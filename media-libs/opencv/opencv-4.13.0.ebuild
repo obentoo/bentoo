@@ -371,11 +371,11 @@ PATCHES=(
 	"${FILESDIR}/${PN}-4.4.0-disable-native-cpuflag-detect.patch"
 	"${FILESDIR}/${PN}-4.12.0-link-with-cblas-for-lapack.patch"
 
-	"${FILESDIR}/${PN}-4.8.1-use-system-flatbuffers.patch"
+	#"${FILESDIR}/${PN}-4.13.0-use-system-flatbuffers.patch"
 	"${FILESDIR}/${PN}-4.8.1-use-system-opencl.patch"
 
 	"${FILESDIR}/${PN}-4.9.0-drop-python2-detection.patch"
-	"${FILESDIR}/${PN}-4.9.0-cmake-cleanup.patch"
+	#"${FILESDIR}/${PN}-4.9.0-cmake-cleanup.patch"
 
 	"${FILESDIR}/${PN}-4.10.0-dnn-explicitly-include-abseil-cpp.patch"
 	"${FILESDIR}/${PN}-4.10.0-tbb-detection.patch"
@@ -384,11 +384,11 @@ PATCHES=(
 	"${FILESDIR}/${PN}-4.11.0-cmake-CMP0177.patch"
 
 	"${FILESDIR}/${PN}-4.12.0-cmake-4.patch"
-	"${FILESDIR}/${PN}-4.11.0-qt-6.9.patch" # https://github.com/opencv/opencv/issues/27223
+	#"${FILESDIR}/${PN}-4.11.0-qt-6.9.patch" # https://github.com/opencv/opencv/issues/27223
 
-	"${FILESDIR}/${PN}-4.12.0-cuda-13.0.patch"
+	#"${FILESDIR}/${PN}-4.12.0-cuda-13.0.patch"
 
-	"${FILESDIR}/${PN}-4.11.0-ffmpeg8.patch" # PR 27691
+	#"${FILESDIR}/${PN}-4.11.0-ffmpeg8.patch" # PR 27691
 	"${DISTDIR}/${P}-fix_videowriter_raw_return_code.patch"
 
 	# TODO applied in src_prepare
