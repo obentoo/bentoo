@@ -47,8 +47,8 @@ BDEPEND="
 DOCS=( AUTHORS ChangeLog NEWS README.md RELEASE )
 
 PATCHES=(
-	"${FILESDIR}"/0001-analyticsoverlay-move-option-to-right-section.patch
-	"${FILESDIR}"/0002-codec2json-move-option-to-right-section.patch
+	#"${FILESDIR}"/0001-analyticsoverlay-move-option-to-right-section.patch
+	#"${FILESDIR}"/0002-codec2json-move-option-to-right-section.patch
 )
 
 src_prepare() {
