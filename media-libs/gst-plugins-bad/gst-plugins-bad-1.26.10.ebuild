@@ -46,23 +46,21 @@ BDEPEND="
 
 DOCS=( AUTHORS ChangeLog NEWS README.md RELEASE )
 
-PATCHES=(
-	#"${FILESDIR}"/0001-analyticsoverlay-move-option-to-right-section.patch
-	#"${FILESDIR}"/0002-codec2json-move-option-to-right-section.patch
-)
-
 src_prepare() {
 	default
 	addpredict /dev # Prevent sandbox violations bug #570624
 }
 
 multilib_src_configure() {
-	GST_PLUGINS_NOAUTO="bz2 hls ipcpipeline librfb shm va wayland"
+	GST_PLUGINS_NOAUTO="bz2 hls ipcpipeline lcevcdecoder lcevcencoder librfb shm va wayland"
 
 	local emesonargs=(
 		-Dshm=enabled
 		-Dipcpipeline=enabled
 		-Dhls=disabled
+		-Dlcevcdecoder=disabled
+		-Dlcevcencoder=disabled
+
 		$(meson_feature bzip2 bz2)
 		$(meson_feature vaapi va)
 		-Dudev=$(usex udev $(usex vaapi enabled disabled) disabled)
