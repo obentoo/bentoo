@@ -53,13 +53,6 @@ BDEPEND="
 	)
 "
 
-PATCHES=(
-	# Needed until gstreamer-rs (for gstreamer-pbutils) is packaged
-	"${FILESDIR}/${PN}-1.20.0-optional-gstreamer.patch"
-	# These tests require connections to pipewire, internet, /dev/fuse
-	"${FILESDIR}/${PN}-1.20.0-sandbox-disable-failing-tests.patch"
-)
-
 pkg_setup() {
 	use test && python-any-r1_pkg_setup
 }
