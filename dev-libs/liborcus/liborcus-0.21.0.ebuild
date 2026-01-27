@@ -39,10 +39,6 @@ DEPEND="
 	dev-util/mdds:${MDDS_SLOT}
 "
 
-PATCHES=(
-	"${FILESDIR}"/${PN}-0.19.2-boost-m4.patch
-)
-
 pkg_setup() {
 	use python && python-single-r1_pkg_setup
 }
