@@ -12,10 +12,7 @@ SLOT="0"
 KEYWORDS="amd64 ~arm arm64 ~loong ppc64 ~riscv x86"
 
 PATCHES=(
-	#"${FILESDIR}"/${PN}-2.5-libcxx-19.patch
-	#"${FILESDIR}"/${PN}-2.5-gcc15.patch
 	"${FILESDIR}"/${PN}-2.5-makefile-install.patch
-	#"${FILESDIR}"/${PN}-2.5-parallel-build.patch # bug 958271
 )
 
 src_install() {
