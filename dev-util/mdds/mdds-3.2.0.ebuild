@@ -34,7 +34,6 @@ BDEPEND="
 
 PATCHES=(
 	"${FILESDIR}/${PN}-3.0.0-buildsystem.patch"
-	"${FILESDIR}/${P}-include.patch"
 )
 
 pkg_pretend() {
