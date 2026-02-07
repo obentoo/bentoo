@@ -18,4 +18,5 @@ PATCHES=(
 src_install() {
 	emake DESTDIR="${ED}" LIBDIR="/usr/$(get_libdir)" install
 	rm "${ED}/usr/$(get_libdir)/libzxcvbn.a" || die
+	doheader zxcvbn.h
 }

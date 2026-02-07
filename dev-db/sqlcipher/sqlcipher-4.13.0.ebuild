@@ -1,9 +1,9 @@
-# Copyright 1999-2025 Gentoo Authors
+# Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
 
-inherit flag-o-matic multilib-minimal
+inherit edo flag-o-matic multilib-minimal
 
 DESCRIPTION="Full Database Encryption for SQLite"
 HOMEPAGE="
@@ -21,7 +21,9 @@ REQUIRED_USE="
 	?? ( libedit readline )
 	test? ( tcl )
 "
-RESTRICT="!test? ( test )"
+# Extra flags are needed like -DSQLCIPHER_TEST which add undesirable
+# test-only code into the main binary. multibuild for tests?
+RESTRICT="!test? ( test ) test"
 
 RDEPEND="
 	dev-libs/openssl:=[${MULTILIB_USEDEP}]
@@ -35,7 +37,12 @@ BDEPEND="dev-lang/tcl"
 
 src_configure() {
 	# Column metadata added due to bug #670346
-	append-cflags -DSQLITE_HAS_CODEC -DSQLITE_ENABLE_COLUMN_METADATA
+	# Since sqlcipher 4.7.0, SQLITE_EXTRA_INIT/SHUTDOWN are required at compile time
+	append-cflags -DSQLITE_HAS_CODEC -DSQLITE_ENABLE_COLUMN_METADATA -DSQLITE_EXTRA_INIT=sqlcipher_extra_init -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown
+	# Link against OpenSSL libcrypto (default crypto provider)
+	# Note: append-ldflags used because sqlcipher's Makefile does not propagate
+	# LIBS to all link targets; LIBS via econf also fails
+	append-ldflags -lcrypto
 
 	multilib-minimal_src_configure
 }
@@ -49,7 +56,7 @@ multilib_src_configure() {
 		--enable-memsys5
 		--enable-rtree
 		--enable-session
-		--enable-tempstore
+		--with-tempstore=yes
 		$(use_enable debug)
 		$(use_enable libedit editline)
 		$(use_enable readline)
@@ -57,6 +64,12 @@ multilib_src_configure() {
 	)
 	ECONF_SOURCE="${S}" \
 		econf "${myeconfargs[@]}"
+}
+
+multilib_src_test() {
+	# https://github.com/sqlcipher/sqlcipher#testing
+	emake testfixture
+	edo ./testfixture "${S}"/test/sqlcipher.test
 }
 
 multilib_src_install_all() {
