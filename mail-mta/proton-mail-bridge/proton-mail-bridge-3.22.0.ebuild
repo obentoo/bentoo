@@ -32,6 +32,9 @@ BDEPEND="
 
 RDEPEND="
 	app-crypt/libsecret
+	dev-libs/libcbor
+	dev-libs/libfido2
+	dev-libs/openssl:=
 	gui? (
 		>=dev-libs/protobuf-21.12:=
 		dev-libs/re2:=
@@ -97,7 +100,7 @@ src_configure() {
 	export CGO_CFLAGS="${CFLAGS}"
 	export CGO_CPPFLAGS="${CPPFLAGS}"
 	export CGO_CXXFLAGS="${CXXFLAGS}"
-	export CGO_LDFLAGS="${LDFLAGS}"
+	export CGO_LDFLAGS="${LDFLAGS} -lfido2 -lcbor -lssl -lcrypto"
 	
 	# Use vendored modules for build reproducibility
 	export GOFLAGS="${GOFLAGS} -mod=vendor"

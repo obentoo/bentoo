@@ -32,7 +32,7 @@ RDEPEND="
 	dev-libs/boost:=[zlib(+)]
 	virtual/zlib:=
 	python? ( ${PYTHON_DEPS} )
-	spreadsheet-model? ( dev-libs/libixion:${SLOT} )
+	spreadsheet-model? ( dev-libs/libixion:0/0.20 )
 "
 DEPEND="
 	${RDEPEND}
