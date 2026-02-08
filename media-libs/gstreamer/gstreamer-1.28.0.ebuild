@@ -34,7 +34,7 @@ BDEPEND="
 	ptp? ( ${RUST_DEPEND} )
 "
 
-DOCS=( AUTHORS ChangeLog NEWS MAINTAINERS README.md RELEASE )
+DOCS=( NEWS MAINTAINERS README.md RELEASE )
 
 PATCHES=(
 	"${FILESDIR}"/gstreamer-1.24.10-disable-test-with-no-tools.patch
