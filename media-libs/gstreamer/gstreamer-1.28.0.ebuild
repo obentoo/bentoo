@@ -40,6 +40,12 @@ PATCHES=(
 	"${FILESDIR}"/gstreamer-1.24.10-disable-test-with-no-tools.patch
 )
 
+src_prepare() {
+	default
+	# GStreamer 1.28+ uses meson.options but the eclass expects meson_options.txt
+	ln -s meson.options meson_options.txt || die
+}
+
 # Rust
 QA_FLAGS_IGNORED="usr/libexec/gstreamer-1.0/gst-ptp-helper"
 
