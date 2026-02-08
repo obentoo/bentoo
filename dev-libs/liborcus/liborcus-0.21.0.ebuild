@@ -22,7 +22,7 @@ else
 fi
 
 LICENSE="MIT"
-SLOT="0/0.20" # based on SONAME of liborcus.so
+SLOT="0/0.21" # based on SONAME of liborcus.so
 IUSE="python +spreadsheet-model test tools"
 
 REQUIRED_USE="python? ( ${PYTHON_REQUIRED_USE} )"
