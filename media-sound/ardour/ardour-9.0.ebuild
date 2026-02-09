@@ -11,24 +11,16 @@ DESCRIPTION="Digital Audio Workstation"
 HOMEPAGE="https://ardour.org/"
 
 if [[ ${PV} == *9999* ]]; then
-	# Main repo not stable
-	#EGIT_REPO_URI="https://git.ardour.org/ardour/ardour.git"
 	EGIT_REPO_URI="https://github.com/Ardour/ardour.git"
 	inherit git-r3
 else
-	# We previously had 8.12 instead of 8.12.0 despite SRC_URI + S
-	[[ ${PV} != 8.12 ]] && die "Please fix the version to be X.Y.Z instead of X.Y on this next bump!"
-	# upstream doesn't provide a release tarball in github repo
-	# see https://github.com/Ardour/ardour/blob/master/README-GITHUB.txt
-	# official link is available here, but with token/expiration:
-	# https://community.ardour.org/download?architecture=x86_64&type=source
-	SRC_URI="https://dev.gentoo.org/~fordfrog/distfiles/Ardour-${PV}.0.tar.bz2"
+	SRC_URI="https://community.ardour.org/download/release/616 -> Ardour-${PV}.0.tar.bz2"
 	S="${WORKDIR}/Ardour-${PV}.0"
-	KEYWORDS="amd64 ~loong ~x86"
+	KEYWORDS="~amd64 ~loong ~x86"
 fi
 
 LICENSE="GPL-2"
-SLOT="8"
+SLOT="9"
 IUSE="doc jack phonehome pulseaudio test"
 CPU_USE=(
 	cpu_flags_x86_{avx,avx512f,fma3,sse}
@@ -97,12 +89,6 @@ BDEPEND="
 "
 
 PATCHES=(
-	"${FILESDIR}/${PN}-9.0.0-fix-clang-crash.patch"
-	"${FILESDIR}/${PN}-9.0.0-properly-check-for-syscall.patch"
-	"${FILESDIR}/${PN}-9.0.0-fix-unlikely-buffer-overflow.patch"
-	"${FILESDIR}/${PN}-8.12-fix_fpu.patch"
-	# see bug #966219
-	"${FILESDIR}/${PN}-8.12-fix_fftranscode.patch"
 )
 
 src_prepare() {
