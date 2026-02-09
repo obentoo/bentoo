@@ -22,20 +22,18 @@ IUSE="cet debuginfod doc gprofng hardened multitarget +nls pgo +plugins static-l
 PATCH_VER=1
 PATCH_DEV=sam
 
+EGIT_REPO_URI="https://sourceware.org/git/binutils-gdb.git"
+inherit git-r3
+
 if [[ ${PV} == 9999 ]]; then
-	inherit git-r3
 	SLOT=${PV}
 elif [[ ${PV} == *9999 ]]; then
-	inherit git-r3
 	SLOT=$(ver_cut 1-2)
 else
-	PATCH_BINUTILS_VER=${PATCH_BINUTILS_VER:-${PV}}
-	PATCH_DEV=${PATCH_DEV:-dilfridge}
-	SRC_URI="mirror://gnu/binutils/binutils-${PV}.tar.xz https://sourceware.org/pub/binutils/releases/binutils-${PV}.tar.xz https://dev.gentoo.org/~${PATCH_DEV}/distfiles/binutils-${PV}.tar.xz"
-	[[ -z ${PATCH_VER} ]] || SRC_URI="${SRC_URI}
-		https://dev.gentoo.org/~${PATCH_DEV}/distfiles/binutils-${PATCH_BINUTILS_VER}-patches-${PATCH_VER}.tar.xz"
+	# For 2.46.0, use tag binutils-2_46
+	EGIT_COMMIT="binutils-2_46"
 	SLOT=$(ver_cut 1-2)
-	KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~m68k ~mips ppc ppc64 ~riscv ~s390 ~sparc x86"
+	KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~m68k ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86"
 fi
 
 #
@@ -85,7 +83,7 @@ RESTRICT="!test? ( test )"
 MY_BUILDDIR=${WORKDIR}/build
 
 src_unpack() {
-	if [[ ${PV} == *9999 ]] ; then
+	if [[ ${PV} == 9999 ]] ; then
 		EGIT_REPO_URI="
 			https://anongit.gentoo.org/git/proj/toolchain/binutils-patches.git
 			https://github.com/gentoo/binutils-patches
@@ -94,14 +92,35 @@ src_unpack() {
 		git-r3_src_unpack
 		mv patches-git/9999 patch || die
 
-		if [[ ${PV} != 9999 ]] ; then
-			EGIT_BRANCH=binutils-$(ver_cut 1)_$(ver_cut 2)-branch
-		fi
 		EGIT_REPO_URI="
 			https://sourceware.org/git/binutils-gdb.git
 			https://git.sr.ht/~sourceware/binutils-gdb
 			https://gitlab.com/x86-binutils/binutils-gdb.git
 		"
+		S=${WORKDIR}/binutils
+		EGIT_CHECKOUT_DIR=${S}
+		git-r3_src_unpack
+	elif [[ ${PV} == *9999 ]] ; then
+		EGIT_REPO_URI="
+			https://anongit.gentoo.org/git/proj/toolchain/binutils-patches.git
+			https://github.com/gentoo/binutils-patches
+		"
+		EGIT_CHECKOUT_DIR=${WORKDIR}/patches-git
+		git-r3_src_unpack
+		mv patches-git/9999 patch || die
+
+		EGIT_BRANCH=binutils-$(ver_cut 1)_$(ver_cut 2)-branch
+		EGIT_REPO_URI="
+			https://sourceware.org/git/binutils-gdb.git
+			https://git.sr.ht/~sourceware/binutils-gdb
+			https://gitlab.com/x86-binutils/binutils-gdb.git
+		"
+		S=${WORKDIR}/binutils
+		EGIT_CHECKOUT_DIR=${S}
+		git-r3_src_unpack
+	elif [[ -n ${EGIT_COMMIT} ]] ; then
+		# Tagged release via git
+		EGIT_REPO_URI="https://sourceware.org/git/binutils-gdb.git"
 		S=${WORKDIR}/binutils
 		EGIT_CHECKOUT_DIR=${S}
 		git-r3_src_unpack
@@ -128,11 +147,14 @@ src_prepare() {
 		patchsetname="from git master"
 	elif [[ ${PV} == *9999 ]] ; then
 		patchsetname="from git branch ${EGIT_BRANCH}"
+	elif [[ -n ${EGIT_COMMIT} ]] ; then
+		patchsetname="skipped for git tag ${EGIT_COMMIT}"
 	else
 		patchsetname="${PATCH_BINUTILS_VER}-${PATCH_VER}"
 	fi
 
-	if [[ -n ${PATCH_VER} ]] || [[ ${PV} == *9999 ]] ; then
+	# Only apply patches for non-git releases or live ebuilds with patch dir
+	if [[ -z ${EGIT_COMMIT} ]] && ( [[ -n ${PATCH_VER} ]] || [[ ${PV} == *9999 ]] ) ; then
 		if ! use vanilla; then
 			einfo "Applying binutils patchset ${patchsetname}"
 			eapply "${WORKDIR}/patch"
@@ -145,6 +167,8 @@ src_prepare() {
 					   "${FILESDIR}"/binutils-2.43-linker-prefix.patch
 			fi
 		fi
+	else
+		einfo "Binutils patchset ${patchsetname}"
 	fi
 
 	# Make sure our explicit libdir paths don't get clobbered, bug #562460
