@@ -12,14 +12,17 @@ LIVEPATCH="${P}b"
 
 inherit ecm python-single-r1 xdg
 
+CALAMARES_COMMIT="e6ed0773ac91923c8192dc91fda07ca7bd748c06"
+
 DESCRIPTION="Distribution-independent installer framework"
 HOMEPAGE="https://calamares.io https://codeberg.org/Calamares/calamares"
-SRC_URI="https://codeberg.org/Calamares/${PN}/releases/download/v${PV}/${P}.tar.gz
+SRC_URI="https://codeberg.org/Calamares/${PN}/archive/${CALAMARES_COMMIT}.tar.gz -> ${P}.tar.gz
 	livecd? (
 		https://github.com/calamares/calamares/compare/95aa33f...TableFlipper9:calamares:gentoo-patches-3.3.14b.patch \
 		-> ${LIVEPATCH}-gentoo-patches.patch
 	)
 "
+S="${WORKDIR}/${PN}"
 
 LICENSE="GPL-3"
 SLOT="0"
@@ -57,7 +60,7 @@ RDEPEND="${DEPEND}
 BDEPEND=">=dev-qt/qttools-${QTMIN}:6[linguist]"
 
 src_prepare() {
-	eapply "${FILESDIR}"/${PN}-3.3.14-boost-python-fix.patch
+	eapply "${FILESDIR}"/${P}-boost-python-fix.patch
 	if use "livecd" ; then
 		cp "${DISTDIR}/${LIVEPATCH}-gentoo-patches.patch" "${LIVEPATCH}-gentoo-patches.patch" || die
 		eapply "${LIVEPATCH}-gentoo-patches.patch"
