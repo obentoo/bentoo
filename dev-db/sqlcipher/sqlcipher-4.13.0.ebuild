@@ -40,8 +40,6 @@ src_configure() {
 	# Since sqlcipher 4.7.0, SQLITE_EXTRA_INIT/SHUTDOWN are required at compile time
 	append-cflags -DSQLITE_HAS_CODEC -DSQLITE_ENABLE_COLUMN_METADATA -DSQLITE_EXTRA_INIT=sqlcipher_extra_init -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown
 	# Link against OpenSSL libcrypto (default crypto provider)
-	# Note: append-ldflags used because sqlcipher's Makefile does not propagate
-	# LIBS to all link targets; LIBS via econf also fails
 	append-ldflags -lcrypto
 
 	multilib-minimal_src_configure
@@ -72,7 +70,55 @@ multilib_src_test() {
 	edo ./testfixture "${S}"/test/sqlcipher.test
 }
 
+multilib_src_install() {
+	default
+
+	# sqlcipher's autotools installs everything with sqlite3 names,
+	# which conflicts with dev-db/sqlite. We need to:
+	# 1) Remove all sqlite3-named files (owned by dev-db/sqlite)
+	# 2) Create proper sqlcipher-specific development files
+
+	# Create sqlcipher include directory with headers
+	insinto /usr/include/sqlcipher
+	doins "${S}"/sqlite3.h
+	doins "${S}"/sqlite3ext.h
+
+	# Create the .so development symlink (autotools only creates .so.0)
+	dosym libsqlcipher.so.0 "/usr/$(get_libdir)/libsqlcipher.so"
+
+	# Create sqlcipher.pc for pkg-config
+	local sqlcipher_version
+	sqlcipher_version=$(grep '^Version:' "${BUILD_DIR}"/sqlite3.pc 2>/dev/null | cut -d' ' -f2)
+	[[ -z "${sqlcipher_version}" ]] && sqlcipher_version="${PV}"
+
+	cat > "${T}"/sqlcipher.pc <<-EOF || die
+		prefix=/usr
+		exec_prefix=\${prefix}
+		libdir=\${exec_prefix}/$(get_libdir)
+		includedir=\${prefix}/include/sqlcipher
+
+		Name: SQLCipher
+		Description: Full Database Encryption for SQLite
+		Version: ${sqlcipher_version}
+		Libs: -L\${libdir} -lsqlcipher
+		Libs.private: -lcrypto -lm -lz
+		Cflags: -I\${includedir} -DSQLITE_HAS_CODEC
+	EOF
+	insinto "/usr/$(get_libdir)/pkgconfig"
+	doins "${T}"/sqlcipher.pc
+
+	# Remove files that conflict with dev-db/sqlite
+	rm -f "${ED}"/usr/include/sqlite3.h || die
+	rm -f "${ED}"/usr/include/sqlite3ext.h || die
+	rm -f "${ED}"/usr/$(get_libdir)/libsqlite3.{a,so,so.0,so.*} || die
+	rm -f "${ED}"/usr/$(get_libdir)/pkgconfig/sqlite3.pc || die
+	rm -f "${ED}"/usr/bin/sqlite3 || die
+}
+
 multilib_src_install_all() {
 	einstalldocs
 	find "${ED}" -name '*.la' -type f -delete || die
+
+	# Remove man page that conflicts with dev-db/sqlite
+	rm -f "${ED}"/usr/share/man/man1/sqlite3.1* || die
 }
