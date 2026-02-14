@@ -75,20 +75,22 @@ multilib_src_install() {
 
 	# sqlcipher's autotools installs everything with sqlite3 names,
 	# which conflicts with dev-db/sqlite. We need to:
-	# 1) Remove all sqlite3-named files (owned by dev-db/sqlite)
-	# 2) Create proper sqlcipher-specific development files
+	# 1) Move headers to sqlcipher-specific include dir
+	# 2) Create proper sqlcipher .so symlink and pkg-config
+	# 3) Remove all remaining sqlite3-named files
 
-	# Create sqlcipher include directory with headers
-	insinto /usr/include/sqlcipher
-	doins "${S}"/sqlite3.h
-	doins "${S}"/sqlite3ext.h
+	# Move already-installed headers to /usr/include/sqlcipher/
+	dodir /usr/include/sqlcipher
+	mv "${ED}"/usr/include/sqlite3.h "${ED}"/usr/include/sqlcipher/ || die
+	mv "${ED}"/usr/include/sqlite3ext.h "${ED}"/usr/include/sqlcipher/ || die
 
-	# Create the .so development symlink (autotools only creates .so.0)
+	# Create the .so development symlink
+	# (autotools creates libsqlite3.so symlinks but not libsqlcipher.so)
 	dosym libsqlcipher.so.0 "/usr/$(get_libdir)/libsqlcipher.so"
 
 	# Create sqlcipher.pc for pkg-config
 	local sqlcipher_version
-	sqlcipher_version=$(grep '^Version:' "${BUILD_DIR}"/sqlite3.pc 2>/dev/null | cut -d' ' -f2)
+	sqlcipher_version=$(sed -n 's/^Version: //p' "${BUILD_DIR}"/sqlite3.pc 2>/dev/null)
 	[[ -z "${sqlcipher_version}" ]] && sqlcipher_version="${PV}"
 
 	cat > "${T}"/sqlcipher.pc <<-EOF || die
@@ -107,9 +109,7 @@ multilib_src_install() {
 	insinto "/usr/$(get_libdir)/pkgconfig"
 	doins "${T}"/sqlcipher.pc
 
-	# Remove files that conflict with dev-db/sqlite
-	rm -f "${ED}"/usr/include/sqlite3.h || die
-	rm -f "${ED}"/usr/include/sqlite3ext.h || die
+	# Remove remaining files that conflict with dev-db/sqlite
 	rm -f "${ED}"/usr/$(get_libdir)/libsqlite3.{a,so,so.0,so.*} || die
 	rm -f "${ED}"/usr/$(get_libdir)/pkgconfig/sqlite3.pc || die
 	rm -f "${ED}"/usr/bin/sqlite3 || die
