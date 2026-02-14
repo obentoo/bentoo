@@ -3,7 +3,7 @@
 
 EAPI=8
 
-COMMIT=03be1c69c40c74f08e880e754ce30d7af647c020
+COMMIT=95f92180cd88f7e51f3678fc5133191393edc19d
 inherit cmake flag-o-matic xdg
 
 DESCRIPTION="Light GUI editor for SQLite databases"
@@ -15,7 +15,7 @@ if [[ ${PV} == *9999* ]]; then
 else
 	SRC_URI="https://github.com/sqlitebrowser/sqlitebrowser/archive/${COMMIT}.tar.gz -> ${P}-${COMMIT:0:8}.tar.gz"
 	S="${WORKDIR}/${PN}-${COMMIT}"
-	KEYWORDS="amd64 x86"
+	KEYWORDS="~amd64 ~x86"
 fi
 
 LICENSE="GPL-3+ MPL-2.0"
@@ -41,7 +41,6 @@ DOCS=( images/ {BUILDING,CHANGELOG,README}.md )
 
 PATCHES=(
 	"${FILESDIR}/${P}-no-git.patch"
-	"${FILESDIR}/${P}-qt-6.9.patch"
 )
 
 src_configure() {
