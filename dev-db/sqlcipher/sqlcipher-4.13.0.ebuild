@@ -85,10 +85,11 @@ multilib_src_install() {
 	mv "${ED}"/usr/include/sqlite3ext.h "${ED}"/usr/include/sqlcipher/ || die
 
 	# Rename the actual versioned library to libsqlcipher.so.0
-	# (autotools installs as libsqlite3.so.0.X.Y, we need libsqlcipher naming)
+	# (autotools installs as libsqlite3.so.X.Y.Z with sqlite3 naming)
 	local sqlite3_lib
-	sqlite3_lib=$(ls "${ED}"/usr/$(get_libdir)/libsqlite3.so.0.* 2>/dev/null | head -1)
-	[[ -n "${sqlite3_lib}" ]] && mv "${sqlite3_lib}" "${ED}/usr/$(get_libdir)/libsqlcipher.so.0" || die
+	sqlite3_lib=$(find "${ED}/usr/$(get_libdir)" -maxdepth 1 -name 'libsqlite3.so.*' -type f | head -1)
+	[[ -z "${sqlite3_lib}" ]] && die "Could not find versioned libsqlite3.so library"
+	mv "${sqlite3_lib}" "${ED}/usr/$(get_libdir)/libsqlcipher.so.0" || die "Failed to rename library"
 
 	# Create the .so development symlink
 	dosym libsqlcipher.so.0 "/usr/$(get_libdir)/libsqlcipher.so"
