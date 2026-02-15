@@ -84,8 +84,13 @@ multilib_src_install() {
 	mv "${ED}"/usr/include/sqlite3.h "${ED}"/usr/include/sqlcipher/ || die
 	mv "${ED}"/usr/include/sqlite3ext.h "${ED}"/usr/include/sqlcipher/ || die
 
+	# Rename the actual versioned library to libsqlcipher.so.0
+	# (autotools installs as libsqlite3.so.0.X.Y, we need libsqlcipher naming)
+	local sqlite3_lib
+	sqlite3_lib=$(ls "${ED}"/usr/$(get_libdir)/libsqlite3.so.0.* 2>/dev/null | head -1)
+	[[ -n "${sqlite3_lib}" ]] && mv "${sqlite3_lib}" "${ED}/usr/$(get_libdir)/libsqlcipher.so.0" || die
+
 	# Create the .so development symlink
-	# (autotools creates libsqlite3.so symlinks but not libsqlcipher.so)
 	dosym libsqlcipher.so.0 "/usr/$(get_libdir)/libsqlcipher.so"
 
 	# Create sqlcipher.pc for pkg-config
