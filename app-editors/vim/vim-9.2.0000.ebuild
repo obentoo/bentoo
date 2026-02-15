@@ -75,13 +75,6 @@ BDEPEND="
 "
 PDEPEND="!minimal? ( app-vim/gentoo-syntax )"
 
-if [[ ${PV} != 9999* ]]; then
-	# Gentoo patches to fix runtime issues, cross-compile errors, etc
-	PATCHES=(
-		"${WORKDIR}/vim-patches-vim-${VIM_PATCHES_VERSION}-patches"
-	)
-fi
-
 # platform-specific checks (bug #898452):
 # - acl()     -- Solaris
 # - statacl() -- AIX
