@@ -37,7 +37,6 @@ fi
 
 DESCRIPTION="Multimedia processing graphs"
 HOMEPAGE="https://pipewire.org/"
-SRC_URI+=" https://dev.gentoo.org/~sam/distfiles/${CATEGORY}/${PN}/${PN}-1.4.7-0001-don-t-include-standard-C-headers-inside-of-extern-C.patch.xz"
 
 LICENSE="MIT LGPL-2.1+ GPL-2"
 # ABI was broken in 0.3.42 for https://gitlab.freedesktop.org/pipewire/wireplumber/-/issues/49
@@ -50,7 +49,7 @@ IUSE+=" pulseaudio sound-server ssl system-service systemd test v4l X zeroconf"
 # jack-client IUSE will need blocking to avoid users accidentally
 # configuring their systems to send PW sink output to the emulated
 # JACK's sink - doing so is likely to yield no audio, cause a CPU
-# cycles consuming loop (and may even cause GUI crashes)!
+# ccycles consuming loop (and may even cause GUI crashes)!
 
 # - TODO: There should be "sound-server? ( || ( alsa bluetooth ) )" here, but ALSA is always enabled
 # - TODO: Pulseaudio alsa plugin performs runtime check that pulseaudio server connection will work
@@ -173,7 +172,6 @@ PDEPEND=">=media-video/wireplumber-0.5.2"
 
 PATCHES=(
 	"${FILESDIR}"/${PN}-0.3.25-enable-failed-mlock-warning.patch
-	"${WORKDIR}"/${PN}-1.4.7-0001-don-t-include-standard-C-headers-inside-of-extern-C.patch
 )
 
 pkg_setup() {
@@ -215,7 +213,7 @@ multilib_src_configure() {
 		$(meson_native_use_feature gstreamer)
 		$(meson_native_use_feature gstreamer gstreamer-device-provider)
 		$(meson_native_use_feature gsettings)
-		$(meson_native_use_feature systemd)
+		$(meson_native_use_feature systemd libsystemd)
 		-Dlogind=${logind}
 		-Dlogind-provider=$(usex systemd 'libsystemd' 'libelogind')
 
