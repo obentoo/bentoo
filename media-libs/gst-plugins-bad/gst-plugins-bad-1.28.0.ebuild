@@ -16,7 +16,6 @@ IUSE="X bzip2 +introspection +orc udev vaapi vnc wayland"
 # X11 is automagic for now, upstream #709530 - only used by librfb USE=vnc plugin
 # Baseline requirement for libva is 1.6, but 1.15 gets more features
 RDEPEND="
-	!media-plugins/gst-plugins-va
 	!media-plugins/gst-transcoder
 
 	>=media-libs/gstreamer-${PV}:${SLOT}[${MULTILIB_USEDEP},introspection?]
@@ -34,6 +33,7 @@ RDEPEND="
 	orc? ( >=dev-lang/orc-0.4.33[${MULTILIB_USEDEP}] )
 
 	vaapi? (
+		>=media-plugins/gst-plugins-va-${PV}:${SLOT}[${MULTILIB_USEDEP}]
 		>=media-libs/libva-1.15:=[${MULTILIB_USEDEP}]
 		udev? ( dev-libs/libgudev[${MULTILIB_USEDEP}] )
 	)
@@ -78,4 +78,14 @@ multilib_src_configure() {
 multilib_src_test() {
 	# Tests are slower than upstream expects
 	CK_DEFAULT_TIMEOUT=300 gstreamer_multilib_src_test
+}
+
+multilib_src_install() {
+	gstreamer_multilib_src_install
+
+	# Remove the VA plugin - it is provided by media-plugins/gst-plugins-va
+	# to avoid file collisions. We only ship the library (libgstva-1.0.so).
+	if use vaapi; then
+		rm -f "${D}"/usr/$(get_libdir)/gstreamer-1.0/libgstva.so || die
+	fi
 }

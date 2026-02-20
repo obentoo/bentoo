@@ -15,7 +15,7 @@ KEYWORDS="amd64 ~arm64 ~riscv x86"
 
 RDEPEND="
 	!!media-plugins/gst-plugins-vaapi
-	>=media-libs/gst-plugins-bad-${PV}:${SLOT}[${MULTILIB_USEDEP}]
+	>=media-libs/gst-plugins-bad-${PV}:${SLOT}[vaapi,${MULTILIB_USEDEP}]
 	>=media-libs/libva-1.15.0:=[${MULTILIB_USEDEP}]
 "
 DEPEND="${RDEPEND}"
