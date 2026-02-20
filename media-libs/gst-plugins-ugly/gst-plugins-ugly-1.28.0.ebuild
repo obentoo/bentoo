@@ -16,7 +16,7 @@ RDEPEND="
 "
 DEPEND="${RDEPEND}"
 
-DOCS=( AUTHORS ChangeLog NEWS README.md RELEASE )
+DOCS=( ChangeLog NEWS README.md RELEASE )
 
 src_prepare() {
 	default
