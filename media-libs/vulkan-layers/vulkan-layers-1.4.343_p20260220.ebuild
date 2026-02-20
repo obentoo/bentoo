@@ -52,6 +52,9 @@ multilib_src_configure() {
 		-DBUILD_WSI_XCB_SUPPORT=$(usex X)
 		-DBUILD_WSI_XLIB_SUPPORT=$(usex X)
 		-DBUILD_TESTS=$(usex test)
+		-DVULKAN_HEADERS_INSTALL_DIR="${ESYSROOT}/usr"
+		-DFETCHCONTENT_FULLY_DISCONNECTED=ON
+		-DUPDATE_DEPS=OFF
 	)
 	cmake_src_configure
 }
