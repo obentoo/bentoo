@@ -96,6 +96,13 @@ DOCS=( AUTHORS NEWS README.md RELEASE )
 PATCHES=(
 )
 
+src_prepare() {
+	default
+	# GStreamer 1.28+ uses meson.options but the eclass expects meson_options.txt
+	[[ -f "${S}/meson.options" && ! -f "${S}/meson_options.txt" ]] && \
+		ln -s meson.options "${S}/meson_options.txt" || die
+}
+
 multilib_src_configure() {
 	filter-flags -mno-sse -mno-sse2 -mno-sse4.1 #610340
 

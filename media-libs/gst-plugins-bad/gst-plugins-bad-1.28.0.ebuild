@@ -49,6 +49,9 @@ DOCS=( AUTHORS ChangeLog NEWS README.md RELEASE )
 src_prepare() {
 	default
 	addpredict /dev # Prevent sandbox violations bug #570624
+	# GStreamer 1.28+ uses meson.options but the eclass expects meson_options.txt
+	[[ -f "${S}/meson.options" && ! -f "${S}/meson_options.txt" ]] && \
+		ln -s meson.options "${S}/meson_options.txt" || die
 }
 
 multilib_src_configure() {
