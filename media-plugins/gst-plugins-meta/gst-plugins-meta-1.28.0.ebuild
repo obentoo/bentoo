@@ -11,7 +11,7 @@ HOMEPAGE="https://gstreamer.freedesktop.org/"
 LICENSE="metapackage"
 SLOT="1.0"
 KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~mips ppc ppc64 ~riscv ~sparc x86"
-IUSE="aac a52 alsa cdda dts dv dvb dvd ffmpeg flac http jack lame libass libvisual mp3 modplug mpeg ogg opus oss pulseaudio taglib theora v4l vaapi vcd vorbis vpx wavpack X x264"
+IUSE="aac a52 alsa cdda dts dv dvb dvd ffmpeg flac http jack lame libass libde265 libvisual mp3 modplug mpeg nvcodec ogg opus oss pulseaudio taglib theora v4l vaapi vcd vorbis vpx wavpack X x264"
 REQUIRED_USE="opus? ( ogg ) theora? ( ogg ) vorbis? ( ogg )"
 
 RDEPEND="
@@ -40,12 +40,14 @@ RDEPEND="
 	jack? ( >=media-plugins/gst-plugins-jack-${PV}:1.0[${MULTILIB_USEDEP}] )
 	lame? ( >=media-plugins/gst-plugins-lame-${PV}:1.0[${MULTILIB_USEDEP}] )
 	libass? ( >=media-plugins/gst-plugins-assrender-${PV}:1.0[${MULTILIB_USEDEP}] )
+	libde265? ( >=media-plugins/gst-plugins-libde265-${PV}:1.0[${MULTILIB_USEDEP}] )
 	libvisual? ( >=media-plugins/gst-plugins-libvisual-${PV}:1.0[${MULTILIB_USEDEP}] )
 	modplug? ( >=media-plugins/gst-plugins-modplug-${PV}:1.0[${MULTILIB_USEDEP}] )
 	mp3? (
 		>=media-libs/gst-plugins-ugly-${PV}:1.0[${MULTILIB_USEDEP}]
 		>=media-plugins/gst-plugins-mpg123-${PV}:1.0[${MULTILIB_USEDEP}] )
 	mpeg? ( >=media-plugins/gst-plugins-mpeg2dec-${PV}:1.0[${MULTILIB_USEDEP}] )
+	nvcodec? ( >=media-plugins/gst-plugins-nvcodec-${PV}:1.0[${MULTILIB_USEDEP}] )
 	opus? ( >=media-plugins/gst-plugins-opus-${PV}:1.0[${MULTILIB_USEDEP}] )
 	oss? ( >=media-plugins/gst-plugins-oss-${PV}:1.0[${MULTILIB_USEDEP}] )
 	pulseaudio? ( >=media-plugins/gst-plugins-pulse-${PV}:1.0[${MULTILIB_USEDEP}] )
