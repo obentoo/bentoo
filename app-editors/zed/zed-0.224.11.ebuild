@@ -1549,7 +1549,11 @@ BDEPEND="
 	')
 "
 
-QA_FLAGS_IGNORED="usr/bin/zedit"
+QA_FLAGS_IGNORED="usr/bin/zedit usr/libexec/zed-editor"
+
+pkg_pretend() {
+	check-reqs_pkg_pretend
+}
 
 pkg_setup() {
 	if tc-is-lto; then

@@ -1,4 +1,4 @@
-# Copyright 1999-2025 Gentoo Authors
+# Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
@@ -29,7 +29,6 @@ REQUIRED_USE="
 "
 
 # Binary redistribution is permitted under MIT license
-# We restrict mirroring to respect upstream's distribution preferences
 # Strip is restricted because these are pre-built binaries
 RESTRICT="mirror strip"
 
@@ -53,17 +52,12 @@ RDEPEND="
 	)
 "
 
-# No build-time dependencies for binary package
 DEPEND=""
-
-# systemd only needed if USE flag is enabled
 BDEPEND="systemd? ( sys-apps/systemd )"
 
 pkg_pretend() {
-	# Check disk space requirements early
 	check-reqs_pkg_pretend
 
-	# Warn about experimental GPU support
 	if use rocm; then
 		ewarn ""
 		ewarn "ROCm (AMD GPU) support is experimental and may not work on all hardware."
@@ -83,13 +77,10 @@ pkg_pretend() {
 }
 
 pkg_setup() {
-	# Verify disk space requirements
 	check-reqs_pkg_setup
 }
 
 src_unpack() {
-	# Unpack the appropriate tarball based on architecture and USE flags
-	# ROCm variant takes precedence over standard amd64 build
 	if use amd64; then
 		if use rocm; then
 			unpack "${P}-rocm.tgz"
@@ -102,7 +93,6 @@ src_unpack() {
 }
 
 src_prepare() {
-	# Apply any user patches if present
 	default
 }
 
@@ -112,7 +102,6 @@ src_install() {
 	doexe bin/ollama
 
 	# Install bundled libraries
-	# These are required for GPU acceleration and may not match system libraries
 	insinto /opt/ollama/lib
 	doins -r lib/*
 
@@ -122,7 +111,6 @@ src_install() {
 	# Install systemd service file
 	if use systemd; then
 		systemd_dounit "${FILESDIR}"/ollama.service
-		# Install systemd-tmpfiles configuration
 		dotmpfiles "${FILESDIR}"/ollama.conf
 	fi
 
@@ -139,20 +127,15 @@ src_install() {
 	keepdir /var/log/ollama
 	fowners ollama:ollama /var/log/ollama
 	fperms 0750 /var/log/ollama
-
-	# Install documentation
-	dodoc "${FILESDIR}"/README.gentoo
 }
 
 pkg_preinst() {
-	# Preserve any existing models and configuration
 	if [[ -d "${EROOT}"/var/lib/ollama ]]; then
 		einfo "Preserving existing Ollama data in /var/lib/ollama"
 	fi
 }
 
 pkg_postinst() {
-	# Rebuild systemd-tmpfiles if systemd is running
 	if use systemd; then
 		tmpfiles_process ollama.conf
 	fi
@@ -164,79 +147,56 @@ pkg_postinst() {
 	elog "=================="
 	elog ""
 	elog "1. Start the Ollama service:"
-	
+
 	if use systemd; then
 		elog "   systemctl enable --now ollama"
-		elog ""
-		elog "   Or run manually:"
-		elog "   systemctl start ollama"
 	else
 		elog "   rc-service ollama start"
-		elog "   rc-update add ollama default  # Enable at boot"
-		elog ""
-		elog "   Or run manually:"
-		elog "   ollama serve"
+		elog "   rc-update add ollama default"
 	fi
-	
+
 	elog ""
 	elog "2. Download and run a model:"
 	elog "   ollama run llama3.2:3b"
 	elog ""
-	elog "3. List available models:"
-	elog "   ollama list"
-	elog ""
-	elog "4. Browse the model library:"
+	elog "3. Browse the model library:"
 	elog "   https://ollama.com/library"
 	elog ""
-	
+
 	if use cuda; then
 		elog "NVIDIA CUDA Support:"
-		elog "  - CUDA toolkit detected"
 		elog "  - Ollama will automatically use NVIDIA GPUs"
 		elog "  - Set CUDA_VISIBLE_DEVICES to control GPU selection"
 		elog ""
 	fi
-	
+
 	if use rocm; then
 		elog "AMD ROCm Support:"
-		elog "  - ROCm libraries detected"
 		elog "  - Set HSA_OVERRIDE_GFX_VERSION if needed for your GPU"
 		elog "  - Example: HSA_OVERRIDE_GFX_VERSION=10.3.0 for Radeon RX 6000"
 		elog ""
 	fi
-	
+
+	elog "Privacy:"
+	elog "  - Set OLLAMA_NO_CLOUD=1 to disable cloud models"
+	elog ""
 	elog "Configuration:"
-	elog "  - Models are stored in: /var/lib/ollama"
-	elog "  - Logs are written to: /var/log/ollama"
-	elog "  - Default API endpoint: http://localhost:11434"
+	elog "  - Models: /var/lib/ollama"
+	elog "  - Logs: /var/log/ollama"
+	elog "  - API: http://localhost:11434"
 	elog ""
-	elog "Environment Variables:"
-	elog "  OLLAMA_HOST     - Bind address (default: 127.0.0.1:11434)"
-	elog "  OLLAMA_MODELS   - Model storage path"
-	elog "  OLLAMA_KEEP_ALIVE - Model memory retention time"
-	elog "  OLLAMA_NUM_PARALLEL - Number of parallel requests"
-	elog ""
-	
+
 	if [[ -z "${REPLACING_VERSIONS}" ]]; then
-		elog "First-time Installation:"
-		elog "  Add your user to the ollama group to access the service:"
-		elog "    usermod -aG ollama YOUR_USERNAME"
-		elog "  Then log out and back in for changes to take effect."
+		elog "Add your user to the ollama group:"
+		elog "  usermod -aG ollama YOUR_USERNAME"
 		elog ""
 	fi
-	
-	elog "For more information:"
-	elog "  - Documentation: https://github.com/ollama/ollama/tree/main/docs"
-	elog "  - API reference: https://github.com/ollama/ollama/blob/main/docs/api.md"
-	elog ""
 }
 
 pkg_postrm() {
 	elog ""
 	elog "Ollama has been removed."
-	elog ""
-	elog "Note: Models and configuration in /var/lib/ollama were preserved."
-	elog "To completely remove Ollama data:"
-	elog "  rm -rf /var/lib/ollama"
+	elog "Models and configuration in /var/lib/ollama were preserved."
+	elog "To completely remove: rm -rf /var/lib/ollama"
 	elog ""
 }
