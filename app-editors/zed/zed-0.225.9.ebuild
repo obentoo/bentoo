@@ -21,7 +21,7 @@ CRATES="
 	alloc-stdlib@0.2.2
 	allocator-api2@0.2.21
 	alsa-sys@0.3.1
-	alsa@0.9.1
+	alsa@0.10.0
 	ambient-authority@0.0.2
 	ammonia@4.1.2
 	android_system_properties@0.1.5
@@ -41,7 +41,6 @@ CRATES="
 	arrayvec@0.7.6
 	as-raw-xcb-connection@1.0.1
 	ascii@1.1.0
-	ash-window@0.13.0
 	ash@0.38.0+1.3.281
 	ashpd@0.12.1
 	async-attributes@1.1.2
@@ -102,7 +101,6 @@ CRATES="
 	aws-smithy-xml@0.60.12
 	aws-types@1.3.10
 	axum-core@0.3.4
-	axum-extra@0.4.2
 	axum@0.6.20
 	backtrace@0.3.76
 	base16ct@0.1.1
@@ -126,7 +124,6 @@ CRATES="
 	block2@0.6.2
 	block@0.1.6
 	blocking@1.6.2
-	bm25@2.3.2
 	bon-macros@3.8.2
 	bon@3.8.2
 	borrow-or-share@0.2.4
@@ -231,7 +228,7 @@ CRATES="
 	coreaudio-rs@0.13.0
 	coreaudio-sys@0.2.17
 	cosmic-text@0.17.1
-	cpal@0.16.0
+	cpal@0.17.1
 	cpp_demangle@0.4.5
 	cpufeatures@0.2.17
 	cranelift-assembler-x64-meta@0.120.2
@@ -294,7 +291,6 @@ CRATES="
 	derive_more@0.99.20
 	derive_more@2.0.1
 	derive_setters@0.1.8
-	deunicode@1.6.2
 	dialoguer@0.11.0
 	diff@0.1.13
 	diffy@0.4.2
@@ -309,6 +305,7 @@ CRATES="
 	dispatch@0.2.0
 	displaydoc@0.2.5
 	dlib@0.5.2
+	document-features@0.2.12
 	documented-macros@0.9.2
 	documented@0.9.2
 	dotenvy@0.15.7
@@ -387,6 +384,7 @@ CRATES="
 	font-types@0.10.0
 	font-types@0.11.0
 	fontconfig-parser@0.5.8
+	fontdb@0.16.2
 	fontdb@0.23.0
 	foreign-types-macros@0.2.3
 	foreign-types-shared@0.1.1
@@ -417,7 +415,6 @@ CRATES="
 	futures@0.1.31
 	futures@0.3.31
 	fuzzy-matcher@0.3.7
-	fxhash@0.2.1
 	gemm-c32@0.17.1
 	gemm-c32@0.18.2
 	gemm-c64@0.17.1
@@ -441,14 +438,16 @@ CRATES="
 	gimli@0.31.1
 	gimli@0.32.3
 	git2@0.20.4
+	gl_generator@0.14.0
 	glob@0.3.3
 	globset@0.4.17
 	gloo-timers@0.3.0
 	glow@0.16.0
+	glutin_wgl_sys@0.6.1
 	goblin@0.8.2
-	gpu-alloc-ash@0.7.0
-	gpu-alloc-types@0.3.0
-	gpu-alloc@0.6.0
+	gpu-allocator@0.28.0
+	gpu-descriptor-types@0.2.0
+	gpu-descriptor@0.3.2
 	grid@0.18.0
 	group@0.12.1
 	h2@0.3.27
@@ -474,7 +473,6 @@ CRATES="
 	hermit-abi@0.5.2
 	hex@0.4.3
 	hexf-parse@0.2.1
-	hidden-trait@0.1.2
 	hkdf@0.12.4
 	hmac@0.12.1
 	home@0.5.11
@@ -550,12 +548,14 @@ CRATES="
 	jni@0.21.1
 	jobserver@0.1.34
 	js-sys@0.3.81
+	json5@0.4.1
 	json_dotpath@1.1.0
 	jsonschema@0.37.4
 	jsonwebtoken@10.3.0
-	jupyter-protocol@1.1.1
+	jupyter-protocol@1.2.0
 	jupyter-websocket-client@1.0.0
 	khronos-egl@6.0.0
+	khronos_api@3.1.0
 	kqueue-sys@1.0.4
 	kqueue@1.1.1
 	kurbo@0.11.3
@@ -582,6 +582,7 @@ CRATES="
 	linux-raw-sys@0.11.0
 	linux-raw-sys@0.4.15
 	litemap@0.8.0
+	litrs@1.0.0
 	lmdb-master-sys@0.2.5
 	lock_api@0.4.14
 	log@0.4.29
@@ -617,6 +618,7 @@ CRATES="
 	merge@0.1.0
 	merge_derive@0.1.0
 	metal@0.29.0
+	metal@0.33.0
 	mimalloc@0.1.48
 	mime@0.3.17
 	mime_guess@2.0.5
@@ -625,7 +627,6 @@ CRATES="
 	minidumper@0.8.3
 	minimal-lexical@0.2.1
 	miniz_oxide@0.8.9
-	mint@0.5.9
 	mio@0.8.11
 	mio@1.1.0
 	miow@0.6.1
@@ -634,7 +635,7 @@ CRATES="
 	msvc_spectre_libs@0.1.3
 	multimap@0.10.1
 	multimap@0.8.3
-	naga@25.0.1
+	naga@28.0.0
 	nanoid@0.4.0
 	nanorand@0.7.0
 	native-tls@0.2.14
@@ -671,17 +672,15 @@ CRATES="
 	num_enum_derive@0.7.4
 	num_threads@0.1.7
 	objc-foundation@0.1.1
-	objc2-app-kit@0.3.1
 	objc2-audio-toolbox@0.3.1
+	objc2-avf-audio@0.3.1
 	objc2-core-audio-types@0.3.2
-	objc2-core-audio@0.3.2
+	objc2-core-audio@0.3.1
 	objc2-core-foundation@0.3.2
 	objc2-encode@4.1.0
 	objc2-foundation@0.3.1
 	objc2-io-kit@0.3.2
 	objc2-metal@0.3.1
-	objc2-quartz-core@0.3.1
-	objc2-ui-kit@0.3.1
 	objc2@0.6.3
 	objc@0.2.7
 	objc_exception@0.1.2
@@ -777,6 +776,7 @@ CRATES="
 	powerfmt@0.2.0
 	ppv-lite86@0.2.21
 	precomputed-hash@0.1.1
+	presser@0.3.1
 	pretty_assertions@1.4.1
 	prettyplease@0.2.37
 	primal-check@0.3.4
@@ -829,6 +829,7 @@ CRATES="
 	rand_core@0.6.4
 	rand_core@0.9.3
 	rand_distr@0.5.1
+	range-alloc@0.1.4
 	range-map@0.2.0
 	rangemap@1.7.1
 	rav1e@0.7.1
@@ -836,7 +837,6 @@ CRATES="
 	raw-cpuid@10.7.0
 	raw-cpuid@11.6.0
 	raw-window-handle@0.6.2
-	raw-window-metal@0.4.0
 	rayon-core@1.13.0
 	rayon@1.11.0
 	read-fonts@0.35.0
@@ -856,6 +856,7 @@ CRATES="
 	regex-syntax@0.8.8
 	regex@1.12.2
 	rend@0.4.2
+	renderdoc-sys@1.1.0
 	reqwest@0.11.27
 	reqwest@0.12.24
 	resvg@0.45.1
@@ -871,11 +872,10 @@ CRATES="
 	rsa@0.9.10
 	rtoolbox@0.0.3
 	rtrb@0.3.2
-	runtimelib@1.1.0
+	runtimelib@1.2.0
 	rust-embed-impl@8.7.2
 	rust-embed-utils@8.7.2
 	rust-embed@8.7.2
-	rust-stemmers@1.2.0
 	rust_decimal@1.39.0
 	rustc-demangle@0.1.26
 	rustc-hash@1.1.0
@@ -996,7 +996,6 @@ CRATES="
 	stacksafe-macro@0.1.4
 	stacksafe@0.1.4
 	static_assertions@1.1.0
-	stop-words@0.9.0
 	streaming-iterator@0.1.9
 	strength_reduce@0.2.4
 	strict-num@0.1.1
@@ -1006,7 +1005,6 @@ CRATES="
 	strsim@0.11.1
 	strum@0.26.3
 	strum@0.27.2
-	strum_macros@0.26.4
 	strum_macros@0.27.2
 	subtle@2.6.1
 	sval@2.15.0
@@ -1100,7 +1098,6 @@ CRATES="
 	toml_write@0.1.2
 	toml_writer@1.0.4
 	topological-sort@0.2.2
-	tower-http@0.3.5
 	tower-http@0.4.4
 	tower-http@0.6.6
 	tower-layer@0.3.3
@@ -1135,6 +1132,7 @@ CRATES="
 	tree-sitter-rust@0.24.0
 	tree-sitter@0.26.3
 	try-lock@0.2.5
+	ttf-parser@0.20.0
 	ttf-parser@0.25.1
 	tungstenite@0.20.1
 	tungstenite@0.21.0
@@ -1246,6 +1244,13 @@ CRATES="
 	webpki-root-certs@0.26.8
 	webpki-roots@0.26.8
 	weezl@0.1.10
+	wgpu-core-deps-apple@28.0.0
+	wgpu-core-deps-emscripten@28.0.0
+	wgpu-core-deps-windows-linux-android@28.0.0
+	wgpu-core@28.0.0
+	wgpu-hal@28.0.0
+	wgpu-types@28.0.0
+	wgpu@28.0.0
 	which@4.4.2
 	which@6.0.3
 	whoami@1.6.1
@@ -1258,12 +1263,13 @@ CRATES="
 	winapi@0.3.9
 	winch-codegen@33.0.2
 	windows-collections@0.2.0
-	windows-core@0.54.0
+	windows-collections@0.3.2
 	windows-core@0.57.0
 	windows-core@0.58.0
 	windows-core@0.61.2
 	windows-core@0.62.2
 	windows-future@0.2.1
+	windows-future@0.3.2
 	windows-implement@0.57.0
 	windows-implement@0.58.0
 	windows-implement@0.60.2
@@ -1273,6 +1279,7 @@ CRATES="
 	windows-link@0.1.3
 	windows-link@0.2.1
 	windows-numerics@0.2.0
+	windows-numerics@0.3.1
 	windows-registry@0.4.0
 	windows-registry@0.5.3
 	windows-registry@0.6.1
@@ -1295,10 +1302,11 @@ CRATES="
 	windows-targets@0.52.6
 	windows-targets@0.53.5
 	windows-threading@0.1.0
-	windows@0.54.0
+	windows-threading@0.2.1
 	windows@0.57.0
 	windows@0.58.0
 	windows@0.61.3
+	windows@0.62.2
 	windows_aarch64_gnullvm@0.42.2
 	windows_aarch64_gnullvm@0.48.5
 	windows_aarch64_gnullvm@0.52.6
@@ -1365,6 +1373,7 @@ CRATES="
 	xcursor@0.3.10
 	xkbcommon@0.8.0
 	xkeysym@0.2.1
+	xml-rs@0.8.28
 	xml5ever@0.18.1
 	xmlparser@0.13.6
 	xmlwriter@0.1.0
@@ -1410,9 +1419,6 @@ declare -A GIT_CRATES=(
 	[alacritty_terminal]='https://github.com/zed-industries/alacritty;9d9640d4e56d67a09d049f9c0a300aae08d4f61e;alacritty-%commit%/alacritty_terminal'
 	[async-pipe]='https://github.com/zed-industries/async-pipe-rs;82d00a04211cf4e1236029aa03e6b6ce2a74c553;async-pipe-rs-%commit%'
 	[async-task]='https://github.com/smol-rs/async-task;b4486cd71e4e94fbda54ce6302444de14f4d190e;async-task-%commit%'
-	[blade-graphics]='https://github.com/kvark/blade;e3cf011ca18a6dfd907d1dedd93e85e21f005fe3;blade-%commit%/blade-graphics'
-	[blade-macros]='https://github.com/kvark/blade;e3cf011ca18a6dfd907d1dedd93e85e21f005fe3;blade-%commit%/blade-macros'
-	[blade-util]='https://github.com/kvark/blade;e3cf011ca18a6dfd907d1dedd93e85e21f005fe3;blade-%commit%/blade-util'
 	[calloop]='https://github.com/zed-industries/calloop;eb6b4fd17b9af5ecc226546bdd04185391b3e265;calloop-%commit%'
 	[candle-core]='https://github.com/zed-industries/candle;724d75eb3deebefe83f2a7381a45d4fac6eda383;candle-%commit%/candle-core'
 	[candle-nn]='https://github.com/zed-industries/candle;724d75eb3deebefe83f2a7381a45d4fac6eda383;candle-%commit%/candle-nn'
@@ -1426,6 +1432,7 @@ declare -A GIT_CRATES=(
 	[livekit-runtime]='https://github.com/zed-industries/livekit-rust-sdks;5f04705ac3f356350ae31534ffbc476abc9ea83d;livekit-rust-sdks-%commit%/livekit-runtime'
 	[livekit]='https://github.com/zed-industries/livekit-rust-sdks;5f04705ac3f356350ae31534ffbc476abc9ea83d;livekit-rust-sdks-%commit%/livekit'
 	[lsp-types]='https://github.com/zed-industries/lsp-types;a4f410987660bf560d1e617cb78117c6b6b9f599;lsp-types-%commit%'
+	[mermaid-rs-renderer]='https://github.com/zed-industries/mermaid-rs-renderer;d91961aa90bc7b0c09c87a13c91d48e2f05c468d;mermaid-rs-renderer-%commit%'
 	[notify-types]='https://github.com/zed-industries/notify;ce58c24cad542c28e04ced02e20325a4ec28a31d;notify-%commit%/notify-types'
 	[notify]='https://github.com/zed-industries/notify;ce58c24cad542c28e04ced02e20325a4ec28a31d;notify-%commit%/notify'
 	[nvim-rs]='https://github.com/KillTheMule/nvim-rs;764dd270c642f77f10f3e19d05cc178a6cbe69f3;nvim-rs-%commit%'
@@ -1454,7 +1461,7 @@ declare -A GIT_CRATES=(
 	[pet-windows-registry]='https://github.com/microsoft/python-environment-tools;d5b5bb0c4558a51d8cc76b514bc870fd1c042f16;python-environment-tools-%commit%/crates/pet-windows-registry'
 	[pet-windows-store]='https://github.com/microsoft/python-environment-tools;d5b5bb0c4558a51d8cc76b514bc870fd1c042f16;python-environment-tools-%commit%/crates/pet-windows-store'
 	[pet]='https://github.com/microsoft/python-environment-tools;d5b5bb0c4558a51d8cc76b514bc870fd1c042f16;python-environment-tools-%commit%/crates/pet'
-	[rodio]='https://github.com/RustAudio/rodio;e2074c6c2acf07b57cf717e076bdda7a9ac6e70b;rodio-%commit%'
+	[rodio]='https://github.com/RustAudio/rodio;e50e726ddd0292f6ef9de0dda6b90af4ed1fb66a;rodio-%commit%'
 	[tiktoken-rs]='https://github.com/zed-industries/tiktoken-rs;2570c4387a8505fb8f1d3f3557454b474f1e8271;tiktoken-rs-%commit%/tiktoken-rs'
 	[tree-sitter-cpp]='https://github.com/tree-sitter/tree-sitter-cpp;5cb9b693cfd7bfacab1d9ff4acac1a4150700609;tree-sitter-cpp-%commit%'
 	[tree-sitter-gitcommit]='https://github.com/zed-industries/tree-sitter-git-commit;88309716a69dd13ab83443721ba6e0b491d37ee9;tree-sitter-git-commit-%commit%'
