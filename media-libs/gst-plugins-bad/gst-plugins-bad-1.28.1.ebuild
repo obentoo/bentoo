@@ -45,7 +45,7 @@ BDEPEND="
 	wayland? ( dev-util/wayland-scanner )
 "
 
-DOCS=( ChangeLog NEWS README.md RELEASE )
+DOCS=( README.md )
 
 src_prepare() {
 	default

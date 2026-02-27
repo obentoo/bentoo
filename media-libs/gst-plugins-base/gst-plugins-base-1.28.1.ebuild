@@ -91,7 +91,7 @@ DEPEND="${RDEPEND}
 	X? ( x11-base/xorg-proto )
 "
 
-DOCS=( NEWS README.md RELEASE )
+DOCS=( README.md )
 
 PATCHES=(
 )
