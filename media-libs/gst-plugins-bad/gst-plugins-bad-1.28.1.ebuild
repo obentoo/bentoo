@@ -33,12 +33,13 @@ RDEPEND="
 	orc? ( >=dev-lang/orc-0.4.33[${MULTILIB_USEDEP}] )
 
 	vaapi? (
-		>=media-plugins/gst-plugins-va-${PV}:${SLOT}[${MULTILIB_USEDEP}]
 		>=media-libs/libva-1.15:=[${MULTILIB_USEDEP}]
 		udev? ( dev-libs/libgudev[${MULTILIB_USEDEP}] )
 	)
 "
 DEPEND="${RDEPEND}"
+# gst-plugins-va listed in PDEPEND to avoid circular dependency with gst-plugins-bad
+PDEPEND="vaapi? ( >=media-plugins/gst-plugins-va-${PV}:${SLOT}[${MULTILIB_USEDEP}] )"
 BDEPEND="
 	dev-util/glib-utils
 	wayland? ( dev-util/wayland-scanner )
