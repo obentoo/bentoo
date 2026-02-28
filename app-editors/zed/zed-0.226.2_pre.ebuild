@@ -1503,10 +1503,11 @@ declare -A GIT_CRATES=(
 	[zed-reqwest]='https://github.com/zed-industries/reqwest;c15662463bda39148ba154100dd44d3fba5873a4;reqwest-%commit%'
 	[zed-scap]='https://github.com/zed-industries/scap;4afea48c3b002197176fb19cd0f9b180dd36eaac;scap-%commit%'
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
+	[wprcontrol]='https://github.com/zed-industries/wprcontrol;cd811f7d744f65291e13131b1d907fda63ed91a1;wprcontrol-%commit%'
 )
 
-LLVM_COMPAT=( 21 )
-RUST_MIN_VER="1.93.0"
+LLVM_COMPAT=( 21 22 )
+RUST_MIN_VER="1.92.0"
 RUST_NEEDS_LLVM=1
 WEBRTC_COMMIT="b99fd2c-6"
 
@@ -1642,6 +1643,11 @@ src_prepare() {
 		-e "s#${NOTIFY_TYPES_GIT}#${NOTIFY_TYPES_PATH}#" \
 		-e "s#${WIN_CAP_GIT}#${WIN_CAP_PATH}#" \
 		-i "${S}/Cargo.toml" || die "Cargo fetch workaround failed"
+
+	# Patch etw_tracing to use local wprcontrol instead of git
+	local WPRCONTROL_COMMIT="cd811f7d744f65291e13131b1d907fda63ed91a1"
+	sed -i "s|wprcontrol = { git = \"https://github.com/zed-industries/wprcontrol\", rev = \"cd811f7\" }|wprcontrol = { path = \"${WORKDIR}/wprcontrol-${WPRCONTROL_COMMIT}\" }|" \
+		"${S}/crates/etw_tracing/Cargo.toml" || die "wprcontrol patch failed"
 }
 
 src_compile() {
