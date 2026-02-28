@@ -10,11 +10,11 @@ DESCRIPTION="The fast, collaborative code editor (binary package)"
 HOMEPAGE="https://zed.dev https://github.com/zed-industries/zed"
 SRC_URI="
 	amd64? (
-		https://github.com/zed-industries/zed/releases/download/v${PV}/${MY_PN}-linux-x86_64.tar.gz
+		https://github.com/zed-industries/zed/releases/download/v${PV/_/-}/${MY_PN}-linux-x86_64.tar.gz
 			-> ${P}-linux-x86_64.tar.gz
 	)
 	arm64? (
-		https://github.com/zed-industries/zed/releases/download/v${PV}/${MY_PN}-linux-aarch64.tar.gz
+		https://github.com/zed-industries/zed/releases/download/v${PV/_/-}/${MY_PN}-linux-aarch64.tar.gz
 			-> ${P}-linux-aarch64.tar.gz
 	)
 "

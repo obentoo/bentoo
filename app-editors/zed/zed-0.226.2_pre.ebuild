@@ -42,7 +42,7 @@ CRATES="
 	as-raw-xcb-connection@1.0.1
 	ascii@1.1.0
 	ash@0.38.0+1.3.281
-	ashpd@0.12.1
+	ashpd@0.13.2
 	async-attributes@1.1.2
 	async-broadcast@0.7.2
 	async-channel@1.9.0
@@ -55,7 +55,7 @@ CRATES="
 	async-global-executor@2.4.1
 	async-io@2.6.0
 	async-lock@2.8.0
-	async-lock@3.4.1
+	async-lock@3.4.2
 	async-net@2.0.0
 	async-process@2.5.0
 	async-recursion@1.1.1
@@ -217,12 +217,12 @@ CRATES="
 	core-graphics-helmer-fork@0.24.0
 	core-graphics-types@0.1.3
 	core-graphics-types@0.2.0
-	core-graphics2@0.4.1
+	core-graphics2@0.5.2
 	core-graphics@0.23.2
 	core-graphics@0.24.0
 	core-services@0.2.1
 	core-text@21.0.0
-	core-video@0.4.3
+	core-video@0.5.2
 	core_maths@0.1.1
 	coreaudio-rs@0.12.1
 	coreaudio-rs@0.13.0
@@ -399,6 +399,7 @@ CRATES="
 	fs2@0.4.3
 	fs_extra@1.3.0
 	fsevent-sys@4.1.0
+	fuchsia-cprng@0.1.1
 	funty@2.0.0
 	futf@0.1.5
 	futures-channel@0.3.31
@@ -415,6 +416,7 @@ CRATES="
 	futures@0.1.31
 	futures@0.3.31
 	fuzzy-matcher@0.3.7
+	gaoya@0.2.0
 	gemm-c32@0.17.1
 	gemm-c32@0.18.2
 	gemm-c64@0.17.1
@@ -434,6 +436,7 @@ CRATES="
 	gethostname@1.1.0
 	getrandom@0.2.16
 	getrandom@0.3.4
+	getrandom@0.4.1
 	gif@0.13.3
 	gimli@0.31.1
 	gimli@0.32.3
@@ -552,7 +555,7 @@ CRATES="
 	json_dotpath@1.1.0
 	jsonschema@0.37.4
 	jsonwebtoken@10.3.0
-	jupyter-protocol@1.2.0
+	jupyter-protocol@1.2.1
 	jupyter-websocket-client@1.0.0
 	khronos-egl@6.0.0
 	khronos_api@3.1.0
@@ -617,7 +620,6 @@ CRATES="
 	memoffset@0.9.1
 	merge@0.1.0
 	merge_derive@0.1.0
-	metal@0.29.0
 	metal@0.33.0
 	mimalloc@0.1.48
 	mime@0.3.17
@@ -639,7 +641,7 @@ CRATES="
 	nanoid@0.4.0
 	nanorand@0.7.0
 	native-tls@0.2.14
-	nbformat@1.0.0
+	nbformat@1.1.0
 	ndk-context@0.1.1
 	ndk-sys@0.6.0+11769913
 	ndk@0.9.0
@@ -656,6 +658,7 @@ CRATES="
 	ntapi@0.4.1
 	nu-ansi-term@0.50.3
 	num-bigint-dig@0.8.6
+	num-bigint-dig@0.9.1
 	num-bigint@0.4.6
 	num-cmp@0.1.0
 	num-complex@0.4.6
@@ -689,7 +692,7 @@ CRATES="
 	object@0.37.3
 	once_cell@1.21.3
 	once_cell_polyfill@1.70.1
-	oo7@0.5.0
+	oo7@0.6.0
 	oorandom@11.1.5
 	open@5.3.2
 	opener@0.7.2
@@ -715,7 +718,6 @@ CRATES="
 	parse_int@0.9.0
 	partial-json-fixer@0.5.3
 	password-hash@0.4.2
-	password-hash@0.5.0
 	paste@1.0.15
 	pathdiff@0.2.3
 	pathfinder_geometry@0.5.1
@@ -822,13 +824,19 @@ CRATES="
 	quote@1.0.41
 	r-efi@5.3.0
 	radium@0.7.0
+	rand@0.3.23
+	rand@0.4.6
 	rand@0.8.5
 	rand@0.9.2
 	rand_chacha@0.3.1
 	rand_chacha@0.9.0
+	rand_core@0.3.1
+	rand_core@0.4.2
 	rand_core@0.6.4
 	rand_core@0.9.3
 	rand_distr@0.5.1
+	rand_pcg@0.3.1
+	random_choice@0.3.2
 	range-alloc@0.1.4
 	range-map@0.2.0
 	rangemap@1.7.1
@@ -839,6 +847,7 @@ CRATES="
 	raw-window-handle@0.6.2
 	rayon-core@1.13.0
 	rayon@1.11.0
+	rdrand@0.4.0
 	read-fonts@0.35.0
 	read-fonts@0.37.0
 	realfft@3.5.0
@@ -902,7 +911,6 @@ CRATES="
 	ryu@1.0.20
 	saa@5.4.9
 	safetensors@0.4.5
-	salsa20@0.10.2
 	same-file@1.0.6
 	scc@3.5.6
 	schannel@0.1.28
@@ -915,7 +923,6 @@ CRATES="
 	screencapturekit@0.2.8
 	scroll@0.12.0
 	scroll_derive@0.12.1
-	scrypt@0.11.0
 	sct@0.7.1
 	sdd@4.6.2
 	sea-bae@0.2.1
@@ -932,6 +939,7 @@ CRATES="
 	semver@1.0.27
 	seq-macro@0.3.6
 	serde@1.0.228
+	serde_bytes@0.11.19
 	serde_core@1.0.228
 	serde_derive@1.0.228
 	serde_derive_internals@0.29.1
@@ -945,6 +953,7 @@ CRATES="
 	serde_urlencoded@0.7.1
 	serde_yaml@0.9.34+deprecated
 	serial2@0.2.33
+	sha-1@0.10.1
 	sha1@0.10.6
 	sha1_smol@1.0.1
 	sha2@0.10.9
@@ -953,6 +962,7 @@ CRATES="
 	shell-words@1.1.0
 	shellexpand@2.1.2
 	shellexpand@3.1.1
+	shingles@0.1.1
 	shlex@1.3.0
 	signal-hook-registry@1.4.6
 	signal-hook@0.3.18
@@ -965,6 +975,7 @@ CRATES="
 	simple_asn1@0.6.3
 	simplecss@0.2.2
 	simplelog@0.12.2
+	siphasher@0.3.11
 	siphasher@1.0.1
 	skrifa@0.37.0
 	skrifa@0.40.0
@@ -1131,6 +1142,7 @@ CRATES="
 	tree-sitter-ruby@0.23.1
 	tree-sitter-rust@0.24.0
 	tree-sitter@0.26.3
+	triomphe@0.1.15
 	try-lock@0.2.5
 	ttf-parser@0.20.0
 	ttf-parser@0.25.1
@@ -1192,6 +1204,7 @@ CRATES="
 	warp@0.3.7
 	wasi@0.11.1+wasi-snapshot-preview1
 	wasip2@1.0.1+wasi-0.2.4
+	wasip3@0.4.0+wasi-0.3.0-rc-2026-01-06
 	wasite@0.1.0
 	wasm-bindgen-backend@0.2.104
 	wasm-bindgen-futures@0.4.54
@@ -1203,13 +1216,16 @@ CRATES="
 	wasm-encoder@0.221.3
 	wasm-encoder@0.227.1
 	wasm-encoder@0.229.0
+	wasm-encoder@0.244.0
 	wasm-metadata@0.201.0
 	wasm-metadata@0.227.1
+	wasm-metadata@0.244.0
 	wasm-streams@0.4.2
 	wasmparser@0.201.0
 	wasmparser@0.221.3
 	wasmparser@0.227.1
 	wasmparser@0.229.0
+	wasmparser@0.244.0
 	wasmprinter@0.229.0
 	wasmtime-asm-macros@33.0.2
 	wasmtime-c-api-impl@33.0.2
@@ -1262,6 +1278,7 @@ CRATES="
 	winapi-x86_64-pc-windows-gnu@0.4.0
 	winapi@0.3.9
 	winch-codegen@33.0.2
+	windows-bindgen@0.61.1
 	windows-collections@0.2.0
 	windows-collections@0.3.2
 	windows-core@0.57.0
@@ -1347,20 +1364,26 @@ CRATES="
 	wio@0.2.2
 	wit-bindgen-core@0.22.0
 	wit-bindgen-core@0.41.0
+	wit-bindgen-core@0.51.0
 	wit-bindgen-rt@0.22.0
 	wit-bindgen-rt@0.41.0
 	wit-bindgen-rust-macro@0.22.0
 	wit-bindgen-rust-macro@0.41.0
+	wit-bindgen-rust-macro@0.51.0
 	wit-bindgen-rust@0.22.0
 	wit-bindgen-rust@0.41.0
+	wit-bindgen-rust@0.51.0
 	wit-bindgen@0.22.0
 	wit-bindgen@0.41.0
 	wit-bindgen@0.46.0
+	wit-bindgen@0.51.0
 	wit-component@0.201.0
 	wit-component@0.227.1
+	wit-component@0.244.0
 	wit-parser@0.201.0
 	wit-parser@0.227.1
 	wit-parser@0.229.0
+	wit-parser@0.244.0
 	witx@0.9.1
 	writeable@0.6.1
 	wyz@0.5.1
@@ -1386,9 +1409,9 @@ CRATES="
 	yoke-derive@0.8.0
 	yoke@0.7.5
 	yoke@0.8.0
-	zbus@5.12.0
-	zbus_macros@5.12.0
-	zbus_names@4.2.0
+	zbus@5.13.2
+	zbus_macros@5.13.2
+	zbus_names@4.3.1
 	zed_extension_api@0.1.0
 	zed_extension_api@0.7.0
 	zeno@0.3.3
@@ -1410,9 +1433,9 @@ CRATES="
 	zune-core@0.4.12
 	zune-inflate@0.2.54
 	zune-jpeg@0.4.21
-	zvariant@5.8.0
-	zvariant_derive@5.8.0
-	zvariant_utils@3.2.1
+	zvariant@5.9.2
+	zvariant_derive@5.9.2
+	zvariant_utils@3.3.0
 "
 
 declare -A GIT_CRATES=(
@@ -1493,7 +1516,6 @@ DESCRIPTION="The fast, collaborative code editor"
 HOMEPAGE="https://zed.dev https://github.com/zed-industries/zed"
 SRC_URI="
 	https://github.com/zed-industries/zed/archive/refs/tags/v${PV/_/-}.tar.gz -> ${P}.tar.gz
-	https://github.com/gentoo-crate-dist/zed/releases/download/v${PV/_/-}/${P/_/-}-crates.tar.xz
 	amd64? (
 		https://github.com/livekit/rust-sdks/releases/download/webrtc-${WEBRTC_COMMIT}/webrtc-linux-x64-release.zip ->
 			webrtc-${WEBRTC_COMMIT}-linux-x64-release.zip
