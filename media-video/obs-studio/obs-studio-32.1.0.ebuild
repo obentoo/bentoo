@@ -161,8 +161,7 @@ QA_PREBUILT="
 "
 
 PATCHES=(
-	# https://bugs.gentoo.org/966051
-	"${FILESDIR}/${PN}-32.0.2-fix-build-with-qt-6.10.patch"
+	"${FILESDIR}/${PN}-32.1.0-ffmpeg-git-version.patch"
 )
 
 pkg_setup() {
