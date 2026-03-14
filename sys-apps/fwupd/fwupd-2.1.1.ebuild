@@ -17,14 +17,13 @@ SRC_URI="
 LICENSE="LGPL-2.1+"
 SLOT="0"
 KEYWORDS="~amd64 ~arm ~arm64 ~loong ~ppc64 ~riscv ~x86"
-IUSE="amdgpu +archive bash-completion bluetooth cbor elogind flashrom gnutls gtk-doc introspection lzma minimal modemmanager nvme policykit protobuf seccomp spi synaptics systemd test tpm uefi"
+IUSE="amdgpu bash-completion bluetooth cbor elogind flashrom gnutls gtk-doc introspection lzma minimal modemmanager nvme policykit seccomp spi synaptics systemd test tpm uefi"
 REQUIRED_USE="${PYTHON_REQUIRED_USE}
 	^^ ( elogind minimal systemd )
 	minimal? ( !introspection )
 	spi? ( lzma )
 	seccomp? ( systemd )
 	synaptics? ( gnutls )
-	test? ( archive )
 	uefi? ( gnutls )
 "
 RESTRICT="!test? ( test )"
@@ -65,13 +64,11 @@ COMMON_DEPEND="${PYTHON_DEPS}
 		dev-python/pygobject:3[${PYTHON_USEDEP}]
 	')
 	>=net-misc/curl-7.62.0
-	archive? ( app-arch/libarchive:= )
 	cbor? ( >=dev-libs/libcbor-0.7.0:= )
 	elogind? ( >=sys-auth/elogind-211 )
 	flashrom? ( >=sys-apps/flashrom-1.2-r3 )
 	gnutls? ( >=net-libs/gnutls-3.6.0 )
 	virtual/libusb:1
-	protobuf? ( dev-libs/protobuf-c:= )
 	lzma? ( app-arch/xz-utils )
 	modemmanager? ( >=net-misc/modemmanager-1.22.0[mbim,qmi] )
 	policykit? ( >=sys-auth/polkit-0.114 )
@@ -99,10 +96,6 @@ DEPEND="
 	)
 "
 
-PATCHES=(
-	"${FILESDIR}"/${PN}-2.0.18-elogind.patch
-)
-
 src_prepare() {
 	default
 
@@ -117,7 +110,6 @@ src_prepare() {
 src_configure() {
 	local plugins=(
 		$(meson_feature flashrom plugin_flashrom)
-		$(meson_feature protobuf protobuf)
 		$(meson_feature modemmanager plugin_modem_manager)
 		$(meson_use uefi plugin_uefi_capsule_splash)
 	)
@@ -130,11 +122,10 @@ src_configure() {
 		-Dman="true"
 		-Dsupported_build="enabled"
 		-Dsystemd_unit_user=""
-		$(meson_feature archive libarchive)
 		$(meson_use bash-completion bash_completion)
 		$(meson_feature bluetooth bluez)
 		$(meson_feature cbor)
-		$(meson_feature elogind)
+		$(meson_feature elogind logind)
 		$(meson_feature gnutls)
 		$(meson_feature gtk-doc docs)
 		$(meson_feature introspection)
