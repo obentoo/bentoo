@@ -1520,6 +1520,7 @@ declare -A GIT_CRATES=(
 	[wgpu-types]='https://github.com/zed-industries/wgpu;465557eccfe77c840a9b4936f1408da9503372c4;wgpu-%commit%/wgpu-types'
 	[wgpu]='https://github.com/zed-industries/wgpu;465557eccfe77c840a9b4936f1408da9503372c4;wgpu-%commit%/wgpu'
 	[windows-capture]='https://github.com/zed-industries/windows-capture;f0d6c1b6691db75461b732f6d5ff56eed002eeb9;windows-capture-%commit%'
+	[proptest]='https://github.com/proptest-rs/proptest;3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b;proptest-%commit%/proptest'
 	[wprcontrol]='https://github.com/zed-industries/wprcontrol;cd811f7d744f65291e13131b1d907fda63ed91a1;wprcontrol-%commit%'
 	[xim-ctext]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%/xim-ctext'
 	[xim-parser]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%/xim-parser'
@@ -1659,6 +1660,10 @@ src_prepare() {
 	local LIBWEBRTC_GIT="libwebrtc = { git = \"https://github.com/zed-industries/livekit-rust-sdks\", rev = \"${LIVEKIT_COMMIT}\""
 	local LIBWEBRTC_PATH="libwebrtc = \\{ path = \"${WORKDIR}/livekit-rust-sdks-${LIVEKIT_COMMIT}/libwebrtc\""
 
+	local PROPTEST_COMMIT="3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b"
+	local PROPTEST_GIT="proptest = { git = \"https://github.com/proptest-rs/proptest\", rev = \"${PROPTEST_COMMIT}\""
+	local PROPTEST_PATH="proptest = \\{ path = \"${WORKDIR}/proptest-${PROPTEST_COMMIT}/proptest\""
+
 	sed -e "s#${ASYNC_TASK_GIT}#${ASYNC_TASK_PATH}#" \
 		-e "s#${CALLOOP_GIT}#${CALLOOP_PATH}#" \
 		-e "s#${NOTIFY_GIT}#${NOTIFY_PATH}#" \
@@ -1667,6 +1672,9 @@ src_prepare() {
 		-e "s#${LIVEKIT_GIT}#${LIVEKIT_PATH}#" \
 		-e "s#${LIBWEBRTC_GIT}#${LIBWEBRTC_PATH}#" \
 		-i "${S}/Cargo.toml" || die "Cargo fetch workaround failed"
+
+	find "${S}" -name "Cargo.toml" -exec sed -i \
+		-e "s#${PROPTEST_GIT}#${PROPTEST_PATH}#" {} + || die "proptest fetch workaround failed"
 }
 
 src_compile() {
