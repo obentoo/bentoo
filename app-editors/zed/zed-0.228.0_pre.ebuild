@@ -1614,7 +1614,7 @@ pkg_setup() {
 
 	strip-unsupported-flags
 	# flags from upstream
-	export RUSTFLAGS="${RUSTFLAGS} -C symbol-mangling-version=v0 --cfg tokio_unstable -C link-args=-Wl,--disable-new-dtags,-rpath,\$ORIGIN/../lib"
+	export RUSTFLAGS="${RUSTFLAGS} -C symbol-mangling-version=v0 --cfg tokio_unstable -C link-args=-Wl,--disable-new-dtags,-rpath,\$ORIGIN/../lib -A unstable-name-collisions"
 	llvm-r1_pkg_setup
 	rust_pkg_setup
 }
