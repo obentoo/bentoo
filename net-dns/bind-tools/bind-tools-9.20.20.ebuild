@@ -11,7 +11,7 @@ SLOT="0"
 KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~m68k ~mips ppc ppc64 ~riscv ~s390 ~sparc x86"
 IUSE="+caps doc gssapi idn libedit readline xml"
 
-RDEPEND="=net-dns/bind-9.18*[caps?,doc?,gssapi?,idn?,xml?]"
+RDEPEND="=net-dns/bind-9.20*[caps?,doc?,gssapi?,idn?,xml?]"
 
 pkg_postinst() {
 	ewarn "net-dns/bind-tools is now merged into net-dns/bind and"
