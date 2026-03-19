@@ -58,7 +58,7 @@ MINKV="5.10"
 COMMON_DEPEND="
 	>=sys-apps/util-linux-2.37:0=[${MULTILIB_USEDEP}]
 	sys-libs/libcap:0=[${MULTILIB_USEDEP}]
-	>=dev-libs/libxcrypt-4.4.0:=[${MULTILIB_USEDEP}]
+	>=sys-libs/libxcrypt-4.4.0:=[${MULTILIB_USEDEP}]
 	acl? ( sys-apps/acl:0= )
 	apparmor? ( >=sys-libs/libapparmor-2.13:0= )
 	audit? ( >=sys-process/audit-2:0= )
