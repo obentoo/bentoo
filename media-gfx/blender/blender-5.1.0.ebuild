@@ -107,6 +107,7 @@ RDEPEND="${PYTHON_DEPS}
 	dev-cpp/gflags:=
 	dev-cpp/glog:=
 	dev-libs/boost:=[nls?]
+	sci-libs/ceres-solver:=
 	$(python_gen_cond_dep '
 		dev-python/cattrs[${PYTHON_USEDEP}]
 		dev-python/cython[${PYTHON_USEDEP}]
