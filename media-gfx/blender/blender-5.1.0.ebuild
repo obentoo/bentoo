@@ -1,4 +1,4 @@
-# Copyright 1999-2025 Gentoo Authors
+# Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 # shellcheck disable=SC2207
@@ -127,7 +127,7 @@ RDEPEND="${PYTHON_DEPS}
 	virtual/zlib:=
 	alembic? ( >=media-gfx/alembic-1.8.3-r2[boost(+),hdf(+)] )
 	bullet? ( sci-physics/bullet:=[double-precision] )
-	color-management? ( >=media-libs/opencolorio-2.4.2:= )
+	color-management? ( >=media-libs/opencolorio-2.5.0:= )
 	cuda? ( dev-util/nvidia-cuda-toolkit:= )
 	embree? ( media-libs/embree:=[raymask] )
 	ffmpeg? ( media-video/ffmpeg:=[encode(+),lame(-),jpeg2k?,opus,theora,vorbis,vpx,x264,xvid] )
@@ -152,13 +152,13 @@ RDEPEND="${PYTHON_DEPS}
 	openal? ( media-libs/openal )
 	oidn? ( >=media-libs/oidn-2.1.0:= )
 	openexr? (
-		>=dev-libs/imath-3.1.7:=
-		>=media-libs/openexr-3.3.5:0=
+		>=dev-libs/imath-3.2.0:=
+		>=media-libs/openexr-3.4.0:0=
 	)
 	openpgl? ( media-libs/openpgl:= )
 	opensubdiv? ( >=media-libs/opensubdiv-3.6.0-r2:=[opengl,cuda?,tbb?] )
 	openvdb? (
-		>=media-gfx/openvdb-11.0.0:=[nanovdb?]
+		>=media-gfx/openvdb-13.0.0:=[nanovdb?]
 		dev-libs/c-blosc:=
 	)
 	optix? (
@@ -260,6 +260,7 @@ PATCHES=(
 	"${FILESDIR}/${PN}-4.0.2-FindClang.patch"
 	"${FILESDIR}/${PN}-4.1.1-FindLLVM.patch"
 	"${FILESDIR}/${PN}-4.3.2-system-glog.patch"
+	"${FILESDIR}/${PN}-5.1.0-eigen-3.4-jacobiSvd.patch"
 )
 
 blender_check_requirements() {
