@@ -55,6 +55,7 @@ declare -A GIT_CRATES=(
 	[pet-windows-registry]='https://github.com/microsoft/python-environment-tools;d5b5bb0c4558a51d8cc76b514bc870fd1c042f16;python-environment-tools-%commit%/crates/pet-windows-registry'
 	[pet-windows-store]='https://github.com/microsoft/python-environment-tools;d5b5bb0c4558a51d8cc76b514bc870fd1c042f16;python-environment-tools-%commit%/crates/pet-windows-store'
 	[pet]='https://github.com/microsoft/python-environment-tools;d5b5bb0c4558a51d8cc76b514bc870fd1c042f16;python-environment-tools-%commit%/crates/pet'
+	[proptest]='https://github.com/proptest-rs/proptest;3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b;proptest-%commit%/proptest'
 	[rodio]='https://github.com/RustAudio/rodio;e50e726ddd0292f6ef9de0dda6b90af4ed1fb66a;rodio-%commit%'
 	[tiktoken-rs]='https://github.com/zed-industries/tiktoken-rs;2570c4387a8505fb8f1d3f3557454b474f1e8271;tiktoken-rs-%commit%/tiktoken-rs'
 	[tree-sitter-cpp]='https://github.com/tree-sitter/tree-sitter-cpp;5cb9b693cfd7bfacab1d9ff4acac1a4150700609;tree-sitter-cpp-%commit%'
@@ -214,6 +215,10 @@ src_prepare() {
 	local WIN_CAP_GIT="windows-capture = { git = \"https://github.com/zed-industries/windows-capture.git\", rev = \"${WIN_CAP_COMMIT}\""
 	local WIN_CAP_PATH="windows-capture = \\{ path = \"${WORKDIR}/windows-capture-${WIN_CAP_COMMIT}\""
 
+	local PROPTEST_COMMIT="3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b"
+	local PROPTEST_GIT="proptest = { git = \"https://github.com/proptest-rs/proptest\", rev = \"${PROPTEST_COMMIT}\""
+	local PROPTEST_PATH="proptest = \\{ path = \"${WORKDIR}/proptest-${PROPTEST_COMMIT}/proptest\""
+
 	sed -e "s#${ASYNC_TASK_GIT}#${ASYNC_TASK_PATH}#" \
 		-e "s#${CALLOOP_GIT}#${CALLOOP_PATH}#" \
 		-e "s#${LIVEKIT_GIT}#${LIVEKIT_PATH}#" \
@@ -221,6 +226,7 @@ src_prepare() {
 		-e "s#${NOTIFY_GIT}#${NOTIFY_PATH}#" \
 		-e "s#${NOTIFY_TYPES_GIT}#${NOTIFY_TYPES_PATH}#" \
 		-e "s#${WIN_CAP_GIT}#${WIN_CAP_PATH}#" \
+		-e "s#${PROPTEST_GIT}#${PROPTEST_PATH}#" \
 		-i "${S}/Cargo.toml" || die "Cargo fetch workaround failed"
 }
 
