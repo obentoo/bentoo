@@ -29,11 +29,12 @@ S=${WORKDIR}
 LICENSE="OPERA-2018"
 SLOT="0"
 KEYWORDS="-* amd64"
-IUSE="+ffmpeg-chromium +proprietary-codecs +suid qt6"
+IUSE="+ffmpeg-chromium +proprietary-codecs +qt5 +suid qt6"
 RESTRICT="bindist mirror strip"
 
 RDEPEND="
 	>=app-accessibility/at-spi2-core-2.46.0:2
+	app-crypt/gnupg
 	dev-libs/expat
 	dev-libs/glib:2
 	dev-libs/nspr
@@ -45,6 +46,7 @@ RDEPEND="
 	net-print/cups
 	sys-apps/dbus
 	sys-libs/glibc
+	virtual/libudev
 	x11-libs/cairo
 	x11-libs/gdk-pixbuf
 	x11-libs/gtk+:3
@@ -63,8 +65,15 @@ RDEPEND="
 		!ffmpeg-chromium? ( >=media-video/ffmpeg-6.1-r1:0/58.60.60[chromium] )
 		ffmpeg-chromium? ( media-video/ffmpeg-chromium:${CHROMIUM_VERSION} )
 	)
+	qt5? (
+		dev-qt/qtcore:5
+		dev-qt/qtgui:5
+		dev-qt/qtwidgets:5
+	)
 	qt6? ( dev-qt/qtbase:6[gui,widgets] )
 "
+
+BDEPEND="dev-util/desktop-file-utils"
 
 QA_PREBUILT="*"
 OPERA_HOME="opt/${MY_PN}"
@@ -94,13 +103,19 @@ src_install() {
 	# disable auto update
 	rm "${OPERA_HOME}/opera_autoupdate"{,.licenses,.version} || die
 
+	# disable crash reporting (crashpad causes segfault on non-Debian systems)
+	rm -f "${OPERA_HOME}/chrome_crashpad_handler" || die
+	rm -f "${OPERA_HOME}/opera_crashreporter" || die
+
+	# remove Debian-specific files
 	rm -r "usr/share/lintian" || die
+	rm -f "usr/share/menu/${MY_PN}" || die
 
 	# fix docs
 	mv usr/share/doc/${MY_PN} usr/share/doc/${PF} || die
 	gzip -d usr/share/doc/${PF}/changelog.gz || die
 
-	# fix desktop file
+	# fix desktop file (TargetEnvironment is Unity-specific)
 	sed -i \
 		-e 's|^TargetEnvironment|X-&|g' \
 		usr/share/applications/${PN}.desktop || die
@@ -121,7 +136,10 @@ src_install() {
 			  /${OPERA_HOME}/libffmpeg.so
 	fi
 
-	rm "${OPERA_HOME}/libqt5_shim.so" || die
+	# Qt shim handling: qt5 is default, qt6 is optional
+	if ! use qt5; then
+		rm "${OPERA_HOME}/libqt5_shim.so" || die
+	fi
 	if ! use qt6; then
 		rm "${OPERA_HOME}/libqt6_shim.so" || die
 	fi
@@ -130,4 +148,12 @@ src_install() {
 	pax-mark m "${OPERA_HOME}/opera"
 	# enable suid sandbox if requested
 	use suid && fperms 4711 "/${OPERA_HOME}/opera_sandbox"
+}
+
+pkg_postinst() {
+	xdg_pkg_postinst
+}
+
+pkg_postrm() {
+	xdg_pkg_postrm
 }
