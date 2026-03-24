@@ -28,10 +28,7 @@ fi
 
 S="${WORKDIR}/${MY_P}"
 
-# this is still required to support glibc-2.42 in qemu-user, bug 961307
-# source: https://gitlab.com/qemu-project/qemu/-/issues/3065#note_2969046870
-#
-SRC_URI+=" https://dev.gentoo.org/~dilfridge/distfiles/qemu-10-termios2-patches.tar.xz"
+# termios2 patches merged upstream in qemu 11
 
 DESCRIPTION="QEMU + Kernel-based Virtual Machine userland tools"
 HOMEPAGE="https://www.qemu.org https://www.linux-kvm.org"
@@ -63,7 +60,6 @@ COMMON_TARGETS="
 	loongarch64
 	m68k
 	microblaze
-	microblazeel
 	mips
 	mips64
 	mips64el
@@ -93,6 +89,7 @@ IUSE_USER_TARGETS="
 	aarch64_be
 	armeb
 	hexagon
+	microblazeel
 	mipsn32
 	mipsn32el
 	ppc64le
@@ -317,7 +314,7 @@ PATCHES=(
 	"${FILESDIR}"/${PN}-9.2.0-capstone-include-path.patch
 	"${FILESDIR}"/${PN}-8.1.0-skip-tests.patch
 	"${FILESDIR}"/${PN}-8.1.0-find-sphinx.patch
-	"${FILESDIR}"/${PN}-7.2.16-optionrom-pass-Wl-no-error-rwx-segments.patch
+	"${FILESDIR}"/${PN}-11.0.0-optionrom-pass-Wl-no-error-rwx-segments.patch
 )
 
 QA_PREBUILT="
@@ -457,9 +454,6 @@ src_prepare() {
 	check_targets IUSE_USER_TARGETS linux-user
 
 	default
-
-	# this is still required to support glibc-2.42 in qemu-user
-	eapply "${WORKDIR}/termios2-patches"/*.patch
 
 	# Use correct toolchain to fix cross-compiling
 	tc-export AR AS LD NM OBJCOPY PKG_CONFIG RANLIB STRINGS
