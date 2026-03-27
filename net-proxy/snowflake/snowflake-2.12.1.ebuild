@@ -6,13 +6,13 @@ EAPI=8
 inherit go-module systemd
 
 MY_P="${PN}-v${PV}"
-JOB_ID="898266" # Keep this in sync with the link with "other" in releases
+JOB_ID="1413878" # Keep this in sync with the link with "other" in releases
 DESCRIPTION="Pluggable Transport using WebRTC, inspired by Flashproxy"
 HOMEPAGE="
 	https://snowflake.torproject.org
 	https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake
 "
-SRC_URI="https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/${PN}/-/jobs/${JOB_ID}/artifacts/raw/${MY_P}.tar.gz"
+SRC_URI="https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/${PN}/-/jobs/${JOB_ID}/artifacts/file/${MY_P}.tar.gz"
 S="${WORKDIR}/${MY_P}"
 
 LICENSE="BSD Apache-2.0 BSD-2 CC0-1.0 MIT"
@@ -24,14 +24,6 @@ RESTRICT="!test? ( test )"
 BDEPEND=">=dev-lang/go-1.21"
 
 src_prepare() {
-	COMPONENTS=(
-		broker
-		client
-		probetest
-		proxy
-		server
-	)
-
 	sed -i -e "s|./client|/usr/bin/snowflake-client|" \
 		client/{torrc,torrc.localhost} \
 		|| die "sed failed to fix torrc example"
@@ -39,12 +31,21 @@ src_prepare() {
 	default
 }
 
+src_configure() {
+	COMPONENTS=(
+		broker
+		client
+		probetest
+		proxy
+		server
+	)
+}
+
 src_compile() {
-	local component
 	for component in "${COMPONENTS[@]}"; do
 		pushd ${component} || die
 		einfo "Building ${component}"
-		ego build
+		nonfatal ego build || die "${component}: build failed"
 		popd || die
 	done
 }

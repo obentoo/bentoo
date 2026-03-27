@@ -17,8 +17,6 @@ CRATES="
 	aho-corasick@1.1.3
 	aliasable@0.1.3
 	aligned-vec@0.6.4
-	alloc-no-stdlib@2.0.4
-	alloc-stdlib@0.2.2
 	allocator-api2@0.2.21
 	alsa-sys@0.3.1
 	alsa@0.10.0
@@ -115,7 +113,9 @@ CRATES="
 	bindgen@0.71.1
 	bindgen@0.72.1
 	bit-set@0.8.0
+	bit-set@0.9.1
 	bit-vec@0.8.0
+	bit-vec@0.9.1
 	bit_field@0.10.3
 	bitflags@1.3.2
 	bitflags@2.10.0
@@ -132,8 +132,6 @@ CRATES="
 	borrow-or-share@0.2.4
 	borsh-derive@1.5.7
 	borsh@1.5.7
-	brotli-decompressor@5.0.0
-	brotli@8.0.2
 	brush-parser@0.3.0
 	bstr@1.12.0
 	built@0.7.7
@@ -151,6 +149,7 @@ CRATES="
 	bytes@1.11.1
 	bzip2-sys@0.1.13+1.0.8
 	bzip2@0.4.4
+	bzip2@0.6.1
 	cached@0.56.0
 	cached_proc_macro@0.25.0
 	cached_proc_macro_types@0.1.1
@@ -197,7 +196,6 @@ CRATES="
 	cocoa-foundation@0.2.0
 	cocoa@0.25.0
 	cocoa@0.26.0
-	codespan-reporting@0.12.0
 	codespan-reporting@0.13.0
 	color_quant@1.1.0
 	colorchoice@1.0.4
@@ -369,6 +367,7 @@ CRATES="
 	failspot@0.2.0
 	fallible-iterator@0.3.0
 	fancy-regex@0.16.2
+	fancy-regex@0.17.0
 	fast-srgb8@1.0.0
 	fastrand@1.9.0
 	fastrand@2.3.0
@@ -461,7 +460,7 @@ CRATES="
 	glob@0.3.3
 	globset@0.4.17
 	gloo-timers@0.3.0
-	glow@0.16.0
+	glow@0.17.0
 	glutin_wgl_sys@0.6.1
 	gobject-sys@0.21.5
 	goblin@0.9.3
@@ -476,6 +475,7 @@ CRATES="
 	handlebars@4.5.0
 	handlebars@5.1.2
 	harfrust@0.5.0
+	hash32@0.3.1
 	hashbrown@0.12.3
 	hashbrown@0.14.5
 	hashbrown@0.15.5
@@ -484,6 +484,7 @@ CRATES="
 	hashlink@0.8.4
 	headers-core@0.2.0
 	headers@0.3.9
+	heapless@0.9.2
 	heck@0.3.3
 	heck@0.4.1
 	heck@0.5.0
@@ -586,6 +587,7 @@ CRATES="
 	leb128@0.2.5
 	leb128fmt@0.1.0
 	lebe@0.5.3
+	libbz2-rs-sys@0.2.2
 	libc@0.2.182
 	libdbus-sys@0.2.6
 	libfuzzer-sys@0.4.10
@@ -653,7 +655,7 @@ CRATES="
 	moxcms@0.7.7
 	msvc_spectre_libs@0.1.3
 	multimap@0.8.3
-	naga@28.0.0
+	naga@29.0.0
 	nanoid@0.4.0
 	nanorand@0.7.0
 	native-tls@0.2.14
@@ -691,15 +693,16 @@ CRATES="
 	num_enum_derive@0.7.4
 	num_threads@0.1.7
 	objc-foundation@0.1.1
-	objc2-audio-toolbox@0.3.1
-	objc2-avf-audio@0.3.1
+	objc2-audio-toolbox@0.3.2
+	objc2-avf-audio@0.3.2
 	objc2-core-audio-types@0.3.2
-	objc2-core-audio@0.3.1
+	objc2-core-audio@0.3.2
 	objc2-core-foundation@0.3.2
 	objc2-encode@4.1.0
-	objc2-foundation@0.3.1
+	objc2-foundation@0.3.2
 	objc2-io-kit@0.3.2
-	objc2-metal@0.3.1
+	objc2-metal@0.3.2
+	objc2-quartz-core@0.3.2
 	objc2@0.6.3
 	objc@0.2.7
 	objc_exception@0.1.2
@@ -865,6 +868,7 @@ CRATES="
 	raw-cpuid@10.7.0
 	raw-cpuid@11.6.0
 	raw-window-handle@0.6.2
+	raw-window-metal@1.1.0
 	rayon-core@1.13.0
 	rayon@1.11.0
 	rdrand@0.4.0
@@ -1011,7 +1015,7 @@ CRATES="
 	spdx@0.10.9
 	spin@0.10.0
 	spin@0.9.8
-	spirv@0.3.0+sdk-1.3.268.0
+	spirv@0.4.0+sdk-1.4.341.0
 	spki@0.6.0
 	spki@0.7.3
 	sptr@0.3.2
@@ -1105,7 +1109,7 @@ CRATES="
 	tiny-keccak@2.0.2
 	tiny-skia-path@0.11.4
 	tiny-skia@0.11.4
-	tiny_http@0.8.2
+	tiny_http@0.12.0
 	tinystr@0.8.1
 	tinytemplate@1.2.1
 	tinyvec@1.10.0
@@ -1164,7 +1168,7 @@ CRATES="
 	tree-sitter-python@0.25.0
 	tree-sitter-regex@0.24.3
 	tree-sitter-ruby@0.23.1
-	tree-sitter-rust@0.24.0
+	tree-sitter-rust@0.24.1
 	tree-sitter@0.26.3
 	triomphe@0.1.15
 	try-lock@0.2.5
@@ -1467,14 +1471,14 @@ declare -A GIT_CRATES=(
 	[dap-types]='https://github.com/zed-industries/dap-types;1b461b310481d01e02b2603c16d7144b926339f8;dap-types-%commit%/dap-types'
 	[gh-workflow-macros]='https://github.com/zed-industries/gh-workflow;37f3c0575d379c218a9c455ee67585184e40d43f;gh-workflow-%commit%/crates/gh-workflow-macros'
 	[gh-workflow]='https://github.com/zed-industries/gh-workflow;37f3c0575d379c218a9c455ee67585184e40d43f;gh-workflow-%commit%/crates/gh-workflow'
-	[libwebrtc]='https://github.com/zed-industries/livekit-rust-sdks;c1209aa155cbf4543383774f884a46ae7e53ee2e;livekit-rust-sdks-%commit%/libwebrtc'
-	[livekit-api]='https://github.com/zed-industries/livekit-rust-sdks;c1209aa155cbf4543383774f884a46ae7e53ee2e;livekit-rust-sdks-%commit%/livekit-api'
-	[livekit-protocol]='https://github.com/zed-industries/livekit-rust-sdks;c1209aa155cbf4543383774f884a46ae7e53ee2e;livekit-rust-sdks-%commit%/livekit-protocol'
-	[livekit-runtime]='https://github.com/zed-industries/livekit-rust-sdks;c1209aa155cbf4543383774f884a46ae7e53ee2e;livekit-rust-sdks-%commit%/livekit-runtime'
-	[livekit]='https://github.com/zed-industries/livekit-rust-sdks;c1209aa155cbf4543383774f884a46ae7e53ee2e;livekit-rust-sdks-%commit%/livekit'
+	[libwebrtc]='https://github.com/zed-industries/livekit-rust-sdks;147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1;livekit-rust-sdks-%commit%/libwebrtc'
+	[livekit-api]='https://github.com/zed-industries/livekit-rust-sdks;147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1;livekit-rust-sdks-%commit%/livekit-api'
+	[livekit-protocol]='https://github.com/zed-industries/livekit-rust-sdks;147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1;livekit-rust-sdks-%commit%/livekit-protocol'
+	[livekit-runtime]='https://github.com/zed-industries/livekit-rust-sdks;147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1;livekit-rust-sdks-%commit%/livekit-runtime'
+	[livekit]='https://github.com/zed-industries/livekit-rust-sdks;147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1;livekit-rust-sdks-%commit%/livekit'
 	[lsp-types]='https://github.com/zed-industries/lsp-types;a4f410987660bf560d1e617cb78117c6b6b9f599;lsp-types-%commit%'
 	[mermaid-rs-renderer]='https://github.com/zed-industries/mermaid-rs-renderer;374db9ead5426697c6c2111151d9f246899bc638;mermaid-rs-renderer-%commit%'
-	[naga]='https://github.com/zed-industries/wgpu;465557eccfe77c840a9b4936f1408da9503372c4;wgpu-%commit%/naga'
+	[naga]='https://github.com/zed-industries/wgpu;a466bc382ea747f8e1ac810efdb6dcd49a514575;wgpu-%commit%/naga'
 	[notify-types]='https://github.com/zed-industries/notify;ce58c24cad542c28e04ced02e20325a4ec28a31d;notify-%commit%/notify-types'
 	[notify]='https://github.com/zed-industries/notify;ce58c24cad542c28e04ced02e20325a4ec28a31d;notify-%commit%/notify'
 	[nvim-rs]='https://github.com/KillTheMule/nvim-rs;764dd270c642f77f10f3e19d05cc178a6cbe69f3;nvim-rs-%commit%'
@@ -1516,15 +1520,16 @@ declare -A GIT_CRATES=(
 	[tree-sitter-md]='https://github.com/tree-sitter-grammars/tree-sitter-markdown;9a23c1a96c0513d8fc6520972beedd419a973539;tree-sitter-markdown-%commit%'
 	[tree-sitter-typescript]='https://github.com/zed-industries/tree-sitter-typescript;e2c53597d6a5d9cf7bbe8dccde576fe1e46c5899;tree-sitter-typescript-%commit%'
 	[tree-sitter-yaml]='https://github.com/zed-industries/tree-sitter-yaml;baff0b51c64ef6a1fb1f8390f3ad6015b83ec13a;tree-sitter-yaml-%commit%'
-	[webrtc-sys-build]='https://github.com/zed-industries/livekit-rust-sdks;c1209aa155cbf4543383774f884a46ae7e53ee2e;livekit-rust-sdks-%commit%/webrtc-sys/build'
-	[webrtc-sys]='https://github.com/zed-industries/livekit-rust-sdks;c1209aa155cbf4543383774f884a46ae7e53ee2e;livekit-rust-sdks-%commit%/webrtc-sys'
-	[wgpu-core-deps-apple]='https://github.com/zed-industries/wgpu;465557eccfe77c840a9b4936f1408da9503372c4;wgpu-%commit%/wgpu-core/platform-deps/apple'
-	[wgpu-core-deps-emscripten]='https://github.com/zed-industries/wgpu;465557eccfe77c840a9b4936f1408da9503372c4;wgpu-%commit%/wgpu-core/platform-deps/emscripten'
-	[wgpu-core-deps-windows-linux-android]='https://github.com/zed-industries/wgpu;465557eccfe77c840a9b4936f1408da9503372c4;wgpu-%commit%/wgpu-core/platform-deps/windows-linux-android'
-	[wgpu-core]='https://github.com/zed-industries/wgpu;465557eccfe77c840a9b4936f1408da9503372c4;wgpu-%commit%/wgpu-core'
-	[wgpu-hal]='https://github.com/zed-industries/wgpu;465557eccfe77c840a9b4936f1408da9503372c4;wgpu-%commit%/wgpu-hal'
-	[wgpu-types]='https://github.com/zed-industries/wgpu;465557eccfe77c840a9b4936f1408da9503372c4;wgpu-%commit%/wgpu-types'
-	[wgpu]='https://github.com/zed-industries/wgpu;465557eccfe77c840a9b4936f1408da9503372c4;wgpu-%commit%/wgpu'
+	[webrtc-sys-build]='https://github.com/zed-industries/livekit-rust-sdks;147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1;livekit-rust-sdks-%commit%/webrtc-sys/build'
+	[webrtc-sys]='https://github.com/zed-industries/livekit-rust-sdks;147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1;livekit-rust-sdks-%commit%/webrtc-sys'
+	[wgpu-core-deps-apple]='https://github.com/zed-industries/wgpu;a466bc382ea747f8e1ac810efdb6dcd49a514575;wgpu-%commit%/wgpu-core/platform-deps/apple'
+	[wgpu-core-deps-emscripten]='https://github.com/zed-industries/wgpu;a466bc382ea747f8e1ac810efdb6dcd49a514575;wgpu-%commit%/wgpu-core/platform-deps/emscripten'
+	[wgpu-core-deps-windows-linux-android]='https://github.com/zed-industries/wgpu;a466bc382ea747f8e1ac810efdb6dcd49a514575;wgpu-%commit%/wgpu-core/platform-deps/windows-linux-android'
+	[wgpu-core]='https://github.com/zed-industries/wgpu;a466bc382ea747f8e1ac810efdb6dcd49a514575;wgpu-%commit%/wgpu-core'
+	[wgpu-hal]='https://github.com/zed-industries/wgpu;a466bc382ea747f8e1ac810efdb6dcd49a514575;wgpu-%commit%/wgpu-hal'
+	[wgpu-naga-bridge]='https://github.com/zed-industries/wgpu;a466bc382ea747f8e1ac810efdb6dcd49a514575;wgpu-%commit%/wgpu-naga-bridge'
+	[wgpu-types]='https://github.com/zed-industries/wgpu;a466bc382ea747f8e1ac810efdb6dcd49a514575;wgpu-%commit%/wgpu-types'
+	[wgpu]='https://github.com/zed-industries/wgpu;a466bc382ea747f8e1ac810efdb6dcd49a514575;wgpu-%commit%/wgpu'
 	[windows-capture]='https://github.com/zed-industries/windows-capture;f0d6c1b6691db75461b732f6d5ff56eed002eeb9;windows-capture-%commit%'
 	[wprcontrol]='https://github.com/zed-industries/wprcontrol;cd811f7d744f65291e13131b1d907fda63ed91a1;wprcontrol-%commit%'
 	[xim-ctext]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%/xim-ctext'
@@ -1564,7 +1569,7 @@ LICENSE+=" BSD"
 # Dependent crate licenses
 LICENSE+="
 	Apache-2.0 Apache-2.0-with-LLVM-exceptions BSD-2 BSD CC0-1.0 ISC
-	LGPL-3 MIT MIT-0 MPL-2.0 UoI-NCSA openssl Unicode-3.0 ZLIB
+	LGPL-3 MIT MIT-0 MPL-2.0 UoI-NCSA openssl Unicode-3.0 ZLIB BZIP2
 "
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
@@ -1648,7 +1653,7 @@ src_prepare() {
 	local CALLOOP_GIT="calloop = { git = \"https://github.com/zed-industries/calloop\""
 	local CALLOOP_PATH="calloop = \\{ path = \"${WORKDIR}/calloop-${CALLOOP_COMMIT}\""
 
-	local LIVEKIT_COMMIT="c1209aa155cbf4543383774f884a46ae7e53ee2e"
+	local LIVEKIT_COMMIT="147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1"
 	local LIVEKIT_GIT="livekit = { git = \"https://github.com/zed-industries/livekit-rust-sdks\", rev = \"${LIVEKIT_COMMIT}\""
 	local LIVEKIT_PATH="livekit = \\{ path = \"${WORKDIR}/livekit-rust-sdks-${LIVEKIT_COMMIT}/livekit\""
 
