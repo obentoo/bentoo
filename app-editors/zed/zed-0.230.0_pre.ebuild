@@ -1674,10 +1674,14 @@ src_prepare() {
 	local PROPTEST_GIT="proptest = { git = \"https://github.com/proptest-rs/proptest\", rev = \"${PROPTEST_COMMIT}\""
 	local PROPTEST_PATH="proptest = \\{ path = \"${WORKDIR}/proptest-${PROPTEST_COMMIT}/proptest\""
 
+	local WEBRTC_SYS_GIT="webrtc-sys = { git = \"https://github.com/zed-industries/livekit-rust-sdks\", rev = \"${LIVEKIT_COMMIT}\""
+	local WEBRTC_SYS_PATH="webrtc-sys = \\{ path = \"${WORKDIR}/livekit-rust-sdks-${LIVEKIT_COMMIT}/webrtc-sys\""
+
 	sed -e "s#${ASYNC_TASK_GIT}#${ASYNC_TASK_PATH}#" \
 		-e "s#${CALLOOP_GIT}#${CALLOOP_PATH}#" \
 		-e "s#${LIVEKIT_GIT}#${LIVEKIT_PATH}#" \
 		-e "s#${LIBWERBRTC_GIT}#${LIBWERBRTC_PATH}#" \
+		-e "s#${WEBRTC_SYS_GIT}#${WEBRTC_SYS_PATH}#" \
 		-e "s#${NOTIFY_GIT}#${NOTIFY_PATH}#" \
 		-e "s#${NOTIFY_TYPES_GIT}#${NOTIFY_TYPES_PATH}#" \
 		-e "s#${WIN_CAP_GIT}#${WIN_CAP_PATH}#" \
