@@ -3,13 +3,13 @@
 
 EAPI=8
 
-MY_P="nomachine-enterprise-client_$(ver_cut 1-3)_$(ver_cut 4)"
+MY_P="nomachine_$(ver_cut 1-3)_$(ver_cut 4)"
 
 DESCRIPTION="Client for NoMachine remote servers"
 HOMEPAGE="https://www.nomachine.com"
 SRC_URI="amd64? ( https://web9001.nomachine.com/download/$(ver_cut 1-2)/Linux/${MY_P}_x86_64.tar.gz )
 	x86? ( https://web9001.nomachine.com/download/$(ver_cut 1-2)/Linux/${MY_P}_i686.tar.gz )"
-S="${WORKDIR}"/NX/etc/NX/player/packages
+S="${WORKDIR}"/NX/etc/NX/server/packages
 
 LICENSE="nomachine"
 SLOT="0"
