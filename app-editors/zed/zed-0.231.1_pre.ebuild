@@ -6,7 +6,6 @@
 EAPI=8
 
 CRATES="
-	addr2line@0.24.2
 	addr2line@0.25.1
 	adler2@2.0.1
 	aes@0.8.4
@@ -235,19 +234,19 @@ CRATES="
 	cpal@0.17.1
 	cpp_demangle@0.4.5
 	cpufeatures@0.2.17
-	cranelift-assembler-x64-meta@0.120.2
-	cranelift-assembler-x64@0.120.2
-	cranelift-bforest@0.120.2
-	cranelift-bitset@0.120.2
-	cranelift-codegen-meta@0.120.2
-	cranelift-codegen-shared@0.120.2
-	cranelift-codegen@0.120.2
-	cranelift-control@0.120.2
-	cranelift-entity@0.120.2
-	cranelift-frontend@0.120.2
-	cranelift-isle@0.120.2
-	cranelift-native@0.120.2
-	cranelift-srcgen@0.120.2
+	cranelift-assembler-x64-meta@0.123.6
+	cranelift-assembler-x64@0.123.6
+	cranelift-bforest@0.123.6
+	cranelift-bitset@0.123.6
+	cranelift-codegen-meta@0.123.6
+	cranelift-codegen-shared@0.123.6
+	cranelift-codegen@0.123.6
+	cranelift-control@0.123.6
+	cranelift-entity@0.123.6
+	cranelift-frontend@0.123.6
+	cranelift-isle@0.123.6
+	cranelift-native@0.123.6
+	cranelift-srcgen@0.123.6
 	crash-context@0.6.3
 	crash-handler@0.6.3
 	crc-catalog@2.4.0
@@ -449,7 +448,6 @@ CRATES="
 	getrandom@0.3.4
 	getrandom@0.4.1
 	gif@0.13.3
-	gimli@0.31.1
 	gimli@0.32.3
 	gio-sys@0.21.5
 	git2@0.20.4
@@ -693,6 +691,7 @@ CRATES="
 	num_enum_derive@0.7.4
 	num_threads@0.1.7
 	objc-foundation@0.1.1
+	objc2-app-kit@0.3.1
 	objc2-audio-toolbox@0.3.2
 	objc2-avf-audio@0.3.2
 	objc2-core-audio-types@0.3.2
@@ -707,7 +706,6 @@ CRATES="
 	objc@0.2.7
 	objc_exception@0.1.2
 	objc_id@0.1.1
-	object@0.36.7
 	object@0.37.3
 	once_cell@1.21.3
 	once_cell_polyfill@1.70.1
@@ -830,7 +828,8 @@ CRATES="
 	pulldown-cmark-escape@0.10.1
 	pulldown-cmark@0.10.3
 	pulldown-cmark@0.13.0
-	pulley-interpreter@33.0.2
+	pulley-interpreter@36.0.6
+	pulley-macros@36.0.6
 	pulp@0.18.22
 	pulp@0.21.5
 	pxfm@0.1.25
@@ -906,9 +905,9 @@ CRATES="
 	rtoolbox@0.0.3
 	rtrb@0.3.2
 	runtimelib@1.4.0
-	rust-embed-impl@8.7.2
-	rust-embed-utils@8.7.2
-	rust-embed@8.7.2
+	rust-embed-impl@8.11.0
+	rust-embed-utils@8.11.0
+	rust-embed@8.11.0
 	rust_decimal@1.39.0
 	rustc-demangle@0.1.26
 	rustc-hash@1.1.0
@@ -1018,7 +1017,6 @@ CRATES="
 	spirv@0.4.0+sdk-1.4.341.0
 	spki@0.6.0
 	spki@0.7.3
-	sptr@0.3.2
 	sqlformat@0.2.6
 	sqlx-core@0.8.6
 	sqlx-macros-core@0.8.6
@@ -1152,7 +1150,6 @@ CRATES="
 	tracing@0.1.43
 	tracy-client-sys@0.27.0
 	tracy-client@0.18.3
-	trait-variant@0.1.2
 	transpose@0.2.3
 	tree-sitter-bash@0.25.1
 	tree-sitter-c@0.24.1
@@ -1168,8 +1165,8 @@ CRATES="
 	tree-sitter-python@0.25.0
 	tree-sitter-regex@0.24.3
 	tree-sitter-ruby@0.23.1
-	tree-sitter-rust@0.24.1
-	tree-sitter@0.26.3
+	tree-sitter-rust@0.24.2
+	tree-sitter@0.26.8
 	triomphe@0.1.15
 	try-lock@0.2.5
 	ttf-parser@0.20.0
@@ -1243,7 +1240,7 @@ CRATES="
 	wasm-encoder@0.201.0
 	wasm-encoder@0.221.3
 	wasm-encoder@0.227.1
-	wasm-encoder@0.229.0
+	wasm-encoder@0.236.1
 	wasm-encoder@0.244.0
 	wasm-metadata@0.201.0
 	wasm-metadata@0.227.1
@@ -1253,26 +1250,28 @@ CRATES="
 	wasmparser@0.201.0
 	wasmparser@0.221.3
 	wasmparser@0.227.1
-	wasmparser@0.229.0
+	wasmparser@0.236.1
 	wasmparser@0.244.0
-	wasmprinter@0.229.0
-	wasmtime-asm-macros@33.0.2
-	wasmtime-c-api-impl@33.0.2
-	wasmtime-c-api-macros@33.0.2
-	wasmtime-component-macro@33.0.2
-	wasmtime-component-util@33.0.2
-	wasmtime-cranelift@33.0.2
-	wasmtime-environ@33.0.2
-	wasmtime-fiber@33.0.2
-	wasmtime-jit-icache-coherence@33.0.2
-	wasmtime-math@33.0.2
-	wasmtime-slab@33.0.2
-	wasmtime-versioned-export-macros@33.0.2
-	wasmtime-wasi-io@33.0.2
-	wasmtime-wasi@33.0.2
-	wasmtime-winch@33.0.2
-	wasmtime-wit-bindgen@33.0.2
-	wasmtime@33.0.2
+	wasmprinter@0.236.1
+	wasmtime-c-api-impl@36.0.6
+	wasmtime-environ@36.0.6
+	wasmtime-internal-asm-macros@36.0.6
+	wasmtime-internal-c-api-macros@36.0.6
+	wasmtime-internal-component-macro@36.0.6
+	wasmtime-internal-component-util@36.0.6
+	wasmtime-internal-cranelift@36.0.6
+	wasmtime-internal-fiber@36.0.6
+	wasmtime-internal-jit-debug@36.0.6
+	wasmtime-internal-jit-icache-coherence@36.0.6
+	wasmtime-internal-math@36.0.6
+	wasmtime-internal-slab@36.0.6
+	wasmtime-internal-unwinder@36.0.6
+	wasmtime-internal-versioned-export-macros@36.0.6
+	wasmtime-internal-winch@36.0.6
+	wasmtime-internal-wit-bindgen@36.0.6
+	wasmtime-wasi-io@36.0.6
+	wasmtime-wasi@36.0.6
+	wasmtime@36.0.6
 	wast@35.0.2
 	wax@0.7.0
 	wayland-backend@0.3.11
@@ -1292,14 +1291,14 @@ CRATES="
 	which@4.4.2
 	which@6.0.3
 	whoami@1.6.1
-	wiggle-generate@33.0.2
-	wiggle-macro@33.0.2
-	wiggle@33.0.2
+	wiggle-generate@36.0.6
+	wiggle-macro@36.0.6
+	wiggle@36.0.6
 	winapi-i686-pc-windows-gnu@0.4.0
 	winapi-util@0.1.11
 	winapi-x86_64-pc-windows-gnu@0.4.0
 	winapi@0.3.9
-	winch-codegen@33.0.2
+	winch-codegen@36.0.6
 	windows-bindgen@0.61.1
 	windows-collections@0.2.0
 	windows-collections@0.3.2
@@ -1404,7 +1403,7 @@ CRATES="
 	wit-component@0.244.0
 	wit-parser@0.201.0
 	wit-parser@0.227.1
-	wit-parser@0.229.0
+	wit-parser@0.236.1
 	wit-parser@0.244.0
 	witx@0.9.1
 	writeable@0.6.1
