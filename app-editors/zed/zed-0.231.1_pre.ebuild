@@ -1572,12 +1572,13 @@ LICENSE+="
 "
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
+IUSE="+X +pulseaudio tracy +wayland"
+REQUIRED_USE="|| ( X wayland )"
 CHECKREQS_DISK_BUILD="18G"
 CHECKREQS_MEMORY="8G"
 
 DEPEND="
 	dev-libs/glib:2
-	dev-libs/wayland
 	|| (
 		media-fonts/dejavu
 		media-fonts/cantarell
@@ -1587,21 +1588,29 @@ DEPEND="
 	media-libs/alsa-lib
 	media-libs/fontconfig
 	media-libs/freetype
-	media-libs/libpulse
-	media-libs/vulkan-loader[X]
+	media-libs/vulkan-loader[X?]
 	virtual/zlib:=
-	x11-libs/libX11
-	x11-libs/libxcb:=
-	x11-libs/libxkbcommon[X]
+	pulseaudio? ( media-libs/libpulse )
+	wayland? (
+		dev-libs/wayland
+		x11-libs/libxkbcommon[wayland]
+	)
+	X? (
+		x11-libs/libX11
+		x11-libs/libxcb:=
+		x11-libs/libxkbcommon[X]
+	)
 "
 RDEPEND="${DEPEND}"
 BDEPEND="
 	app-arch/unzip
 	dev-build/cmake
-	dev-libs/wayland-protocols
-	dev-util/wayland-scanner
 	dev-util/vulkan-headers
 	sys-devel/gettext
+	wayland? (
+		dev-libs/wayland-protocols
+		dev-util/wayland-scanner
+	)
 	$(llvm_gen_dep '
 		llvm-core/clang:${LLVM_SLOT}=
 		llvm-core/llvm:${LLVM_SLOT}=
@@ -1686,6 +1695,16 @@ src_prepare() {
 		-e "s#${WIN_CAP_GIT}#${WIN_CAP_PATH}#" \
 		-e "s#${PROPTEST_GIT}#${PROPTEST_PATH}#" \
 		-i "${S}/Cargo.toml" || die "Cargo fetch workaround failed"
+
+	# Toggle gpui display backend features based on USE flags
+	if ! use wayland; then
+		sed -e '/\"gpui\/wayland\"/d' \
+			-i "${S}/crates/zed/Cargo.toml" || die "Failed to disable wayland feature"
+	fi
+	if ! use X; then
+		sed -e '/\"gpui\/x11\"/d' \
+			-i "${S}/crates/zed/Cargo.toml" || die "Failed to disable x11 feature"
+	fi
 }
 
 src_compile() {
@@ -1696,7 +1715,11 @@ src_compile() {
 	elif use amd64; then
 		export LK_CUSTOM_WEBRTC="${WORKDIR}/linux-x64-release"
 	fi
-	cargo_src_compile --package zed --package cli
+	local features=()
+	use tracy && features+=( tracy )
+
+	cargo_src_compile --package zed --package cli \
+		${features:+--features "${features[*]}"}
 }
 
 src_install() {

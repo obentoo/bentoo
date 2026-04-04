@@ -7,7 +7,7 @@ if [[ ${PV} == "9999" ]] ; then
 	inherit git-r3
 	EGIT_REPO_URI="https://gitlab.freedesktop.org/mobile-broadband/libqmi.git"
 else
-	GIT_COMMIT="27792399ec07f479d296370c8fd0c3167117fa1c"
+	GIT_COMMIT="7e0acca8ec41b5b8d58a030e632ddb4ab5a9904b"
 	SRC_URI="https://gitlab.freedesktop.org/mobile-broadband/libqmi/-/archive/${GIT_COMMIT}/libqmi-${GIT_COMMIT}.tar.gz"
 	KEYWORDS="amd64 arm arm64 ~loong ~mips ppc ppc64 ~riscv x86"
 	S="${WORKDIR}/libqmi-${GIT_COMMIT}"

@@ -13,7 +13,7 @@ inherit chromium-2 desktop rpm xdg
 
 DESCRIPTION="Linux fork of GitHub Desktop"
 HOMEPAGE="https://github.com/shiftkey/desktop"
-SRC_URI="https://github.com/shiftkey/desktop/releases/download/release-${PV%_rc*}-linux${PV#*_rc}/GitHubDesktop-linux-x86_64-${PV%_rc*}-linux${PV#*_rc}.rpm"
+SRC_URI="https://github.com/shiftkey/desktop/releases/download/release-${PV}-linux1/GitHubDesktop-linux-x86_64-${PV}-linux1.rpm"
 S="${WORKDIR}"
 
 KEYWORDS="-* ~amd64"
