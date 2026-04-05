@@ -40,7 +40,7 @@ BDEPEND="dev-qt/qttools:6[linguist]"
 DOCS=( images/ {BUILDING,CHANGELOG,README}.md )
 
 PATCHES=(
-	"${FILESDIR}/${P}-no-git.patch"
+	"${FILESDIR}/${PN}-no-git.patch"
 )
 
 src_configure() {
