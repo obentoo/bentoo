@@ -20,11 +20,10 @@ else
 	MY_P="${PN}-${MY_PV}"
 	SRC_URI="
 		https://github.com/ollama/${PN}/archive/refs/tags/v${MY_PV}.tar.gz -> ${MY_P}.gh.tar.gz
-		https://github.com/gentoo-golang-dist/${PN}/releases/download/v${MY_PV}/${MY_P}-deps.tar.xz
 	"
-	if [[ ${PV} != *_rc* ]]; then
-		KEYWORDS="~amd64"
-	fi
+	PROPERTIES="live"
+	RESTRICT+=" network-sandbox"
+	S="${WORKDIR}/${MY_P}"
 fi
 
 LICENSE="MIT"
@@ -58,7 +57,7 @@ add_cpu_features_use() {
 }
 add_cpu_features_use
 
-RESTRICT="mirror test"
+RESTRICT+=" mirror test"
 
 COMMON_DEPEND="
 	blas? (
@@ -108,7 +107,7 @@ RDEPEND="
 "
 
 PATCHES=(
-	"${FILESDIR}/${PN}-0.19.0-use-GNUInstallDirs.patch"
+	"${FILESDIR}/${PN}-0.20.2-use-GNUInstallDirs.patch"
 )
 
 pkg_pretend() {
@@ -149,10 +148,11 @@ src_unpack() {
 
 	if [[ "${PV}" == *9999* ]]; then
 		git-r3_src_unpack
-		go-module_live_vendor
 	else
-		go-module_src_unpack
+		default
 	fi
+
+	go-module_live_vendor
 }
 
 src_prepare() {
