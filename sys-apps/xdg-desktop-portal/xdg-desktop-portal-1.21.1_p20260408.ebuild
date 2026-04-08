@@ -7,7 +7,7 @@ PYTHON_COMPAT=( python3_{11..13} )
 
 inherit meson python-any-r1 systemd
 
-MY_COMMIT="845290fb539e48adcbe2610c73078cb9f1e9d732"
+MY_COMMIT="105b3a53bf176c717f9469ea8949dbe8a5526d8a"
 
 DESCRIPTION="Desktop integration portal"
 HOMEPAGE="https://flatpak.github.io/xdg-desktop-portal/ https://github.com/flatpak/xdg-desktop-portal"
@@ -24,7 +24,7 @@ RESTRICT="!test? ( test )"
 REQUIRED_USE="flatpak? ( seccomp )"
 
 DEPEND="
-	>=dev-libs/glib-2.72:2
+	>=dev-libs/glib-2.76:2
 	dev-libs/json-glib
 	>=media-video/pipewire-0.3:=
 	>=sys-fs/fuse-3.10.0:3=[suid]
