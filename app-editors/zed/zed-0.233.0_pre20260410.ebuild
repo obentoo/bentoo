@@ -236,19 +236,19 @@ CRATES="
 	cpal@0.17.1
 	cpp_demangle@0.4.5
 	cpufeatures@0.2.17
-	cranelift-assembler-x64-meta@0.123.6
-	cranelift-assembler-x64@0.123.6
-	cranelift-bforest@0.123.6
-	cranelift-bitset@0.123.6
-	cranelift-codegen-meta@0.123.6
-	cranelift-codegen-shared@0.123.6
-	cranelift-codegen@0.123.6
-	cranelift-control@0.123.6
-	cranelift-entity@0.123.6
-	cranelift-frontend@0.123.6
-	cranelift-isle@0.123.6
-	cranelift-native@0.123.6
-	cranelift-srcgen@0.123.6
+	cranelift-assembler-x64-meta@0.123.7
+	cranelift-assembler-x64@0.123.7
+	cranelift-bforest@0.123.7
+	cranelift-bitset@0.123.7
+	cranelift-codegen-meta@0.123.7
+	cranelift-codegen-shared@0.123.7
+	cranelift-codegen@0.123.7
+	cranelift-control@0.123.7
+	cranelift-entity@0.123.7
+	cranelift-frontend@0.123.7
+	cranelift-isle@0.123.7
+	cranelift-native@0.123.7
+	cranelift-srcgen@0.123.7
 	crash-context@0.6.3
 	crash-handler@0.6.3
 	crc-catalog@2.4.0
@@ -831,8 +831,8 @@ CRATES="
 	pulldown-cmark-escape@0.10.1
 	pulldown-cmark@0.10.3
 	pulldown-cmark@0.13.0
-	pulley-interpreter@36.0.6
-	pulley-macros@36.0.6
+	pulley-interpreter@36.0.7
+	pulley-macros@36.0.7
 	pulp@0.18.22
 	pulp@0.21.5
 	pxfm@0.1.25
@@ -1260,24 +1260,24 @@ CRATES="
 	wasmparser@0.244.0
 	wasmprinter@0.236.1
 	wasmtime-c-api-impl@36.0.6
-	wasmtime-environ@36.0.6
-	wasmtime-internal-asm-macros@36.0.6
+	wasmtime-environ@36.0.7
+	wasmtime-internal-asm-macros@36.0.7
 	wasmtime-internal-c-api-macros@36.0.6
-	wasmtime-internal-component-macro@36.0.6
-	wasmtime-internal-component-util@36.0.6
-	wasmtime-internal-cranelift@36.0.6
-	wasmtime-internal-fiber@36.0.6
-	wasmtime-internal-jit-debug@36.0.6
-	wasmtime-internal-jit-icache-coherence@36.0.6
-	wasmtime-internal-math@36.0.6
-	wasmtime-internal-slab@36.0.6
-	wasmtime-internal-unwinder@36.0.6
-	wasmtime-internal-versioned-export-macros@36.0.6
-	wasmtime-internal-winch@36.0.6
-	wasmtime-internal-wit-bindgen@36.0.6
+	wasmtime-internal-component-macro@36.0.7
+	wasmtime-internal-component-util@36.0.7
+	wasmtime-internal-cranelift@36.0.7
+	wasmtime-internal-fiber@36.0.7
+	wasmtime-internal-jit-debug@36.0.7
+	wasmtime-internal-jit-icache-coherence@36.0.7
+	wasmtime-internal-math@36.0.7
+	wasmtime-internal-slab@36.0.7
+	wasmtime-internal-unwinder@36.0.7
+	wasmtime-internal-versioned-export-macros@36.0.7
+	wasmtime-internal-winch@36.0.7
+	wasmtime-internal-wit-bindgen@36.0.7
 	wasmtime-wasi-io@36.0.6
 	wasmtime-wasi@36.0.6
-	wasmtime@36.0.6
+	wasmtime@36.0.7
 	wast@35.0.2
 	wax@0.7.0
 	wayland-backend@0.3.11
@@ -1304,7 +1304,7 @@ CRATES="
 	winapi-util@0.1.11
 	winapi-x86_64-pc-windows-gnu@0.4.0
 	winapi@0.3.9
-	winch-codegen@36.0.6
+	winch-codegen@36.0.7
 	windows-bindgen@0.61.1
 	windows-collections@0.2.0
 	windows-collections@0.3.2
@@ -1550,7 +1550,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="377e78b8bf90a64ad868e73684d9a3b50cb1e16c"
+EGIT_COMMIT="5a9f82583bdaf9a41676b23cf2d00d878beb4b09"
 LLVM_COMPAT=( 21 )
 RUST_MIN_VER="1.94.0"
 RUST_NEEDS_LLVM=1
