@@ -1550,9 +1550,9 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="5a9f82583bdaf9a41676b23cf2d00d878beb4b09"
+EGIT_COMMIT="cca6552bc4228b0ab33a57ede4a5f4a46571035b"
 LLVM_COMPAT=( 21 )
-RUST_MIN_VER="1.94.0"
+RUST_MIN_VER="1.94.1"
 RUST_NEEDS_LLVM=1
 WEBRTC_COMMIT="0001d84-4"
 
@@ -1689,14 +1689,6 @@ src_prepare() {
 	local WIN_CAP_GIT="windows-capture = { git = \"https://github.com/zed-industries/windows-capture.git\", rev = \"${WIN_CAP_COMMIT}\""
 	local WIN_CAP_PATH="windows-capture = \\{ path = \"${WORKDIR}/windows-capture-${WIN_CAP_COMMIT}\""
 
-	local PROPTEST_COMMIT="3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b"
-	local PROPTEST_GIT="proptest = { git = \"https://github.com/proptest-rs/proptest\", rev = \"${PROPTEST_COMMIT}\""
-	local PROPTEST_PATH="proptest = \\{ path = \"${WORKDIR}/proptest-${PROPTEST_COMMIT}/proptest\""
-
-	local TRASH_COMMIT="3bf27effd4eb8699f2e484d3326b852fe3e53af7"
-	local TRASH_GIT="trash = { git = \"https://github.com/zed-industries/trash-rs\", rev = \"${TRASH_COMMIT}\""
-	local TRASH_PATH="trash = \\{ path = \"${WORKDIR}/trash-rs-${TRASH_COMMIT}\""
-
 	local WEBRTC_SYS_GIT="webrtc-sys = { git = \"https://github.com/zed-industries/livekit-rust-sdks\", rev = \"${LIVEKIT_COMMIT}\""
 	local WEBRTC_SYS_PATH="webrtc-sys = \\{ path = \"${WORKDIR}/livekit-rust-sdks-${LIVEKIT_COMMIT}/webrtc-sys\""
 
@@ -1708,8 +1700,6 @@ src_prepare() {
 		-e "s#${NOTIFY_GIT}#${NOTIFY_PATH}#" \
 		-e "s#${NOTIFY_TYPES_GIT}#${NOTIFY_TYPES_PATH}#" \
 		-e "s#${WIN_CAP_GIT}#${WIN_CAP_PATH}#" \
-		-e "s#${PROPTEST_GIT}#${PROPTEST_PATH}#" \
-		-e "s#${TRASH_GIT}#${TRASH_PATH}#" \
 		-i "${S}/Cargo.toml" || die "Cargo fetch workaround failed"
 
 	# Toggle gpui display backend features based on USE flags
