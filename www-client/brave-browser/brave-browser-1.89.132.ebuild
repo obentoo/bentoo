@@ -96,7 +96,7 @@ BRAVE_HOME="opt/brave.com/brave${PN#brave-browser}"
 pkg_pretend() {
 	# Protect against people using autounmask overzealously
 	use amd64 || die "brave only works on amd64"
-	
+
 	# Check available disk space (~300MB required)
 	local disk_space=$(df -P "${PORTAGE_TMPDIR}" 2>/dev/null | awk 'NR==2 {print $4}')
 	if [[ -n ${disk_space} ]] && [[ ${disk_space} -lt 307200 ]]; then
@@ -104,14 +104,14 @@ pkg_pretend() {
 		eerror "Required: ~300MB, Available: $((disk_space/1024))MB"
 		die "Insufficient disk space"
 	fi
-	
+
 	# Warn about multiple Brave versions
 	if has_version "www-client/brave-browser:0" && \
 	   has_version "www-client/brave-browser-beta:0"; then
 		ewarn "Multiple Brave versions detected."
 		ewarn "Consider using only one variant to avoid confusion."
 	fi
-	
+
 	chromium_suid_sandbox_check_kernel_config
 }
 
@@ -155,13 +155,13 @@ src_install() {
 	# Decompress files - let Portage handle compression automatically
 	gzip -d usr/share/doc/${PF}/changelog.gz || die
 	gzip -d usr/share/man/man1/${MY_PN}.1.gz || die
-	
+
 	# Remove ALL existing brave-browser symlinks from upstream package
 	# The .deb contains a symlink pointing to .gz which we just decompressed
 	rm -f usr/share/man/man1/brave-browser.1.gz || die
 	rm -f usr/share/man/man1/brave-browser.1.bz2 || die
 	rm -f usr/share/man/man1/brave-browser.1 || die
-	
+
 	# Create new symlink pointing to uncompressed file
 	# Portage will compress both files and update symlink automatically
 	dosym ${MY_PN}.1 usr/share/man/man1/brave-browser.1
@@ -204,17 +204,17 @@ src_install() {
 
 	# Mark main executable with PaX (protection against exploits)
 	pax-mark m "${ED}/${BRAVE_HOME}/brave"
-	
+
 	# Verify chrome-sandbox exists and set SUID permissions
 	[[ ! -f "${ED}/${BRAVE_HOME}/chrome-sandbox" ]] && \
 		die "chrome-sandbox not found"
-	
+
 	fperms 4755 "/${BRAVE_HOME}/chrome-sandbox"
 }
 
 pkg_postinst() {
 	xdg_pkg_postinst
-	
+
 	elog "Brave browser has been installed."
 	elog ""
 	elog "For custom policies, create:"
@@ -223,18 +223,18 @@ pkg_postinst() {
 	elog "To enable hardware acceleration:"
 	elog "  brave-browser --enable-features=VaapiVideoDecoder"
 	elog ""
-	
+
 	if use qt6; then
 		elog "Qt6 support is enabled for better KDE/Qt integration"
 		elog ""
 	fi
-	
+
 	if ! use selinux; then
 		ewarn "SELinux support is not enabled."
 		ewarn "If you use SELinux, recompile with USE=selinux"
 		ewarn ""
 	fi
-	
+
 	if has_version "app-admin/eselect-browser"; then
 		elog "To set Brave as your default browser:"
 		elog "  eselect browser set brave-browser"

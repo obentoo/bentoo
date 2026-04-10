@@ -285,28 +285,6 @@ src_test() {
 	# to try anything to avoid random test hangs!
 	export TERM=xterm
 
-	# See https://github.com/vim/vim/blob/f08b0eb8691ff09f98bc4beef986ece1c521655f/src/testdir/runtest.vim#L5
-	# for more information on test variables we can use.
-	# Note that certain variables need vim-compatible regex (not PCRE), see e.g.
-	# http://www.softpanorama.org/Editors/Vimorama/vim_regular_expressions.shtml.
-	#
-	# Skipped tests:
-	# - Test_expand_star_star
-	# Hangs because of a recursive symlink in /usr/include/nodejs (bug #616680)
-	# - Test_exrc
-	# Looks in wrong location? (bug #742710)
-	# - Test_job_tty_in_out
-	# Fragile and depends on TERM(?)
-	# - Test_spelldump_bang
-	# Hangs.
-	# - Test_fuzzy_completion_env
-	# Too sensitive to leaked environment variables.
-	# - Test_term_mouse_multiple_clicks_to_select_mode
-	# Hangs.
-	# - Test_spelldump
-	# Hangs.
-	# - Test_glvs_*
-	# Depends on local network.
 	export TEST_SKIP_PAT='\(Test_expand_star_star\|Test_exrc\|Test_job_tty_in_out\|Test_spelldump_bang\|Test_fuzzy_completion_env\|Test_term_mouse_multiple_clicks_to_select_mode\|Test_spelldump\|Test_glvs_\)'
 
 	echo "throw 'Skipped: needs X'" > src/testdir/test_clientserver.vim || die
