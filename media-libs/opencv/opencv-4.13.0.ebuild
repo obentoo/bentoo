@@ -70,8 +70,6 @@ else
 		contribdnn? (
 			https://github.com/ShiqiYu/libfacedetection.train/raw/02246e79b1e976c83d1e135a85e0628120c93769/onnx/yunet_s_640_640.onnx -> yunet-202303.onnx
 		)
-		https://github.com/opencv/opencv/commit/54b03cc2f84cfe83222c59b747e17cb378a9744c.patch
-		-> ${P}-fix_videowriter_raw_return_code.patch
 	"
 	KEYWORDS="~amd64 ~arm ~arm64 ~loong ~ppc64 ~riscv ~x86"
 fi
@@ -389,7 +387,6 @@ PATCHES=(
 	#"${FILESDIR}/${PN}-4.12.0-cuda-13.0.patch"
 
 	#"${FILESDIR}/${PN}-4.11.0-ffmpeg8.patch" # PR 27691
-	"${DISTDIR}/${P}-fix_videowriter_raw_return_code.patch"
 
 	# TODO applied in src_prepare
 	# "${FILESDIR}/${PN}_contrib-4.8.1-rgbd.patch"
