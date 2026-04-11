@@ -206,7 +206,7 @@ CRATES="
 	compression-codecs@0.4.31
 	compression-core@0.4.29
 	concurrent-queue@2.5.0
-	console@0.15.11
+	console@0.16.3
 	console_error_panic_hook@0.1.7
 	const-oid@0.9.6
 	const-random-macro@0.1.16
@@ -237,19 +237,19 @@ CRATES="
 	cpal@0.17.1
 	cpp_demangle@0.4.5
 	cpufeatures@0.2.17
-	cranelift-assembler-x64-meta@0.123.6
-	cranelift-assembler-x64@0.123.6
-	cranelift-bforest@0.123.6
-	cranelift-bitset@0.123.6
-	cranelift-codegen-meta@0.123.6
-	cranelift-codegen-shared@0.123.6
-	cranelift-codegen@0.123.6
-	cranelift-control@0.123.6
-	cranelift-entity@0.123.6
-	cranelift-frontend@0.123.6
-	cranelift-isle@0.123.6
-	cranelift-native@0.123.6
-	cranelift-srcgen@0.123.6
+	cranelift-assembler-x64-meta@0.123.7
+	cranelift-assembler-x64@0.123.7
+	cranelift-bforest@0.123.7
+	cranelift-bitset@0.123.7
+	cranelift-codegen-meta@0.123.7
+	cranelift-codegen-shared@0.123.7
+	cranelift-codegen@0.123.7
+	cranelift-control@0.123.7
+	cranelift-entity@0.123.7
+	cranelift-frontend@0.123.7
+	cranelift-isle@0.123.7
+	cranelift-native@0.123.7
+	cranelift-srcgen@0.123.7
 	crash-context@0.6.3
 	crash-handler@0.6.3
 	crc-catalog@2.4.0
@@ -299,7 +299,7 @@ CRATES="
 	derive_more-impl@2.1.1
 	derive_more@2.1.1
 	derive_setters@0.1.9
-	dialoguer@0.11.0
+	dialoguer@0.12.0
 	diff@0.1.13
 	diffy@0.4.2
 	digest@0.10.7
@@ -428,7 +428,6 @@ CRATES="
 	futures-util@0.3.32
 	futures@0.1.31
 	futures@0.3.32
-	fuzzy-matcher@0.3.7
 	gaoya@0.2.0
 	gemm-c32@0.17.1
 	gemm-c32@0.18.2
@@ -835,8 +834,8 @@ CRATES="
 	pulldown-cmark-escape@0.10.1
 	pulldown-cmark@0.10.3
 	pulldown-cmark@0.13.0
-	pulley-interpreter@36.0.6
-	pulley-macros@36.0.6
+	pulley-interpreter@36.0.7
+	pulley-macros@36.0.7
 	pulp@0.18.22
 	pulp@0.21.5
 	pxfm@0.1.25
@@ -1264,24 +1263,24 @@ CRATES="
 	wasmparser@0.244.0
 	wasmprinter@0.236.1
 	wasmtime-c-api-impl@36.0.6
-	wasmtime-environ@36.0.6
-	wasmtime-internal-asm-macros@36.0.6
+	wasmtime-environ@36.0.7
+	wasmtime-internal-asm-macros@36.0.7
 	wasmtime-internal-c-api-macros@36.0.6
-	wasmtime-internal-component-macro@36.0.6
-	wasmtime-internal-component-util@36.0.6
-	wasmtime-internal-cranelift@36.0.6
-	wasmtime-internal-fiber@36.0.6
-	wasmtime-internal-jit-debug@36.0.6
-	wasmtime-internal-jit-icache-coherence@36.0.6
-	wasmtime-internal-math@36.0.6
-	wasmtime-internal-slab@36.0.6
-	wasmtime-internal-unwinder@36.0.6
-	wasmtime-internal-versioned-export-macros@36.0.6
-	wasmtime-internal-winch@36.0.6
-	wasmtime-internal-wit-bindgen@36.0.6
+	wasmtime-internal-component-macro@36.0.7
+	wasmtime-internal-component-util@36.0.7
+	wasmtime-internal-cranelift@36.0.7
+	wasmtime-internal-fiber@36.0.7
+	wasmtime-internal-jit-debug@36.0.7
+	wasmtime-internal-jit-icache-coherence@36.0.7
+	wasmtime-internal-math@36.0.7
+	wasmtime-internal-slab@36.0.7
+	wasmtime-internal-unwinder@36.0.7
+	wasmtime-internal-versioned-export-macros@36.0.7
+	wasmtime-internal-winch@36.0.7
+	wasmtime-internal-wit-bindgen@36.0.7
 	wasmtime-wasi-io@36.0.6
 	wasmtime-wasi@36.0.6
-	wasmtime@36.0.6
+	wasmtime@36.0.7
 	wast@35.0.2
 	wax@0.7.0
 	wayland-backend@0.3.11
@@ -1308,19 +1307,22 @@ CRATES="
 	winapi-util@0.1.11
 	winapi-x86_64-pc-windows-gnu@0.4.0
 	winapi@0.3.9
-	winch-codegen@36.0.6
+	winch-codegen@36.0.7
 	windows-bindgen@0.61.1
 	windows-collections@0.2.0
 	windows-collections@0.3.2
+	windows-core@0.56.0
 	windows-core@0.57.0
 	windows-core@0.58.0
 	windows-core@0.61.2
 	windows-core@0.62.2
 	windows-future@0.2.1
 	windows-future@0.3.2
+	windows-implement@0.56.0
 	windows-implement@0.57.0
 	windows-implement@0.58.0
 	windows-implement@0.60.2
+	windows-interface@0.56.0
 	windows-interface@0.57.0
 	windows-interface@0.58.0
 	windows-interface@0.59.3
@@ -1351,6 +1353,7 @@ CRATES="
 	windows-targets@0.53.5
 	windows-threading@0.1.0
 	windows-threading@0.2.1
+	windows@0.56.0
 	windows@0.57.0
 	windows@0.58.0
 	windows@0.61.3
@@ -1443,9 +1446,9 @@ CRATES="
 	zbus@5.13.2
 	zbus_macros@5.13.2
 	zbus_names@4.3.1
-	zeno@0.3.3
 	zed_extension_api@0.1.0
 	zed_extension_api@0.7.0
+	zeno@0.3.3
 	zerocopy-derive@0.8.27
 	zerocopy@0.8.27
 	zerofrom-derive@0.1.6
@@ -1521,6 +1524,7 @@ declare -A GIT_CRATES=(
 	[proptest]='https://github.com/proptest-rs/proptest;3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b;proptest-%commit%/proptest'
 	[rodio]='https://github.com/RustAudio/rodio;e50e726ddd0292f6ef9de0dda6b90af4ed1fb66a;rodio-%commit%'
 	[tiktoken-rs]='https://github.com/zed-industries/tiktoken-rs;2570c4387a8505fb8f1d3f3557454b474f1e8271;tiktoken-rs-%commit%/tiktoken-rs'
+	[trash]='https://github.com/zed-industries/trash-rs;3bf27effd4eb8699f2e484d3326b852fe3e53af7;trash-rs-%commit%'
 	[tree-sitter-cpp]='https://github.com/tree-sitter/tree-sitter-cpp;5cb9b693cfd7bfacab1d9ff4acac1a4150700609;tree-sitter-cpp-%commit%'
 	[tree-sitter-gitcommit]='https://github.com/zed-industries/tree-sitter-git-commit;88309716a69dd13ab83443721ba6e0b491d37ee9;tree-sitter-git-commit-%commit%'
 	[tree-sitter-gomod]='https://github.com/camdencheek/tree-sitter-go-mod;2e886870578eeba1927a2dc4bd2e2b3f598c5f9a;tree-sitter-go-mod-%commit%'
@@ -1549,9 +1553,9 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="2d3f49e4b265c6d074b0d3316806a454fccabeb8"
+EGIT_COMMIT="6af5ca3f8036b937e9d84bdf2283e89986caca67"
 LLVM_COMPAT=( 21 )
-RUST_MIN_VER="1.94.0"
+RUST_MIN_VER="1.94.1"
 RUST_NEEDS_LLVM=1
 WEBRTC_COMMIT="0001d84-4"
 
@@ -1688,10 +1692,6 @@ src_prepare() {
 	local WIN_CAP_GIT="windows-capture = { git = \"https://github.com/zed-industries/windows-capture.git\", rev = \"${WIN_CAP_COMMIT}\""
 	local WIN_CAP_PATH="windows-capture = \\{ path = \"${WORKDIR}/windows-capture-${WIN_CAP_COMMIT}\""
 
-	local PROPTEST_COMMIT="3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b"
-	local PROPTEST_GIT="proptest = { git = \"https://github.com/proptest-rs/proptest\", rev = \"${PROPTEST_COMMIT}\""
-	local PROPTEST_PATH="proptest = \\{ path = \"${WORKDIR}/proptest-${PROPTEST_COMMIT}/proptest\""
-
 	local WEBRTC_SYS_GIT="webrtc-sys = { git = \"https://github.com/zed-industries/livekit-rust-sdks\", rev = \"${LIVEKIT_COMMIT}\""
 	local WEBRTC_SYS_PATH="webrtc-sys = \\{ path = \"${WORKDIR}/livekit-rust-sdks-${LIVEKIT_COMMIT}/webrtc-sys\""
 
@@ -1703,7 +1703,6 @@ src_prepare() {
 		-e "s#${NOTIFY_GIT}#${NOTIFY_PATH}#" \
 		-e "s#${NOTIFY_TYPES_GIT}#${NOTIFY_TYPES_PATH}#" \
 		-e "s#${WIN_CAP_GIT}#${WIN_CAP_PATH}#" \
-		-e "s#${PROPTEST_GIT}#${PROPTEST_PATH}#" \
 		-i "${S}/Cargo.toml" || die "Cargo fetch workaround failed"
 
 	# Toggle gpui display backend features based on USE flags
