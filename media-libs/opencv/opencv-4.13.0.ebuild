@@ -613,6 +613,7 @@ src_prepare() {
 		eapply "${FILESDIR}/${PN}_contrib-4.8.1-rgbd.patch"
 		eapply "${FILESDIR}/${PN}_contrib-4.8.1-NVIDIAOpticalFlowSDK-2.0.tar.gz.patch"
 		eapply "${FILESDIR}/${PN}_contrib-4.12.0-cuda-13.0.patch"
+		eapply "${FILESDIR}/${PN}_contrib-4.13.0-cudacodec-fix-cuda-include.patch"
 		[[ -n "${PATCHES_CONTRIB_USER[*]}" ]] && eapply "${PATCHES_CONTRIB_USER[@]}"
 		popd >/dev/null || die
 
