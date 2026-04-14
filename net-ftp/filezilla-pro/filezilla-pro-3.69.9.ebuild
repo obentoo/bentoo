@@ -41,28 +41,32 @@ pkg_nofetch() {
 
 src_prepare() {
 	default
-	cd ${WORKDIR}/FileZilla3/share/applications/
-	mv filezilla.desktop filezilla.desktop
+	cd "${WORKDIR}/FileZilla3/share/applications/" || die
+	mv filezilla.desktop filezilla-pro.desktop || die
+	sed -i \
+		-e 's/Exec=filezilla/Exec=filezilla-pro/' \
+		-e 's/Icon=filezilla/Icon=filezilla-pro/' \
+		filezilla-pro.desktop || die
 }
 
 src_install() {
 	insinto /opt/${PN}
 	doins -r * || die
-	
+
 	fperms +x "/opt/${PN}/bin/filezilla"
-	dosym "/opt/${PN}/bin/filezilla" /usr/bin/filezilla
+	dosym "/opt/${PN}/bin/filezilla" /usr/bin/filezilla-pro
 
 	fperms +x "/opt/${PN}/bin/fzputtygen"
-	dosym "/opt/${PN}/bin/fzputtygen" /usr/bin/fzputtygen
+	dosym "/opt/${PN}/bin/fzputtygen" /usr/bin/fzputtygen-pro
 
 	fperms +x "/opt/${PN}/bin/fzsftp"
-	dosym "/opt/${PN}/bin/fzsftp" /usr/bin/fzsftp
+	dosym "/opt/${PN}/bin/fzsftp" /usr/bin/fzsftp-pro
 
 	fperms +x "/opt/${PN}/bin/fzstorj"
-	dosym "/opt/${PN}/bin/fzstorj" /usr/bin/fzstorj
+	dosym "/opt/${PN}/bin/fzstorj" /usr/bin/fzstorj-pro
 
-	newicon share/pixmaps/filezilla.png filezilla.png
-	domenu share/applications/filezilla.desktop
+	newicon share/pixmaps/filezilla.png filezilla-pro.png
+	domenu share/applications/filezilla-pro.desktop
 }
 
 pkg_postinst() {
