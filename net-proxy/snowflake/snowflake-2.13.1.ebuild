@@ -6,7 +6,7 @@ EAPI=8
 inherit go-module systemd
 
 MY_P="${PN}-v${PV}"
-JOB_ID="1413878" # Keep this in sync with the link with "other" in releases
+JOB_ID="1471331" # Keep this in sync with the link with "other" in releases
 DESCRIPTION="Pluggable Transport using WebRTC, inspired by Flashproxy"
 HOMEPAGE="
 	https://snowflake.torproject.org

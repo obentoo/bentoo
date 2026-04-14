@@ -3,7 +3,7 @@
 
 EAPI=8
 
-COMMIT=2b39cefd985ffff83e381b5b89cf3333c3130d20
+COMMIT=e174cea1ba334856c4b7d5e631e963ba177ac26e
 inherit cmake flag-o-matic xdg
 
 DESCRIPTION="Light GUI editor for SQLite databases"

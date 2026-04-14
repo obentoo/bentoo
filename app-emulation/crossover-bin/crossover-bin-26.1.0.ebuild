@@ -1,4 +1,4 @@
-# Copyright 1999-2025 Gentoo Authors
+# Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
@@ -8,24 +8,21 @@ inherit python-single-r1 unpacker
 
 DESCRIPTION="Commercial version of app-emulation/wine with paid support"
 HOMEPAGE="https://www.codeweavers.com/products/"
-SRC_URI="https://media.codeweavers.com/pub/crossover/cxlinux/demo/install-crossover-${PV}.bin"
+SRC_URI="https://media.codeweavers.com/pub/crossover/cxlinux/demo/crossover_${PV}-1.deb -> ${P}.deb"
 
 S="${WORKDIR}"
 
 LICENSE="CROSSOVER-3"
 SLOT="0"
-KEYWORDS="-* ~amd64 ~x86"
+KEYWORDS="-* ~amd64"
 IUSE="+capi +cups +gphoto2 +gstreamer +jpeg +lcms +mp3 +nls osmesa +openal +opencl +opengl +pcap +png +scanner +ssl +v4l +vulkan"
 REQUIRED_USE="${PYTHON_REQUIRED_USE}"
 
-RESTRICT="bindist test"
+RESTRICT="bindist mirror strip"
 QA_PREBUILT="*"
 
 BDEPEND="${PYTHON_DEPS}
-	app-alternatives/cpio
-	app-arch/unzip
 	dev-lang/perl
-	dev-util/bbe
 "
 RDEPEND="${DEPEND}
 	${PYTHON_DEPS}
@@ -92,16 +89,11 @@ RDEPEND="${DEPEND}
 "
 
 src_unpack() {
-	# self unpacking zip archive; unzip warns about the exe stuff
-	unpack_zip ${A}
+	unpack_deb ${A}
 }
 
 src_prepare() {
 	default
-
-	# Remove unnecessary files, license.txt file kept as it's used by
-	# multiple files (apart of the menu to show the license)
-	rm -r guis/ || die "Could not remove files"
 }
 
 src_install() {
@@ -109,33 +101,32 @@ src_install() {
 		-e "s:xdg_install_icons(:&\"${ED}\".:" \
 		-e "s:\"\(.*\)/applications:\"${ED}\1/applications:" \
 		-e "s:\"\(.*\)/desktop-directories:\"${ED}\1/desktop-directories:" \
-		"${S}/lib/perl/CXMenuXDG.pm" || die
+		"${S}/opt/cxoffice/lib/perl/CXMenuXDG.pm" || die
 
 	# Install crossover symlink, bug #476314
 	dosym ../cxoffice/bin/crossover /opt/bin/crossover
 
-	# Install documentation
-	dodoc README changelog.txt
-	rm README changelog.txt || die "Could not remove README and changelog.txt"
-
 	# Install files
 	dodir /opt/cxoffice
-	#cp -r ./* "${ED}/opt/cxoffice" \
-	find . | cpio -dumpl "${ED}/opt/cxoffice" 2>/dev/null \
-		|| die "Could not install into ${ED}/opt/cxoffice"
+	cp -r "${S}/opt/cxoffice/." "${ED}/opt/cxoffice" || die "Could not install into ${ED}/opt/cxoffice"
+
+	# Remove the doc symlink (we install docs separately)
+	rm "${ED}/opt/cxoffice/doc" || die
+
+	# Install documentation from the .deb's usr/share/doc
+	dodoc "${S}/usr/share/doc/crossover/README"
 
 	# Disable auto-update
-	sed -i -e 's/;;\"AutoUpdate\" = \"1\"/\"AutoUpdate\" = \"0\"/g' share/crossover/data/cxoffice.conf || die
+	sed -i -e 's/;;\"AutoUpdate\" = \"1\"/\"AutoUpdate\" = \"0\"/g' \
+		"${ED}/opt/cxoffice/share/crossover/data/cxoffice.conf" || die
 
 	# Install configuration file
 	insinto /opt/cxoffice/etc
-	doins share/crossover/data/cxoffice.conf
+	doins "${ED}/opt/cxoffice/share/crossover/data/cxoffice.conf"
 	dodir /etc/env.d
 	echo "CONFIG_PROTECT=/opt/cxoffice/etc/cxoffice.conf" >> "${ED}"/etc/env.d/30crossover-bin || die
 
-	# Konqueror in its infinite wisdom decides to try opening things for
-	# writing, which are sandbox violations. This breaks the install process if
-	# it is installed, so we ninja edit it to false so it so doesn't run.
+	# Konqueror workaround: ninja edit to false so it doesn't run
 	sed -i -e 's/cxwhich konqueror/false &/' "${ED}/opt/cxoffice/bin/locate_gui.sh" \
 		|| die "Could not apply workaround for konqueror"
 
@@ -149,7 +140,7 @@ src_install() {
 
 	# Revert ninja edit
 	sed -i -e 's/false \(cxwhich konqueror\)/\1/' "${ED}/opt/cxoffice/bin/locate_gui.sh" \
-		|| die "Could not apply workaround for konqueror"
+		|| die "Could not revert workaround for konqueror"
 
 	# Drop Uninstall menus
 	rm "${ED}/usr/share/applications/"*"Uninstall"* \

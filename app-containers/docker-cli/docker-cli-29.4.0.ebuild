@@ -1,4 +1,4 @@
-# Copyright 1999-2025 Gentoo Authors
+# Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
@@ -7,7 +7,7 @@ inherit shell-completion go-module
 MY_PV=${PV/_/-}
 
 # update this on every bump
-GIT_COMMIT=c2be9ccfc3cf0b4c4c4f0a3d5c91dd759ab21256
+GIT_COMMIT=9d7ad9ff180b43ae5577d048a7bac1159ce7bacf
 
 DESCRIPTION="the command line binary for docker"
 HOMEPAGE="https://www.docker.com/"
@@ -39,7 +39,7 @@ src_unpack() {
 src_prepare() {
 	default
 	sed -i 's@dockerd\?\.exe@@g' contrib/completion/bash/docker || die
-	
+
 	# Ensure man directory exists
 	mkdir -p man || die "Failed to create man directory"
 }
@@ -62,12 +62,12 @@ src_compile() {
 		VERSION="${PV}" \
 		GITCOMMIT="${GIT_COMMIT}" \
 		manpages || die "Failed to generate man pages"
-	
+
 	# Verify man pages were generated
 	if [[ ! -d man/man1 ]] || [[ -z "$(find man -name '*.1' -type f)" ]]; then
 		die "Man pages were not generated successfully"
 	fi
-	
+
 	einfo "Man pages generated successfully in man/ directory"
 }
 

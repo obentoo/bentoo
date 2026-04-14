@@ -206,6 +206,7 @@ CRATES="
 	compression-codecs@0.4.31
 	compression-core@0.4.29
 	concurrent-queue@2.5.0
+	console@0.16.3
 	console_error_panic_hook@0.1.7
 	const-oid@0.9.6
 	const-random-macro@0.1.16
@@ -298,14 +299,11 @@ CRATES="
 	derive_more-impl@2.1.1
 	derive_more@2.1.1
 	derive_setters@0.1.9
+	dialoguer@0.12.0
 	diff@0.1.13
 	diffy@0.4.2
 	digest@0.10.7
-	dirs-sys@0.3.7
-	dirs-sys@0.4.1
 	dirs-sys@0.5.0
-	dirs@4.0.0
-	dirs@5.0.1
 	dirs@6.0.0
 	dispatch2@0.3.1
 	dispatch@0.2.0
@@ -337,6 +335,7 @@ CRATES="
 	embedded-io@0.4.0
 	embedded-io@0.6.1
 	emojis@0.6.4
+	encode_unicode@1.0.0
 	encoding_rs@0.8.35
 	endi@1.1.0
 	enum-as-inner@0.6.1
@@ -880,7 +879,6 @@ CRATES="
 	reborrow@0.5.5
 	redox_syscall@0.2.16
 	redox_syscall@0.5.18
-	redox_users@0.4.6
 	redox_users@0.5.2
 	ref-cast-impl@1.0.25
 	ref-cast@1.0.25
@@ -988,7 +986,6 @@ CRATES="
 	sharded-slab@0.1.7
 	shared_library@0.1.9
 	shell-words@1.1.0
-	shellexpand@2.1.2
 	shellexpand@3.1.1
 	shingles@0.1.1
 	shlex@1.3.0
@@ -1544,13 +1541,13 @@ declare -A GIT_CRATES=(
 	[wprcontrol]='https://github.com/zed-industries/wprcontrol;cd811f7d744f65291e13131b1d907fda63ed91a1;wprcontrol-%commit%'
 	[xim-ctext]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%/xim-ctext'
 	[xim-parser]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%/xim-parser'
-	[zed-font-kit]='https://github.com/zed-industries/font-kit;110523127440aefb11ce0cf280ae7c5071337ec5;font-kit-%commit%'
+	[zed-font-kit]='https://github.com/zed-industries/font-kit;94b0f28166665e8fd2f53ff6d268a14955c82269;font-kit-%commit%'
 	[zed-reqwest]='https://github.com/zed-industries/reqwest;c15662463bda39148ba154100dd44d3fba5873a4;reqwest-%commit%'
 	[zed-scap]='https://github.com/zed-industries/scap;4afea48c3b002197176fb19cd0f9b180dd36eaac;scap-%commit%'
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="cca6552bc4228b0ab33a57ede4a5f4a46571035b"
+EGIT_COMMIT="b310904bd95cecc9b2804261701d0bb7110529d9"
 LLVM_COMPAT=( 21 )
 RUST_MIN_VER="1.94.1"
 RUST_NEEDS_LLVM=1

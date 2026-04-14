@@ -1,0 +1,387 @@
+# Copyright 2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+
+EAPI=8
+
+CRATES="
+	adler2@2.0.1
+	aes@0.8.4
+	aho-corasick@1.1.4
+	android_system_properties@0.1.5
+	anyhow@1.0.102
+	arrayvec@0.7.6
+	ashpd@0.13.9
+	astral-tokio-tar@0.6.0
+	async-broadcast@0.7.2
+	async-recursion@1.1.1
+	async-trait@0.1.89
+	autocfg@1.5.0
+	base64@0.22.1
+	bitflags@2.11.0
+	block-buffer@0.10.4
+	block-padding@0.3.3
+	block@0.1.6
+	bumpalo@3.20.2
+	byteorder@1.5.0
+	bytes@1.11.1
+	cairo-rs@0.22.0
+	cairo-sys-rs@0.22.0
+	cbc@0.1.2
+	cc@1.2.57
+	cfg-expr@0.20.7
+	cfg-if@1.0.4
+	chrono@0.4.44
+	cipher@0.4.4
+	concurrent-queue@2.5.0
+	containers-api@0.9.0
+	core-foundation-sys@0.8.7
+	cpufeatures@0.2.17
+	crc32fast@1.5.0
+	crossbeam-utils@0.8.21
+	crypto-common@0.1.7
+	deranged@0.5.8
+	digest@0.10.7
+	displaydoc@0.2.5
+	endi@1.1.1
+	enumflags2@0.7.12
+	enumflags2_derive@0.7.12
+	equivalent@1.0.2
+	errno@0.3.14
+	event-listener-strategy@0.5.4
+	event-listener@5.4.1
+	fastrand@2.3.0
+	field-offset@0.3.6
+	filetime@0.2.27
+	find-msvc-tools@0.1.9
+	flate2@1.1.9
+	fnv@1.0.7
+	foldhash@0.1.5
+	form_urlencoded@1.2.2
+	futures-channel@0.3.32
+	futures-core@0.3.32
+	futures-executor@0.3.32
+	futures-io@0.3.32
+	futures-lite@2.6.1
+	futures-macro@0.3.32
+	futures-sink@0.3.32
+	futures-task@0.3.32
+	futures-util@0.3.32
+	futures@0.3.32
+	futures_codec@0.5.0
+	gdk-pixbuf-sys@0.22.0
+	gdk-pixbuf@0.22.0
+	gdk4-sys@0.11.1
+	gdk4-wayland-sys@0.11.0
+	gdk4-wayland@0.11.0
+	gdk4-x11-sys@0.11.0
+	gdk4-x11@0.11.0
+	gdk4@0.11.1
+	generic-array@0.14.7
+	getrandom@0.2.17
+	getrandom@0.3.4
+	getrandom@0.4.2
+	gettext-rs@0.7.0
+	gettext-sys@0.21.4
+	gio-sys@0.22.0
+	gio@0.22.2
+	glib-macros@0.22.2
+	glib-sys@0.22.3
+	glib@0.22.3
+	gobject-sys@0.22.0
+	graphene-rs@0.22.0
+	graphene-sys@0.22.0
+	gsk4-sys@0.11.1
+	gsk4@0.11.1
+	gtk4-macros@0.11.0
+	gtk4-sys@0.11.1
+	gtk4@0.11.1
+	hashbrown@0.15.5
+	hashbrown@0.16.1
+	heck@0.5.0
+	hex@0.4.3
+	hkdf@0.12.4
+	hmac@0.12.1
+	hostname@0.4.2
+	http-body@0.4.6
+	http@0.2.12
+	httparse@1.10.1
+	httpdate@1.0.3
+	hyper@0.14.32
+	hyperlocal@0.8.0
+	iana-time-zone-haiku@0.1.2
+	iana-time-zone@0.1.65
+	icu_collections@2.1.1
+	icu_locale_core@2.1.1
+	icu_normalizer@2.1.1
+	icu_normalizer_data@2.1.1
+	icu_properties@2.1.2
+	icu_properties_data@2.1.2
+	icu_provider@2.1.1
+	id-arena@2.3.0
+	idna@1.1.0
+	idna_adapter@1.2.1
+	indexmap@2.13.0
+	inout@0.1.4
+	io-lifetimes@2.0.4
+	itoa@1.0.18
+	js-sys@0.3.91
+	lazy_static@1.5.0
+	leb128fmt@0.1.0
+	libadwaita-sys@0.9.1
+	libadwaita@0.9.1
+	libc@0.2.183
+	libm@0.2.16
+	libredox@0.1.14
+	linux-raw-sys@0.12.1
+	litemap@0.8.1
+	locale_config@0.3.0
+	log@0.4.29
+	malloc_buf@0.0.6
+	md-5@0.10.6
+	memchr@2.8.0
+	memoffset@0.9.1
+	mime@0.3.17
+	miniz_oxide@0.8.9
+	mio@1.1.1
+	multi_log@0.1.2
+	names@0.14.0
+	num-bigint-dig@0.9.1
+	num-bigint@0.4.6
+	num-complex@0.4.6
+	num-conv@0.2.0
+	num-integer@0.1.46
+	num-iter@0.1.45
+	num-rational@0.4.2
+	num-traits@0.2.19
+	num@0.4.3
+	num_threads@0.1.7
+	objc-foundation@0.1.1
+	objc@0.2.7
+	objc_id@0.1.1
+	once_cell@1.21.4
+	oo7@0.6.0
+	ordered-stream@0.2.0
+	pango-sys@0.22.0
+	pango@0.22.0
+	paris@1.5.15
+	parking@2.2.1
+	paste@1.0.15
+	pbkdf2@0.12.2
+	percent-encoding@2.3.2
+	pin-project-internal@1.1.11
+	pin-project-lite@0.2.17
+	pin-project@1.1.11
+	pkg-config@0.3.32
+	plain@0.2.3
+	podman-api-stubs@0.9.0
+	podman-api@0.11.0
+	portable-atomic@1.13.1
+	potential_utf@0.1.4
+	powerfmt@0.2.0
+	ppv-lite86@0.2.21
+	prettyplease@0.2.37
+	proc-macro-crate@3.5.0
+	proc-macro2@1.0.106
+	quote@1.0.45
+	r-efi@5.3.0
+	r-efi@6.0.0
+	rand@0.8.5
+	rand@0.9.2
+	rand_chacha@0.3.1
+	rand_chacha@0.9.0
+	rand_core@0.6.4
+	rand_core@0.9.5
+	redox_syscall@0.7.3
+	regex-automata@0.4.14
+	regex-syntax@0.8.10
+	regex@1.12.3
+	rustc-hash@2.1.1
+	rustc_version@0.4.1
+	rustix@1.1.4
+	rustversion@1.0.22
+	semver@1.0.27
+	serde@1.0.228
+	serde_bytes@0.11.19
+	serde_core@1.0.228
+	serde_derive@1.0.228
+	serde_json@1.0.149
+	serde_repr@0.1.20
+	serde_spanned@1.0.4
+	sha2@0.10.9
+	shlex@1.3.0
+	signal-hook-registry@1.4.8
+	simd-adler32@0.3.8
+	simplelog@0.12.2
+	slab@0.4.12
+	smallvec@1.15.1
+	socket2@0.5.10
+	socket2@0.6.3
+	sourceview5-sys@0.11.0
+	sourceview5@0.11.0
+	stable_deref_trait@1.2.1
+	subtle@2.6.1
+	syn@2.0.117
+	synstructure@0.13.2
+	syslog@7.0.0
+	system-deps@7.0.7
+	tar@0.4.45
+	target-lexicon@0.13.3
+	temp-dir@0.1.16
+	tempfile@3.27.0
+	termcolor@1.4.1
+	thiserror-impl@1.0.69
+	thiserror-impl@2.0.18
+	thiserror@1.0.69
+	thiserror@2.0.18
+	time-core@0.1.8
+	time-macros@0.2.27
+	time@0.3.47
+	tinystr@0.8.2
+	tokio-stream@0.1.18
+	tokio@1.50.0
+	toml@0.9.12+spec-1.1.0
+	toml_datetime@0.7.5+spec-1.1.0
+	toml_datetime@1.0.1+spec-1.1.0
+	toml_edit@0.25.5+spec-1.1.0
+	toml_parser@1.0.10+spec-1.1.0
+	toml_writer@1.0.7+spec-1.1.0
+	tower-service@0.3.3
+	tracing-attributes@0.1.31
+	tracing-core@0.1.36
+	tracing@0.1.44
+	try-lock@0.2.5
+	typenum@1.19.0
+	uds_windows@1.2.1
+	unicode-ident@1.0.24
+	unicode-xid@0.2.6
+	url@2.5.8
+	utf8_iter@1.0.4
+	uuid@1.22.0
+	version-compare@0.2.1
+	version_check@0.9.5
+	vte4-sys@0.10.0
+	vte4@0.10.0
+	vte@0.15.0
+	want@0.3.1
+	wasi@0.11.1+wasi-snapshot-preview1
+	wasip2@1.0.2+wasi-0.2.9
+	wasip3@0.4.0+wasi-0.3.0-rc-2026-01-06
+	wasm-bindgen-macro-support@0.2.114
+	wasm-bindgen-macro@0.2.114
+	wasm-bindgen-shared@0.2.114
+	wasm-bindgen@0.2.114
+	wasm-encoder@0.244.0
+	wasm-metadata@0.244.0
+	wasmparser@0.244.0
+	winapi-i686-pc-windows-gnu@0.4.0
+	winapi-util@0.1.11
+	winapi-x86_64-pc-windows-gnu@0.4.0
+	winapi@0.3.9
+	windows-core@0.62.2
+	windows-implement@0.60.2
+	windows-interface@0.59.3
+	windows-link@0.2.1
+	windows-result@0.4.1
+	windows-strings@0.5.1
+	windows-sys@0.52.0
+	windows-sys@0.61.2
+	windows-targets@0.52.6
+	windows_aarch64_gnullvm@0.52.6
+	windows_aarch64_msvc@0.52.6
+	windows_i686_gnu@0.52.6
+	windows_i686_gnullvm@0.52.6
+	windows_i686_msvc@0.52.6
+	windows_x86_64_gnu@0.52.6
+	windows_x86_64_gnullvm@0.52.6
+	windows_x86_64_msvc@0.52.6
+	winnow@0.7.15
+	winnow@1.0.0
+	wit-bindgen-core@0.51.0
+	wit-bindgen-rust-macro@0.51.0
+	wit-bindgen-rust@0.51.0
+	wit-bindgen@0.51.0
+	wit-component@0.244.0
+	wit-parser@0.244.0
+	writeable@0.6.2
+	x11-dl@2.21.0
+	xattr@1.6.1
+	yoke-derive@0.8.1
+	yoke@0.8.1
+	zbus@5.14.0
+	zbus_macros@5.14.0
+	zbus_names@4.3.1
+	zerocopy-derive@0.8.47
+	zerocopy@0.8.47
+	zerofrom-derive@0.1.6
+	zerofrom@0.1.6
+	zeroize@1.8.2
+	zeroize_derive@1.4.3
+	zerotrie@0.2.3
+	zerovec-derive@0.11.2
+	zerovec@0.11.5
+	zmij@1.0.21
+	zvariant@5.10.0
+	zvariant_derive@5.10.0
+	zvariant_utils@3.3.0
+"
+
+inherit cargo gnome2-utils meson xdg
+
+COMMIT="59c609d11e4b366ac4846a24c45d9d0217331d9f"
+DESCRIPTION="Keep track of your podman containers"
+HOMEPAGE="https://github.com/marhkb/pods"
+SRC_URI="
+	https://github.com/marhkb/pods/archive/${COMMIT}.tar.gz -> ${P}.gh.tar.gz
+	${CARGO_CRATE_URIS}
+"
+S="${WORKDIR}/${PN}-${COMMIT}"
+
+LICENSE="GPL-3"
+# Dependent crate licenses
+LICENSE+="
+	Apache-2.0 Apache-2.0-with-LLVM-exceptions BSD MIT MPL-2.0
+	Unicode-DFS-2016
+"
+SLOT="0"
+KEYWORDS="~amd64"
+
+RDEPEND="
+	dev-libs/glib
+	gui-libs/gtksourceview
+	gui-libs/libadwaita
+	gui-libs/vte
+	media-libs/graphene
+	x11-libs/pango
+"
+DEPEND="
+	dev-libs/glib
+	gui-libs/gtk[wayland]
+	gui-libs/libadwaita
+"
+BDEPEND="
+	app-alternatives/ninja
+	dev-libs/appstream-glib
+	virtual/pkgconfig
+"
+
+# Rust
+QA_FLAGS_IGNORED="usr/bin/${PN}"
+
+PATCHES=(
+	"${FILESDIR}"/disable-clippy-test-2.4.0.patch
+)
+
+src_configure() {
+	meson_src_configure
+	ln -s "${CARGO_HOME}" "${BUILD_DIR}/cargo-home" || die
+}
+
+pkg_postinst() {
+	xdg_pkg_postinst
+	gnome2_schemas_update
+}
+
+pkg_postrm() {
+	xdg_pkg_postrm
+	gnome2_schemas_update
+}
