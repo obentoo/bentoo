@@ -3,7 +3,7 @@
 
 EAPI=8
 
-inherit unpacker systemd
+inherit systemd
 
 DESCRIPTION="Banking security software by Topaz OFD for South American financial services"
 HOMEPAGE="https://www.topaz.com.br/ofd/index.php"
@@ -17,6 +17,8 @@ RESTRICT="bindist mirror strip"
 
 QA_PREBUILT="*"
 
+BDEPEND="app-arch/libarchive"
+
 RDEPEND="
 	sys-apps/dbus
 	sys-process/procps
@@ -27,14 +29,17 @@ RDEPEND="
 S="${WORKDIR}"
 
 src_unpack() {
-	bash "${DISTDIR}/${P}.run" --noexec --target "${T}/run_extract" || die "Failed to extract makeself archive"
+	local offset
+	offset=$(grep -boa '!<arch>' "${DISTDIR}/${A}" | head -1 | cut -d: -f1)
+	[[ -n ${offset} ]] || die "No .deb archive found inside .run binary"
 
-	local deb
-	deb=$(find "${T}/run_extract" -name '*.deb' -print -quit)
-	[[ -n ${deb} ]] || die "No .deb found inside makeself archive"
+	tail -c +$((offset + 1)) "${DISTDIR}/${A}" > "${T}/${P}.deb" || die
 
-	cp "${deb}" "${WORKDIR}/warsaw.deb" || die
-	unpack_deb "${WORKDIR}/warsaw.deb"
+	cd "${WORKDIR}" || die
+	bsdtar -xf "${T}/${P}.deb" data.tar.xz 2>/dev/null
+	[[ -f data.tar.xz ]] || die "Failed to extract data.tar.xz from .deb"
+	tar xJf data.tar.xz || die
+	rm -f data.tar.xz || die
 }
 
 src_install() {
