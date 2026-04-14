@@ -3,9 +3,7 @@
 
 EAPI=8
 
-WX_GTK_VER="3.2-gtk3"
-
-inherit autotools wxwidgets xdg desktop
+inherit xdg desktop
 
 MY_PV="${PV/_/-}"
 MY_P="FileZilla_${MY_PV}"
@@ -18,6 +16,9 @@ LICENSE="GPL-3"
 SLOT="0"
 KEYWORDS="~amd64"
 
+QA_PREBUILT="*"
+RESTRICT="bindist mirror strip"
+
 RDEPEND="
 	>=dev-libs/nettle-3.1:=
 	>=dev-db/sqlite-3.7
@@ -25,7 +26,7 @@ RDEPEND="
 	>=dev-libs/libfilezilla-0.51.1:=
 	>=dev-libs/pugixml-1.7
 	>=net-libs/gnutls-3.5.7
-	x11-libs/wxGTK:${WX_GTK_VER}=[X]
+	x11-libs/gtk+:2
 	x11-misc/xdg-utils"
 DEPEND="${RDEPEND}"
 
@@ -41,12 +42,6 @@ src_install() {
 
 	fperms +x "/opt/${PN}/bin/filezilla"
 	dosym "/opt/${PN}/bin/filezilla" /usr/bin/filezilla
-
-	fperms +x "/opt/${PN}/bin/fzputtygen"
-	dosym "/opt/${PN}/bin/fzputtygen" /usr/bin/fzputtygen
-
-	fperms +x "/opt/${PN}/bin/fzsftp"
-	dosym "/opt/${PN}/bin/fzsftp" /usr/bin/fzsftp
 
 	fperms +x "/opt/${PN}/bin/fzstorj"
 	dosym "/opt/${PN}/bin/fzstorj" /usr/bin/fzstorj
