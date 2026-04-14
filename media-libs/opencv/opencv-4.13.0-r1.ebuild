@@ -1,4 +1,4 @@
-# Copyright 1999-2025 Gentoo Authors
+# Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
@@ -61,8 +61,6 @@ else
 				https://github.com/NVIDIA/NVIDIAOpticalFlowSDK/archive/${NVIDIA_OPTICAL_FLOW_COMMIT}.tar.gz
 					-> NVIDIAOpticalFlowSDK-${NVIDIA_OPTICAL_FLOW_COMMIT}.tar.gz
 			)
-			https://github.com/${PN}/${PN}_contrib/commit/667a66ee0e99f3f3263c1ef2de1b90d9244b7bd4.patch
-			-> ${PN}_contrib-4.10.0-3607.patch
 		)
 		test? (
 			https://github.com/${PN}/${PN}_extra/archive/refs/tags/${PV}.tar.gz -> ${PN}_extra-${PV}.tar.gz
@@ -369,11 +367,10 @@ PATCHES=(
 	"${FILESDIR}/${PN}-4.4.0-disable-native-cpuflag-detect.patch"
 	"${FILESDIR}/${PN}-4.12.0-link-with-cblas-for-lapack.patch"
 
-	#"${FILESDIR}/${PN}-4.13.0-use-system-flatbuffers.patch"
+	"${FILESDIR}/${PN}-4.13.0-use-system-flatbuffers.patch"
 	"${FILESDIR}/${PN}-4.8.1-use-system-opencl.patch"
 
 	"${FILESDIR}/${PN}-4.9.0-drop-python2-detection.patch"
-	#"${FILESDIR}/${PN}-4.9.0-cmake-cleanup.patch"
 
 	"${FILESDIR}/${PN}-4.10.0-dnn-explicitly-include-abseil-cpp.patch"
 	"${FILESDIR}/${PN}-4.10.0-tbb-detection.patch"
@@ -382,18 +379,10 @@ PATCHES=(
 	"${FILESDIR}/${PN}-4.11.0-cmake-CMP0177.patch"
 
 	"${FILESDIR}/${PN}-4.12.0-cmake-4.patch"
-	#"${FILESDIR}/${PN}-4.11.0-qt-6.9.patch" # https://github.com/opencv/opencv/issues/27223
-
-	#"${FILESDIR}/${PN}-4.12.0-cuda-13.0.patch"
-
-	#"${FILESDIR}/${PN}-4.11.0-ffmpeg8.patch" # PR 27691
 
 	# TODO applied in src_prepare
 	# "${FILESDIR}/${PN}_contrib-4.8.1-rgbd.patch"
-
 	# "${FILESDIR}/${PN}_contrib-4.8.1-NVIDIAOpticalFlowSDK-2.0.tar.gz.patch"
-
-	# "${FILESDIR}/${PN}_contrib-4.12.0-cuda-13.0.patch"
 )
 
 cuda_get_host_compiler() {
