@@ -7,7 +7,7 @@ PYTHON_COMPAT=( python3_{11..13} )
 
 inherit meson python-any-r1 systemd
 
-MY_COMMIT="105b3a53bf176c717f9469ea8949dbe8a5526d8a"
+MY_COMMIT="a0a587cfd3fca15c7e1e4d404eb53d530cb3860a"
 
 DESCRIPTION="Desktop integration portal"
 HOMEPAGE="https://flatpak.github.io/xdg-desktop-portal/ https://github.com/flatpak/xdg-desktop-portal"

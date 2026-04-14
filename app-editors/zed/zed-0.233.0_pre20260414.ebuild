@@ -1547,7 +1547,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="b310904bd95cecc9b2804261701d0bb7110529d9"
+EGIT_COMMIT="acf5da917270c5cedf083a56bcb4e0fb1a2e6886"
 LLVM_COMPAT=( 21 )
 RUST_MIN_VER="1.94.1"
 RUST_NEEDS_LLVM=1
@@ -1580,7 +1580,7 @@ LICENSE+="
 "
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
-IUSE="+X +pulseaudio tracy +wayland"
+IUSE="+X +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
 REQUIRED_USE="|| ( X wayland )"
 CHECKREQS_DISK_BUILD="18G"
 CHECKREQS_MEMORY="8G"
@@ -1599,6 +1599,12 @@ DEPEND="
 	media-libs/vulkan-loader[X?]
 	virtual/zlib:=
 	pulseaudio? ( media-libs/libpulse )
+	screen-capture? (
+		wayland? (
+			media-video/pipewire
+			sys-apps/dbus
+		)
+	)
 	wayland? (
 		dev-libs/wayland
 		x11-libs/libxkbcommon[wayland]
@@ -1609,7 +1615,10 @@ DEPEND="
 		x11-libs/libxkbcommon[X]
 	)
 "
-RDEPEND="${DEPEND}"
+RDEPEND="
+	${DEPEND}
+	neovim? ( app-editors/neovim )
+"
 BDEPEND="
 	app-arch/unzip
 	dev-build/cmake
@@ -1702,11 +1711,31 @@ src_prepare() {
 	# Toggle gpui display backend features based on USE flags
 	if ! use wayland; then
 		sed -e '/\"gpui\/wayland\"/d' \
+			-e '/^\s*\"wayland\",$/d' \
+			-e 's/, "wayland"//' \
+			-e 's/"wayland", //' \
 			-i "${S}/crates/zed/Cargo.toml" || die "Failed to disable wayland feature"
 	fi
 	if ! use X; then
 		sed -e '/\"gpui\/x11\"/d' \
+			-e '/^\s*\"x11\",$/d' \
+			-e 's/, "x11"//' \
+			-e 's/"x11", //' \
 			-i "${S}/crates/zed/Cargo.toml" || die "Failed to disable x11 feature"
+	fi
+
+	# Toggle screen-capture feature on gpui_platform
+	if ! use screen-capture; then
+		sed -e 's/"screen-capture", //' \
+			-e 's/, "screen-capture"//' \
+			-e 's/"screen-capture"//' \
+			-i "${S}/crates/zed/Cargo.toml" || die "Failed to disable screen-capture feature"
+	fi
+
+	# Enable neovim integration in vim crate
+	if use neovim; then
+		sed -e 's/vim\.workspace = true/vim = { workspace = true, features = ["neovim"] }/' \
+			-i "${S}/crates/zed/Cargo.toml" || die "Failed to enable neovim feature"
 	fi
 }
 
@@ -1719,6 +1748,7 @@ src_compile() {
 		export LK_CUSTOM_WEBRTC="${WORKDIR}/linux-x64-release"
 	fi
 	local features=()
+	use mimalloc && features+=( mimalloc )
 	use tracy && features+=( tracy )
 
 	cargo_src_compile --package zed --package cli \
@@ -1726,9 +1756,9 @@ src_compile() {
 }
 
 src_install() {
-	newbin $(cargo_target_dir)/cli ${APP_CLI}
+	newbin "$(cargo_target_dir)"/cli "${APP_CLI}"
 	exeinto "/usr/libexec"
-	newexe $(cargo_target_dir)/zed zed-editor
+	newexe "$(cargo_target_dir)"/zed zed-editor
 
 	newicon -s 512 crates/zed/resources/app-icon.png zed.png
 	newicon -s 1024 crates/zed/resources/app-icon@2x.png zed.png
