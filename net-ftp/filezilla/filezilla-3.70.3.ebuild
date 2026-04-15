@@ -3,61 +3,73 @@
 
 EAPI=8
 
-inherit xdg desktop
+WX_GTK_VER="3.2-gtk3"
+
+inherit autotools flag-o-matic wxwidgets xdg
 
 MY_PV="${PV/_/-}"
 MY_P="FileZilla_${MY_PV}"
 
 DESCRIPTION="FTP client with lots of useful features and an intuitive interface"
 HOMEPAGE="https://filezilla-project.org/"
-SRC_URI="https://distfiles.obentoo.org/${MY_P}_x86_64-linux-gnu.tar.xz"
+SRC_URI="https://distfiles.obentoo.org/${MY_P}_src.tar.xz"
 
-LICENSE="GPL-3"
+S="${WORKDIR}/${PN}-${MY_PV}"
+
+LICENSE="GPL-2"
 SLOT="0"
-KEYWORDS="~amd64"
-
-QA_PREBUILT="*"
-RESTRICT="bindist mirror strip"
+KEYWORDS="~amd64 ~arm ~arm64 ~ppc ~ppc64 ~riscv ~x86"
+IUSE="cpu_flags_x86_sse2 dbus nls test"
+RESTRICT="!test? ( test )"
 
 RDEPEND="
 	>=dev-libs/nettle-3.1:=
 	>=dev-db/sqlite-3.7
 	>=dev-libs/boost-1.76.0:=
-	>=dev-libs/libfilezilla-0.51.1:=
+	>=dev-libs/fzssh-1.1.9:=
+	>=dev-libs/libfilezilla-0.55.3:=
 	>=dev-libs/pugixml-1.7
 	>=net-libs/gnutls-3.5.7
-	x11-libs/gtk+:2
-	x11-misc/xdg-utils"
-DEPEND="${RDEPEND}"
+	x11-libs/wxGTK:${WX_GTK_VER}=[X]
+	x11-misc/xdg-utils
+	dbus? ( sys-apps/dbus )"
+DEPEND="${RDEPEND}
+	test? ( >=dev-util/cppunit-1.13.0 )"
+BDEPEND="
+	virtual/pkgconfig
+	>=dev-build/libtool-1.4
+	nls? ( >=sys-devel/gettext-0.11 )"
 
-S="${WORKDIR}/FileZilla3"
+PATCHES=(
+	"${FILESDIR}"/${PN}-3.22.1-debug.patch
+	"${FILESDIR}"/${PN}-3.47.0-metainfo.patch
+	"${FILESDIR}"/${PN}-3.47.0-disable-shellext_conf.patch
+	"${FILESDIR}"/${PN}-3.52.2-slibtool.patch
+	"${FILESDIR}"/${PN}-3.60.1-desktop.patch
+)
 
 src_prepare() {
 	default
+	eautoreconf
+}
+
+src_configure() {
+	if use x86 && ! use cpu_flags_x86_sse2; then
+		append-cppflags -D_FORCE_SOFTWARE_SHA
+	fi
+	setup-wxwidgets
+
+	local myeconfargs=(
+		--disable-autoupdatecheck
+		--with-pugixml=system
+		$(use_enable nls locales)
+		$(use_with dbus)
+	)
+	econf "${myeconfargs[@]}"
 }
 
 src_install() {
-	insinto /opt/${PN}
-	doins -r * || die
+	default
 
-	fperms +x "/opt/${PN}/bin/filezilla"
-	dosym "/opt/${PN}/bin/filezilla" /usr/bin/filezilla
-
-	fperms +x "/opt/${PN}/bin/fzstorj"
-	dosym "/opt/${PN}/bin/fzstorj" /usr/bin/fzstorj
-
-	newicon share/pixmaps/filezilla.png filezilla.png
-	domenu share/applications/filezilla.desktop
-}
-
-pkg_postinst() {
-	xdg_desktop_database_update
-	xdg_mimeinfo_database_update
-	xdg_icon_cache_update
-}
-
-pkg_postrm() {
-	xdg_desktop_database_update
-	xdg_mimeinfo_database_update
-	xdg_icon_cache_update
+	find "${ED}" -name '*.la' -delete || die
 }

@@ -850,7 +850,7 @@ CRATES="
 	rand@0.3.23
 	rand@0.4.6
 	rand@0.8.5
-	rand@0.9.2
+	rand@0.9.3
 	rand_chacha@0.3.1
 	rand_chacha@0.9.0
 	rand_core@0.3.1
@@ -1547,7 +1547,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="acf5da917270c5cedf083a56bcb4e0fb1a2e6886"
+EGIT_COMMIT="a7503162752870cf76959b7c5dde7b07691c5971"
 LLVM_COMPAT=( 21 )
 RUST_MIN_VER="1.94.1"
 RUST_NEEDS_LLVM=1
