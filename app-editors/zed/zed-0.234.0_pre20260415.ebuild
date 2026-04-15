@@ -1547,7 +1547,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="c2736df3c719ac54a954634b685f923125b165fb"
+EGIT_COMMIT="d60b55675b7a8a06d8a0ac35cd9e59cf2acb1d77"
 LLVM_COMPAT=( 21 )
 RUST_MIN_VER="1.94.1"
 RUST_NEEDS_LLVM=1
@@ -1580,7 +1580,7 @@ LICENSE+="
 "
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
-IUSE="+X collab extensions-cli +mimalloc neovim +pulseaudio +remote screen-capture tracy +wayland"
+IUSE="+X collab extensions-cli +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
 REQUIRED_USE="|| ( X wayland )"
 CHECKREQS_DISK_BUILD="18G"
 CHECKREQS_MEMORY="8G"
@@ -1637,7 +1637,6 @@ BDEPEND="
 QA_FLAGS_IGNORED="
 	usr/bin/zedit
 	usr/libexec/zed-editor
-	usr/libexec/zed-remote-server
 	usr/bin/collab
 	usr/bin/zed-extension
 "
@@ -1674,6 +1673,10 @@ src_prepare() {
 	export APP_ARGS="%U"
 	export DO_STARTUP_NOTIFY="true"
 	envsubst < "crates/zed/resources/zed.desktop.in" > ${APP_ID}.desktop || die
+
+	# Set release channel to nightly so the remote_server auto-download
+	# works (dev channel hard-fails, nightly fetches "latest" from zed.dev).
+	echo "nightly" > crates/zed/RELEASE_CHANNEL || die
 
 	# Cargo offline fetch workaround
 	local ASYNC_TASK_COMMIT="b4486cd71e4e94fbda54ce6302444de14f4d190e"
@@ -1766,45 +1769,12 @@ src_compile() {
 
 	cargo_src_compile "${packages[@]}" \
 		${features:+--features "${features[*]}"}
-
-	# Build remote_server separately with musl for a fully static binary,
-	# preventing feature unification from pulling in X11/Wayland via gpui.
-	# Requires dev-lang/rust-bin (ships musl target + bundled musl libc).
-	# cargo_env() unsets RUSTFLAGS in a subshell, so we must use
-	# target-specific CARGO_TARGET_<TRIPLE>_RUSTFLAGS and _LINKER vars.
-	if use remote; then
-		local musl_triple musl_env_prefix
-		if use amd64; then
-			musl_triple="x86_64-unknown-linux-musl"
-			musl_env_prefix="CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL"
-		elif use arm64; then
-			musl_triple="aarch64-unknown-linux-musl"
-			musl_env_prefix="CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL"
-		fi
-
-		export "${musl_env_prefix}_LINKER=clang"
-		export "${musl_env_prefix}_RUSTFLAGS=-C target-feature=+crt-static"
-
-		cargo_src_compile --package remote_server --target "${musl_triple}"
-
-		unset "${musl_env_prefix}_LINKER" "${musl_env_prefix}_RUSTFLAGS"
-	fi
 }
 
 src_install() {
 	newbin "$(cargo_target_dir)"/cli "${APP_CLI}"
 	exeinto "/usr/libexec"
 	newexe "$(cargo_target_dir)"/zed zed-editor
-
-	if use remote; then
-		local musl_triple
-		if use amd64; then
-			musl_triple="x86_64-unknown-linux-musl"
-		elif use arm64; then
-			musl_triple="aarch64-unknown-linux-musl"
-		fi
-		newexe "$(cargo_target_dir)/${musl_triple}/release/remote_server" zed-remote-server
-	fi
 
 	if use collab; then
 		dobin "$(cargo_target_dir)"/collab
