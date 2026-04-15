@@ -17,7 +17,10 @@ RESTRICT="bindist mirror strip"
 
 QA_PREBUILT="*"
 
-BDEPEND="app-arch/libarchive"
+BDEPEND="
+	app-arch/libarchive
+	dev-util/patchelf
+"
 
 RDEPEND="
 	sys-apps/dbus
@@ -52,6 +55,7 @@ src_install() {
 
 	dobin usr/bin/warsaw
 
+	sed -i 's|/var/run/core.pid|/run/core.pid|' lib/systemd/system/warsaw.service || die
 	systemd_dounit lib/systemd/system/warsaw.service
 
 	doinitd etc/init.d/warsaw
@@ -67,15 +71,12 @@ src_install() {
 	dodoc usr/share/doc/warsaw/copyright
 }
 
-pkg_postinst() {
-	if type -P execstack &>/dev/null; then
-		execstack -s "${EROOT}/usr/local/bin/warsaw/core" || ewarn "execstack failed"
-	else
-		ewarn "execstack not found. Warsaw may not work correctly in browsers."
-		ewarn "If you experience issues, install execstack and run:"
-		ewarn "  execstack -s /usr/local/bin/warsaw/core"
-	fi
+src_prepare() {
+	default
+	patchelf --set-execstack usr/local/bin/warsaw/core || die "patchelf --set-execstack failed"
+}
 
+pkg_postinst() {
 	chattr +i "${EROOT}/usr/local/bin/warsaw/core" 2>/dev/null
 	chattr +a "${EROOT}/usr/local/bin/warsaw/" 2>/dev/null
 
