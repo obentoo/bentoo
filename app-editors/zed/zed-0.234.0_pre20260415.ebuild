@@ -1547,7 +1547,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="a7503162752870cf76959b7c5dde7b07691c5971"
+EGIT_COMMIT="c2736df3c719ac54a954634b685f923125b165fb"
 LLVM_COMPAT=( 21 )
 RUST_MIN_VER="1.94.1"
 RUST_NEEDS_LLVM=1
@@ -1624,6 +1624,7 @@ BDEPEND="
 	dev-build/cmake
 	dev-util/vulkan-headers
 	sys-devel/gettext
+	remote? ( sys-libs/musl )
 	wayland? (
 		dev-libs/wayland-protocols
 		dev-util/wayland-scanner
@@ -1761,12 +1762,29 @@ src_compile() {
 		--package zed
 		--package cli
 	)
-	use remote && packages+=( --package remote_server )
 	use collab && packages+=( --package collab )
 	use extensions-cli && packages+=( --package extension_cli )
 
 	cargo_src_compile "${packages[@]}" \
 		${features:+--features "${features[*]}"}
+
+	# Build remote_server separately with musl for a fully static binary,
+	# preventing feature unification from pulling in X11/Wayland via gpui.
+	if use remote; then
+		local musl_triple
+		if use amd64; then
+			musl_triple="x86_64-unknown-linux-musl"
+		elif use arm64; then
+			musl_triple="aarch64-unknown-linux-musl"
+		fi
+
+		local saved_rustflags="${RUSTFLAGS}"
+		export RUSTFLAGS="${RUSTFLAGS} -C target-feature=+crt-static"
+
+		cargo_src_compile --package remote_server --target "${musl_triple}"
+
+		export RUSTFLAGS="${saved_rustflags}"
+	fi
 }
 
 src_install() {
@@ -1775,7 +1793,13 @@ src_install() {
 	newexe "$(cargo_target_dir)"/zed zed-editor
 
 	if use remote; then
-		newexe "$(cargo_target_dir)"/remote_server zed-remote-server
+		local musl_triple
+		if use amd64; then
+			musl_triple="x86_64-unknown-linux-musl"
+		elif use arm64; then
+			musl_triple="aarch64-unknown-linux-musl"
+		fi
+		newexe "$(cargo_target_dir)/${musl_triple}/release/remote_server" zed-remote-server
 	fi
 
 	if use collab; then
