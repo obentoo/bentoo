@@ -1624,7 +1624,6 @@ BDEPEND="
 	dev-build/cmake
 	dev-util/vulkan-headers
 	sys-devel/gettext
-	remote? ( sys-libs/musl )
 	wayland? (
 		dev-libs/wayland-protocols
 		dev-util/wayland-scanner
@@ -1770,20 +1769,25 @@ src_compile() {
 
 	# Build remote_server separately with musl for a fully static binary,
 	# preventing feature unification from pulling in X11/Wayland via gpui.
+	# Requires dev-lang/rust-bin (ships musl target + bundled musl libc).
+	# cargo_env() unsets RUSTFLAGS in a subshell, so we must use
+	# target-specific CARGO_TARGET_<TRIPLE>_RUSTFLAGS and _LINKER vars.
 	if use remote; then
-		local musl_triple
+		local musl_triple musl_env_prefix
 		if use amd64; then
 			musl_triple="x86_64-unknown-linux-musl"
+			musl_env_prefix="CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL"
 		elif use arm64; then
 			musl_triple="aarch64-unknown-linux-musl"
+			musl_env_prefix="CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL"
 		fi
 
-		local saved_rustflags="${RUSTFLAGS}"
-		export RUSTFLAGS="${RUSTFLAGS} -C target-feature=+crt-static"
+		export "${musl_env_prefix}_LINKER=clang"
+		export "${musl_env_prefix}_RUSTFLAGS=-C target-feature=+crt-static"
 
 		cargo_src_compile --package remote_server --target "${musl_triple}"
 
-		export RUSTFLAGS="${saved_rustflags}"
+		unset "${musl_env_prefix}_LINKER" "${musl_env_prefix}_RUSTFLAGS"
 	fi
 }
 
