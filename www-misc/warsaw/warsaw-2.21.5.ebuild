@@ -22,64 +22,63 @@ BDEPEND="app-arch/libarchive"
 RDEPEND="
 	sys-apps/dbus
 	sys-process/procps
+	dev-lang/python:3=
 	gnome-extra/zenity
-	dev-lang/python:3.12
+	sys-fs/e2fsprogs
 "
 
 S="${WORKDIR}"
 
 src_unpack() {
-	local offset
-	offset=$(grep -boa '!<arch>' "${DISTDIR}/${A}" | head -1 | cut -d: -f1)
-	[[ -n ${offset} ]] || die "No .deb archive found inside .run binary"
-
-	tail -c +$((offset + 1)) "${DISTDIR}/${A}" > "${T}/${P}.deb" || die
-
 	cd "${WORKDIR}" || die
-	bsdtar -xf "${T}/${P}.deb" data.tar.xz 2>/dev/null
-	[[ -f data.tar.xz ]] || die "Failed to extract data.tar.xz from .deb"
+	bsdtar -xpf "${DISTDIR}/${A}" || die
+	bsdtar -xf warsaw_setup/warsaw_*.deb data.tar.xz || die
 	tar xJf data.tar.xz || die
 	rm -f data.tar.xz || die
 }
 
 src_install() {
-	# Main executables in /usr/local/bin/warsaw/
-	insinto /usr/local/bin/warsaw
-	insopts -m0755
-	doins usr/local/bin/warsaw/*
+	exeinto /usr/local/bin/warsaw
+	doexe usr/local/bin/warsaw/core
+	doexe usr/local/bin/warsaw/sysdss
+	doexe usr/local/bin/warsaw/wsatspi
+	doexe usr/local/bin/warsaw/wsupdsl
 
-	# Libraries in /usr/local/lib/warsaw/
-	insinto /usr/local/lib/warsaw
-	insopts -m0755
-	doins usr/local/lib/warsaw/*.so
+	exeinto /usr/local/lib/warsaw
+	doexe usr/local/lib/warsaw/*.so
 
-	# Config files in /usr/local/etc/warsaw/
 	insinto /usr/local/etc/warsaw
-	insopts -m0644
 	doins usr/local/etc/warsaw/*
 
-	# CLI wrapper
 	dobin usr/bin/warsaw
 
-	# Systemd service
 	systemd_dounit lib/systemd/system/warsaw.service
 
-	# OpenRC init script
 	doinitd etc/init.d/warsaw
 
-	# Man page
 	doman usr/share/man/man1/warsaw.1.gz
 
-	# Font
 	insinto /usr/share/fonts/truetype
 	doins usr/local/share/fonts/truetype/dbldwrsw.ttf
 
-	# Locale
 	insinto /usr/share/locale/pt_BR/LC_MESSAGES
 	doins usr/share/locale/pt_BR/LC_MESSAGES/warsaw.mo
+
+	dodoc usr/share/doc/warsaw/copyright
 }
 
 pkg_postinst() {
+	if type -P execstack &>/dev/null; then
+		execstack -s "${EROOT}/usr/local/bin/warsaw/core" || ewarn "execstack failed"
+	else
+		ewarn "execstack not found. Warsaw may not work correctly in browsers."
+		ewarn "If you experience issues, install execstack and run:"
+		ewarn "  execstack -s /usr/local/bin/warsaw/core"
+	fi
+
+	chattr +i "${EROOT}/usr/local/bin/warsaw/core" 2>/dev/null
+	chattr +a "${EROOT}/usr/local/bin/warsaw/" 2>/dev/null
+
 	elog "Warsaw has been installed. To start the service:"
 	elog "  OpenRC: rc-service warsaw start"
 	elog "  systemd: systemctl start warsaw"
@@ -87,4 +86,14 @@ pkg_postinst() {
 	elog "To enable at boot:"
 	elog "  OpenRC: rc-update add warsaw default"
 	elog "  systemd: systemctl enable warsaw"
+	elog ""
+	elog "After starting, complete your bank setup at:"
+	elog "  Banco do Brasil: https://seg.bb.com.br"
+	elog "  Caixa Econômica Federal: https://imagem.caixa.gov.br/asc/diagnostico.htm"
+	elog "  Sicredi: https://www.sicredi.com.br/diagnostico/html/modulo/index.html"
+}
+
+pkg_prerm() {
+	chattr -i "${EROOT}/usr/local/bin/warsaw/core" 2>/dev/null
+	chattr -a "${EROOT}/usr/local/bin/warsaw/" 2>/dev/null
 }
