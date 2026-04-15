@@ -22,7 +22,7 @@ BDEPEND="app-arch/libarchive"
 RDEPEND="
 	sys-apps/dbus
 	sys-process/procps
-	dev-lang/python:3=
+	dev-lang/python:*
 	gnome-extra/zenity
 	sys-fs/e2fsprogs
 "
