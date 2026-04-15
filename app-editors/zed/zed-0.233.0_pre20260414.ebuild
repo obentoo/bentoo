@@ -1580,7 +1580,7 @@ LICENSE+="
 "
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
-IUSE="+X +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
+IUSE="+X collab extensions-cli +mimalloc neovim +pulseaudio +remote screen-capture tracy +wayland"
 REQUIRED_USE="|| ( X wayland )"
 CHECKREQS_DISK_BUILD="18G"
 CHECKREQS_MEMORY="8G"
@@ -1634,7 +1634,13 @@ BDEPEND="
 	')
 "
 
-QA_FLAGS_IGNORED="usr/bin/zedit"
+QA_FLAGS_IGNORED="
+	usr/bin/zedit
+	usr/libexec/zed-editor
+	usr/libexec/zed-remote-server
+	usr/bin/collab
+	usr/bin/zed-extension
+"
 
 pkg_setup() {
 	if tc-is-lto; then
@@ -1748,10 +1754,18 @@ src_compile() {
 		export LK_CUSTOM_WEBRTC="${WORKDIR}/linux-x64-release"
 	fi
 	local features=()
-	use mimalloc && features+=( mimalloc )
-	use tracy && features+=( tracy )
+	use mimalloc && features+=( zed/mimalloc )
+	use tracy && features+=( zed/tracy )
 
-	cargo_src_compile --package zed --package cli \
+	local packages=(
+		--package zed
+		--package cli
+	)
+	use remote && packages+=( --package remote_server )
+	use collab && packages+=( --package collab )
+	use extensions-cli && packages+=( --package extension_cli )
+
+	cargo_src_compile "${packages[@]}" \
 		${features:+--features "${features[*]}"}
 }
 
@@ -1759,6 +1773,18 @@ src_install() {
 	newbin "$(cargo_target_dir)"/cli "${APP_CLI}"
 	exeinto "/usr/libexec"
 	newexe "$(cargo_target_dir)"/zed zed-editor
+
+	if use remote; then
+		newexe "$(cargo_target_dir)"/remote_server zed-remote-server
+	fi
+
+	if use collab; then
+		dobin "$(cargo_target_dir)"/collab
+	fi
+
+	if use extensions-cli; then
+		newbin "$(cargo_target_dir)"/zed-extension zed-extension
+	fi
 
 	newicon -s 512 crates/zed/resources/app-icon.png zed.png
 	newicon -s 1024 crates/zed/resources/app-icon@2x.png zed.png
