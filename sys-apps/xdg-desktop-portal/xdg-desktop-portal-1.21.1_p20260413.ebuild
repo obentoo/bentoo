@@ -79,6 +79,8 @@ python_check_deps() {
 src_configure() {
 	# gst-plugin-scanner writes to /proc/self/task/*/comm for thread naming
 	addpredict /proc/self/task
+	# gst-plugin-scanner probes GPU render nodes when scanning VAAPI/NVDEC plugins
+	addpredict /dev/dri
 
 	local emesonargs=(
 		-Ddbus-service-dir="${EPREFIX}/usr/share/dbus-1/services"
