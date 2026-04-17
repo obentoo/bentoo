@@ -8,10 +8,14 @@ PYTHON_COMPAT=( python3_{11..13} )
 inherit meson python-any-r1 systemd
 
 MY_COMMIT="a0a587cfd3fca15c7e1e4d404eb53d530cb3860a"
+LIBGLNX_COMMIT="ccea836b799256420788c463a638ded0636b1632"
 
 DESCRIPTION="Desktop integration portal"
 HOMEPAGE="https://flatpak.github.io/xdg-desktop-portal/ https://github.com/flatpak/xdg-desktop-portal"
-SRC_URI="https://github.com/flatpak/${PN}/archive/${MY_COMMIT}.tar.gz -> ${P}.tar.gz"
+SRC_URI="
+	https://github.com/flatpak/${PN}/archive/${MY_COMMIT}.tar.gz -> ${P}.tar.gz
+	https://gitlab.gnome.org/GNOME/libglnx/-/archive/${LIBGLNX_COMMIT}/libglnx-${LIBGLNX_COMMIT}.tar.gz -> libglnx-${LIBGLNX_COMMIT}.tar.gz
+"
 
 S="${WORKDIR}/${PN}-${MY_COMMIT}"
 
@@ -59,6 +63,11 @@ BDEPEND="
 
 pkg_setup() {
 	use test && python-any-r1_pkg_setup
+}
+
+src_unpack() {
+	default
+	mv "${WORKDIR}/libglnx-${LIBGLNX_COMMIT}" "${S}/subprojects/libglnx" || die
 }
 
 python_check_deps() {
