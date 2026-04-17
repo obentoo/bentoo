@@ -16,6 +16,7 @@ CRATES="
 	aho-corasick@1.1.3
 	aliasable@0.1.3
 	aligned-vec@0.6.4
+	aligned@0.4.3
 	allocator-api2@0.2.21
 	alsa-sys@0.3.1
 	alsa@0.10.0
@@ -40,6 +41,7 @@ CRATES="
 	arrayref@0.3.9
 	arrayvec@0.7.6
 	as-raw-xcb-connection@1.0.1
+	as-slice@0.2.1
 	ascii@1.1.0
 	ash@0.38.0+1.3.281
 	ashpd@0.13.2
@@ -73,6 +75,7 @@ CRATES="
 	atomic@0.5.3
 	auditable-serde@0.8.0
 	autocfg@1.5.0
+	av-scenechange@0.14.1
 	av1-grain@0.2.4
 	avif-serialize@0.8.6
 	aws-config@1.8.10
@@ -119,7 +122,7 @@ CRATES="
 	bit_field@0.10.3
 	bitflags@1.3.2
 	bitflags@2.10.0
-	bitstream-io@2.6.0
+	bitstream-io@4.9.0
 	bitvec@1.0.1
 	block-buffer@0.10.4
 	block-padding@0.3.3
@@ -134,7 +137,7 @@ CRATES="
 	borsh@1.5.7
 	brush-parser@0.3.0
 	bstr@1.12.0
-	built@0.7.7
+	built@0.8.0
 	bumpalo@3.19.0
 	by_address@1.2.1
 	bytecheck@0.6.12
@@ -172,7 +175,6 @@ CRATES="
 	cc@1.2.49
 	cesu8@1.1.0
 	cexpr@0.6.0
-	cfg-expr@0.15.8
 	cfg-expr@0.20.6
 	cfg-if@1.0.4
 	cfg_aliases@0.1.1
@@ -229,6 +231,7 @@ CRATES="
 	core-services@0.2.1
 	core-text@21.0.0
 	core-video@0.5.2
+	core2@0.4.0
 	core_maths@0.1.1
 	coreaudio-rs@0.12.1
 	coreaudio-rs@0.13.0
@@ -360,7 +363,7 @@ CRATES="
 	event-listener@2.5.3
 	event-listener@5.4.1
 	exec@0.3.1
-	exr@1.73.0
+	exr@1.74.0
 	extended@0.1.0
 	failspot@0.2.0
 	fallible-iterator@0.3.0
@@ -446,6 +449,7 @@ CRATES="
 	getrandom@0.3.4
 	getrandom@0.4.1
 	gif@0.13.3
+	gif@0.14.2
 	gimli@0.32.3
 	gio-sys@0.21.5
 	git2@0.20.4
@@ -478,6 +482,7 @@ CRATES="
 	hashbrown@0.16.1
 	hashlink@0.10.0
 	hashlink@0.8.4
+	hdrhistogram@7.5.4
 	headers-core@0.2.0
 	headers@0.3.9
 	heapless@0.9.2
@@ -528,7 +533,7 @@ CRATES="
 	idna_adapter@1.2.1
 	ignore@0.4.24
 	image-webp@0.2.4
-	image@0.25.8
+	image@0.25.10
 	imagesize@0.13.0
 	imara-diff@0.1.8
 	imgref@1.12.0
@@ -557,7 +562,6 @@ CRATES="
 	is_terminal_polyfill@1.70.1
 	itertools@0.10.5
 	itertools@0.11.0
-	itertools@0.12.1
 	itertools@0.14.0
 	itoa@1.0.15
 	jiff-static@0.2.15
@@ -649,7 +653,7 @@ CRATES="
 	mio@1.1.0
 	miow@0.6.1
 	moka@0.12.11
-	moxcms@0.7.7
+	moxcms@0.8.1
 	msvc_spectre_libs@0.1.3
 	multimap@0.8.3
 	naga@29.0.0
@@ -738,6 +742,7 @@ CRATES="
 	partial-json-fixer@0.5.3
 	password-hash@0.4.2
 	paste@1.0.15
+	pastey@0.1.1
 	pathdiff@0.2.3
 	pathfinder_geometry@0.5.1
 	pathfinder_simd@0.5.5
@@ -864,8 +869,8 @@ CRATES="
 	range-alloc@0.1.4
 	range-map@0.2.0
 	rangemap@1.7.1
-	rav1e@0.7.1
-	ravif@0.11.20
+	rav1e@0.8.1
+	ravif@0.13.0
 	raw-cpuid@10.7.0
 	raw-cpuid@11.6.0
 	raw-window-handle@0.6.2
@@ -1084,7 +1089,6 @@ CRATES="
 	system-configuration-sys@0.6.0
 	system-configuration@0.5.1
 	system-configuration@0.6.1
-	system-deps@6.2.2
 	system-deps@7.0.7
 	system-interface@0.27.3
 	taffy@0.9.0
@@ -1092,7 +1096,6 @@ CRATES="
 	take-until@0.2.0
 	tao-core-video-sys@0.2.0
 	tap@1.0.1
-	target-lexicon@0.12.16
 	target-lexicon@0.13.3
 	tempfile@3.23.0
 	tendril@0.4.3
@@ -1103,7 +1106,7 @@ CRATES="
 	thiserror@1.0.69
 	thiserror@2.0.17
 	thread_local@1.1.9
-	tiff@0.10.3
+	tiff@0.11.3
 	time-core@0.1.8
 	time-macros@0.2.27
 	time@0.3.47
@@ -1428,6 +1431,7 @@ CRATES="
 	xml5ever@0.18.1
 	xmlparser@0.13.6
 	xmlwriter@0.1.0
+	y4m@0.8.0
 	yaml-rust2@0.8.1
 	yansi@1.0.1
 	yawc@0.2.5
@@ -1459,8 +1463,10 @@ CRATES="
 	zstd-sys@2.0.16+zstd.1.5.7
 	zstd@0.11.2+zstd.1.5.2
 	zune-core@0.4.12
+	zune-core@0.5.1
 	zune-inflate@0.2.54
 	zune-jpeg@0.4.21
+	zune-jpeg@0.5.15
 	zvariant@5.9.2
 	zvariant_derive@5.9.2
 	zvariant_utils@3.3.0
