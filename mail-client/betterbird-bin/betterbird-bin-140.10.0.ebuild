@@ -5,7 +5,7 @@ EAPI=8
 
 inherit desktop xdg
 
-MY_BUILD="esr-bb20"
+MY_BUILD="esr-bb21"
 MY_PN="${PN%-bin}"
 
 DESCRIPTION="Fine-tuned version of Mozilla Thunderbird with additional features"
