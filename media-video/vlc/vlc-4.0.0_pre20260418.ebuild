@@ -245,6 +245,7 @@ PATCHES=(
 	"${FILESDIR}"/${P}-no-vlc-cache-gen.patch # bugs 564842, 608256
 	"${FILESDIR}"/${P}-fix-libtremor-libs.patch # build system
 	"${FILESDIR}"/${P}-configure-lua-version.patch
+	"${FILESDIR}"/${P}-freetype-blending-mode-fribidi.patch # upstream regression: missing fribidi guard
 	"${FILESDIR}"/${PN}-4.0.0_pre20260215-force-x11.patch # crashes w/ wayland platform plugin
 )
 
