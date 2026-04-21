@@ -1488,7 +1488,7 @@ declare -A GIT_CRATES=(
 	[livekit-protocol]='https://github.com/zed-industries/livekit-rust-sdks;147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1;livekit-rust-sdks-%commit%/livekit-protocol'
 	[livekit-runtime]='https://github.com/zed-industries/livekit-rust-sdks;147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1;livekit-rust-sdks-%commit%/livekit-runtime'
 	[livekit]='https://github.com/zed-industries/livekit-rust-sdks;147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1;livekit-rust-sdks-%commit%/livekit'
-	[lsp-types]='https://github.com/zed-industries/lsp-types;9bceaf7d06bd9394dc6ed002e27d306348d5b83d;lsp-types-%commit%'
+	[lsp-types]='https://github.com/zed-industries/lsp-types;f4dfa89a21ca35cd929b70354b1583fabae325f8;lsp-types-%commit%'
 	[mermaid-rs-renderer]='https://github.com/zed-industries/mermaid-rs-renderer;374db9ead5426697c6c2111151d9f246899bc638;mermaid-rs-renderer-%commit%'
 	[naga]='https://github.com/zed-industries/wgpu;a466bc382ea747f8e1ac810efdb6dcd49a514575;wgpu-%commit%/naga'
 	[notify-types]='https://github.com/zed-industries/notify;ce58c24cad542c28e04ced02e20325a4ec28a31d;notify-%commit%/notify-types'
@@ -1553,7 +1553,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="ec9be5c332f79986b046a2985e003766591ec82f"
+EGIT_COMMIT="7db7ea9277e6a2bffa7c7cabc7bf7791012778a7"
 LLVM_COMPAT=( 21 )
 RUST_MIN_VER="1.94.1"
 RUST_NEEDS_LLVM=1
