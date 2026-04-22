@@ -35,8 +35,7 @@ HOMEPAGE="https://www.qemu.org https://www.linux-kvm.org"
 
 LICENSE="GPL-2 LGPL-2 BSD-2"
 SLOT="0"
-# RC release — no stable keywords
-KEYWORDS=""
+KEYWORDS="~amd64"
 
 [[ ${QEMU_DOCS_PREBUILT} == 1 ]] && QEMU_DOC_USEFLAG="doc"
 
