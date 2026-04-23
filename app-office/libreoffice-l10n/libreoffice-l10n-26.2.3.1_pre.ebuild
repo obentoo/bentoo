@@ -8,6 +8,7 @@ inherit rpm
 BASE_PV=$(ver_cut 1-3)
 MY_PV="${PV/_alpha/.alpha}"
 MY_PV="${MY_PV/_beta/.beta}"
+MY_PV="${MY_PV/_pre/}"
 [[ ${PV} == *alpha* || ${PV} == *beta* ]] && PN_DEV="Dev"
 
 DESCRIPTION="Translations for the Libreoffice suite"

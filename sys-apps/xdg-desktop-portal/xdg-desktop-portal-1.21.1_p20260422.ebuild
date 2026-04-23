@@ -7,7 +7,7 @@ PYTHON_COMPAT=( python3_{11..13} )
 
 inherit meson python-any-r1 systemd
 
-MY_COMMIT="a0a587cfd3fca15c7e1e4d404eb53d530cb3860a"
+MY_COMMIT="5be2d11b1c4f74823fe9cb4d19945660b818563c"
 LIBGLNX_COMMIT="ccea836b799256420788c463a638ded0636b1632"
 
 DESCRIPTION="Desktop integration portal"

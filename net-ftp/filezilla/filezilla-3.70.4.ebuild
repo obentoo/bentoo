@@ -16,7 +16,7 @@ SRC_URI="https://distfiles.obentoo.org/${MY_P}_src.tar.xz"
 
 S="${WORKDIR}/${PN}-${MY_PV}"
 
-LICENSE="GPL-2"
+LICENSE="GPL-3"
 SLOT="0"
 KEYWORDS="~amd64 ~arm ~arm64 ~ppc ~ppc64 ~riscv ~x86"
 IUSE="cpu_flags_x86_sse2 dbus nls test"
