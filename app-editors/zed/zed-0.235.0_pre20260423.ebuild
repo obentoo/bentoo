@@ -9,8 +9,9 @@ CRATES="
 	addr2line@0.25.1
 	adler2@2.0.1
 	aes@0.8.4
-	agent-client-protocol-schema@0.11.2
-	agent-client-protocol@0.10.2
+	agent-client-protocol-derive@0.11.0
+	agent-client-protocol-schema@0.12.0
+	agent-client-protocol@0.11.1
 	ahash@0.7.8
 	ahash@0.8.12
 	aho-corasick@1.1.3
@@ -31,7 +32,7 @@ CRATES="
 	anstyle-wincon@3.0.10
 	anstyle@1.0.13
 	any_vec@0.14.0
-	anyhow@1.0.100
+	anyhow@1.0.102
 	approx@0.5.1
 	ar_archive_writer@0.5.1
 	arbitrary@1.4.2
@@ -136,7 +137,7 @@ CRATES="
 	borsh-derive@1.5.7
 	borsh@1.5.7
 	brush-parser@0.3.0
-	bstr@1.12.0
+	bstr@1.12.1
 	built@0.8.0
 	bumpalo@3.19.0
 	by_address@1.2.1
@@ -284,10 +285,13 @@ CRATES="
 	cxxbridge-macro@1.0.187
 	darling@0.20.11
 	darling@0.21.3
+	darling@0.23.0
 	darling_core@0.20.11
 	darling_core@0.21.3
+	darling_core@0.23.0
 	darling_macro@0.20.11
 	darling_macro@0.21.3
+	darling_macro@0.23.0
 	dashmap@6.1.0
 	dasp_sample@0.11.0
 	data-encoding@2.9.0
@@ -538,6 +542,7 @@ CRATES="
 	imara-diff@0.1.8
 	imgref@1.12.0
 	indenter@0.3.4
+	indexmap@1.9.3
 	indexmap@2.11.4
 	indoc@2.0.6
 	inherent@1.0.13
@@ -572,10 +577,11 @@ CRATES="
 	js-sys@0.3.90
 	json5@0.4.1
 	json_dotpath@1.1.0
+	jsonrpcmsg@0.1.2
 	jsonschema@0.37.4
 	jsonwebtoken@10.3.0
 	jupyter-protocol@1.4.0
-	jupyter-websocket-client@1.0.0
+	jupyter-websocket-client@1.1.0
 	khronos-egl@6.0.0
 	khronos_api@3.1.0
 	kqueue-sys@1.0.4
@@ -743,6 +749,7 @@ CRATES="
 	password-hash@0.4.2
 	paste@1.0.15
 	pastey@0.1.1
+	pastey@0.2.1
 	pathdiff@0.2.3
 	pathfinder_geometry@0.5.1
 	pathfinder_simd@0.5.5
@@ -892,7 +899,7 @@ CRATES="
 	regex-automata@0.4.13
 	regex-lite@0.1.8
 	regex-syntax@0.8.8
-	regex@1.12.2
+	regex@1.12.3
 	rend@0.4.2
 	renderdoc-sys@1.1.0
 	reqwest@0.11.27
@@ -903,6 +910,8 @@ CRATES="
 	ring@0.17.14
 	rkyv@0.7.45
 	rkyv_derive@0.7.45
+	rmcp-macros@1.3.0
+	rmcp@1.3.0
 	rmp@0.8.14
 	rmpv@1.3.0
 	roxmltree@0.20.0
@@ -944,6 +953,7 @@ CRATES="
 	same-file@1.0.6
 	scc@3.5.6
 	schannel@0.1.28
+	schemars@0.9.0
 	schemars@1.0.4
 	schemars_derive@1.0.4
 	scoped-tls@1.0.1
@@ -982,6 +992,8 @@ CRATES="
 	serde_spanned@0.6.9
 	serde_spanned@1.0.3
 	serde_urlencoded@0.7.1
+	serde_with@3.18.0
+	serde_with_macros@3.18.0
 	serde_yaml@0.9.34+deprecated
 	serial2@0.2.33
 	sha-1@0.10.1
@@ -1523,7 +1535,6 @@ declare -A GIT_CRATES=(
 	[proptest-macro]='https://github.com/proptest-rs/proptest;3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b;proptest-%commit%/proptest-macro'
 	[proptest]='https://github.com/proptest-rs/proptest;3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b;proptest-%commit%/proptest'
 	[rodio]='https://github.com/RustAudio/rodio;e50e726ddd0292f6ef9de0dda6b90af4ed1fb66a;rodio-%commit%'
-	[tiktoken-rs]='https://github.com/zed-industries/tiktoken-rs;2570c4387a8505fb8f1d3f3557454b474f1e8271;tiktoken-rs-%commit%/tiktoken-rs'
 	[trash]='https://github.com/zed-industries/trash-rs;3bf27effd4eb8699f2e484d3326b852fe3e53af7;trash-rs-%commit%'
 	[tree-sitter-cpp]='https://github.com/tree-sitter/tree-sitter-cpp;5cb9b693cfd7bfacab1d9ff4acac1a4150700609;tree-sitter-cpp-%commit%'
 	[tree-sitter-gitcommit]='https://github.com/zed-industries/tree-sitter-git-commit;88309716a69dd13ab83443721ba6e0b491d37ee9;tree-sitter-git-commit-%commit%'
@@ -1553,7 +1564,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="7db7ea9277e6a2bffa7c7cabc7bf7791012778a7"
+EGIT_COMMIT="58c4dda8b9750b4d003f69ab0d73320b242248db"
 LLVM_COMPAT=( 21 )
 RUST_MIN_VER="1.94.1"
 RUST_NEEDS_LLVM=1
