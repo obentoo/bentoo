@@ -57,7 +57,6 @@ CRATES="
 	async-fs@2.2.0
 	async-global-executor@2.4.1
 	async-io@2.6.0
-	async-lock@2.8.0
 	async-lock@3.4.2
 	async-net@2.0.0
 	async-process@2.5.0
@@ -471,7 +470,7 @@ CRATES="
 	gpu-allocator@0.28.0
 	gpu-descriptor-types@0.2.0
 	gpu-descriptor@0.3.2
-	grid@0.18.0
+	grid@1.0.0
 	group@0.12.1
 	h2@0.3.27
 	h2@0.4.12
@@ -1026,7 +1025,7 @@ CRATES="
 	smallvec@1.15.1
 	smart-default@0.7.1
 	smol@2.0.2
-	smol_str@0.3.5
+	smol_str@0.3.6
 	snafu-derive@0.8.9
 	snafu@0.8.9
 	socket2@0.5.10
@@ -1103,7 +1102,7 @@ CRATES="
 	system-configuration@0.6.1
 	system-deps@7.0.7
 	system-interface@0.27.3
-	taffy@0.9.0
+	taffy@0.10.1
 	tagptr@0.2.0
 	take-until@0.2.0
 	tao-core-video-sys@0.2.0
@@ -1564,7 +1563,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="9adb4ea63e9fd10472da004cb03f2d1ea56bd06f"
+EGIT_COMMIT="e3d1876c06b0e244230b4b5883e65e83ca1370e2"
 LLVM_COMPAT=( 21 )
 RUST_MIN_VER="1.94.1"
 RUST_NEEDS_LLVM=1
