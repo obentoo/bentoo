@@ -241,6 +241,13 @@ src_prepare() {
 	sed -i -e 's/^setup_qt_test(QuantitySpinBox)/if(BUILD_GUI)\n    setup_qt_test(QuantitySpinBox)\nendif()/' \
 		tests/src/Gui/CMakeLists.txt || die
 
+	# Remove bundled PyCXX (older 6.2 API lacks PYCXX_UNICODE_TYPE,
+	# which the system pycxx-7.x cxxsupport.cxx references).
+	# -DPYCXX_INCLUDE_DIR / -DPYCXX_SOURCE_DIR already point at the system copy.
+	if [[ ${PV} != *9999* ]]; then
+		rm -r src/3rdParty/PyCXX || die "remove bundled pycxx"
+	fi
+
 	cmake_src_prepare
 }
 
@@ -259,7 +266,7 @@ src_configure() {
 	local mycmakeargs=(
 		-DFREECAD_USE_CCACHE="no"
 
-		-DPYCXX_INCLUDE_DIR="${ESYSROOT}/usr/include/${PYTHON_SINGLE_TARGET/_/.}"
+		-DPYCXX_INCLUDE_DIRS="${ESYSROOT}/usr/include/${PYTHON_SINGLE_TARGET/_/.}"
 		-DPYCXX_SOURCE_DIR="${ESYSROOT}/usr/share/${PYTHON_SINGLE_TARGET/_/.}/CXX"
 
 		-DBUILD_DESIGNER_PLUGIN=$(usex designer)
