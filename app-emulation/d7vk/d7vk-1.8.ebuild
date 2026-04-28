@@ -93,7 +93,7 @@ src_prepare() {
 		mv ../SPIRV-Headers-${HASH_SPIRV} include/spirv || die
 		mv ../Vulkan-Headers-${HASH_VULKAN} include/vulkan || die
 		mv ../dxbc-spirv-${HASH_DXBCSPIRV} subprojects/dxbc-spirv || die
-		mkdir -p subprojects/dxbc-spirv/submodules || die
+		rmdir subprojects/dxbc-spirv/submodules/spirv_headers || die
 		mv ../SPIRV-Headers-${HASH_SPIRV_DXBC} subprojects/dxbc-spirv/submodules/spirv_headers || die
 		mv ../libdisplay-info-${HASH_DISPLAYINFO} subprojects/libdisplay-info || die
 	fi
