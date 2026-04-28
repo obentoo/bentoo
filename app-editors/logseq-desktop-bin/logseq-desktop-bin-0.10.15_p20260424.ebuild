@@ -75,7 +75,7 @@ src_install() {
 	cd "${WORKDIR}/squashfs-root" || die
 
 	exeinto /opt/logseq-desktop
-	doexe Logseq chrome-sandbox libEGL.so libffmpeg.so libGLESv2.so \
+	doexe logseq chrome-sandbox libEGL.so libffmpeg.so libGLESv2.so \
 		libvk_swiftshader.so libvulkan.so.1
 
 	insinto /opt/logseq-desktop
@@ -90,7 +90,7 @@ src_install() {
 
 	[[ -x chrome_crashpad_handler ]] && doexe chrome_crashpad_handler
 
-	dosym ../logseq-desktop/Logseq /opt/bin/logseq
+	dosym ../logseq-desktop/logseq /opt/bin/logseq
 
 	local exec_extra_flags=()
 	if use wayland; then
@@ -99,7 +99,5 @@ src_install() {
 	make_desktop_entry "/opt/bin/logseq ${exec_extra_flags[*]} %U" Logseq logseq \
 		"Office;" "StartupWMClass=Logseq\nMimeType=x-scheme-handler/logseq;"
 
-	if [[ -f resources/app/icons/logseq.png ]]; then
-		doicon resources/app/icons/logseq.png
-	fi
+	newicon -s 512 usr/share/icons/hicolor/512x512/apps/logseq.png logseq.png || die
 }
