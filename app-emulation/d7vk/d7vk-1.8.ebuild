@@ -14,12 +14,14 @@ if [[ ${PV} == 9999 ]]; then
 	EGIT_SUBMODULES=(
 		include/{native/directx,spirv,vulkan}
 		subprojects/{libdisplay-info,dxbc-spirv}
+		subprojects/dxbc-spirv/submodules/spirv_headers
 	)
 else
 	HASH_DIRECTX=adeef0e68c3471e13a9028528bbe0d835345424a
 	HASH_SPIRV=04f10f650d514df88b76d25e83db360142c7b174
 	HASH_VULKAN=5d94bb4dcc968cccce1f601324fcaf3eda92a52b
 	HASH_DXBCSPIRV=29c93aeecd55533a357fdd7c95be5587d1c1f506
+	HASH_SPIRV_DXBC=c8ad050fcb29e42a2f57d9f59e97488f465c436d
 	HASH_DISPLAYINFO=275e6459c7ab1ddd4b125f28d0440716e4888078
 	SRC_URI="
 		https://github.com/WinterSnowfall/d7vk/archive/refs/tags/v${PV}.tar.gz
@@ -28,6 +30,8 @@ else
 			-> mingw-directx-headers-${HASH_DIRECTX}.tar.gz
 		https://github.com/KhronosGroup/SPIRV-Headers/archive/${HASH_SPIRV}.tar.gz
 			-> spirv-headers-${HASH_SPIRV}.tar.gz
+		https://github.com/KhronosGroup/SPIRV-Headers/archive/${HASH_SPIRV_DXBC}.tar.gz
+			-> spirv-headers-${HASH_SPIRV_DXBC}.tar.gz
 		https://github.com/KhronosGroup/Vulkan-Headers/archive/${HASH_VULKAN}.tar.gz
 			-> vulkan-headers-${HASH_VULKAN}.tar.gz
 		https://github.com/doitsujin/dxbc-spirv/archive/${HASH_DXBCSPIRV}.tar.gz
@@ -89,6 +93,8 @@ src_prepare() {
 		mv ../SPIRV-Headers-${HASH_SPIRV} include/spirv || die
 		mv ../Vulkan-Headers-${HASH_VULKAN} include/vulkan || die
 		mv ../dxbc-spirv-${HASH_DXBCSPIRV} subprojects/dxbc-spirv || die
+		mkdir -p subprojects/dxbc-spirv/submodules || die
+		mv ../SPIRV-Headers-${HASH_SPIRV_DXBC} subprojects/dxbc-spirv/submodules/spirv_headers || die
 		mv ../libdisplay-info-${HASH_DISPLAYINFO} subprojects/libdisplay-info || die
 	fi
 	cp -- "${DISTDIR}"/setup_dxvk.sh "${S}"/setup_d7vk.sh || die
