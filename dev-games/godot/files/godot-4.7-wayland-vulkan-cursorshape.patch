@@ -1,0 +1,40 @@
+From: Bentoo Overlay <noreply@bentoo>
+Subject: [PATCH] Fix Wayland+Vulkan build: undef X11 CursorShape macro after vulkan include
+
+When building with USE="vulkan wayland gui", display_server_wayland.cpp
+includes the Wayland Vulkan rendering context driver at line 54, which
+transitively pulls in <vulkan/vulkan.h> with VK_USE_PLATFORM_XLIB_KHR set.
+That drags <X11/X.h> in, which defines `CursorShape` as the macro `0`.
+
+After PR #116976 (Decouple DisplayServer), CursorShape lives in
+namespace DisplayServerEnums. References to `DisplayServerEnums::CursorShape`
+later in the same TU (cursor_set_shape, cursor_get_shape,
+cursor_set_custom_image at lines ~1624/1643/1649) get mangled into
+`DisplayServerEnums::0` by the X11 macro, producing:
+
+  error: variable or field 'cursor_set_shape' declared void
+  error: expected unqualified-id before numeric constant
+
+Undefining CursorShape inside display_server_enums.h is not enough because
+that header is included on line 31 (transitively, via display_server_wayland.h)
+BEFORE the vulkan include on line 54 redefines the macro.
+
+Fix: undef the macro in display_server_wayland.cpp itself, immediately
+after the RD/Vulkan include block, so it stays gone for the rest of
+the translation unit. Same trick is used by display_server_x11.h and
+display_server.h on the Xlib side.
+
+--- a/platform/linuxbsd/wayland/display_server_wayland.cpp
++++ b/platform/linuxbsd/wayland/display_server_wayland.cpp
+@@ -55,6 +55,11 @@
+ #endif
+
+ #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
++
++// Xlib's <X11/X.h> (pulled in by vulkan.h when VK_USE_PLATFORM_XLIB_KHR is set)
++// defines CursorShape as a numeric macro (0) and clobbers references to
++// DisplayServerEnums::CursorShape later in this TU. Undef after the Vulkan block.
++#undef CursorShape
+ #endif
+
+ #ifdef GLES3_ENABLED

@@ -95,6 +95,7 @@ BDEPEND="
 
 PATCHES=(
 	"${FILESDIR}"/${PN}-4.7-scons.patch
+	"${FILESDIR}"/${PN}-4.7-wayland-vulkan-cursorshape.patch
 )
 
 src_prepare() {
