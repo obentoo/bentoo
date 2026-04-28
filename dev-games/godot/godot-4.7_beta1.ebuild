@@ -234,7 +234,7 @@ src_install() {
 	dodoc AUTHORS.md CHANGELOG.md DONORS.md README.md
 
 	if use gui; then
-		newicon icon.svg godot.svg
+		newicon misc/logo/icon.svg godot.svg
 		domenu misc/dist/linux/org.godotengine.Godot.desktop
 
 		insinto /usr/share/metainfo
