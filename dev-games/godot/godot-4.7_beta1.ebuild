@@ -43,7 +43,7 @@ RDEPEND="
 	dev-libs/icu:=
 	dev-libs/libpcre2:=[pcre32]
 	media-libs/freetype[brotli,harfbuzz]
-	media-libs/harfbuzz:=[icu]
+	>=media-libs/harfbuzz-14.0.0:=[icu]
 	media-libs/libjpeg-turbo:=
 	media-libs/libogg
 	media-libs/libpng:=
@@ -94,6 +94,7 @@ BDEPEND="
 "
 
 PATCHES=(
+	"${FILESDIR}"/${PN}-4.7-harfbuzz-raster.patch
 	"${FILESDIR}"/${PN}-4.7-scons.patch
 	"${FILESDIR}"/${PN}-4.7-wayland-vulkan-cursorshape.patch
 )
@@ -111,7 +112,7 @@ src_prepare() {
 	local unbundle=(
 		brotli doctest embree freetype graphite harfbuzz icu4c libjpeg-turbo
 		libogg libpng libtheora libvorbis libwebp linuxbsd_headers mbedtls
-		miniupnpc pcre2 recastnavigation sdl volk wslay zlib zstd
+		miniupnpc pcre2 recastnavigation sdl wslay zlib zstd
 		# certs: unused by generated header, but scons panics if not found
 	)
 	rm -r "${unbundle[@]/#/thirdparty/}" || die
@@ -152,7 +153,11 @@ src_compile() {
 		speechd=$(usex speech)
 		udev=$(usex udev)
 		use_sowrap=no
-		use_volk=no # unnecessary when linking directly to libvulkan
+		# volk is required since 4.7 to resolve ray tracing symbols
+		# (VK_KHR_acceleration_structure, VK_KHR_ray_tracing_pipeline)
+		# that are not exported by libvulkan and must be loaded via
+		# vkGetDeviceProcAddr; volk is header-only and bundled.
+		use_volk=yes
 		vulkan=$(usex gui $(usex vulkan))
 		wayland=$(usex wayland)
 		# TODO: retry to add optional USE=X, wayland support is new
