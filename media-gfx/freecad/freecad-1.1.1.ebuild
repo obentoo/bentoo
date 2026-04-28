@@ -18,8 +18,13 @@ if [[ ${PV} == *9999* ]]; then
 	EGIT_SUBMODULES=( 'src/Mod/AddonManager' )
 	S="${WORKDIR}/freecad-${PV}"
 else
+	# AddonManager is a git submodule absent from the release tarball;
+	# pin it to the commit referenced by the ${PV} tag (verified via
+	# https://api.github.com/repos/FreeCAD/FreeCAD/contents/src/Mod/AddonManager?ref=${PV}).
+	ADDONMGR_COMMIT="937b6877239dc78ef59eeefe8099e5f14243eda1"
 	SRC_URI="
 		https://github.com/${MY_PN}/${MY_PN}/archive/refs/tags/${PV}.tar.gz -> ${P}.tar.gz
+		https://github.com/${MY_PN}/AddonManager/archive/${ADDONMGR_COMMIT}.tar.gz -> ${MY_PN}-AddonManager-${ADDONMGR_COMMIT}.tar.gz
 	"
 	KEYWORDS="~amd64"
 	S="${WORKDIR}/FreeCAD-${PV}"
@@ -246,6 +251,13 @@ src_prepare() {
 	# -DPYCXX_INCLUDE_DIR / -DPYCXX_SOURCE_DIR already point at the system copy.
 	if [[ ${PV} != *9999* ]]; then
 		rm -r src/3rdParty/PyCXX || die "remove bundled pycxx"
+
+		# The AddonManager is a git submodule absent from the release tarball;
+		# inject it from the separately-fetched archive.
+		rm -rf "${S}/src/Mod/AddonManager" || die "failed to clear AddonManager dir"
+		mv "${WORKDIR}/AddonManager-${ADDONMGR_COMMIT}" \
+			"${S}/src/Mod/AddonManager" \
+			|| die "failed to inject AddonManager submodule"
 	fi
 
 	cmake_src_prepare
