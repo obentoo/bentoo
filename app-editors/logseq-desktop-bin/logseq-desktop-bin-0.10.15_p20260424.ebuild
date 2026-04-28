@@ -80,7 +80,7 @@ src_install() {
 
 	insinto /opt/logseq-desktop
 	doins chrome_100_percent.pak chrome_200_percent.pak icudtl.dat \
-		resources.pak snapshot_blob.bin v8_context_snapshot.bin version \
+		resources.pak snapshot_blob.bin v8_context_snapshot.bin \
 		vk_swiftshader_icd.json
 	insopts -m0755
 	doins -r locales resources
