@@ -1,0 +1,130 @@
+# Copyright 1999-2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+
+EAPI=8
+
+inherit edo flag-o-matic multilib-minimal
+
+DESCRIPTION="Full Database Encryption for SQLite"
+HOMEPAGE="
+	https://www.zetetic.net/sqlcipher/
+	https://github.com/sqlcipher/sqlcipher
+"
+SRC_URI="https://github.com/sqlcipher/${PN}/archive/v${PV}.tar.gz -> ${P}.tar.gz"
+
+LICENSE="BSD"
+SLOT="0"
+KEYWORDS="amd64 ~arm64 x86"
+IUSE="debug libedit readline tcl test"
+# Testsuite requires compilation with TCL, bug #582584
+REQUIRED_USE="
+	?? ( libedit readline )
+	test? ( tcl )
+"
+# Extra flags are needed like -DSQLCIPHER_TEST which add undesirable
+# test-only code into the main binary. multibuild for tests?
+RESTRICT="!test? ( test ) test"
+
+RDEPEND="
+	dev-libs/openssl:=[${MULTILIB_USEDEP}]
+	virtual/zlib:=[${MULTILIB_USEDEP}]
+	libedit? ( dev-libs/libedit[${MULTILIB_USEDEP}] )
+	readline? ( sys-libs/readline:=[${MULTILIB_USEDEP}] )
+	tcl? ( dev-lang/tcl:=[${MULTILIB_USEDEP}] )
+"
+DEPEND="${RDEPEND}"
+BDEPEND="dev-lang/tcl"
+
+src_configure() {
+	# Column metadata added due to bug #670346
+	# Since sqlcipher 4.7.0, SQLITE_EXTRA_INIT/SHUTDOWN are required at compile time
+	append-cflags -DSQLITE_HAS_CODEC -DSQLITE_ENABLE_COLUMN_METADATA -DSQLITE_EXTRA_INIT=sqlcipher_extra_init -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown
+	# Link against OpenSSL libcrypto (default crypto provider)
+	append-ldflags -lcrypto
+
+	multilib-minimal_src_configure
+}
+
+multilib_src_configure() {
+	local myeconfargs=(
+		--enable-fts3
+		--enable-fts4
+		--enable-fts5
+		--enable-geopoly
+		--enable-memsys5
+		--enable-rtree
+		--enable-session
+		--with-tempstore=yes
+		$(use_enable debug)
+		$(use_enable libedit editline)
+		$(use_enable readline)
+		$(use_enable tcl)
+	)
+	ECONF_SOURCE="${S}" \
+		econf "${myeconfargs[@]}"
+}
+
+multilib_src_test() {
+	# https://github.com/sqlcipher/sqlcipher#testing
+	emake testfixture
+	edo ./testfixture "${S}"/test/sqlcipher.test
+}
+
+multilib_src_install() {
+	default
+
+	# sqlcipher's autotools installs everything with sqlite3 names,
+	# which conflicts with dev-db/sqlite. We need to:
+	# 1) Move headers to sqlcipher-specific include dir
+	# 2) Create proper sqlcipher .so symlink and pkg-config
+	# 3) Remove all remaining sqlite3-named files
+
+	# Move already-installed headers to /usr/include/sqlcipher/
+	dodir /usr/include/sqlcipher
+	mv "${ED}"/usr/include/sqlite3.h "${ED}"/usr/include/sqlcipher/ || die
+	mv "${ED}"/usr/include/sqlite3ext.h "${ED}"/usr/include/sqlcipher/ || die
+
+	# Rename the actual versioned library to libsqlcipher.so.0
+	# (autotools installs as libsqlite3.so.X.Y.Z with sqlite3 naming)
+	local sqlite3_lib
+	sqlite3_lib=$(find "${ED}/usr/$(get_libdir)" -maxdepth 1 -name 'libsqlite3.so.*' -type f | head -1)
+	[[ -z "${sqlite3_lib}" ]] && die "Could not find versioned libsqlite3.so library"
+	mv "${sqlite3_lib}" "${ED}/usr/$(get_libdir)/libsqlcipher.so.0" || die "Failed to rename library"
+
+	# Create the .so development symlink
+	dosym libsqlcipher.so.0 "/usr/$(get_libdir)/libsqlcipher.so"
+
+	# Create sqlcipher.pc for pkg-config
+	local sqlcipher_version
+	sqlcipher_version=$(sed -n 's/^Version: //p' "${BUILD_DIR}"/sqlite3.pc 2>/dev/null)
+	[[ -z "${sqlcipher_version}" ]] && sqlcipher_version="${PV}"
+
+	cat > "${T}"/sqlcipher.pc <<-EOF || die
+		prefix=/usr
+		exec_prefix=\${prefix}
+		libdir=\${exec_prefix}/$(get_libdir)
+		includedir=\${prefix}/include/sqlcipher
+
+		Name: SQLCipher
+		Description: Full Database Encryption for SQLite
+		Version: ${sqlcipher_version}
+		Libs: -L\${libdir} -lsqlcipher
+		Libs.private: -lcrypto -lm -lz
+		Cflags: -I\${includedir} -DSQLITE_HAS_CODEC
+	EOF
+	insinto "/usr/$(get_libdir)/pkgconfig"
+	doins "${T}"/sqlcipher.pc
+
+	# Remove remaining files that conflict with dev-db/sqlite
+	rm -f "${ED}"/usr/$(get_libdir)/libsqlite3.{a,so,so.0,so.*} || die
+	rm -f "${ED}"/usr/$(get_libdir)/pkgconfig/sqlite3.pc || die
+	rm -f "${ED}"/usr/bin/sqlite3 || die
+}
+
+multilib_src_install_all() {
+	einstalldocs
+	find "${ED}" -name '*.la' -type f -delete || die
+
+	# Remove man page that conflicts with dev-db/sqlite
+	rm -f "${ED}"/usr/share/man/man1/sqlite3.1* || die
+}
