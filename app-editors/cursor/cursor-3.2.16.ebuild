@@ -87,13 +87,6 @@ src_install() {
 		rm -r "${CURSOR_HOME}/resources/app/node_modules/kerberos" || die
 	fi
 
-	# Remove foreign-arch ripgrep binaries to avoid QA soname warnings
-	if use amd64; then
-		rm -r "${CURSOR_HOME}/resources/app/extensions/cursor-agent/dist/claude-agent-sdk/vendor/ripgrep/arm64-linux" || die
-	elif use arm64; then
-		rm -r "${CURSOR_HOME}/resources/app/extensions/cursor-agent/dist/claude-agent-sdk/vendor/ripgrep/x64-linux" || die
-	fi
-
 	dodir /opt/cursor
 	cp -ar "${CURSOR_HOME}/." "${D}/opt/cursor/" || die
 
