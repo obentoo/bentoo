@@ -1679,16 +1679,20 @@ src_prepare() {
 	default
 
 	export APP_CLI="zedit"
-	export APP_ICON="zed"
-	if [[ "${PV}" == *pre ]]; then
-		export APP_ID="dev.zed.Zed-Preview"
-	else
-		export APP_ID="dev.zed.Zed"
-	fi
-	export APP_NAME="Zed"
+	# Ebuild força RELEASE_CHANNEL="nightly" abaixo, então o app_id runtime
+	# (Wayland app_id / X11 WM_CLASS) é "dev.zed.Zed-Nightly".
+	# .desktop filename, Icon name e StartupWMClass DEVEM casar com isso,
+	# senão compositors Wayland exibem o ícone genérico em vez do ícone do Zed.
+	export APP_ID="dev.zed.Zed-Nightly"
+	export APP_ICON="${APP_ID}"
+	export APP_NAME="Zed Nightly"
 	export APP_ARGS="%U"
 	export DO_STARTUP_NOTIFY="true"
 	envsubst < "crates/zed/resources/zed.desktop.in" > ${APP_ID}.desktop || die
+
+	# Adiciona StartupWMClass na seção [Desktop Entry] (antes da linha Actions=)
+	# para máxima compatibilidade com X11 e fallback de compositors Wayland.
+	sed -i "/^Actions=/i StartupWMClass=${APP_ID}" "${APP_ID}.desktop" || die
 
 	# Set release channel to nightly so the remote_server auto-download
 	# works (dev channel hard-fails, nightly fetches "latest" from zed.dev).
@@ -1800,8 +1804,10 @@ src_install() {
 		newbin "$(cargo_target_dir)"/zed-extension zed-extension
 	fi
 
-	newicon -s 512 crates/zed/resources/app-icon.png zed.png
-	newicon -s 1024 crates/zed/resources/app-icon@2x.png zed.png
+	# Usa o icon set específico do canal nightly (existe no source),
+	# instalado com nome igual ao APP_ID para resolução por compositors Wayland.
+	newicon -s 512 crates/zed/resources/app-icon-nightly.png "${APP_ID}.png"
+	newicon -s 1024 crates/zed/resources/app-icon-nightly@2x.png "${APP_ID}.png"
 	domenu "${S}/${APP_ID}.desktop"
 }
 
