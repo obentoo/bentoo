@@ -661,7 +661,6 @@ CRATES="
 	moxcms@0.8.1
 	msvc_spectre_libs@0.1.3
 	multimap@0.8.3
-	naga@29.0.0
 	nanoid@0.4.0
 	nanorand@0.7.0
 	native-tls@0.2.14
@@ -1563,7 +1562,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="950161ff0ff34d313c795eef6c28b958cb487039"
+EGIT_COMMIT="9155bf4e1795131339ccf9e5e8e491d35ab9cfdd"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
