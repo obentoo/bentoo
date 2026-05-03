@@ -10,7 +10,7 @@ if [[ ${PV} == *9999* ]]; then
 	EGIT_REPO_URI="https://github.com/KhronosGroup/${MY_PN}.git"
 	inherit git-r3
 else
-	EGIT_COMMIT="f6a6f7ab165cedbfa2a7d0c93fe27a2d01ce09c8"
+	EGIT_COMMIT="8864cdc896bbc2a9b6eb36b3218fc9ef57908d77"
 	SRC_URI="https://github.com/KhronosGroup/${MY_PN}/archive/${EGIT_COMMIT}.tar.gz -> ${P}.tar.gz"
 	KEYWORDS="amd64 arm arm64 ~hppa ~loong ppc ppc64 ~riscv x86"
 	S="${WORKDIR}"/${MY_PN}-${EGIT_COMMIT}

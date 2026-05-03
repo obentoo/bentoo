@@ -1,4 +1,4 @@
-# Copyright 2023-2025 Gentoo Authors
+# Copyright 2023-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
@@ -19,7 +19,7 @@ if [[ ${PV} == 9999 ]]; then
 	EGIT_REPO_URI="https://gitlab.freedesktop.org/mesa/mesa.git"
 	inherit git-r3
 else
-	GIT_COMMIT="0319be8b0237f243f0bd55a12beaacfd0aa580f4"
+	GIT_COMMIT="5112dfea2243437b31b640d471216f489ffa8b10"
 	S="${WORKDIR}/mesa-${GIT_COMMIT}"
 	SRC_URI="https://gitlab.freedesktop.org/${PN}/${PN}/-/archive/${GIT_COMMIT}/mesa-${GIT_COMMIT}.tar.gz -> ${P}.tar.gz"
 	KEYWORDS="~amd64 ~x86"
