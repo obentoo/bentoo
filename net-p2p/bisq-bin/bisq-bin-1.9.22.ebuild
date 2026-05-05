@@ -16,9 +16,12 @@ KEYWORDS="~amd64"
 
 RESTRICT="bindist mirror strip"
 
-# Dependencies based on Debian package analysis and Gentoo equivalents
+# Runtime deps reflect what the bundled JDK actually links against
+# (libawt_xawt.so → libX11/Xext/Xi/Xrender/Xtst; libjsound.so → libasound).
+# JRE of the system is NOT used: bin/Bisq is a jpackage native launcher
+# that uses the embedded runtime in /opt/bisq/lib/runtime/.
 RDEPEND="
-	>=virtual/jre-11:*
+	media-libs/alsa-lib
 	x11-libs/libX11
 	x11-libs/libXext
 	x11-libs/libXi
@@ -88,29 +91,17 @@ src_install() {
 		doicon "${ED}/opt/bisq/lib/Bisq.png"
 	fi
 
-	# Create optimized wrapper script
+	# Create optimized wrapper script.
+	# bin/Bisq is a jpackage native launcher (ELF), not a shell/java script.
+	# It ignores JAVA_OPTS — JVM tuning must be passed as -J<opt> arguments.
 	cat > "${T}/bisq-wrapper" <<-EOF || die
 		#!/bin/bash
-		# Bisq wrapper script for better Java integration
-
-		# Set working directory
-		cd /opt/bisq || exit 1
-
-		# Set Java options for better performance
-		export JAVA_OPTS="\${JAVA_OPTS} -Xmx2048m -XX:+UseG1GC"
-
-		# Launch Bisq with arguments
-		exec ./bin/Bisq "\$@"
+		exec /opt/bisq/bin/Bisq -J-Xmx2048m -J-XX:+UseG1GC "\$@"
 	EOF
 
 	exeinto /opt/bisq
 	doexe "${T}/bisq-wrapper"
 	dosym ../../opt/bisq/bisq-wrapper /usr/bin/bisq-wrapper
-
-	# Install documentation if present
-	if [[ -d "${S}/opt/bisq/share/doc" ]]; then
-		dodoc "${S}"/opt/bisq/share/doc/*
-	fi
 
 	# Handle copyright file
 	if [[ -f "${S}/opt/bisq/share/doc/copyright" ]]; then

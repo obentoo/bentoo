@@ -16,10 +16,14 @@ KEYWORDS="-* ~amd64"
 
 RESTRICT="bindist mirror strip"
 
+# Runtime deps reflect what the bundled JDK actually links against
+# (libawt_xawt.so → libX11/Xext/Xi/Xrender/Xtst; libjsound.so → libasound).
+# JRE of the system is NOT used: bin/Bisq2 is a jpackage native launcher
+# that uses the embedded runtime in /opt/bisq2/lib/runtime/.
+# net-vpn/tor is NOT needed: Bisq 2 downloads its own Tor binary at runtime
+# into ~/.local/share/Bisq2/ via TorInstaller/TorBinaryZipExtractor.
 RDEPEND="
-	>=virtual/jre-21:*
 	media-libs/alsa-lib
-	net-vpn/tor
 	x11-libs/libX11
 	x11-libs/libXext
 	x11-libs/libXi
@@ -81,12 +85,12 @@ src_install() {
 		doicon "${ED}/opt/bisq2/lib/Bisq2.png"
 	fi
 
-	# Optimized wrapper script with G1GC tuning
+	# Optimized wrapper script with G1GC tuning.
+	# bin/Bisq2 is a jpackage native launcher (ELF), not a shell/java script.
+	# It ignores JAVA_OPTS — JVM tuning must be passed as -J<opt> arguments.
 	cat > "${T}/bisq2-wrapper" <<-EOF || die
 		#!/bin/bash
-		cd /opt/bisq2 || exit 1
-		export JAVA_OPTS="\${JAVA_OPTS} -Xmx2048m -XX:+UseG1GC"
-		exec ./bin/Bisq2 "\$@"
+		exec /opt/bisq2/bin/Bisq2 -J-Xmx2048m -J-XX:+UseG1GC "\$@"
 	EOF
 
 	exeinto /opt/bisq2
@@ -111,7 +115,8 @@ pkg_postinst() {
 	elog "Notes:"
 	elog "- Java 21 runtime is bundled (located in /opt/bisq2/lib/runtime/)"
 	elog "- Configuration stored in: ~/.local/share/Bisq2"
-	elog "- Tor is required for P2P networking (net-vpn/tor)"
+	elog "- Tor binary is auto-installed by Bisq 2 into ~/.local/share/Bisq2/"
+	elog "  (system net-vpn/tor is not used)"
 	elog "- Bisq 2 supports multiple trade protocols (Bisq Easy, MuSig, Submarine)"
 	elog "- Bisq 2 coexists with Bisq 1 (net-p2p/bisq-bin) — separate data dirs"
 	elog ""
