@@ -7,19 +7,9 @@ PYTHON_COMPAT=( python3_{11..13} )
 
 inherit meson python-any-r1 systemd
 
-MY_COMMIT="5be2d11b1c4f74823fe9cb4d19945660b818563c"
-LIBGLNX_COMMIT="c8bebf470b1d08f2145daffd4b6e4e0333987c8a"
-GVDB_COMMIT="c6f2359cc1d00f16e0a0e2527fa0bc1882b8b5ab"
-
 DESCRIPTION="Desktop integration portal"
 HOMEPAGE="https://flatpak.github.io/xdg-desktop-portal/ https://github.com/flatpak/xdg-desktop-portal"
-SRC_URI="
-	https://github.com/flatpak/${PN}/archive/${MY_COMMIT}.tar.gz -> ${P}.tar.gz
-	https://gitlab.gnome.org/GNOME/libglnx/-/archive/${LIBGLNX_COMMIT}/libglnx-${LIBGLNX_COMMIT}.tar.gz -> libglnx-${LIBGLNX_COMMIT}.tar.gz
-	https://gitlab.gnome.org/GNOME/gvdb/-/archive/${GVDB_COMMIT}/gvdb-${GVDB_COMMIT}.tar.gz -> gvdb-${GVDB_COMMIT}.tar.gz
-"
-
-S="${WORKDIR}/${PN}-${MY_COMMIT}"
+SRC_URI="https://github.com/flatpak/${PN}/releases/download/${PV}/${P}.tar.xz"
 
 LICENSE="LGPL-2.1"
 SLOT="0"
@@ -65,12 +55,6 @@ BDEPEND="
 
 pkg_setup() {
 	use test && python-any-r1_pkg_setup
-}
-
-src_unpack() {
-	default
-	mv "${WORKDIR}/libglnx-${LIBGLNX_COMMIT}" "${S}/subprojects/libglnx" || die
-	mv "${WORKDIR}/gvdb-${GVDB_COMMIT}" "${S}/subprojects/gvdb" || die
 }
 
 python_check_deps() {
