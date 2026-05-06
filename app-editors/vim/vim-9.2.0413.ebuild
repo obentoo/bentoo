@@ -1,4 +1,4 @@
-# Copyright 1999-2025 Gentoo Authors
+# Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
@@ -11,7 +11,7 @@ VIM_PATCHES_VERSION="9.1.1432"
 LUA_COMPAT=( lua5-{1..4} luajit )
 PYTHON_COMPAT=( python3_{11..14} )
 PYTHON_REQ_USE="threads(+)"
-USE_RUBY="ruby31 ruby32"
+USE_RUBY="ruby32 ruby33 ruby34 ruby40"
 GENTOO_DEPEND_ON_PERL=no
 
 inherit vim-doc flag-o-matic bash-completion-r1 lua-single perl-module python-single-r1 ruby-single toolchain-funcs desktop xdg-utils
@@ -74,6 +74,13 @@ BDEPEND="
 	nls? ( sys-devel/gettext )
 "
 PDEPEND="!minimal? ( app-vim/gentoo-syntax )"
+
+if [[ ${PV} != 9999* ]]; then
+	# Gentoo patches to fix runtime issues, cross-compile errors, etc
+	PATCHES=(
+		"${WORKDIR}/vim-patches-vim-${VIM_PATCHES_VERSION}-patches"
+	)
+fi
 
 # platform-specific checks (bug #898452):
 # - acl()     -- Solaris

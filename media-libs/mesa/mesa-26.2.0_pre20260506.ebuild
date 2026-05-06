@@ -8,7 +8,7 @@ LLVM_OPTIONAL=1
 CARGO_OPTIONAL=1
 PYTHON_COMPAT=( python3_{11..14} )
 
-inherit flag-o-matic llvm-r1 meson-multilib python-any-r1 linux-info rust-toolchain
+inherit flag-o-matic llvm-r2 meson-multilib python-any-r1 linux-info
 
 MY_P="${P/_/-}"
 
@@ -34,7 +34,7 @@ if [[ ${PV} == 9999 ]]; then
 	EGIT_REPO_URI="https://gitlab.freedesktop.org/mesa/mesa.git"
 	inherit git-r3
 else
-	GIT_COMMIT="5112dfea2243437b31b640d471216f489ffa8b10"
+	GIT_COMMIT="2b9e491b6789f60a7993cc9b74fe5ac7fa60c9c5"
 	SRC_URI="https://gitlab.freedesktop.org/${PN}/${PN}/-/archive/${GIT_COMMIT}/mesa-${GIT_COMMIT}.tar.gz -> ${MY_P}.tar.gz"
 	KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86 ~amd64-linux ~x86-linux ~x64-solaris"
 fi
@@ -75,7 +75,7 @@ REQUIRED_USE="
 	video_cards_nvk? ( vulkan video_cards_nouveau )
 "
 
-LIBDRM_DEPSTRING=">=x11-libs/libdrm-2.4.121"
+LIBDRM_DEPSTRING=">=x11-libs/libdrm-2.4.133"
 RDEPEND="
 	${LIBDRM_DEPSTRING}[${MULTILIB_USEDEP}]
 	>=dev-libs/expat-2.1.0-r3[${MULTILIB_USEDEP}]
@@ -262,7 +262,7 @@ pkg_setup() {
 		linux-info_pkg_setup
 	fi
 
-	use llvm && llvm-r1_pkg_setup
+	use llvm && llvm-r2_pkg_setup
 	python-any-r1_pkg_setup
 
 	if use opencl || (use vulkan && use video_cards_nvk); then
@@ -348,15 +348,7 @@ multilib_src_configure() {
 		vulkan_enable video_cards_v3d broadcom
 		vulkan_enable video_cards_vc4 broadcom
 		vulkan_enable video_cards_virgl virtio
-		if use video_cards_nvk; then
-			vulkan_enable video_cards_nvk nouveau
-			if ! multilib_is_native_abi; then
-				echo -e "[binaries]\nrust = ['rustc', '--target=$(rust_abi $CBUILD)']" > "${T}/rust_fix.ini"
-				emesonargs+=(
-					--native-file "${T}"/rust_fix.ini
-				)
-			fi
-		fi
+		vulkan_enable video_cards_nvk nouveau
 
 		emesonargs+=(-Dvulkan-layers=anti-lag,device-select,overlay)
 	fi
@@ -414,19 +406,6 @@ multilib_src_configure() {
 		-Db_ndebug=$(usex debug false true)
 	)
 	meson_src_configure
-
-	if ! multilib_is_native_abi && use video_cards_nvk; then
-		sed -i -E '{N; s/(rule rust_COMPILER_FOR_BUILD\n command = rustc) --target=[a-zA-Z0-9=:-]+ (.*) -C link-arg=-m[[:digit:]]+/\1 \2/g}' build.ninja || die
-	fi
-}
-
-multilib_src_compile() {
-	if [[ ${ABI} == x86 ]]; then
-		# Bug 939803
-		BINDGEN_EXTRA_CLANG_ARGS="-m32" meson_src_compile
-	else
-		meson_src_compile
-	fi
 }
 
 multilib_src_test() {
