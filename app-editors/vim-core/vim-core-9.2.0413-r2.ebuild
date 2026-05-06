@@ -6,7 +6,6 @@ EAPI=8
 # Please bump with app-editors/vim and app-editors/gvim
 
 VIM_VERSION="9.2"
-VIM_PATCHES_VERSION="9.1.1432"
 inherit desktop flag-o-matic prefix toolchain-funcs vim-doc xdg-utils
 
 if [[ ${PV} == 9999* ]] ; then
@@ -14,9 +13,7 @@ if [[ ${PV} == 9999* ]] ; then
 	EGIT_REPO_URI="https://github.com/vim/vim.git"
 	EGIT_CHECKOUT_DIR=${WORKDIR}/vim-${PV}
 else
-	SRC_URI="https://github.com/vim/vim/archive/v${PV}.tar.gz -> vim-${PV}.tar.gz
-		https://gitweb.gentoo.org/proj/vim-patches.git/snapshot/vim-patches-vim-${VIM_PATCHES_VERSION}-patches.tar.bz2"
-		# https://github.com/douglarek/gentoo-vim-patches/releases/download/vim-${VIM_PATCHES_VERSION}-patches/vim-${VIM_PATCHES_VERSION}-patches.tar.gz"
+	SRC_URI="https://github.com/vim/vim/archive/v${PV}.tar.gz -> vim-${PV}.tar.gz"
 	KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~m68k ~mips ppc ppc64 ~riscv ~s390 ~sparc x86 ~arm64-macos ~x64-macos ~x64-solaris"
 fi
 
@@ -33,15 +30,8 @@ RDEPEND="dev-util/xxd"
 DEPEND=">=sys-libs/ncurses-5.2-r2:0"
 BDEPEND="dev-build/autoconf"
 
-if [[ ${PV} != 9999* ]]; then
-	# Gentoo patches to fix runtime issues, cross-compile errors, etc
-	PATCHES=(
-		"${WORKDIR}/vim-patches-vim-${VIM_PATCHES_VERSION}-patches"
-	)
-fi
-
 # unbundle xxd
-PATCHES+=( "${FILESDIR}/vim-core-9.1.1652-r1-unbundle-xxd.patch" )
+PATCHES=( "${FILESDIR}/vim-core-9.1.1652-r1-unbundle-xxd.patch" )
 
 # platform-specific checks (bug #898406):
 # - acl()     -- Solaris
