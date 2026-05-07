@@ -295,6 +295,12 @@ PATCHES=(
 	"${FILESDIR}/${PN}-6.1-nomancompress.patch"
 	"${FILESDIR}/${PN}-24.2-qtdetect.patch"
 	"${FILESDIR}/${PN}-25.2-cflags.patch"
+
+	# upstream backport: anchor SvLockBytes vtable in tools library so that
+	# svidl (idl/source/prj/{database,parser}.cxx) links cleanly
+	# https://gerrit.libreoffice.org/c/core/+/197842
+	# commit e3ea377f2daa2756a412dd974eb39fd9f5db1366
+	"${FILESDIR}/${PN}-26.2-svlockbytes.patch"
 )
 
 _check_reqs() {

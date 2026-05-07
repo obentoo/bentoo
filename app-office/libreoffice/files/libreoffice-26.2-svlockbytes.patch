@@ -1,0 +1,56 @@
+From e3ea377f2daa2756a412dd974eb39fd9f5db1366 Mon Sep 17 00:00:00 2001
+From: Stephan Bergmann <stephan.bergmann@collabora.com>
+Date: Thu, 22 Jan 2026 14:09:56 +0100
+Subject: [PATCH] Make a virtual function non-inline
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+...which helps avoid some supposedly spurious -Werror=free-nonheap-object seen
+at least with recent GCC 16 trunk,
+
+> In destructor ‘virtual SvLockBytes::~SvLockBytes()’,
+>     inlined from ‘void SvRefBase::ReleaseRef()’ at include/tools/ref.hxx:160:36,
+>     inlined from ‘tools::SvRef<T>::~SvRef() [with T = writerfilter::rtftok::RTFTokenizer]’ at include/tools/ref.hxx:56:46,
+>     inlined from ‘writerfilter::rtftok::RTFLookahead::~RTFLookahead()’ at sw/source/writerfilter/rtftok/rtflookahead.cxx:37:1:
+> include/tools/stream.hxx:115:48: error: ‘void operator delete(void*, std::size_t)’ called on pointer ‘((tools::SvRef<writerfilter::rtftok::RTFTokenizer>*)this)[1].tools::SvRef<writerfilter::rtftok::RTFTokenizer>::pObj’ with nonzero offset 56 [-Werror=free-nonheap-object]
+>   115 |     virtual ~SvLockBytes() override { close(); }
+>       |                                                ^
+
+etc.
+
+Change-Id: I26a599f0e3258e6bf6a4d6e63e559b41029862db
+Reviewed-on: https://gerrit.libreoffice.org/c/core/+/197842
+Tested-by: Jenkins
+Reviewed-by: Stephan Bergmann <stephan.bergmann@collabora.com>
+---
+ include/tools/stream.hxx       | 2 +-
+ tools/source/stream/stream.cxx | 2 ++
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/include/tools/stream.hxx b/include/tools/stream.hxx
+index 38c072fe038ae..43c2b028d36ca 100644
+--- a/include/tools/stream.hxx
++++ b/include/tools/stream.hxx
+@@ -112,7 +112,7 @@ public:
+ 
+     SvLockBytes() : m_bSync(false) {}
+ 
+-    virtual ~SvLockBytes() override { close(); }
++    virtual ~SvLockBytes() override;
+ 
+     void            SetSynchronMode(bool bTheSync = true) { m_bSync = bTheSync; }
+     bool            IsSynchronMode() const { return m_bSync; }
+diff --git a/tools/source/stream/stream.cxx b/tools/source/stream/stream.cxx
+index 16e5e0fbb7036..2cb511e9896d8 100644
+--- a/tools/source/stream/stream.cxx
++++ b/tools/source/stream/stream.cxx
+@@ -155,6 +155,8 @@ void SvStream::writeNumberWithoutSwap_(const void * pDataSrc, int nDataSize)
+ }
+ 
+ 
++SvLockBytes::~SvLockBytes() { close(); }
++
+ void SvLockBytes::close()
+ {
+     (void)this;
