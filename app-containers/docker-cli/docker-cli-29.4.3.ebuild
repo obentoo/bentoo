@@ -7,7 +7,7 @@ inherit shell-completion go-module
 MY_PV=${PV/_/-}
 
 # update this on every bump
-GIT_COMMIT=9d7ad9ff180b43ae5577d048a7bac1159ce7bacf
+GIT_COMMIT=055a478ea9010a19d0d4674c0d0e87ade37a4223
 
 DESCRIPTION="the command line binary for docker"
 HOMEPAGE="https://www.docker.com/"
