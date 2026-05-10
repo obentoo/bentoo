@@ -1,15 +1,17 @@
-# Copyright 1999-2024 Gentoo Authors
+# Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
 
-MY_P="nomachine_$(ver_cut 1-3)_$(ver_cut 4)"
+inherit unpacker
+
+MY_P="nomachine_${PV}_2"
 
 DESCRIPTION="Client for NoMachine remote servers"
 HOMEPAGE="https://www.nomachine.com"
-SRC_URI="amd64? ( https://web9001.nomachine.com/download/$(ver_cut 1-2)/Linux/${MY_P}_x86_64.tar.gz )
-	x86? ( https://web9001.nomachine.com/download/$(ver_cut 1-2)/Linux/${MY_P}_i686.tar.gz )"
-S="${WORKDIR}"/NX/etc/NX/server/packages
+SRC_URI="amd64? ( https://web9001.nomachine.com/download/$(ver_cut 1-2)/Linux/${MY_P}_amd64.deb )
+	x86? ( https://web9001.nomachine.com/download/$(ver_cut 1-2)/Linux/${MY_P}_i386.deb )"
+S="${WORKDIR}/usr/share/NX/packages/server"
 
 LICENSE="nomachine"
 SLOT="0"
@@ -25,6 +27,7 @@ RDEPEND="
 "
 
 QA_PREBUILT="*"
+RESTRICT="bindist mirror strip"
 
 src_install() {
 	dodir /opt
