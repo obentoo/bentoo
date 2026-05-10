@@ -83,7 +83,6 @@ PATCHES=(
 	"${FILESDIR}"/tdesktop-5.8.3-cstdint.patch
 	"${FILESDIR}"/tdesktop-5.14.3-system-cppgir.patch
 	"${FILESDIR}"/tdesktop-6.5.1-zlib-1.3.2.patch
-	"${FILESDIR}"/tdesktop-6.8.1-tgcalls-cstdint.patch
 )
 
 pkg_pretend() {
@@ -143,6 +142,28 @@ src_prepare() {
 	rm cmake/external/glib/cppgir/expected-lite/example/CMakeLists.txt || die
 	rm cmake/external/glib/cppgir/expected-lite/test/CMakeLists.txt || die
 	rm cmake/external/glib/cppgir/expected-lite/CMakeLists.txt || die
+
+	# GCC 14+/recent libstdc++ no longer pulls <cstdint> through transitive
+	# includes; tgcalls headers/sources that use uintN_t/intN_t directly need
+	# the explicit include. Inject it after the first existing #include line,
+	# or at the top of the file if none exists. Skips platforms not built on
+	# Linux to avoid unnecessary churn.
+	local f
+	while IFS= read -r -d '' f; do
+		grep -qE 'uint[0-9]+_t|int[0-9]+_t' "${f}" || continue
+		grep -qE '<cstdint>|<stdint\.h>' "${f}" && continue
+		if grep -q '^[[:space:]]*#include' "${f}"; then
+			sed -i '0,/^[[:space:]]*#include/{/^[[:space:]]*#include/a\
+#include <cstdint>
+}' "${f}" || die "Failed to inject <cstdint> into ${f}"
+		else
+			sed -i '1i#include <cstdint>' "${f}" || die "Failed to inject <cstdint> into ${f}"
+		fi
+	done < <(find Telegram/ThirdParty/tgcalls/tgcalls -type f \
+		\( -name '*.h' -o -name '*.hpp' -o -name '*.cpp' \) \
+		! -path '*/platform/uwp/*' \
+		! -path '*/platform/darwin/*' \
+		-print0)
 
 	cmake_src_prepare
 }
