@@ -1,0 +1,37 @@
+From: lucascouts <lucascs@protonmail.com>
+Date: Sun, 10 May 2026 00:00:00 +0000
+Subject: [PATCH] Fix build with poppler-26.04+
+
+Upstream Poppler changed Gfx8BitFont::getEncoding() to return
+'const std::array<const char*, 256>&' instead of 'char**'. Adapt
+the two call sites in poppler-cairo-font-engine.cpp accordingly.
+
+The cast is safe because both call sites only read enc[i].
+
+Bentoo overlay patch — not yet submitted upstream.
+--- a/src/extension/internal/pdfinput/poppler-cairo-font-engine.cpp
++++ b/src/extension/internal/pdfinput/poppler-cairo-font-engine.cpp
+@@ -385,7 +385,11 @@
+                 goto err2;
+             }
+
++#if POPPLER_CHECK_VERSION(26, 4, 0)
++            enc = const_cast<char **>(gfx8bit->getEncoding().data());
++#else
+             enc = gfx8bit->getEncoding();
++#endif
+
+             codeToGID.resize(256);
+             for (i = 0; i < 256; ++i) {
+@@ -694,7 +698,11 @@
+
+     cairo_font_face_set_user_data(font_face, &type3_font_key, (void *)info, _free_type3_font_info);
+
++#if POPPLER_CHECK_VERSION(26, 4, 0)
++    char **enc = const_cast<char **>(gfx8bit->getEncoding().data());
++#else
+     char **enc = gfx8bit->getEncoding();
++#endif
+     codeToGID.resize(256);
+     for (int i = 0; i < 256; ++i) {
+         codeToGID[i] = 0;

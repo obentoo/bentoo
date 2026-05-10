@@ -398,7 +398,6 @@ CRATES="
 	font-types@0.10.0
 	font-types@0.11.0
 	fontconfig-parser@0.5.8
-	fontdb@0.16.2
 	fontdb@0.23.0
 	foreign-types-macros@0.2.3
 	foreign-types-shared@0.1.1
@@ -573,8 +572,8 @@ CRATES="
 	jni-sys@0.3.0
 	jni@0.21.1
 	jobserver@0.1.34
-	js-sys@0.3.90
-	json5@0.4.1
+	js-sys@0.3.97
+	json5@1.3.1
 	json_dotpath@1.1.0
 	jsonrpcmsg@0.1.2
 	jsonschema@0.37.4
@@ -717,7 +716,7 @@ CRATES="
 	objc_id@0.1.1
 	object@0.37.3
 	octocrab@0.49.7
-	once_cell@1.21.3
+	once_cell@1.21.4
 	once_cell_polyfill@1.70.1
 	oo7@0.6.0
 	oorandom@11.1.5
@@ -909,12 +908,12 @@ CRATES="
 	ring@0.17.14
 	rkyv@0.7.45
 	rkyv_derive@0.7.45
-	rmcp-macros@1.3.0
-	rmcp@1.3.0
+	rmcp-macros@1.6.0
+	rmcp@1.6.0
 	rmp@0.8.14
 	rmpv@1.3.0
 	roxmltree@0.20.0
-	rpassword@7.4.0
+	rpassword@7.5.2
 	rsa@0.9.10
 	rtoolbox@0.0.3
 	rtrb@0.3.2
@@ -1186,7 +1185,6 @@ CRATES="
 	tree-sitter@0.26.8
 	triomphe@0.1.15
 	try-lock@0.2.5
-	ttf-parser@0.20.0
 	ttf-parser@0.25.1
 	tungstenite@0.20.1
 	tungstenite@0.21.0
@@ -1249,11 +1247,11 @@ CRATES="
 	wasip2@1.0.1+wasi-0.2.4
 	wasip3@0.4.0+wasi-0.3.0-rc-2026-01-06
 	wasite@0.1.0
-	wasm-bindgen-futures@0.4.63
-	wasm-bindgen-macro-support@0.2.113
-	wasm-bindgen-macro@0.2.113
-	wasm-bindgen-shared@0.2.113
-	wasm-bindgen@0.2.113
+	wasm-bindgen-futures@0.4.70
+	wasm-bindgen-macro-support@0.2.120
+	wasm-bindgen-macro@0.2.120
+	wasm-bindgen-shared@0.2.120
+	wasm-bindgen@0.2.120
 	wasm-encoder@0.201.0
 	wasm-encoder@0.221.3
 	wasm-encoder@0.227.1
@@ -1299,7 +1297,7 @@ CRATES="
 	wayland-protocols@0.32.9
 	wayland-scanner@0.31.7
 	wayland-sys@0.31.7
-	web-sys@0.3.90
+	web-sys@0.3.97
 	web-time@1.1.0
 	web_atoms@0.1.3
 	webpki-root-certs@0.26.8
@@ -1500,7 +1498,7 @@ declare -A GIT_CRATES=(
 	[livekit-runtime]='https://github.com/zed-industries/livekit-rust-sdks;147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1;livekit-rust-sdks-%commit%/livekit-runtime'
 	[livekit]='https://github.com/zed-industries/livekit-rust-sdks;147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1;livekit-rust-sdks-%commit%/livekit'
 	[lsp-types]='https://github.com/zed-industries/lsp-types;f4dfa89a21ca35cd929b70354b1583fabae325f8;lsp-types-%commit%'
-	[mermaid-rs-renderer]='https://github.com/zed-industries/mermaid-rs-renderer;374db9ead5426697c6c2111151d9f246899bc638;mermaid-rs-renderer-%commit%'
+	[mermaid-rs-renderer]='https://github.com/zed-industries/mermaid-rs-renderer;782b89a7da3f0e91e51f98d00a93acba679be6fb;mermaid-rs-renderer-%commit%'
 	[naga]='https://github.com/zed-industries/wgpu;a466bc382ea747f8e1ac810efdb6dcd49a514575;wgpu-%commit%/naga'
 	[notify-types]='https://github.com/zed-industries/notify;ce58c24cad542c28e04ced02e20325a4ec28a31d;notify-%commit%/notify-types'
 	[notify]='https://github.com/zed-industries/notify;ce58c24cad542c28e04ced02e20325a4ec28a31d;notify-%commit%/notify'
