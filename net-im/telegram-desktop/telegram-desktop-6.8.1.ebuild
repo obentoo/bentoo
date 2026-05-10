@@ -1,4 +1,4 @@
-# Copyright 2020-2026 Gentoo Authors
+# Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
@@ -16,7 +16,7 @@ S="${WORKDIR}/${MY_P}"
 
 LICENSE="BSD GPL-3-with-openssl-exception LGPL-2+"
 SLOT="0"
-KEYWORDS="~amd64 ~loong"
+KEYWORDS="~amd64"
 IUSE="dbus enchant +fonts +libdispatch screencast wayland webkit +X"
 
 CDEPEND="
@@ -83,7 +83,6 @@ PATCHES=(
 	"${FILESDIR}"/tdesktop-5.8.3-cstdint.patch
 	"${FILESDIR}"/tdesktop-5.14.3-system-cppgir.patch
 	"${FILESDIR}"/tdesktop-6.5.1-zlib-1.3.2.patch
-	"${FILESDIR}"/tdesktop-6.8.1-tgcalls-cstdint.patch
 )
 
 pkg_pretend() {
