@@ -161,7 +161,7 @@ COMMON_DEPEND="
 	net-misc/curl[ssl]
 	sys-apps/dbus:=
 	media-libs/flac:=
-	sys-libs/zlib:=[minizip]
+	sys-libs/zlib:=
 	!headless? (
 		>=app-accessibility/at-spi2-core-2.46.0:2
 		media-libs/mesa:=[X?,wayland?]
@@ -941,7 +941,7 @@ src_prepare() {
 		third_party/x11proto
 		third_party/xcbproto
 		third_party/xnnpack
-		third_party/zlib/google
+		third_party/zlib
 		third_party/zxcvbn-cpp
 		url/third_party/mozilla
 		v8/third_party/glibc
@@ -1075,7 +1075,6 @@ chromium_configure() {
 		libxml
 		libxslt
 		openh264
-		zlib
 	)
 	if use system-icu; then
 		gn_system_libraries+=( icu )
