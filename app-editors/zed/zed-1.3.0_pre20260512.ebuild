@@ -993,6 +993,7 @@ CRATES="
 	serde_with@3.18.0
 	serde_with_macros@3.18.0
 	serde_yaml@0.9.34+deprecated
+	serde_yaml_ng@0.10.0
 	serial2@0.2.33
 	sha-1@0.10.1
 	sha1@0.10.6
@@ -1561,7 +1562,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="933273061e28513e68d6c4b4fb3be7620ff75e2d"
+EGIT_COMMIT="cc84bed4eb7b66db5695e72ad0b65577e9aaa292"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
