@@ -7,18 +7,19 @@ ECM_HANDBOOK="optional"
 ECM_TEST="forceoptional"
 KFMIN=6.22.0
 QTMIN=6.10.1
-inherit ecm optfeature plasma.kde.org xdg
+inherit ecm plasma.kde.org xdg
 
 DESCRIPTION="Screenshot capture utility"
 HOMEPAGE="https://apps.kde.org/spectacle/"
 
 LICENSE="LGPL-2+ handbook? ( FDL-1.3 )"
 SLOT="6"
-KEYWORDS="~amd64 ~arm64 ~loong ~ppc64 ~riscv ~x86"
+KEYWORDS="~amd64 ~arm64 ~ppc64 ~riscv ~x86" # app-text/tesseract not keyworded on loong
 IUSE="share"
 
 # slot op: Uses Qt::GuiPrivate for qtx11extras_p.h
 COMMON_DEPEND="
+	app-text/tesseract
 	dev-libs/wayland
 	>=dev-qt/qtbase-${QTMIN}:6=[concurrent,dbus,gui,wayland,widgets,X]
 	>=dev-qt/qtdeclarative-${QTMIN}:6
@@ -73,6 +74,5 @@ src_configure() {
 }
 
 pkg_postinst() {
-	optfeature "text recognition in screenshots" "app-text/tesseract"
 	xdg_pkg_postinst
 }
