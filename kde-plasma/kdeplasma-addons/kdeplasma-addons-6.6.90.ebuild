@@ -13,9 +13,11 @@ DESCRIPTION="Extra Plasma applets and engines"
 LICENSE="GPL-2 LGPL-2"
 SLOT="6"
 KEYWORDS="~amd64 ~arm64 ~loong ~ppc64 ~riscv ~x86"
-IUSE="+alternate-calendar share webengine"
+IUSE="+alternate-calendar qmk share webengine"
 
 RESTRICT="test" # bug 727846, +missing selenium-webdriver-at-spi
+
+REQUIRED_USE="qmk? ( amd64 )" # kameleon-qmk-helper only keyworded on amd64
 
 PATCHES=( "${FILESDIR}"/${P}-optional-corrosion.patch )
 
@@ -55,6 +57,7 @@ RDEPEND="${DEPEND}
 	>=dev-qt/qtquick3d-${QTMIN}:6
 	>=kde-frameworks/kirigami-${KFMIN}:6
 	>=kde-frameworks/kitemmodels-${KFMIN}:6
+	qmk? ( amd64? ( kde-plasma/kameleon-qmk-helper ) )
 "
 
 src_configure() {
@@ -70,7 +73,5 @@ src_configure() {
 
 pkg_postinst() {
 	optfeature "Disk quota applet" "sys-fs/quota"
-	optfeature "QMK keyboard LED control (Kameleon)" \
-		"kde-plasma/kameleon-qmk-helper"
 	xdg_pkg_postinst
 }
