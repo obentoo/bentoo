@@ -1699,7 +1699,8 @@ src_prepare() {
 
 	# Cargo offline fetch workaround
 	local ASYNC_TASK_COMMIT="b4486cd71e4e94fbda54ce6302444de14f4d190e"
-	local ASYNC_TASK_GIT="async-task = { git = \"https://github.com/smol-rs/async-task.git\", rev = \"${ASYNC_TASK_COMMIT}\""
+	local ASYNC_TASK_GIT="async-task = { git = \"https://github.com/smol-rs/async-task.git\""
+	ASYNC_TASK_GIT+=", rev = \"${ASYNC_TASK_COMMIT}\""
 	local ASYNC_TASK_PATH="async-task = \\{ path = \"${WORKDIR}/async-task-${ASYNC_TASK_COMMIT}\""
 
 	local CALLOOP_COMMIT="eb6b4fd17b9af5ecc226546bdd04185391b3e265"
@@ -1707,23 +1708,29 @@ src_prepare() {
 	local CALLOOP_PATH="calloop = \\{ path = \"${WORKDIR}/calloop-${CALLOOP_COMMIT}\""
 
 	local LIVEKIT_COMMIT="147fbca3d4b592d96d33f5e6a84b59fc0b5d9bf1"
-	local LIVEKIT_GIT="livekit = { git = \"https://github.com/zed-industries/livekit-rust-sdks\", rev = \"${LIVEKIT_COMMIT}\""
+	local LIVEKIT_GIT="livekit = { git = \"https://github.com/zed-industries/livekit-rust-sdks\""
+	LIVEKIT_GIT+=", rev = \"${LIVEKIT_COMMIT}\""
 	local LIVEKIT_PATH="livekit = \\{ path = \"${WORKDIR}/livekit-rust-sdks-${LIVEKIT_COMMIT}/livekit\""
 
-	local LIBWERBRTC_GIT="libwebrtc = { git = \"https://github.com/zed-industries/livekit-rust-sdks\", rev = \"${LIVEKIT_COMMIT}\""
+	local LIBWERBRTC_GIT="libwebrtc = { git = \"https://github.com/zed-industries/livekit-rust-sdks\""
+	LIBWERBRTC_GIT+=", rev = \"${LIVEKIT_COMMIT}\""
 	local LIBWERBRTC_PATH="libwebrtc = \\{ path = \"${WORKDIR}/livekit-rust-sdks-${LIVEKIT_COMMIT}/libwebrtc\""
 
 	local NOTIFY_COMMIT="ce58c24cad542c28e04ced02e20325a4ec28a31d"
-	local NOTIFY_GIT="notify = { git = \"https://github.com/zed-industries/notify.git\", rev = \"${NOTIFY_COMMIT}\""
+	local NOTIFY_GIT="notify = { git = \"https://github.com/zed-industries/notify.git\""
+	NOTIFY_GIT+=", rev = \"${NOTIFY_COMMIT}\""
 	local NOTIFY_PATH="notify = \\{ path = \"${WORKDIR}/notify-${NOTIFY_COMMIT}/notify\""
-	local NOTIFY_TYPES_GIT="notify-types = { git = \"https://github.com/zed-industries/notify.git\", rev = \"${NOTIFY_COMMIT}\""
+	local NOTIFY_TYPES_GIT="notify-types = { git = \"https://github.com/zed-industries/notify.git\""
+	NOTIFY_TYPES_GIT+=", rev = \"${NOTIFY_COMMIT}\""
 	local NOTIFY_TYPES_PATH="notify-types = \\{ path = \"${WORKDIR}/notify-${NOTIFY_COMMIT}/notify-types\""
 
 	local WIN_CAP_COMMIT="f0d6c1b6691db75461b732f6d5ff56eed002eeb9"
-	local WIN_CAP_GIT="windows-capture = { git = \"https://github.com/zed-industries/windows-capture.git\", rev = \"${WIN_CAP_COMMIT}\""
+	local WIN_CAP_GIT="windows-capture = { git = \"https://github.com/zed-industries/windows-capture.git\""
+	WIN_CAP_GIT+=", rev = \"${WIN_CAP_COMMIT}\""
 	local WIN_CAP_PATH="windows-capture = \\{ path = \"${WORKDIR}/windows-capture-${WIN_CAP_COMMIT}\""
 
-	local WEBRTC_SYS_GIT="webrtc-sys = { git = \"https://github.com/zed-industries/livekit-rust-sdks\", rev = \"${LIVEKIT_COMMIT}\""
+	local WEBRTC_SYS_GIT="webrtc-sys = { git = \"https://github.com/zed-industries/livekit-rust-sdks\""
+	WEBRTC_SYS_GIT+=", rev = \"${LIVEKIT_COMMIT}\""
 	local WEBRTC_SYS_PATH="webrtc-sys = \\{ path = \"${WORKDIR}/livekit-rust-sdks-${LIVEKIT_COMMIT}/webrtc-sys\""
 
 	sed -e "s#${ASYNC_TASK_GIT}#${ASYNC_TASK_PATH}#" \
