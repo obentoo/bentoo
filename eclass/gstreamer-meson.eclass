@@ -379,6 +379,13 @@ gstreamer_multilib_src_configure() {
 		if grep -q "option('tests'" "${emeson_opts_file}" ; then
 			gst_conf+=( $(meson_feature test tests) )
 		fi
+	else
+		# Split plugins have RESTRICT="test"; force tests disabled to avoid
+		# meson evaluating tests/ subdirs that reference variables from
+		# plugins not being built (e.g. gstmse_private_test_dep in 1.28.3).
+		if grep -q "option('tests'" "${emeson_opts_file}" ; then
+			gst_conf+=( -Dtests=disabled )
+		fi
 	fi
 
 	if grep -qF "option('package-name'" "${emeson_opts_file}" ; then
