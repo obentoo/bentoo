@@ -25,7 +25,7 @@ else
 	S="${WORKDIR}/node-v${PV}"
 fi
 
-IUSE="corepack cpu_flags_x86_sse2 debug doc +icu +inspector lto +npm pax-kernel +snapshot +ssl +system-icu +system-ssl test"
+IUSE="cpu_flags_x86_sse2 debug doc +icu +inspector lto +npm pax-kernel +snapshot +ssl +system-icu +system-ssl test"
 REQUIRED_USE="inspector? ( icu ssl )
 	npm? ( ssl )
 	system-icu? ( icu )
@@ -43,7 +43,6 @@ COMMON_DEPEND=">=app-arch/brotli-1.2.0:=
 	>=net-libs/nghttp2-1.69.0:=
 	>=net-libs/nghttp3-1.15.0:=
 	virtual/zlib:=
-	corepack? ( !sys-apps/yarn )
 	system-icu? ( >=dev-libs/icu-73:= )
 	system-ssl? (
 		>=net-libs/ngtcp2-1.22.0:=
@@ -154,7 +153,6 @@ src_configure() {
 	else
 		myconf+=( --with-intl=none )
 	fi
-	use corepack || myconf+=( --without-corepack )
 	use inspector || myconf+=( --without-inspector )
 	use npm || myconf+=( --without-npm )
 	use snapshot || myconf+=( --without-node-snapshot )
@@ -240,9 +238,6 @@ src_install() {
 				"${find_name[@]}" \
 			\) \) -exec rm -rf "{}" \;
 	fi
-
-	use corepack &&
-		"${D}"/usr/bin/corepack enable --install-directory "${D}"/usr/bin
 
 	mv "${ED}"/usr/share/doc/node "${ED}"/usr/share/doc/${PF} || die
 }
