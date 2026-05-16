@@ -75,6 +75,7 @@ RDEPEND="
 	x11-misc/xdg-utils
 	qt6? ( dev-qt/qtbase:6[gui,widgets] )
 	selinux? ( sec-policy/selinux-chromium )
+	!www-client/brave-browser-nightly
 "
 
 if [[ ${PN} == brave-browser ]]; then
@@ -105,10 +106,10 @@ pkg_pretend() {
 		die "Insufficient disk space"
 	fi
 
-	# Warn about multiple Brave versions
-	if has_version "www-client/brave-browser:0" && \
-	   has_version "www-client/brave-browser-beta:0"; then
-		ewarn "Multiple Brave versions detected."
+	# Warn about multiple Brave variants
+	if has_version "www-client/brave-browser-beta:0" || \
+	   has_version "www-client/brave-browser-nightly:0"; then
+		ewarn "Multiple Brave variants detected."
 		ewarn "Consider using only one variant to avoid confusion."
 	fi
 

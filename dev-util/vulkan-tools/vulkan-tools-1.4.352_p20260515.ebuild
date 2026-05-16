@@ -27,7 +27,7 @@ IUSE="cube wayland test X"
 RESTRICT="!test? ( test )"
 
 BDEPEND="${PYTHON_DEPS}
-	cube? ( ~dev-util/glslang-${PV}:=[${MULTILIB_USEDEP}] )
+	cube? ( >=dev-util/glslang-1.4.350.0:=[${MULTILIB_USEDEP}] )
 "
 RDEPEND="
 	wayland? ( dev-libs/wayland[${MULTILIB_USEDEP}] )

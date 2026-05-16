@@ -12,17 +12,18 @@ inherit brave chromium-2 desktop pax-utils unpacker verify-sig xdg
 DESCRIPTION="The Brave Web Browser"
 HOMEPAGE="https://brave.com/"
 
-# Nightly variant: same PN but fetches the -nightly .deb from upstream.
-# MY_PV strips the _pre suffix used to mark this as a pre-release in Portage.
-MY_PN="brave-browser-nightly"
-MY_PV="${PV%_pre}"
+if [[ ${PN} == brave-browser ]]; then
+	MY_PN=${PN}-stable
+else
+	MY_PN=${PN}
+fi
 
-DEB="${MY_PN}_${MY_PV}_amd64.deb"
+DEB="${PN}_${PV}_amd64.deb"
 SRC_URI="
-	https://github.com/brave/brave-browser/releases/download/v${MY_PV}/${DEB}
+	https://github.com/brave/brave-browser/releases/download/v${PV}/${DEB}
 	verify-sig? (
-		https://github.com/brave/brave-browser/releases/download/v${MY_PV}/${DEB}.sha256
-		https://github.com/brave/brave-browser/releases/download/v${MY_PV}/${DEB}.sha256.asc
+		https://github.com/brave/brave-browser/releases/download/v${PV}/${DEB}.sha256
+		https://github.com/brave/brave-browser/releases/download/v${PV}/${DEB}.sha256.asc
 	)
 "
 S=${WORKDIR}
@@ -74,11 +75,16 @@ RDEPEND="
 	x11-misc/xdg-utils
 	qt6? ( dev-qt/qtbase:6[gui,widgets] )
 	selinux? ( sec-policy/selinux-chromium )
+	!www-client/brave-browser
 "
 
-# Nightly: always use the pre-release signing key.
-BDEPEND="verify-sig? ( >=sec-keys/openpgp-keys-brave-browser-pre-release-20250709 )"
-VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/brave-browser-pre-release.asc
+if [[ ${PN} == brave-browser ]]; then
+	BDEPEND="verify-sig? ( >=sec-keys/openpgp-keys-brave-browser-release-20250709 )"
+	VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/brave-browser-release.asc
+else
+	BDEPEND="verify-sig? ( >=sec-keys/openpgp-keys-brave-browser-pre-release-20250709 )"
+	VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/brave-browser-pre-release.asc
+fi
 
 BDEPEND+="
 	dev-util/desktop-file-utils
@@ -100,10 +106,10 @@ pkg_pretend() {
 		die "Insufficient disk space"
 	fi
 
-	# Warn about multiple Brave versions
-	if has_version "www-client/brave-browser:0" && \
+	# Warn about multiple Brave variants
+	if has_version "www-client/brave-browser:0" || \
 	   has_version "www-client/brave-browser-beta:0"; then
-		ewarn "Multiple Brave versions detected."
+		ewarn "Multiple Brave variants detected."
 		ewarn "Consider using only one variant to avoid confusion."
 	fi
 

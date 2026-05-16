@@ -34,7 +34,13 @@ in_bdir() {
 
 src_configure() {
 	S="${WORKDIR}/gst-plugins-base-${PV}" multilib_foreach_abi gstreamer_multilib_src_configure
-	S="${WORKDIR}/gst-plugins-bad-${PV}"  multilib_foreach_abi gstreamer_multilib_src_configure
+	# Bentoo: gst-plugins-bad 1.28.3 has an upstream meson bug where
+	# tests/check/meson.build:103 references gstmse_private_test_dep, which is
+	# only declared in gst-libs/gst/mse/meson.build when -Dmse is enabled.
+	# Split-plugin builds (this ebuild) auto-disable mse via the eclass, breaking
+	# configure. Force -Dtests=disabled here — RESTRICT="test" (set by the eclass
+	# for split plugins) already prevents test execution, so this is consistent.
+	S="${WORKDIR}/gst-plugins-bad-${PV}"  multilib_foreach_abi gstreamer_multilib_src_configure -Dtests=disabled
 }
 
 src_compile() {
