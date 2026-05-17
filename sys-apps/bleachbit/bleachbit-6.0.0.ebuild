@@ -100,7 +100,7 @@ python_install_all() {
 	doins cleaners/*.xml
 
 	insinto /usr/share/bleachbit
-	doins data/app-menu.ui
+	doins share/app-menu.ui
 
 	doicon ${PN}.png
 	domenu org.${PN}.BleachBit.desktop
