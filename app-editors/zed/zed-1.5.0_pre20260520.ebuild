@@ -1184,7 +1184,7 @@ CRATES="
 	tree-sitter-regex@0.24.3
 	tree-sitter-ruby@0.23.1
 	tree-sitter-rust@0.24.2
-	tree-sitter@0.26.8
+	tree-sitter@0.26.9
 	triomphe@0.1.15
 	try-lock@0.2.5
 	ttf-parser@0.25.1
@@ -1270,10 +1270,10 @@ CRATES="
 	wasmparser@0.236.1
 	wasmparser@0.244.0
 	wasmprinter@0.236.1
-	wasmtime-c-api-impl@36.0.6
+	wasmtime-c-api-impl@36.0.9
 	wasmtime-environ@36.0.9
 	wasmtime-internal-asm-macros@36.0.9
-	wasmtime-internal-c-api-macros@36.0.6
+	wasmtime-internal-c-api-macros@36.0.9
 	wasmtime-internal-component-macro@36.0.9
 	wasmtime-internal-component-util@36.0.9
 	wasmtime-internal-cranelift@36.0.9
@@ -1563,7 +1563,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="e2c38b535829d351345fbac695bada34be61ee4f"
+EGIT_COMMIT="ee5c7b6d45faeccd40a285be63a853753c91eff0"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
