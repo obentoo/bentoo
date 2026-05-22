@@ -13,6 +13,7 @@ LICENSE="MIT"
 SLOT="0"
 KEYWORDS="~amd64 ~x86"
 RESTRICT="network-sandbox"
+IUSE="secure"
 
 RDEPEND="dev-vcs/git"
 
@@ -33,6 +34,11 @@ src_compile() {
 src_install() {
 	dobin bentoo
 	einstalldocs
+
+	if use secure; then
+		insinto /etc/bash/bashrc.d
+		doins "${FILESDIR}"/30-bentoo-safety.bash
+	fi
 }
 
 pkg_postinst() {
@@ -52,4 +58,14 @@ pkg_postinst() {
 	elog "  git:"
 	elog "    user: your_username"
 	elog "    email: your_email@example.com"
+
+	if use secure; then
+		elog ""
+		elog "Shell safety guards have been installed to:"
+		elog "  /etc/bash/bashrc.d/30-bentoo-safety.bash"
+		elog "They add a confirmation delay/block to destructive commands"
+		elog "(rm -rf, reboot, poweroff, etc.) in interactive shells."
+		elog "To bypass them consciously for a single command, prefix with:"
+		elog "  BENTOO_NO_GUARD=1"
+	fi
 }
