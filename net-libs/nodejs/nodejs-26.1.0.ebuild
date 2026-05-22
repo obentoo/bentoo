@@ -25,7 +25,7 @@ else
 	S="${WORKDIR}/node-v${PV}"
 fi
 
-IUSE="cpu_flags_x86_sse2 debug doc +icu +inspector lto +npm pax-kernel +snapshot +ssl +system-icu +system-ssl test"
+IUSE="cpu_flags_x86_sse2 debug doc +icu +inspector lto +npm pax-kernel pnpm +snapshot +ssl +system-icu +system-ssl test"
 REQUIRED_USE="inspector? ( icu ssl )
 	npm? ( ssl )
 	system-icu? ( icu )
@@ -61,6 +61,7 @@ BDEPEND="${PYTHON_DEPS}
 	pax-kernel? ( sys-apps/elfix )"
 DEPEND="${COMMON_DEPEND}"
 RDEPEND="${COMMON_DEPEND}"
+PDEPEND="pnpm? ( sys-apps/pnpm )"
 
 # These are measured on a loong machine with -ggdb on, and only checked
 # if debugging flags are present in CFLAGS.
