@@ -237,7 +237,7 @@ CRATES="
 	coreaudio-rs@0.12.1
 	coreaudio-rs@0.13.0
 	coreaudio-sys@0.2.17
-	cosmic-text@0.17.1
+	cosmic-text@0.19.0
 	cpal@0.17.1
 	cpp_demangle@0.4.5
 	cpufeatures@0.2.17
@@ -1563,7 +1563,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="450206e49dd070866dce81884bac61caa56dba44"
+EGIT_COMMIT="eb2223c0802c4e864caac1687631ac0c45af4dee"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
