@@ -64,7 +64,6 @@ RDEPEND="
 
 PATCHES=(
 	"${FILESDIR}/${PN}-202605-werror.patch"
-	"${FILESDIR}/${PN}-202408-binutils-2.41-textrels.patch"
 )
 
 DISABLE_AUTOFORMATTING="true"
