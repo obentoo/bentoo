@@ -51,14 +51,14 @@ src_install() {
   dodir "${appdir}"
   cp -r "${S}"/. "${ED}${appdir}" || die "Failed to install application files"
 
-  fperms 0755 "${appdir}/antigravity" "${appdir}/bin/antigravity" "${appdir}/chrome_crashpad_handler"
+  fperms 0755 "${appdir}/antigravity-ide" "${appdir}/bin/antigravity-ide" "${appdir}/chrome_crashpad_handler"
   fperms 4755 "${appdir}/chrome-sandbox"
 
-  dosym "${appdir}/antigravity" /usr/bin/antigravity
+  dosym "${appdir}/antigravity-ide" /usr/bin/antigravity
 
-  newbashcomp resources/completions/bash/antigravity antigravity
+  newbashcomp resources/completions/bash/antigravity-ide antigravity
   insinto /usr/share/zsh/site-functions
-  newins resources/completions/zsh/_antigravity _antigravity
+  newins resources/completions/zsh/_antigravity-ide _antigravity
 
   newicon resources/app/resources/linux/code.png antigravity.png
 
