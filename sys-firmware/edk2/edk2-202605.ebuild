@@ -213,7 +213,7 @@ nx_strict_args() {
 }
 
 src_compile() {
-	TOOLCHAIN="GCC5"
+	TOOLCHAIN="GCC"
 	BUILD_TARGET="RELEASE"
 	BUILD_DIR="${BUILD_TARGET}_${TOOLCHAIN}"
 	BUILD_ARGS=()
