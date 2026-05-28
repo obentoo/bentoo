@@ -3,7 +3,7 @@
 
 EAPI=8
 
-inherit cmake
+inherit cmake vala
 
 if [[ ${PV} == *9999* ]]; then
 	EGIT_REPO_URI="https://github.com/AyatanaIndicators/${PN}.git"
@@ -29,7 +29,7 @@ RDEPEND="${DEPEND}"
 # generators are hard build dependencies. The FindGObjectIntrospection.cmake
 # and FindVala.cmake modules are shipped by cmake-extras.
 BDEPEND="
-	dev-lang/vala
+	$(vala_depend)
 	dev-libs/gobject-introspection
 	dev-util/cmake-extras
 	dev-util/gi-docgen
@@ -38,9 +38,15 @@ BDEPEND="
 "
 
 src_configure() {
+	vala_setup
+
+	# cmake-extras' FindVala does a bare find_program(valac/vapigen); Gentoo
+	# only ships versioned binaries, so feed it the paths vala_setup exported.
 	local mycmakeargs=(
 		-DENABLE_TESTS=$(usex test)
 		-DENABLE_WERROR=OFF
+		-DVALA_COMPILER="${VALAC}"
+		-DVAPI_GEN="${VAPIGEN}"
 	)
 	cmake_src_configure
 }
