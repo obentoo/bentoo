@@ -5,7 +5,7 @@ EAPI=8
 
 # Check 'next' branch for backports.
 
-inherit autotools multilib-minimal
+inherit autotools flag-o-matic multilib-minimal
 
 MY_PV="${PV/_/-}"
 MY_P="${PN}-${MY_PV}"
@@ -42,6 +42,11 @@ src_prepare() {
 }
 
 multilib_src_configure() {
+	# abseil-cpp >= 20240722 mandates C++20 (std::weak_ordering in <compare>).
+	# protobuf compiler header pulled in by configure check trips on gcc-16's
+	# default gnu++17. Force gnu++20 so both the configure probe and the build link.
+	append-cxxflags -std=gnu++20
+
 	local myeconfargs=(
 		$(use_enable static-libs static)
 		--enable-year2038
