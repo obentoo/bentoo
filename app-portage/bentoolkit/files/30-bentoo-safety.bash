@@ -10,8 +10,28 @@ _bentoo_delay() {
     local label=$1
     [[ -n $BENTOO_NO_GUARD ]] && return 0
     printf '\033[1;31m⚠️  %s\033[0m\n' "$label"
-    printf '\033[33m   3s para cancelar (Ctrl-C)...\033[0m\n'
-    sleep 3 || { printf '\033[32mCancelado.\033[0m\n'; return 1; }
+
+    # Contagem regressiva (Ctrl-C cancela)
+    local i
+    for ((i=3; i>0; i--)); do
+        printf '\r\033[33m   %ds para cancelar (Ctrl-C)... \033[0m' "$i"
+        sleep 1 || { printf '\n\033[32mCancelado.\033[0m\n'; return 1; }
+    done
+    printf '\r\033[K'
+
+    # Confirmação com código alfanumérico de 4 dígitos
+    local chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789' code='' answer
+    for ((i=0; i<4; i++)); do code+=${chars:RANDOM%${#chars}:1}; done
+
+    printf '\033[1;37mDigite o código \033[1;33m%s\033[1;37m para confirmar: \033[0m' "$code"
+    if ! read -r answer; then
+        printf '\n\033[32mCancelado.\033[0m\n'; return 1
+    fi
+    if [[ ${answer^^} != "$code" ]]; then
+        printf '\033[1;41m Cancelado \033[0m código incorreto.\n'
+        return 1
+    fi
+    return 0
 }
 
 # --- reboot / poweroff / halt ---------------------------------------------
