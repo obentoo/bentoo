@@ -1,4 +1,4 @@
-# Copyright 1999-2025 Gentoo Authors
+# Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
@@ -49,8 +49,8 @@ RDEPEND="
 	media-libs/mesa
 	net-misc/curl
 	sys-apps/dbus
-	sys-libs/zlib
 	sys-process/lsof
+	virtual/zlib
 	x11-libs/cairo
 	x11-libs/gtk+:3
 	x11-libs/libdrm
