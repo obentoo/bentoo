@@ -20,7 +20,7 @@ SRC_URI="
 LICENSE="LGPL-2.1+"
 SLOT="0"
 KEYWORDS="~amd64 ~arm ~arm64 ~loong ~ppc64 ~riscv ~x86"
-IUSE="amdgpu bash-completion bluetooth elogind flashrom gnutls gtk-doc introspection minimal modemmanager policykit seccomp systemd test tpm readline uefi"
+IUSE="amdgpu bash-completion bluetooth elogind gnutls gtk-doc introspection minimal modemmanager policykit seccomp systemd test tpm readline uefi"
 REQUIRED_USE="
 	${PYTHON_REQUIRED_USE}
 	?? ( elogind systemd )
@@ -53,7 +53,6 @@ COMMON_DEPEND="
 		>=x11-libs/libdrm-2.4.113[video_cards_amdgpu]
 	)
 	elogind? ( >=sys-auth/elogind-211 )
-	flashrom? ( >=sys-apps/flashrom-1.2-r3 )
 	gnutls? ( >=net-libs/gnutls-3.6.0:= )
 	modemmanager? ( >=net-misc/modemmanager-1.22.0[mbim,qmi] )
 	policykit? ( >=sys-auth/polkit-0.114 )
@@ -125,7 +124,6 @@ src_configure() {
 	EOF
 
 	local plugins=(
-		$(meson_feature flashrom plugin_flashrom)
 		$(meson_feature amdgpu libdrm)
 		$(meson_feature modemmanager plugin_modem_manager)
 		$(meson_feature tpm hsi)
