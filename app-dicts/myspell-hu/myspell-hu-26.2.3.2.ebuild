@@ -3,7 +3,11 @@
 
 EAPI=8
 
-LO_VER="26.2.3.2"
+# Version tracks the LibreOffice langpack this dictionary is extracted from:
+# PV == LO_VER, so `bentoo overlay autoupdate` can follow the upstream source.
+# The "libreoffice26.2" paths use the LO series (major.minor); if upstream moves
+# to a new series, bump those paths accordingly.
+LO_VER="${PV}"
 
 MYSPELL_DICT=(
 	"opt/libreoffice26.2/share/extensions/dict-hu/hu_HU.aff"
