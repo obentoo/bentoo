@@ -13,9 +13,23 @@ LICENSE="MIT"
 SLOT="0"
 KEYWORDS="~amd64 ~x86"
 RESTRICT="network-sandbox"
-IUSE="+secure +playwright"
+IUSE="+secure +playwright browser"
 
-RDEPEND="dev-vcs/git"
+# playwright and browser are two alternative backends for the same headless
+# "script" version parser, so at most one may be enabled.
+REQUIRED_USE="?? ( playwright browser )"
+
+# browser? enables the chromedp backend, which drives an already-installed
+# Chrome/Chromium over the DevTools Protocol (it does not download a browser).
+RDEPEND="
+	dev-vcs/git
+	browser? (
+		|| (
+			www-client/chromium
+			www-client/google-chrome
+		)
+	)
+"
 
 src_unpack() {
 	default
@@ -29,10 +43,13 @@ src_compile() {
 	local ldflags="-X ${version_pkg}.Version=${PV} -X ${version_pkg}.Commit=release -X ${version_pkg}.BuildDate=${build_date}"
 
 	# The "script" version parser (headless-browser backend used by some
-	# autoupdate packages) lives behind the `playwright` build tag; without it
-	# the binary ships only the stub that reports ErrScriptSupportNotBuilt.
+	# autoupdate packages) lives behind a build tag; without one the binary
+	# ships only the stub that reports ErrScriptSupportNotBuilt. `playwright`
+	# bundles its own browsers; `browser` (chromedp) drives the system Chrome.
+	# REQUIRED_USE keeps the two mutually exclusive.
 	local gotags=""
 	use playwright && gotags="-tags playwright"
+	use browser && gotags="-tags chromedp"
 
 	ego build ${gotags} -ldflags "${ldflags}" -o bentoo ./cmd/bentoo
 }
@@ -67,10 +84,21 @@ pkg_postinst() {
 
 	if use playwright; then
 		elog ""
-		elog "The headless-browser (\"script\") version parser is enabled."
-		elog "It needs the Playwright browsers at runtime. If 'bentoo overlay"
-		elog "autoupdate' reports 'could not start Playwright', install them once:"
+		elog "The headless-browser (\"script\") version parser is enabled"
+		elog "(Playwright backend). It needs the Playwright browsers at runtime."
+		elog "If 'bentoo overlay autoupdate' reports 'could not start Playwright',"
+		elog "install them once:"
 		elog "  playwright install chromium"
+	fi
+
+	if use browser; then
+		elog ""
+		elog "The headless-browser (\"script\") version parser is enabled"
+		elog "(chromedp backend). It drives an already-installed Chrome/Chromium"
+		elog "over the DevTools Protocol -- no extra download is needed."
+		elog "If autoupdate reports 'could not launch headless Chrome', make sure"
+		elog "www-client/chromium or www-client/google-chrome is installed and"
+		elog "reachable on PATH (chromedp auto-detects chromium/google-chrome*)."
 	fi
 
 	if use secure; then
