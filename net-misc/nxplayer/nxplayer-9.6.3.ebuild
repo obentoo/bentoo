@@ -5,7 +5,7 @@ EAPI=8
 
 inherit unpacker
 
-MY_P="nomachine_${PV}_2"
+MY_P="nomachine_${PV}_1"
 
 DESCRIPTION="Client for NoMachine remote servers"
 HOMEPAGE="https://www.nomachine.com"
