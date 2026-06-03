@@ -6,13 +6,12 @@ EAPI=8
 inherit go-module systemd
 
 MY_P="${PN}-v${PV}"
-JOB_ID="1471331" # Keep this in sync with the link with "other" in releases
 DESCRIPTION="Pluggable Transport using WebRTC, inspired by Flashproxy"
 HOMEPAGE="
 	https://snowflake.torproject.org
 	https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake
 "
-SRC_URI="https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/${PN}/-/jobs/${JOB_ID}/artifacts/file/${MY_P}.tar.gz"
+SRC_URI="https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/${PN}/-/archive/v${PV}/${MY_P}.tar.gz"
 S="${WORKDIR}/${MY_P}"
 
 LICENSE="BSD Apache-2.0 BSD-2 CC0-1.0 MIT"

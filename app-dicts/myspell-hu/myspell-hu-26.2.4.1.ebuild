@@ -37,5 +37,5 @@ IUSE=""
 src_unpack() {
 	myspell-r2_src_unpack
 
-	rpm_unpack ./LibreOffice_${LO_VER}_Linux_x86-64_rpm_langpack_hu/RPMS/libreoffice26.2-dict-hu-${LO_VER}-2.x86_64.rpm
+	rpm_unpack ./LibreOffice_${LO_VER}_Linux_x86-64_rpm_langpack_hu/RPMS/libreoffice26.2-dict-hu-${LO_VER}-1.x86_64.rpm
 }
