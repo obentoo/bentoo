@@ -13,7 +13,7 @@ LICENSE="MIT"
 SLOT="0"
 KEYWORDS="~amd64 ~x86"
 RESTRICT="network-sandbox"
-IUSE="secure"
+IUSE="+secure +playwright"
 
 RDEPEND="dev-vcs/git"
 
@@ -28,7 +28,13 @@ src_compile() {
 	local build_date=$(date -u '+%Y-%m-%d_%H:%M:%S')
 	local ldflags="-X ${version_pkg}.Version=${PV} -X ${version_pkg}.Commit=release -X ${version_pkg}.BuildDate=${build_date}"
 
-	ego build -ldflags "${ldflags}" -o bentoo ./cmd/bentoo
+	# The "script" version parser (headless-browser backend used by some
+	# autoupdate packages) lives behind the `playwright` build tag; without it
+	# the binary ships only the stub that reports ErrScriptSupportNotBuilt.
+	local gotags=""
+	use playwright && gotags="-tags playwright"
+
+	ego build ${gotags} -ldflags "${ldflags}" -o bentoo ./cmd/bentoo
 }
 
 src_install() {
@@ -58,6 +64,14 @@ pkg_postinst() {
 	elog "  git:"
 	elog "    user: your_username"
 	elog "    email: your_email@example.com"
+
+	if use playwright; then
+		elog ""
+		elog "The headless-browser (\"script\") version parser is enabled."
+		elog "It needs the Playwright browsers at runtime. If 'bentoo overlay"
+		elog "autoupdate' reports 'could not start Playwright', install them once:"
+		elog "  playwright install chromium"
+	fi
 
 	if use secure; then
 		elog ""
