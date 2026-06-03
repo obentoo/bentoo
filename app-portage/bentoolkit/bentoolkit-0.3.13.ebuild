@@ -13,7 +13,7 @@ LICENSE="MIT"
 SLOT="0"
 KEYWORDS="~amd64 ~x86"
 RESTRICT="network-sandbox"
-IUSE="+secure +playwright browser"
+IUSE="+secure playwright +browser"
 
 # playwright and browser are two alternative backends for the same headless
 # "script" version parser, so at most one may be enabled.
