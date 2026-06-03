@@ -106,10 +106,6 @@ RDEPEND="
 	>=acct-user/${PN}-3[cuda?]
 "
 
-PATCHES=(
-	"${FILESDIR}/${PN}-0.20.2-use-GNUInstallDirs.patch"
-)
-
 pkg_pretend() {
 	if use amd64; then
 		if use cpu_flags_x86_f16c && use cpu_flags_x86_avx2 && use cpu_flags_x86_fma3 && ! use cpu_flags_x86_bmi2; then

@@ -5,12 +5,9 @@ EAPI=8
 
 inherit xdg desktop
 
-MY_PV="${PV/_/-}"
-MY_P="FileZilla_Pro_${MY_PV}"
-
 DESCRIPTION="Commercial verison of FileZilla"
 HOMEPAGE="https://filezillapro.com/"
-SRC_URI="https://distfiles.obentoo.org/${MY_P}_x86_64-linux-gnu.tar.xz"
+SRC_URI="https://distfiles.obentoo.org/${P}_x86_64-linux-gnu.tar.xz"
 
 LICENSE="GPL-2"
 SLOT="0"
