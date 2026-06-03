@@ -15,9 +15,9 @@ CRATES="
 	addr2line@0.25.1
 	adler2@2.0.1
 	aes@0.8.4
-	agent-client-protocol-derive@0.11.1
-	agent-client-protocol-schema@0.13.2
-	agent-client-protocol@0.12.1
+	agent-client-protocol-derive@0.13.1
+	agent-client-protocol-schema@0.13.5
+	agent-client-protocol@0.13.1
 	ahash@0.7.8
 	ahash@0.8.12
 	aho-corasick@1.1.3
@@ -321,7 +321,6 @@ CRATES="
 	der@0.6.1
 	der@0.7.10
 	deranged@0.5.4
-	derive_arbitrary@1.4.2
 	derive_builder@0.12.0
 	derive_builder_core@0.12.0
 	derive_builder_macro@0.12.0
@@ -348,14 +347,9 @@ CRATES="
 	doxygen-rs@0.4.2
 	dtoa-short@0.3.5
 	dtoa@1.0.10
-	dugong-graphlib@0.4.0
-	dugong@0.4.0
 	dunce@1.0.5
 	dwrote@0.11.5
 	dyn-clone@1.0.20
-	dyn-stack-macros@0.1.3
-	dyn-stack@0.10.0
-	dyn-stack@0.13.2
 	ec4rs@1.2.0
 	ecdsa@0.14.8
 	either@1.15.0
@@ -370,7 +364,6 @@ CRATES="
 	encode_unicode@1.0.0
 	encoding_rs@0.8.35
 	endi@1.1.0
-	enum-as-inner@0.6.1
 	enumflags2@0.7.12
 	enumflags2_derive@0.7.12
 	env_filter@0.1.4
@@ -414,7 +407,6 @@ CRATES="
 	flate2@1.1.8
 	float-cmp@0.9.0
 	float-ord@0.3.2
-	float8@0.4.2
 	float_next_after@1.0.0
 	fluent-uri@0.4.1
 	flume@0.11.1
@@ -456,20 +448,6 @@ CRATES="
 	futures@0.1.31
 	futures@0.3.32
 	gaoya@0.2.0
-	gemm-c32@0.17.1
-	gemm-c32@0.18.2
-	gemm-c64@0.17.1
-	gemm-c64@0.18.2
-	gemm-common@0.17.1
-	gemm-common@0.18.2
-	gemm-f16@0.17.1
-	gemm-f16@0.18.2
-	gemm-f32@0.17.1
-	gemm-f32@0.18.2
-	gemm-f64@0.17.1
-	gemm-f64@0.18.2
-	gemm@0.17.1
-	gemm@0.18.2
 	generator@0.8.7
 	generic-array@0.14.7
 	gethostname@1.1.0
@@ -481,7 +459,6 @@ CRATES="
 	gif@0.14.2
 	gimli@0.32.3
 	gio-sys@0.21.5
-	git2@0.21.0
 	gl_generator@0.14.0
 	glam@0.14.0
 	glam@0.15.2
@@ -645,13 +622,11 @@ CRATES="
 	libc@0.2.186
 	libdbus-sys@0.2.6
 	libfuzzer-sys@0.4.10
-	libgit2-sys@0.18.4+1.9.3
 	libloading@0.8.9
 	libm@0.2.15
 	libmimalloc-sys@0.1.44
 	libredox@0.1.10
 	libsqlite3-sys@0.30.1
-	libz-sys@1.1.22
 	linebender_resource_handle@0.1.1
 	link-cplusplus@1.0.12
 	link-section@0.17.2
@@ -682,7 +657,6 @@ CRATES="
 	mach2@0.4.3
 	mach2@0.5.0
 	malloc_buf@0.0.6
-	manatee@0.4.0
 	maplit@1.0.2
 	markup5ever@0.12.1
 	markup5ever@0.35.0
@@ -701,9 +675,6 @@ CRATES="
 	memoffset@0.9.1
 	merge@0.1.0
 	merge_derive@0.1.0
-	merman-core@0.4.0
-	merman-render@0.4.0
-	merman@0.4.0
 	metal@0.33.0
 	mimalloc@0.1.48
 	mime@0.3.17
@@ -816,7 +787,6 @@ CRATES="
 	password-hash@0.4.2
 	paste@1.0.15
 	pastey@0.1.1
-	pastey@0.2.1
 	pathdiff@0.2.3
 	pathfinder_geometry@0.5.1
 	pathfinder_simd@0.5.5
@@ -886,7 +856,6 @@ CRATES="
 	presser@0.3.1
 	pretty_assertions@1.4.1
 	prettyplease@0.2.37
-	primal-check@0.3.4
 	proc-macro-crate@3.4.0
 	proc-macro-error-attr2@2.0.0
 	proc-macro-error-attr@1.0.4
@@ -919,8 +888,6 @@ CRATES="
 	pulldown-cmark@0.13.0
 	pulley-interpreter@36.0.9
 	pulley-macros@36.0.9
-	pulp@0.18.22
-	pulp@0.21.5
 	pxfm@0.1.25
 	qoi@0.4.1
 	quick-error@1.2.3
@@ -954,8 +921,6 @@ CRATES="
 	rangemap@1.7.1
 	rav1e@0.8.1
 	ravif@0.13.0
-	raw-cpuid@10.7.0
-	raw-cpuid@11.6.0
 	raw-window-handle@0.6.2
 	raw-window-metal@1.1.0
 	rawpointer@0.2.1
@@ -964,8 +929,6 @@ CRATES="
 	rdrand@0.4.0
 	read-fonts@0.35.0
 	read-fonts@0.37.0
-	realfft@3.5.0
-	reborrow@0.5.5
 	redox_syscall@0.2.16
 	redox_syscall@0.5.18
 	redox_users@0.4.6
@@ -988,11 +951,8 @@ CRATES="
 	ring@0.17.14
 	rkyv@0.7.45
 	rkyv_derive@0.7.45
-	rmcp-macros@1.6.0
-	rmcp@1.6.0
 	rmp@0.8.14
 	rmpv@1.3.0
-	roughr-merman@0.12.0
 	roxmltree@0.20.0
 	rpassword@7.5.2
 	rsa@0.9.10
@@ -1007,7 +967,6 @@ CRATES="
 	rustc-hash@1.1.0
 	rustc-hash@2.1.1
 	rustc_version@0.4.1
-	rustfft@6.4.1
 	rustix-linux-procfs@0.1.1
 	rustix-openpty@0.2.0
 	rustix@0.38.44
@@ -1030,7 +989,6 @@ CRATES="
 	ryu@1.0.23
 	saa@5.4.9
 	safe_arch@0.7.4
-	safetensors@0.4.5
 	same-file@1.0.6
 	scc@3.5.6
 	schannel@0.1.28
@@ -1060,7 +1018,6 @@ CRATES="
 	selectors@0.35.0
 	self_cell@1.2.2
 	semver@1.0.27
-	seq-macro@0.3.6
 	serde@1.0.228
 	serde_bytes@0.11.19
 	serde_core@1.0.228
@@ -1136,7 +1093,6 @@ CRATES="
 	stacksafe@0.1.4
 	static_assertions@1.1.0
 	streaming-iterator@0.1.9
-	strength_reduce@0.2.4
 	strict-num@0.1.1
 	string_cache@0.8.9
 	string_cache_codegen@0.5.4
@@ -1181,8 +1137,6 @@ CRATES="
 	synchronoise@1.0.1
 	synstructure@0.13.2
 	sys-locale@0.3.2
-	sysctl@0.5.5
-	sysctl@0.6.0
 	sysinfo@0.31.4
 	sysinfo@0.37.2
 	system-configuration-sys@0.5.0
@@ -1257,7 +1211,6 @@ CRATES="
 	tracing@0.1.43
 	tracy-client-sys@0.27.0
 	tracy-client@0.18.3
-	transpose@0.2.3
 	tree-sitter-bash@0.25.1
 	tree-sitter-c@0.24.1
 	tree-sitter-css@0.23.2
@@ -1286,7 +1239,6 @@ CRATES="
 	ucd-trie@0.1.7
 	uds@0.4.2
 	uds_windows@1.1.0
-	ug@0.4.0
 	unarray@0.1.4
 	unicase@2.8.1
 	unicode-bidi-mirroring@0.4.0
@@ -1539,9 +1491,7 @@ CRATES="
 	yawc@0.2.5
 	yazi@0.2.1
 	yeslogic-fontconfig-sys@6.0.0
-	yoke-derive@0.7.5
 	yoke-derive@0.8.0
-	yoke@0.7.5
 	yoke@0.8.0
 	zbus-lockstep-macros@0.5.2
 	zbus-lockstep@0.5.2
@@ -1563,7 +1513,6 @@ CRATES="
 	zerovec-derive@0.11.1
 	zerovec@0.11.4
 	zip@0.6.6
-	zip@1.1.4
 	zstd-safe@5.0.2+zstd.1.5.2
 	zstd-sys@2.0.16+zstd.1.5.7
 	zstd@0.11.2+zstd.1.5.2
@@ -1582,10 +1531,9 @@ declare -A GIT_CRATES=(
 	[async-pipe]='https://github.com/zed-industries/async-pipe-rs;82d00a04211cf4e1236029aa03e6b6ce2a74c553;async-pipe-rs-%commit%'
 	[async-task]='https://github.com/smol-rs/async-task;b4486cd71e4e94fbda54ce6302444de14f4d190e;async-task-%commit%'
 	[calloop]='https://github.com/zed-industries/calloop;eb6b4fd17b9af5ecc226546bdd04185391b3e265;calloop-%commit%'
-	[candle-core]='https://github.com/zed-industries/candle;724d75eb3deebefe83f2a7381a45d4fac6eda383;candle-%commit%/candle-core'
-	[candle-nn]='https://github.com/zed-industries/candle;724d75eb3deebefe83f2a7381a45d4fac6eda383;candle-%commit%/candle-nn'
-	[candle-onnx]='https://github.com/zed-industries/candle;724d75eb3deebefe83f2a7381a45d4fac6eda383;candle-%commit%/candle-onnx'
 	[dap-types]='https://github.com/zed-industries/dap-types;1b461b310481d01e02b2603c16d7144b926339f8;dap-types-%commit%/dap-types'
+	[dugong-graphlib]='https://github.com/zed-industries/merman;1c765dcca2ef5092fcde7bebe8374819563623ef;merman-%commit%/crates/dugong-graphlib'
+	[dugong]='https://github.com/zed-industries/merman;1c765dcca2ef5092fcde7bebe8374819563623ef;merman-%commit%/crates/dugong'
 	[gh-workflow-macros]='https://github.com/zed-industries/gh-workflow;37f3c0575d379c218a9c455ee67585184e40d43f;gh-workflow-%commit%/crates/gh-workflow-macros'
 	[gh-workflow]='https://github.com/zed-industries/gh-workflow;37f3c0575d379c218a9c455ee67585184e40d43f;gh-workflow-%commit%/crates/gh-workflow'
 	[libwebrtc]='https://github.com/zed-industries/livekit-rust-sdks;c3a55bbc207008f1ca3474b6037fdd3c443cad0f;livekit-rust-sdks-%commit%/libwebrtc'
@@ -1594,6 +1542,10 @@ declare -A GIT_CRATES=(
 	[livekit-runtime]='https://github.com/zed-industries/livekit-rust-sdks;c3a55bbc207008f1ca3474b6037fdd3c443cad0f;livekit-rust-sdks-%commit%/livekit-runtime'
 	[livekit]='https://github.com/zed-industries/livekit-rust-sdks;c3a55bbc207008f1ca3474b6037fdd3c443cad0f;livekit-rust-sdks-%commit%/livekit'
 	[lsp-types]='https://github.com/zed-industries/lsp-types;f4dfa89a21ca35cd929b70354b1583fabae325f8;lsp-types-%commit%'
+	[manatee]='https://github.com/zed-industries/merman;1c765dcca2ef5092fcde7bebe8374819563623ef;merman-%commit%/crates/manatee'
+	[merman-core]='https://github.com/zed-industries/merman;1c765dcca2ef5092fcde7bebe8374819563623ef;merman-%commit%/crates/merman-core'
+	[merman-render]='https://github.com/zed-industries/merman;1c765dcca2ef5092fcde7bebe8374819563623ef;merman-%commit%/crates/merman-render'
+	[merman]='https://github.com/zed-industries/merman;1c765dcca2ef5092fcde7bebe8374819563623ef;merman-%commit%/crates/merman'
 	[naga]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/naga'
 	[notify-types]='https://github.com/zed-industries/notify;ce58c24cad542c28e04ced02e20325a4ec28a31d;notify-%commit%/notify-types'
 	[notify]='https://github.com/zed-industries/notify;ce58c24cad542c28e04ced02e20325a4ec28a31d;notify-%commit%/notify'
@@ -1627,6 +1579,7 @@ declare -A GIT_CRATES=(
 	[proptest-macro]='https://github.com/proptest-rs/proptest;3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b;proptest-%commit%/proptest-macro'
 	[proptest]='https://github.com/proptest-rs/proptest;3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b;proptest-%commit%/proptest'
 	[rodio]='https://github.com/RustAudio/rodio;e50e726ddd0292f6ef9de0dda6b90af4ed1fb66a;rodio-%commit%'
+	[roughr-merman]='https://github.com/zed-industries/merman;1c765dcca2ef5092fcde7bebe8374819563623ef;merman-%commit%/crates/roughr'
 	[trash]='https://github.com/zed-industries/trash-rs;3bf27effd4eb8699f2e484d3326b852fe3e53af7;trash-rs-%commit%'
 	[tree-sitter-cpp]='https://github.com/tree-sitter/tree-sitter-cpp;5cb9b693cfd7bfacab1d9ff4acac1a4150700609;tree-sitter-cpp-%commit%'
 	[tree-sitter-gitcommit]='https://github.com/zed-industries/tree-sitter-git-commit;88309716a69dd13ab83443721ba6e0b491d37ee9;tree-sitter-git-commit-%commit%'
