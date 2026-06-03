@@ -51,12 +51,6 @@ src_install() {
 	fperms +x "/opt/${PN}/bin/filezilla"
 	dosym "/opt/${PN}/bin/filezilla" /usr/bin/filezilla-pro
 
-	fperms +x "/opt/${PN}/bin/fzputtygen"
-	dosym "/opt/${PN}/bin/fzputtygen" /usr/bin/fzputtygen-pro
-
-	fperms +x "/opt/${PN}/bin/fzsftp"
-	dosym "/opt/${PN}/bin/fzsftp" /usr/bin/fzsftp-pro
-
 	fperms +x "/opt/${PN}/bin/fzstorj"
 	dosym "/opt/${PN}/bin/fzstorj" /usr/bin/fzstorj-pro
 
