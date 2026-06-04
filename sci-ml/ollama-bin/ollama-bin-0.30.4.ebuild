@@ -39,11 +39,13 @@ QA_PREBUILT="*"
 
 RDEPEND="
 	acct-group/ollama
-	acct-user/ollama
-	cuda? ( dev-util/nvidia-cuda-toolkit )
-	rocm? (
-		dev-libs/rocm-opencl-runtime
-		sci-libs/clblast
+	>=acct-user/ollama-3[cuda?]
+	amd64? (
+		cuda? ( dev-util/nvidia-cuda-toolkit )
+		rocm? (
+			dev-libs/rocm-opencl-runtime
+			sci-libs/clblast
+		)
 	)
 "
 
