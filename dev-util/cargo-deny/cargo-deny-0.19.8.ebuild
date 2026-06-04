@@ -1,0 +1,260 @@
+# Copyright 1999-2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+
+EAPI=8
+
+CRATES="
+	adler2@2.0.1
+	aho-corasick@1.1.4
+	allocator-api2@0.2.21
+	anstream@1.0.0
+	anstyle-parse@1.0.0
+	anstyle-query@1.1.5
+	anstyle-wincon@3.0.11
+	anstyle@1.0.14
+	anyhow@1.0.102
+	base64@0.22.1
+	bitflags@2.11.1
+	bitvec@1.0.1
+	block-buffer@0.10.4
+	borsh@1.6.1
+	bstr@1.12.1
+	bytes@1.11.1
+	camino@1.2.2
+	cc@1.2.62
+	cfg-expr@0.20.7
+	cfg-if@1.0.4
+	cfg_aliases@0.2.1
+	clap@4.6.1
+	clap_builder@4.6.0
+	clap_derive@4.6.1
+	clap_lex@1.1.0
+	codespan-reporting@0.13.1
+	codespan@0.13.1
+	colorchoice@1.0.5
+	console@0.16.3
+	cpufeatures@0.2.17
+	crc32fast@1.5.0
+	crossbeam-channel@0.5.15
+	crossbeam-deque@0.8.6
+	crossbeam-epoch@0.9.18
+	crossbeam-queue@0.3.12
+	crossbeam-utils@0.8.21
+	crossbeam@0.8.4
+	crypto-common@0.1.7
+	digest@0.10.7
+	displaydoc@0.2.5
+	either@1.16.0
+	encode_unicode@1.0.0
+	equivalent@1.0.2
+	errno@0.3.14
+	fastrand@2.4.1
+	fern@0.7.1
+	find-msvc-tools@0.1.9
+	fixedbitset@0.5.7
+	flate2@1.1.9
+	foldhash@0.1.5
+	form_urlencoded@1.2.2
+	fs_extra@1.3.0
+	funty@2.0.0
+	generic-array@0.14.7
+	getrandom@0.2.17
+	getrandom@0.3.4
+	getrandom@0.4.2
+	globset@0.4.18
+	goblin@0.10.5
+	hashbrown@0.15.5
+	hashbrown@0.17.1
+	heck@0.5.0
+	home@0.5.12
+	http@1.4.0
+	httparse@1.10.1
+	icu_collections@2.2.0
+	icu_locale_core@2.2.0
+	icu_normalizer@2.2.0
+	icu_normalizer_data@2.2.0
+	icu_properties@2.2.0
+	icu_properties_data@2.2.0
+	icu_provider@2.2.0
+	id-arena@2.3.0
+	idna@1.1.0
+	idna_adapter@1.2.2
+	indexmap@2.14.0
+	insta@1.47.2
+	is_terminal_polyfill@1.70.2
+	itoa@1.0.18
+	jiff-static@0.2.24
+	jiff@0.2.24
+	jobserver@0.1.34
+	krates@0.21.2
+	leb128fmt@0.1.0
+	libc@0.2.186
+	linux-raw-sys@0.12.1
+	litemap@0.8.2
+	lock_api@0.4.14
+	log@0.4.29
+	memchr@2.8.0
+	memmap2@0.9.10
+	miniz_oxide@0.8.9
+	nu-ansi-term@0.50.3
+	once_cell@1.21.4
+	once_cell_polyfill@1.70.2
+	parking_lot@0.12.5
+	parking_lot_core@0.9.12
+	percent-encoding@2.3.2
+	petgraph@0.8.1
+	pkg-config@0.3.33
+	plain@0.2.3
+	portable-atomic-util@0.2.7
+	portable-atomic@1.13.1
+	potential_utf@0.1.5
+	prettyplease@0.2.37
+	proc-macro2@1.0.106
+	quote@1.0.45
+	r-efi@5.3.0
+	r-efi@6.0.0
+	radium@0.7.0
+	rayon-core@1.13.0
+	rayon@1.12.0
+	redox_syscall@0.5.18
+	regex-automata@0.4.14
+	regex-syntax@0.8.10
+	regex@1.12.3
+	ring@0.17.14
+	rustc-stable-hash@0.1.2
+	rustix@1.1.4
+	rustls-pki-types@1.14.1
+	rustls-webpki@0.103.13
+	rustls@0.23.40
+	same-file@1.0.6
+	scopeguard@1.2.0
+	scroll@0.13.0
+	scroll_derive@0.13.1
+	semver@1.0.28
+	serde@1.0.228
+	serde_core@1.0.228
+	serde_derive@1.0.228
+	serde_json@1.0.150
+	sha2@0.10.9
+	shlex@1.3.0
+	simd-adler32@0.3.9
+	similar@2.7.0
+	smallvec@1.15.1
+	smol_str@0.3.2
+	spdx@0.13.4
+	stable_deref_trait@1.2.1
+	strsim@0.11.1
+	strum@0.28.0
+	strum_macros@0.28.0
+	subtle@2.6.1
+	syn@2.0.117
+	synstructure@0.13.2
+	tame-index@0.26.3
+	tap@1.0.1
+	target-lexicon@0.13.3
+	tempfile@3.27.0
+	termcolor@1.4.1
+	thiserror-impl@2.0.18
+	thiserror@2.0.18
+	tinystr@0.8.3
+	tinyvec@1.11.0
+	tinyvec_macros@0.1.1
+	toml-span@0.7.1
+	twox-hash@2.1.2
+	typenum@1.20.0
+	unicode-ident@1.0.24
+	unicode-normalization@0.1.25
+	unicode-width@0.2.2
+	unicode-xid@0.2.6
+	untrusted@0.9.0
+	ureq-proto@0.6.0
+	ureq@3.3.0
+	url@2.5.8
+	utf8-zero@0.8.1
+	utf8_iter@1.0.4
+	utf8parse@0.2.2
+	version_check@0.9.5
+	walkdir@2.5.0
+	wasi@0.11.1+wasi-snapshot-preview1
+	wasip2@1.0.3+wasi-0.2.9
+	wasip3@0.4.0+wasi-0.3.0-rc-2026-01-06
+	wasm-encoder@0.244.0
+	wasm-metadata@0.244.0
+	wasmparser@0.244.0
+	webpki-roots@1.0.7
+	winapi-util@0.1.11
+	windows-link@0.2.1
+	windows-sys@0.52.0
+	windows-sys@0.61.2
+	windows-targets@0.52.6
+	windows_aarch64_gnullvm@0.52.6
+	windows_aarch64_msvc@0.52.6
+	windows_i686_gnu@0.52.6
+	windows_i686_gnullvm@0.52.6
+	windows_i686_msvc@0.52.6
+	windows_x86_64_gnu@0.52.6
+	windows_x86_64_gnullvm@0.52.6
+	windows_x86_64_msvc@0.52.6
+	wit-bindgen-core@0.51.0
+	wit-bindgen-rust-macro@0.51.0
+	wit-bindgen-rust@0.51.0
+	wit-bindgen@0.51.0
+	wit-bindgen@0.57.1
+	wit-component@0.244.0
+	wit-parser@0.244.0
+	writeable@0.6.3
+	wyz@0.5.1
+	yoke-derive@0.8.2
+	yoke@0.8.2
+	zerofrom-derive@0.1.7
+	zerofrom@0.1.8
+	zeroize@1.8.2
+	zerotrie@0.2.4
+	zerovec-derive@0.11.3
+	zerovec@0.11.6
+	zmij@1.0.21
+	zstd-safe@7.2.4
+	zstd-sys@2.0.16+zstd.1.5.7
+	zstd@0.13.3
+"
+
+RUST_MIN_VER="1.88.0"
+
+inherit cargo
+
+DESCRIPTION="Cargo plugin to lint your project's dependency graph (licenses, advisories, bans, sources)"
+HOMEPAGE="https://github.com/EmbarkStudios/cargo-deny"
+
+if [[ ${PV} == *9999* ]]; then
+	EGIT_REPO_URI="https://github.com/EmbarkStudios/cargo-deny.git"
+	inherit git-r3
+else
+	SRC_URI="
+		https://github.com/EmbarkStudios/cargo-deny/archive/refs/tags/${PV}.tar.gz -> ${P}.tar.gz
+		${CARGO_CRATE_URIS}
+	"
+	KEYWORDS="~amd64 ~arm64"
+fi
+
+# cargo-deny itself is dual-licensed MIT OR Apache-2.0
+LICENSE="|| ( Apache-2.0 MIT )"
+# Dependent crate licenses
+LICENSE+="
+	Apache-2.0 Apache-2.0-with-LLVM-exceptions BSD CDLA-Permissive-2.0
+	ISC MIT Unicode-3.0 ZLIB
+"
+SLOT="0"
+
+BDEPEND="virtual/pkgconfig"
+
+# rust does not use *FLAGS from make.conf, silence portage warning
+QA_FLAGS_IGNORED="usr/bin/${PN}"
+
+src_compile() {
+	cargo_src_compile
+}
+
+src_install() {
+	dobin "$(cargo_target_dir)/${PN}"
+	einstalldocs
+}
