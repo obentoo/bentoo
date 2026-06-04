@@ -152,13 +152,9 @@ src_unpack() {
 }
 
 src_prepare() {
-	pushd "builds/cuda_nvcc/targets/${narch}-linux" >/dev/null || die
-	eapply -p5 "${FILESDIR}/nvidia-cuda-toolkit-glibc-2.41-r1.patch"
-	popd >/dev/null || die
-	pushd "builds/cuda_nvcc/targets/${narch}-linux" >/dev/null || die
-	eapply -p5 "${FILESDIR}/nvidia-cuda-toolkit-glibc-2.42.patch"
-	popd >/dev/null || die
-
+	# CUDA 13.2.1+ already ships the glibc-2.41/2.42/2.43 exception-specification
+	# header fixes upstream (the crt headers also moved from cuda_nvcc to cuda_crt),
+	# so the old nvidia-cuda-toolkit-glibc-2.4{1,2}.patch no longer apply and are dropped.
 	default
 }
 
