@@ -23,6 +23,8 @@ MYSPELL_THES=(
 	"opt/libreoffice26.2/share/extensions/dict-hu/th_hu_HU_v2.idx"
 )
 
+RPM_COMPRESS_TYPE="none"
+
 inherit rpm myspell-r2
 
 DESCRIPTION="Hungarian dictionaries for myspell/hunspell"
@@ -37,5 +39,5 @@ IUSE=""
 src_unpack() {
 	myspell-r2_src_unpack
 
-	rpm_unpack ./LibreOffice_${LO_VER}_Linux_x86-64_rpm_langpack_hu/RPMS/libreoffice26.2-dict-hu-${LO_VER}-1.x86_64.rpm
+	rpm_unpack ./LibreOffice_${LO_VER}_Linux_x86-64_rpm_langpack_hu/RPMS/libreoffice26.2-dict-hu-${LO_VER}-2.x86_64.rpm
 }
