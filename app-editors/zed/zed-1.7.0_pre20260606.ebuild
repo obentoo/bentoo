@@ -15,9 +15,9 @@ CRATES="
 	addr2line@0.25.1
 	adler2@2.0.1
 	aes@0.8.4
-	agent-client-protocol-derive@0.13.1
-	agent-client-protocol-schema@0.13.5
-	agent-client-protocol@0.13.1
+	agent-client-protocol-derive@0.14.0
+	agent-client-protocol-schema@0.13.6
+	agent-client-protocol@0.14.0
 	ahash@0.7.8
 	ahash@0.8.12
 	aho-corasick@1.1.3
