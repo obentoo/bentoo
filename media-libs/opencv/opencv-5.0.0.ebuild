@@ -85,7 +85,7 @@ IUSE+=" cuda cudnn opencl video_cards_intel"
 # video
 IUSE+=" +ffmpeg gphoto2 gstreamer ieee1394 openni openni2 xine vaapi v4l"
 # image
-IUSE+=" avif gdal gif jasper jpeg jpeg2k openexr png quirc spng tesseract tiff webp"
+IUSE+=" avif gdal gif jasper jpeg jpeg2k openexr png spng tesseract tiff webp"
 # gui
 IUSE+=" gtk3 qt6 opengl truetype vtk vulkan wayland"
 # parallel
@@ -277,7 +277,6 @@ COMMON_DEPEND="
 		dev-qt/qt5compat:6
 		dev-qt/qtbase:6[gui,widgets,concurrent,opengl?]
 	)
-	quirc? ( media-libs/quirc:=[${MULTILIB_USEDEP}] )
 	tbb? ( >=dev-cpp/tbb-2022.1.0:=[${MULTILIB_USEDEP}] )
 	tesseract? ( app-text/tesseract[${MULTILIB_USEDEP}] )
 	tiff? ( media-libs/tiff:=[${MULTILIB_USEDEP}] )
@@ -365,20 +364,24 @@ PATCHES=(
 	"${FILESDIR}/${PN}-3.4.1-cuda-add-relaxed-constexpr.patch"
 	"${FILESDIR}/${PN}-4.1.2-opencl-license.patch"
 	"${FILESDIR}/${PN}-4.4.0-disable-native-cpuflag-detect.patch"
-	"${FILESDIR}/${PN}-4.12.0-link-with-cblas-for-lapack.patch"
 
 	"${FILESDIR}/${PN}-4.13.0-use-system-flatbuffers.patch"
-	"${FILESDIR}/${PN}-4.8.1-use-system-opencl.patch"
-
-	"${FILESDIR}/${PN}-4.9.0-drop-python2-detection.patch"
+	# regenerated for 5.0.0; must be applied after opencv-4.1.2-opencl-license.patch
+	"${FILESDIR}/${PN}-5.0.0-use-system-opencl.patch"
 
 	"${FILESDIR}/${PN}-4.10.0-dnn-explicitly-include-abseil-cpp.patch"
 	"${FILESDIR}/${PN}-4.10.0-tbb-detection.patch"
 
-	"${FILESDIR}/${PN}-4.11.0-ade-0.1.2e.tar.gz.patch"
 	"${FILESDIR}/${PN}-4.11.0-cmake-CMP0177.patch"
 
-	"${FILESDIR}/${PN}-4.12.0-cmake-4.patch"
+	# NOTE OpenCV 5: gapi moved from core to opencv_contrib.
+	# The ADE download patch now targets the contrib tree and is applied
+	# in src_prepare inside the `use contrib` block (see below).
+	# link-with-cblas-for-lapack: upstream incorporated the logic in
+	#   cmake/OpenCVFindLAPACK.cmake (find_library(CBLAS_LIBRARY cblas)).
+	# drop-python2-detection: upstream removed all python2 detection.
+	# cmake-4 (gapi cmake_minimum_required bump): gapi/CMakeLists.txt already
+	#   requires CMake 3.13 in contrib.
 
 	# TODO applied in src_prepare
 	# "${FILESDIR}/${PN}_contrib-4.8.1-rgbd.patch"
@@ -555,18 +558,18 @@ src_unpack() {
 		# ippicv
 		# ittnotify
 		libjasper
-		libjpeg
+		# libjpeg # dropped in OpenCV 5, only libjpeg-turbo remains
 		libjpeg-turbo
 		libpng
 		libspng
 		libtiff
 		# libtim-vx
 		libwebp
-		openexr
+		# openexr # bundled OpenEXR removed in OpenCV 5 (system lib only)
 		openjpeg
 		# orbbecsdk
 		protobuf
-		quirc
+		# quirc # QR decoding moved into objdetect in OpenCV 5, no bundled quirc
 		tbb
 		zlib
 		zlib-ng
@@ -574,7 +577,11 @@ src_unpack() {
 
 	local file
 	for file in "${files_3rdparty[@]}"; do
-		rm -r "${S}/3rdparty/${file}" || die "Removing 3rd party components (${file}) failed"
+		# Some bundled components may be absent depending on the release;
+		# only remove what is actually present to avoid spurious failures.
+		if [[ -d "${S}/3rdparty/${file}" ]]; then
+			rm -r "${S}/3rdparty/${file}" || die "Removing 3rd party components (${file}) failed"
+		fi
 
 		sed -e "\_add\_subdirectory(.*3rdparty/${file})_d" \
 			-i "${S}/CMakeLists.txt" "${S}/cmake"/*cmake || die
@@ -585,26 +592,47 @@ src_prepare() {
 	cmake_src_prepare
 
 	sed \
-		-e 's:truetype/wqy:wqy-microhei:g' \
-		-i \
-			modules/gapi/test/render/gapi_render_tests_ocv.cpp \
-			modules/gapi/test/render/ftp_render_test.cpp \
-		|| die
-
-	sed \
 		-e '/find_package(OpenMP/s/)/ COMPONENTS C CXX)/g' \
 		-i \
 			cmake/OpenCVFindFrameworks.cmake \
 		|| die
 
 	if use contrib; then
+		# NOTE OpenCV 5: gapi lives in opencv_contrib now, so the gapi-related
+		# preparation (wqy fonts, ADE download tweak, ADE pre-cache) only makes
+		# sense when contrib is enabled.
+		sed \
+			-e 's:truetype/wqy:wqy-microhei:g' \
+			-i \
+				"${WORKDIR}/${PN}_contrib-${PV}/modules/gapi/test/render/gapi_render_tests_ocv.cpp" \
+				"${WORKDIR}/${PN}_contrib-${PV}/modules/gapi/test/render/ftp_render_test.cpp" \
+			|| die
+
 		pushd "${WORKDIR}/${PN}_contrib-${PV}" >/dev/null || die
 		eapply "${FILESDIR}/${PN}_contrib-4.8.1-rgbd.patch"
 		eapply "${FILESDIR}/${PN}_contrib-4.8.1-NVIDIAOpticalFlowSDK-2.0.tar.gz.patch"
-		eapply "${FILESDIR}/${PN}_contrib-4.12.0-cuda-13.0.patch"
-		eapply "${FILESDIR}/${PN}_contrib-4.13.0-cudacodec-fix-cuda-include.patch"
+		eapply "${FILESDIR}/${PN}_contrib-5.0.0-cuda-13.0.patch"
+
+		if [[ ${PV} = *9999* ]] ; then
+			# live ebuild tracks upstream gapi DownloadADE.cmake directly
+			sed \
+				-e "/ade_filename/s/\.zip/.tar.gz/" \
+				-e "/set(ade_md5/s/\".*\"/\"${ADE_MD5}\"/g" \
+				-i "modules/gapi/cmake/DownloadADE.cmake" || die
+		else
+			# stable: use the dedicated patch instead of the sed above so we
+			# never double-apply the .zip->.tar.gz / md5 rewrite
+			eapply "${FILESDIR}/${PN}-4.11.0-ade-0.1.2e.tar.gz.patch"
+		fi
+
 		[[ -n "${PATCHES_CONTRIB_USER[*]}" ]] && eapply "${PATCHES_CONTRIB_USER[@]}"
 		popd >/dev/null || die
+
+		# OpenCV looks for the pre-fetched ADE archive in <source-root>/.cache/ade
+		mkdir -p "${S}/.cache/ade" || die
+		cp \
+			"${DISTDIR}/ade-${ADE_PV}.tar.gz" \
+			"${S}/.cache/ade/$(md5sum "${DISTDIR}/ade-${ADE_PV}.tar.gz" | cut -f 1 -d " ")-v${ADE_PV}.tar.gz" || die
 
 		! use contribcvv && { rm -R "${WORKDIR}/${PN}_contrib-${PV}/modules/cvv" || die; }
 		! use contribfreetype && { rm -R "${WORKDIR}/${PN}_contrib-${PV}/modules/freetype" || die; }
@@ -612,18 +640,6 @@ src_prepare() {
 		! use contribovis && { rm -R "${WORKDIR}/${PN}_contrib-${PV}/modules/ovis" || die; }
 		! use contribsfm && { rm -R "${WORKDIR}/${PN}_contrib-${PV}/modules/sfm" || die; }
 		! use contribxfeatures2d && { rm -R "${WORKDIR}/${PN}_contrib-${PV}/modules/xfeatures2d" || die; }
-	fi
-
-	mkdir -p "${S}/.cache/ade" || die
-	cp \
-		"${DISTDIR}/ade-${ADE_PV}.tar.gz" \
-		"${S}/.cache/ade/$(md5sum "${DISTDIR}/ade-${ADE_PV}.tar.gz" | cut -f 1 -d " ")-v${ADE_PV}.tar.gz" || die
-
-	if [[ ${PV} = *9999* ]] ; then
-		sed \
-			-e "/ade_filename/s/\.zip/.tar.gz/" \
-			-e "/set(ade_md5/s/\".*\"/\"${ADE_MD5}\"/g" \
-			-i "${S}/modules/gapi/cmake/DownloadADE.cmake" || die
 	fi
 
 	if use wechat-qrcode; then
@@ -728,7 +744,6 @@ multilib_src_configure() {
 	# Optional 3rd party components
 	# ===================================================
 		-DOPENCV_ENABLE_NONFREE="$(usex non-free)"
-		-DWITH_QUIRC="$(usex quirc)"
 		-DWITH_FLATBUFFERS="$(multilib_native_usex contribdnn)"
 		-DWITH_1394="$(usex ieee1394)"
 		# -DWITH_AVFOUNDATION="no" # IOS
@@ -876,7 +891,9 @@ multilib_src_configure() {
 	# configure modules to be build
 	# ===================================================
 		-DBUILD_opencv_dnn="$(usex contribdnn)"
-		-DBUILD_opencv_gapi="$(usex ffmpeg yes "$(usex gstreamer)")"
+		# OpenCV 5: gapi was moved to opencv_contrib and is only available via
+		# OPENCV_EXTRA_MODULES_PATH, so it can only be built when contrib is on.
+		-DBUILD_opencv_gapi="$(usex contrib "$(usex ffmpeg yes "$(usex gstreamer)")" no)"
 		-DBUILD_opencv_features2d="$(usex features2d)"
 		-DBUILD_opencv_java_bindings_generator="$(usex java)"
 		-DBUILD_opencv_wechat_qrcode="$(usex wechat-qrcode)"
