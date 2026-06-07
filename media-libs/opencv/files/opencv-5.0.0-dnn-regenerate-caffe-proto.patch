@@ -1,0 +1,22 @@
+OpenCV 5.0.0 dropped modules/dnn/src/caffe/opencv-caffe.proto (and the caffe
+importer/shrinker) but kept caffe_io.cpp, which still #includes the generated
+"opencv-caffe.pb.h". With Gentoo's system protobuf and -DPROTOBUF_UPDATE_FILES=yes,
+the if(PROTOBUF_UPDATE_FILES) branch regenerates only the tensorflow and onnx
+protos via protoc, so the caffe header is never produced (and the shipped
+pre-generated misc/caffe/opencv-caffe.pb.h is for the old protobuf 3.19 API and
+does not compile against system protobuf 34). The ebuild reinstates the proto
+(from 4.11.0, identical to the shipped .pb) in src_prepare; this patch makes the
+update-files glob include it so it is regenerated against system protobuf, just
+like tensorflow and onnx.
+
+--- a/modules/dnn/CMakeLists.txt
++++ b/modules/dnn/CMakeLists.txt
+@@ -393,7 +393,7 @@ if(HAVE_PROTOBUF)
+   ocv_target_compile_definitions(${the_module} PRIVATE "HAVE_PROTOBUF=1")
+
+   if(PROTOBUF_UPDATE_FILES)
+-    file(GLOB proto_files "${CMAKE_CURRENT_LIST_DIR}/src/tensorflow/*.proto" "${CMAKE_CURRENT_LIST_DIR}/src/onnx/opencv-onnx.proto")
++    file(GLOB proto_files "${CMAKE_CURRENT_LIST_DIR}/src/tensorflow/*.proto" "${CMAKE_CURRENT_LIST_DIR}/src/onnx/opencv-onnx.proto" "${CMAKE_CURRENT_LIST_DIR}/src/caffe/opencv-caffe.proto")
+     if(CMAKE_VERSION VERSION_LESS "3.13.0")
+       set(PROTOBUF_GENERATE_CPP_APPEND_PATH ON) # required for tensorflow
+       protobuf_generate_cpp(fw_srcs fw_hdrs ${proto_files})

@@ -374,6 +374,11 @@ PATCHES=(
 
 	"${FILESDIR}/${PN}-4.11.0-cmake-CMP0177.patch"
 
+	# OpenCV 5 dropped src/caffe/opencv-caffe.proto but kept caffe_io.cpp which
+	# needs the generated header; make PROTOBUF_UPDATE_FILES regenerate it (the
+	# .proto itself is reinstated from 4.11.0 in src_prepare below).
+	"${FILESDIR}/${PN}-5.0.0-dnn-regenerate-caffe-proto.patch"
+
 	# NOTE OpenCV 5: gapi moved from core to opencv_contrib.
 	# The ADE download patch now targets the contrib tree and is applied
 	# in src_prepare inside the `use contrib` block (see below).
@@ -724,6 +729,13 @@ src_prepare() {
 			-e 's:share/OpenCV/testdata:@OPENCV_TEST_DATA_INSTALL_PATH@:g' \
 			-i  "${S}/cmake/templates/opencv_run_all_tests_unix.sh.in" || die
 	fi
+
+	# OpenCV 5 dropped opencv-caffe.proto but kept caffe_io.cpp which needs the
+	# generated header; reinstate the proto (from 4.11.0, identical to the shipped
+	# pre-generated .pb) so PROTOBUF_UPDATE_FILES regenerates it against system
+	# protobuf. The destination filename must stay opencv-caffe.proto since protoc
+	# derives opencv-caffe.pb.h from it. dnn/caffe is core, always built.
+	cp "${FILESDIR}/opencv-caffe.proto" "${S}/modules/dnn/src/caffe/opencv-caffe.proto" || die
 }
 
 multilib_src_configure() {
