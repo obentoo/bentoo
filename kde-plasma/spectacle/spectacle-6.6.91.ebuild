@@ -66,6 +66,8 @@ BDEPEND="
 	virtual/pkgconfig
 "
 
+PATCHES=( "${FILESDIR}/${P}-opencv5.patch" )
+
 src_configure() {
 	local mycmakeargs=(
 		$(cmake_use_find_package share KF6Purpose)
