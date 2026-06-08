@@ -19,7 +19,7 @@ LICENSE="LGPL-2+ BSD"
 SLOT="6/0" # soname version of libwebkit2gtk-6.0
 KEYWORDS="~amd64 ~arm ~arm64 ~loong ~ppc ~ppc64 ~riscv ~sparc ~x86"
 
-IUSE="aqua avif custom-cflags examples gamepad keyring +gstreamer +introspection pdf jpegxl +jumbo-build lcms seccomp spell systemd wayland X"
+IUSE="aqua avif custom-cflags examples gamepad keyring +gstreamer +introspection pdf jpegxl +jumbo-build lcms seccomp spell systemd wayland +webdriver X"
 REQUIRED_USE="|| ( aqua wayland X )"
 
 # Tests do not run when built from tarballs
@@ -100,6 +100,7 @@ RDEPEND="
 		dev-libs/wayland
 		dev-libs/wayland-protocols
 	)
+	webdriver? ( !net-libs/webkit-gtk:4.1[webdriver] )
 "
 DEPEND="${RDEPEND}"
 # Need real bison, not yacc
@@ -229,7 +230,10 @@ src_configure() {
 		-DENABLE_VIDEO=$(usex gstreamer)
 		-DENABLE_WEB_AUDIO=$(usex gstreamer)
 		-DENABLE_WEB_CODECS=$(usex gstreamer) # https://bugs.webkit.org/show_bug.cgi?id=269147
-		-DENABLE_WEBDRIVER=ON
+		# WebKitWebDriver is an automation tool to control the browser via the
+		# W3C WebDriver API. Only one installed SLOT may ship the binary,
+		# enforced by the cross-SLOT [webdriver] blocker in RDEPEND.
+		-DENABLE_WEBDRIVER=$(usex webdriver ON OFF)
 		-DENABLE_WEBGL=ON
 		-DUSE_AVIF=$(usex avif)
 		# Source/cmake/GStreamerDependencies.cmake
