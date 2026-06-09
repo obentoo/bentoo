@@ -708,7 +708,9 @@ CRATES="
 	noop_proc_macro@0.3.0
 	normpath@1.5.0
 	notify-debouncer-mini@0.4.1
+	notify-types@2.1.0
 	notify@6.1.1
+	notify@9.0.0-rc.4
 	ntapi@0.4.1
 	nu-ansi-term@0.50.3
 	nucleo-matcher@0.3.1
@@ -741,6 +743,7 @@ CRATES="
 	objc2-core-data@0.2.2
 	objc2-core-foundation@0.3.2
 	objc2-core-image@0.2.2
+	objc2-core-services@0.3.2
 	objc2-encode@4.1.0
 	objc2-foundation@0.2.2
 	objc2-foundation@0.3.2
@@ -1485,6 +1488,7 @@ CRATES="
 	xml5ever@0.18.1
 	xmlparser@0.13.6
 	xmlwriter@0.1.0
+	xxhash-rust@0.8.15
 	y4m@0.8.0
 	yaml-rust2@0.8.1
 	yansi@1.0.1
@@ -1547,8 +1551,6 @@ declare -A GIT_CRATES=(
 	[merman-render]='https://github.com/zed-industries/merman;06094471f97acb10d0eebf8b92bac19ba2928eea;merman-%commit%/crates/merman-render'
 	[merman]='https://github.com/zed-industries/merman;06094471f97acb10d0eebf8b92bac19ba2928eea;merman-%commit%/crates/merman'
 	[naga]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/naga'
-	[notify-types]='https://github.com/zed-industries/notify;ce58c24cad542c28e04ced02e20325a4ec28a31d;notify-%commit%/notify-types'
-	[notify]='https://github.com/zed-industries/notify;ce58c24cad542c28e04ced02e20325a4ec28a31d;notify-%commit%/notify'
 	[nvim-rs]='https://github.com/KillTheMule/nvim-rs;764dd270c642f77f10f3e19d05cc178a6cbe69f3;nvim-rs-%commit%'
 	[pet-conda]='https://github.com/microsoft/python-environment-tools;9e61a22af989fe54937bf07c9f9cff1bc53d9056;python-environment-tools-%commit%/crates/pet-conda'
 	[pet-core]='https://github.com/microsoft/python-environment-tools;9e61a22af989fe54937bf07c9f9cff1bc53d9056;python-environment-tools-%commit%/crates/pet-core'
@@ -1609,7 +1611,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="8eea0d68f4e6bc6921526f36cff4f7bdd3aaad65"
+EGIT_COMMIT="3d2f7adb95133e696334c17968d5369120838edf"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
@@ -1763,14 +1765,6 @@ src_prepare() {
 	LIBWERBRTC_GIT+=", rev = \"${LIVEKIT_COMMIT}\""
 	local LIBWERBRTC_PATH="libwebrtc = \\{ path = \"${WORKDIR}/livekit-rust-sdks-${LIVEKIT_COMMIT}/libwebrtc\""
 
-	local NOTIFY_COMMIT="ce58c24cad542c28e04ced02e20325a4ec28a31d"
-	local NOTIFY_GIT="notify = { git = \"https://github.com/zed-industries/notify.git\""
-	NOTIFY_GIT+=", rev = \"${NOTIFY_COMMIT}\""
-	local NOTIFY_PATH="notify = \\{ path = \"${WORKDIR}/notify-${NOTIFY_COMMIT}/notify\""
-	local NOTIFY_TYPES_GIT="notify-types = { git = \"https://github.com/zed-industries/notify.git\""
-	NOTIFY_TYPES_GIT+=", rev = \"${NOTIFY_COMMIT}\""
-	local NOTIFY_TYPES_PATH="notify-types = \\{ path = \"${WORKDIR}/notify-${NOTIFY_COMMIT}/notify-types\""
-
 	local WIN_CAP_COMMIT="f0d6c1b6691db75461b732f6d5ff56eed002eeb9"
 	local WIN_CAP_GIT="windows-capture = { git = \"https://github.com/zed-industries/windows-capture.git\""
 	WIN_CAP_GIT+=", rev = \"${WIN_CAP_COMMIT}\""
@@ -1785,8 +1779,6 @@ src_prepare() {
 		-e "s#${LIVEKIT_GIT}#${LIVEKIT_PATH}#" \
 		-e "s#${LIBWERBRTC_GIT}#${LIBWERBRTC_PATH}#" \
 		-e "s#${WEBRTC_SYS_GIT}#${WEBRTC_SYS_PATH}#" \
-		-e "s#${NOTIFY_GIT}#${NOTIFY_PATH}#" \
-		-e "s#${NOTIFY_TYPES_GIT}#${NOTIFY_TYPES_PATH}#" \
 		-e "s#${WIN_CAP_GIT}#${WIN_CAP_PATH}#" \
 		-i "${S}/Cargo.toml" || die "Cargo fetch workaround failed"
 
