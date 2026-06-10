@@ -32,7 +32,7 @@ DEPEND="${RDEPEND}
 	dev-util/glslang:=[${MULTILIB_USEDEP}]
 	dev-util/spirv-headers
 	dev-util/vulkan-headers
-	dev-util/vulkan-utility-libraries:=[${MULTILIB_USEDEP}]
+	>=dev-util/vulkan-utility-libraries-1.4.353-r1:=[${MULTILIB_USEDEP}]
 	wayland? ( dev-libs/wayland:=[${MULTILIB_USEDEP}] )
 	X? (
 		x11-libs/libX11:=[${MULTILIB_USEDEP}]
