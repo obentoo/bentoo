@@ -7,14 +7,11 @@ PYTHON_COMPAT=( python3_{11..14} )
 VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/hughsie.asc
 inherit meson python-single-r1 vala verify-sig udev xdg
 
-# Upstream tag uses a hyphenated re-release suffix; tarball name is fwupd-${PV}.tar.xz
-MY_PV="2.1.4-2"
-
 DESCRIPTION="Aims to make updating firmware on Linux automatic, safe and reliable"
 HOMEPAGE="https://fwupd.org"
 SRC_URI="
-	https://github.com/${PN}/${PN}/releases/download/${MY_PV}/${P}.tar.xz
-	verify-sig? ( https://github.com/${PN}/${PN}/releases/download/${MY_PV}/${P}.tar.xz.asc )
+	https://github.com/${PN}/${PN}/releases/download/${PV}/${P}.tar.xz
+	verify-sig? ( https://github.com/${PN}/${PN}/releases/download/${PV}/${P}.tar.xz.asc )
 "
 
 LICENSE="LGPL-2.1+"
