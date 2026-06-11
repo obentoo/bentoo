@@ -13,7 +13,7 @@ LICENSE="MIT"
 SLOT="0"
 KEYWORDS="~amd64 ~x86"
 RESTRICT="network-sandbox"
-IUSE="+secure playwright +browser"
+IUSE="+secure playwright +browser btrbk snapper restic rclone systemd"
 
 # playwright and browser are two alternative backends for the same headless
 # "script" version parser, so at most one may be enabled.
@@ -29,6 +29,19 @@ RDEPEND="
 			www-client/google-chrome
 		)
 	)
+"
+
+# Optional runtime backends for the `bentoo snapshot` manager:
+# engine (btrbk/snapper), cloud ship (restic/rclone) and scheduling
+# (systemd timers). The binary degrades gracefully without them -- at
+# runtime `bentoo snapshot detect` reports an actionable error naming
+# the exact package whenever an active config needs an absent backend.
+RDEPEND+="
+	btrbk? ( app-backup/btrbk )
+	snapper? ( app-backup/snapper )
+	restic? ( app-backup/restic )
+	rclone? ( net-misc/rclone )
+	systemd? ( sys-apps/systemd )
 "
 
 src_unpack() {
