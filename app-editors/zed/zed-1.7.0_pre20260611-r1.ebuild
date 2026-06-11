@@ -708,9 +708,7 @@ CRATES="
 	noop_proc_macro@0.3.0
 	normpath@1.5.0
 	notify-debouncer-mini@0.4.1
-	notify-types@2.1.0
 	notify@6.1.1
-	notify@9.0.0-rc.4
 	ntapi@0.4.1
 	nu-ansi-term@0.50.3
 	nucleo-matcher@0.3.1
@@ -1551,6 +1549,8 @@ declare -A GIT_CRATES=(
 	[merman-render]='https://github.com/zed-industries/merman;06094471f97acb10d0eebf8b92bac19ba2928eea;merman-%commit%/crates/merman-render'
 	[merman]='https://github.com/zed-industries/merman;06094471f97acb10d0eebf8b92bac19ba2928eea;merman-%commit%/crates/merman'
 	[naga]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/naga'
+	[notify-types]='https://github.com/zed-industries/notify;faecbc33db4f59313e5225ef766bfd9e54a54cfd;notify-%commit%/notify-types'
+	[notify]='https://github.com/zed-industries/notify;faecbc33db4f59313e5225ef766bfd9e54a54cfd;notify-%commit%/notify'
 	[nvim-rs]='https://github.com/KillTheMule/nvim-rs;764dd270c642f77f10f3e19d05cc178a6cbe69f3;nvim-rs-%commit%'
 	[pet-conda]='https://github.com/microsoft/python-environment-tools;9e61a22af989fe54937bf07c9f9cff1bc53d9056;python-environment-tools-%commit%/crates/pet-conda'
 	[pet-core]='https://github.com/microsoft/python-environment-tools;9e61a22af989fe54937bf07c9f9cff1bc53d9056;python-environment-tools-%commit%/crates/pet-core'
@@ -1611,7 +1611,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="d130d03f5d740ea82d551f8d172a8a1e6326a5e5"
+EGIT_COMMIT="cfc5f2697042f425586ce0a46d215bfe0ac619cb"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
@@ -1639,8 +1639,8 @@ LICENSE="GPL-3+"
 LICENSE+=" BSD"
 # Dependent crate licenses
 LICENSE+="
-	Apache-2.0 Apache-2.0-with-LLVM-exceptions BSD-2 BSD CC0-1.0 ISC
-	LGPL-3 MIT MIT-0 MPL-2.0 UoI-NCSA Unicode-3.0 ZLIB BZIP2
+	Apache-2.0 Apache-2.0-with-LLVM-exceptions BSD-2 BSD Boost-1.0
+	CC0-1.0 ISC LGPL-3 MIT MIT-0 MPL-2.0 UoI-NCSA Unicode-3.0 ZLIB BZIP2
 "
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
@@ -1774,12 +1774,23 @@ src_prepare() {
 	WEBRTC_SYS_GIT+=", rev = \"${LIVEKIT_COMMIT}\""
 	local WEBRTC_SYS_PATH="webrtc-sys = \\{ path = \"${WORKDIR}/livekit-rust-sdks-${LIVEKIT_COMMIT}/webrtc-sys\""
 
+	local NOTIFY_COMMIT="faecbc33db4f59313e5225ef766bfd9e54a54cfd"
+	local NOTIFY_GIT="notify = { git = \"https://github.com/zed-industries/notify\""
+	NOTIFY_GIT+=", rev = \"${NOTIFY_COMMIT}\""
+	local NOTIFY_PATH="notify = \\{ path = \"${WORKDIR}/notify-${NOTIFY_COMMIT}/notify\""
+
+	local NOTIFY_TYPES_GIT="notify-types = { git = \"https://github.com/zed-industries/notify\""
+	NOTIFY_TYPES_GIT+=", rev = \"${NOTIFY_COMMIT}\""
+	local NOTIFY_TYPES_PATH="notify-types = \\{ path = \"${WORKDIR}/notify-${NOTIFY_COMMIT}/notify-types\""
+
 	sed -e "s#${ASYNC_TASK_GIT}#${ASYNC_TASK_PATH}#" \
 		-e "s#${CALLOOP_GIT}#${CALLOOP_PATH}#" \
 		-e "s#${LIVEKIT_GIT}#${LIVEKIT_PATH}#" \
 		-e "s#${LIBWERBRTC_GIT}#${LIBWERBRTC_PATH}#" \
 		-e "s#${WEBRTC_SYS_GIT}#${WEBRTC_SYS_PATH}#" \
 		-e "s#${WIN_CAP_GIT}#${WIN_CAP_PATH}#" \
+		-e "s#${NOTIFY_TYPES_GIT}#${NOTIFY_TYPES_PATH}#" \
+		-e "s#${NOTIFY_GIT}#${NOTIFY_PATH}#" \
 		-i "${S}/Cargo.toml" || die "Cargo fetch workaround failed"
 
 	# Toggle gpui display backend features based on USE flags
