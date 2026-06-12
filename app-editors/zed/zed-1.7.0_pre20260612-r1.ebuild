@@ -67,7 +67,6 @@ CRATES="
 	async-io@2.6.0
 	async-lock@3.4.2
 	async-net@2.0.0
-	async-process@2.5.0
 	async-recursion@1.1.1
 	async-signal@0.2.13
 	async-std@1.13.2
@@ -733,7 +732,7 @@ CRATES="
 	objc-foundation@0.1.1
 	objc-sys@0.3.5
 	objc2-app-kit@0.2.2
-	objc2-app-kit@0.3.1
+	objc2-app-kit@0.3.2
 	objc2-audio-toolbox@0.3.2
 	objc2-avf-audio@0.3.2
 	objc2-core-audio-types@0.3.2
@@ -1531,6 +1530,7 @@ CRATES="
 declare -A GIT_CRATES=(
 	[alacritty_terminal]='https://github.com/zed-industries/alacritty;fcf32feacb367b75ec84dd40f041e4fd411d3cc1;alacritty-%commit%/alacritty_terminal'
 	[async-pipe]='https://github.com/zed-industries/async-pipe-rs;82d00a04211cf4e1236029aa03e6b6ce2a74c553;async-pipe-rs-%commit%'
+	[async-process]='https://github.com/zed-industries/async-process;0b6d6713570af61806e1e5cb40e0f757cb93fd9d;async-process-%commit%'
 	[async-task]='https://github.com/smol-rs/async-task;b4486cd71e4e94fbda54ce6302444de14f4d190e;async-task-%commit%'
 	[calloop]='https://github.com/zed-industries/calloop;eb6b4fd17b9af5ecc226546bdd04185391b3e265;calloop-%commit%'
 	[dap-types]='https://github.com/zed-industries/dap-types;1b461b310481d01e02b2603c16d7144b926339f8;dap-types-%commit%/dap-types'
@@ -1611,7 +1611,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="c486f6f529dede2d471deb38fdaacd864d4d3db9"
+EGIT_COMMIT="96285fc14052525fee56e75f4b6e6d1f34352f8c"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
@@ -1747,6 +1747,11 @@ src_prepare() {
 	echo "nightly" > crates/zed/RELEASE_CHANNEL || die
 
 	# Cargo offline fetch workaround
+	local ASYNC_PROCESS_COMMIT="0b6d6713570af61806e1e5cb40e0f757cb93fd9d"
+	local ASYNC_PROCESS_GIT="async-process = { git = \"https://github.com/zed-industries/async-process.git\""
+	ASYNC_PROCESS_GIT+=", rev = \"${ASYNC_PROCESS_COMMIT}\""
+	local ASYNC_PROCESS_PATH="async-process = \\{ path = \"${WORKDIR}/async-process-${ASYNC_PROCESS_COMMIT}\""
+
 	local ASYNC_TASK_COMMIT="b4486cd71e4e94fbda54ce6302444de14f4d190e"
 	local ASYNC_TASK_GIT="async-task = { git = \"https://github.com/smol-rs/async-task.git\""
 	ASYNC_TASK_GIT+=", rev = \"${ASYNC_TASK_COMMIT}\""
@@ -1783,7 +1788,8 @@ src_prepare() {
 	NOTIFY_TYPES_GIT+=", rev = \"${NOTIFY_COMMIT}\""
 	local NOTIFY_TYPES_PATH="notify-types = \\{ path = \"${WORKDIR}/notify-${NOTIFY_COMMIT}/notify-types\""
 
-	sed -e "s#${ASYNC_TASK_GIT}#${ASYNC_TASK_PATH}#" \
+	sed -e "s#${ASYNC_PROCESS_GIT}#${ASYNC_PROCESS_PATH}#" \
+		-e "s#${ASYNC_TASK_GIT}#${ASYNC_TASK_PATH}#" \
 		-e "s#${CALLOOP_GIT}#${CALLOOP_PATH}#" \
 		-e "s#${LIVEKIT_GIT}#${LIVEKIT_PATH}#" \
 		-e "s#${LIBWERBRTC_GIT}#${LIBWERBRTC_PATH}#" \
