@@ -1644,7 +1644,7 @@ LICENSE+="
 "
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
-IUSE="+X collab extensions-cli +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
+IUSE="+X +claude-agent-tui collab extensions-cli +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
 REQUIRED_USE="|| ( X wayland )"
 CHECKREQS_DISK_BUILD="18G"
 CHECKREQS_MEMORY="8G"
@@ -1681,6 +1681,7 @@ DEPEND="
 "
 RDEPEND="
 	${DEPEND}
+	claude-agent-tui? ( dev-util/claude-agent-tui )
 	neovim? ( app-editors/neovim )
 "
 BDEPEND="
@@ -1879,4 +1880,18 @@ src_test () {
 
 	SHELL=/usr/bin/sh RUST_BACKTRACE=full cargo_src_test -vv \
 		-- --skip zed::tests::test_window_edit_state_restoring_enabled
+}
+
+pkg_postinst() {
+	xdg_pkg_postinst
+
+	if use claude-agent-tui; then
+		elog ""
+		elog "The claude-agent-tui ACP bridge was installed as 'claude-agent-acp'."
+		elog "To enable it in Zed, add to ~/.config/zed/settings.json:"
+		elog ""
+		elog "    \"agent_servers\": {"
+		elog "        \"Claude TUI\": { \"command\": \"claude-agent-acp\", \"args\": [] }"
+		elog "    }"
+	fi
 }
