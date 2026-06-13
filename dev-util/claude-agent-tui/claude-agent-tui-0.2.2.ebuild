@@ -46,6 +46,6 @@ pkg_postinst() {
 	elog "To enable it in Zed, add the following to ~/.config/zed/settings.json:"
 	elog ""
 	elog "    \"agent_servers\": {"
-	elog "        \"Claude TUI\": { \"command\": \"claude-agent-acp\", \"args\": [] }"
+	elog "        \"Claude Agent TUI\": { \"command\": \"claude-agent-acp\", \"args\": [] }"
 	elog "    }"
 }
