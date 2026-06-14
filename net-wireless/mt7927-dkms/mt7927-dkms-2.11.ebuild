@@ -10,82 +10,86 @@ MY_PV="${PV}-1"
 MY_P="${MY_PN}-${MY_PV}"
 
 # Kernel release whose mt76 + bluetooth source the 28 patches target. The
-# source is extracted from this tarball, patched, and built against the
-# *running* (target) kernel; compat headers cover 6.17 .. 7.0.
+# mini source tarball below carries only those two subtrees (paths preserved);
+# compat headers in the patchset cover building against 6.17 .. 7.0.
 MT76_KVER="7.0"
+KSRC_P="mt7927-kernel-src-${MT76_KVER}"
+# Pre-extracted MT6639 firmware blobs (proprietary, pulled from the ASUS driver).
+FW_P="mt7927-firmware-${PV}"
 
-# Proprietary ASUS WiFi driver ZIP. extract_firmware.py pulls the 3 MT6639
-# firmware blobs out of its mtkwlan.dat container. Fetched via an
-# authenticated ASUS CloudFront token, so it is neither directly fetchable
-# nor redistributable -> RESTRICT + pkg_nofetch below.
-ASUS_ZIP="DRV_WiFi_MTK_MT7925_MT7927_TP_W11_64_V5603998_20250709R.zip"
+# Base URL of the R2 bucket hosting the two repackaged distfiles above.
+R2_BASE="https://distfiles.obentoo.org/DRV_WiFi_MTK_MT7925_MT7927_TP_W11_64_V5603998_20250709R"
 
 DESCRIPTION="Out-of-tree WiFi (mt7925e) + Bluetooth (MT6639) modules for MediaTek MT7927 Filogic 380"
 HOMEPAGE="https://github.com/jetm/mediatek-mt7927-dkms"
 SRC_URI="
 	https://github.com/jetm/${MY_PN}/archive/refs/tags/v${MY_PV}.tar.gz -> ${P}.tar.gz
-	https://cdn.kernel.org/pub/linux/kernel/v${MT76_KVER%%.*}.x/linux-${MT76_KVER}.tar.xz
-	${ASUS_ZIP}
+	${R2_BASE}/${KSRC_P}.tar.xz
+	${R2_BASE}/${FW_P}.tar.xz
 "
 S="${WORKDIR}/${MY_P}"
 
-# Kernel modules are GPL-2; the extracted MediaTek/ASUS firmware blobs are
-# proprietary with no redistribution grant.
+# Kernel modules + mini source are GPL-2; the MT6639 firmware blobs are
+# proprietary MediaTek/ASUS with no redistribution grant.
 LICENSE="GPL-2 all-rights-reserved"
 SLOT="0"
 KEYWORDS="~amd64"
-RESTRICT="fetch mirror"
+# Do not let Gentoo mirrors carry the proprietary firmware.
+RESTRICT="mirror"
 
 # mt76 WiFi modules link against mac80211/cfg80211; btusb needs the BT stack.
 CONFIG_CHECK="~MAC80211 ~CFG80211 ~BT"
 # Upstream targets kernels 6.17+ (older lack the compat shims here).
 MODULES_KERNEL_MIN="6.17"
 
-BDEPEND="dev-lang/python"
-
-pkg_nofetch() {
-	einfo "The proprietary ASUS WiFi/BT driver ZIP must be present in DISTDIR:"
-	einfo "    ${ASUS_ZIP}"
-	einfo "    SHA256: b377fffa28208bb1671a0eb219c84c62fba4cd6f92161b74e4b0909476307cc8"
-	einfo ""
-	einfo "Obtain it automatically with upstream's helper (resolves the token):"
-	einfo "    git clone ${HOMEPAGE}"
-	einfo "    cd ${MY_PN} && ./download-driver.sh \"\${DISTDIR:-/var/cache/distfiles}\""
-	einfo ""
-	einfo "Or download manually from your board's ASUS support page:"
-	einfo "    WiFi & Bluetooth -> MediaTek MT7925/MT7927 WiFi driver"
-	einfo ""
-	einfo "The kernel and project tarballs are also fetch-restricted; place them"
-	einfo "in DISTDIR too (linux-${MT76_KVER}.tar.xz from cdn.kernel.org, and the"
-	einfo "GitHub tag tarball renamed to ${P}.tar.gz)."
-}
-
 src_unpack() {
-	# Only unpack the project tarball. The 157MB kernel tarball is extracted
-	# selectively in src_compile (just the mt76 + bluetooth subtrees), and the
-	# ZIP is read in place by the python extractor -- auto-unpacking either
-	# would waste a lot of time and disk.
+	# Unpack the project tarball (patches + Kbuild) and the firmware blobs.
+	# The kernel mini source is extracted selectively in src_prepare.
 	unpack "${P}.tar.gz"
+	unpack "${FW_P}.tar.xz"
 }
 
 src_prepare() {
 	default
+
+	local build="${WORKDIR}/_build"
+	mkdir -p "${build}/mt76" "${build}/bluetooth" || die
+
+	# Extract the mt76 + bluetooth subtrees from the kernel mini source.
+	tar -xf "${DISTDIR}/${KSRC_P}.tar.xz" --strip-components=6 \
+		-C "${build}/mt76" \
+		"linux-${MT76_KVER}/drivers/net/wireless/mediatek/mt76" || die
+	tar -xf "${DISTDIR}/${KSRC_P}.tar.xz" --strip-components=3 \
+		-C "${build}/bluetooth" \
+		"linux-${MT76_KVER}/drivers/bluetooth" || die
+
+	# Apply the upstream MT7927 patch series (same order as upstream Makefile).
+	pushd "${build}/mt76" >/dev/null || die
+	eapply "${S}/mt7902-wifi-6.19.patch"
+	eapply "${S}"/mt7927-wifi-*.patch
+	popd >/dev/null || die
+
+	pushd "${build}/bluetooth" >/dev/null || die
+	eapply "${S}"/mt6639-bt-[0-9]*.patch
+	eapply "${S}"/mt6639-bt-compat-*.patch
+	popd >/dev/null || die
+
+	# Drop in the Kbuild/Makefile and compat header (replaces `make sources`).
+	cp "${S}/mt76.Kbuild"        "${build}/mt76/Kbuild" || die
+	cp "${S}/mt7921.Kbuild"      "${build}/mt76/mt7921/Kbuild" || die
+	cp "${S}/mt7925.Kbuild"      "${build}/mt76/mt7925/Kbuild" || die
+	cp "${S}/bluetooth.Makefile" "${build}/bluetooth/Makefile" || die
+	mkdir -p "${build}/mt76/compat/include/linux/soc/airoha" || die
+	cp "${S}/compat-airoha-offload.h" \
+		"${build}/mt76/compat/include/linux/soc/airoha/airoha_offload.h" || die
 }
 
 src_compile() {
-	# 1) Replicate upstream's `make sources` fully offline: extract mt76 +
-	#    bluetooth from the kernel tarball, apply the 28 patches, extract the
-	#    3 firmware blobs from the ASUS ZIP, drop in Kbuild/compat files.
-	emake -j1 sources \
-		MT76_KVER="${MT76_KVER}" \
-		KERNEL_TARBALL="${DISTDIR}/linux-${MT76_KVER}.tar.xz" \
-		DRIVER_ZIP="${DISTDIR}/${ASUS_ZIP}" \
-		SRCDIR="${WORKDIR}/_build" \
-		PYTHON="${EPYTHON:-python3}"
+	local build="${WORKDIR}/_build"
 
-	# 2) Build the WiFi tree -- a single `make M=.../mt76 modules` builds mt76,
-	#    mt76-connac-lib, mt792x-lib and recurses into mt7921/ and mt7925/.
-	local wifi_dir="${WORKDIR}/_build/mt76"
+	# WiFi tree -- one `make M=.../mt76 modules` builds mt76, mt76-connac-lib,
+	# mt792x-lib and recurses into mt7921/ and mt7925/.
+	local wifi_dir="${build}/mt76"
 	local modargs=( -C "${KV_OUT_DIR}" M="${wifi_dir}" )
 	local modlist=(
 		mt76=updates:"${wifi_dir}":"${wifi_dir}":modules
@@ -98,8 +102,8 @@ src_compile() {
 	)
 	linux-mod-r1_src_compile
 
-	# 3) Build the Bluetooth tree (btusb + btmtk) from its own M= directory.
-	local bt_dir="${WORKDIR}/_build/bluetooth"
+	# Bluetooth tree (btusb + btmtk).
+	local bt_dir="${build}/bluetooth"
 	modargs=( -C "${KV_OUT_DIR}" M="${bt_dir}" )
 	modlist=(
 		btusb=updates:"${bt_dir}":"${bt_dir}":modules
@@ -111,9 +115,9 @@ src_compile() {
 src_install() {
 	linux-mod-r1_src_install
 
-	# Firmware blobs extracted from the ASUS driver during src_compile.
+	# Pre-extracted MT6639 firmware blobs.
 	insinto /lib/firmware/mediatek/mt7927
-	doins "${WORKDIR}"/_build/firmware/*.bin
+	doins "${WORKDIR}/${FW_P}"/*.bin
 
 	# Force the out-of-tree updates/ modules to override the in-tree copies.
 	# The eclass' own depmod.d generator is disabled upstream (see
