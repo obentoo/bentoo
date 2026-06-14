@@ -9,17 +9,16 @@ MY_PN="mediatek-mt7927-dkms"
 MY_PV="${PV}-1"
 MY_P="${MY_PN}-${MY_PV}"
 
-# Kernel release whose mt76 source the patches target. The mini source tarball
-# carries only that subtree (paths preserved); compat headers cover 6.17 .. 7.0.
+# Kernel release whose mt76 + bluetooth source the patches target.
 MT76_KVER="7.0"
 KSRC_P="mt7927-kernel-src-${MT76_KVER}"
-# Pre-extracted MT6639 WiFi firmware blobs (proprietary, from the ASUS driver).
+# Pre-extracted MT6639 firmware blobs (proprietary, from the ASUS driver).
 FW_P="mt7927-firmware-${PV}"
 
 # Base URL of the R2 bucket hosting the two repackaged distfiles above.
 R2_BASE="https://distfiles.obentoo.org/DRV_WiFi_MTK_MT7925_MT7927_TP_W11_64_V5603998_20250709R"
 
-DESCRIPTION="Out-of-tree WiFi (mt7925e) driver for MediaTek MT7927 Filogic 380"
+DESCRIPTION="Out-of-tree WiFi (mt7925e) + Bluetooth (MT6639) modules for MediaTek MT7927 Filogic 380"
 HOMEPAGE="https://github.com/jetm/mediatek-mt7927-dkms"
 SRC_URI="
 	https://github.com/jetm/${MY_PN}/archive/refs/tags/v${MY_PV}.tar.gz -> ${P}.tar.gz
@@ -33,19 +32,17 @@ S="${WORKDIR}/${MY_P}"
 LICENSE="GPL-2 all-rights-reserved"
 SLOT="0"
 KEYWORDS="~amd64"
-# Do not let Gentoo mirrors carry the proprietary firmware.
 RESTRICT="mirror"
 
-# mt76 WiFi modules link against mac80211/cfg80211.
-CONFIG_CHECK="~MAC80211 ~CFG80211"
-# Upstream targets kernels 6.17+ (older lack the compat shims here).
+# mt76 WiFi modules link against mac80211/cfg80211; btusb needs the BT stack.
+CONFIG_CHECK="~MAC80211 ~CFG80211 ~BT"
 MODULES_KERNEL_MIN="6.17"
 
-# NOTE: This package ships ONLY the WiFi side (mt7925e + mt76 stack). The
-# MT6639 Bluetooth (USB 13d3:3588) is already handled by the in-tree
-# btusb/btmtk as an MT7925 device; the upstream btusb/btmtk patches retarget
-# it as MT6639 and regress it ("Failed to get fw version (-108)"), so they are
-# intentionally NOT built here.
+# NOTE: -r2 re-adds the patched btusb/btmtk for the MT6639 Bluetooth (the patch
+# series carries section filtering + the 13d3:3588 quirk). The BT side is
+# unconfirmed on this exact USB id and needs a FULL power-cycle to initialise;
+# if it regresses (hci0: -108 / -16), =net-wireless/mt7927-dkms-2.11-r1 is the
+# WiFi-only build.
 
 src_unpack() {
 	unpack "${P}.tar.gz"
@@ -56,23 +53,32 @@ src_prepare() {
 	default
 
 	local build="${WORKDIR}/_build"
-	mkdir -p "${build}/mt76" || die
+	mkdir -p "${build}/mt76" "${build}/bluetooth" || die
 
-	# Extract only the mt76 subtree from the kernel mini source.
+	# Extract the mt76 + bluetooth subtrees from the kernel mini source.
 	tar -xf "${DISTDIR}/${KSRC_P}.tar.xz" --strip-components=6 \
 		-C "${build}/mt76" \
 		"linux-${MT76_KVER}/drivers/net/wireless/mediatek/mt76" || die
+	tar -xf "${DISTDIR}/${KSRC_P}.tar.xz" --strip-components=3 \
+		-C "${build}/bluetooth" \
+		"linux-${MT76_KVER}/drivers/bluetooth" || die
 
-	# Apply the upstream MT7927 WiFi patch series (same order as upstream).
+	# Apply the upstream patch series (same order as upstream Makefile).
 	pushd "${build}/mt76" >/dev/null || die
 	eapply "${S}/mt7902-wifi-6.19.patch"
 	eapply "${S}"/mt7927-wifi-*.patch
 	popd >/dev/null || die
 
-	# Drop in the Kbuild files and compat header (replaces `make sources`).
-	cp "${S}/mt76.Kbuild"   "${build}/mt76/Kbuild" || die
-	cp "${S}/mt7921.Kbuild" "${build}/mt76/mt7921/Kbuild" || die
-	cp "${S}/mt7925.Kbuild" "${build}/mt76/mt7925/Kbuild" || die
+	pushd "${build}/bluetooth" >/dev/null || die
+	eapply "${S}"/mt6639-bt-[0-9]*.patch
+	eapply "${S}"/mt6639-bt-compat-*.patch
+	popd >/dev/null || die
+
+	# Drop in the Kbuild/Makefile and compat header (replaces `make sources`).
+	cp "${S}/mt76.Kbuild"        "${build}/mt76/Kbuild" || die
+	cp "${S}/mt7921.Kbuild"      "${build}/mt76/mt7921/Kbuild" || die
+	cp "${S}/mt7925.Kbuild"      "${build}/mt76/mt7925/Kbuild" || die
+	cp "${S}/bluetooth.Makefile" "${build}/bluetooth/Makefile" || die
 	mkdir -p "${build}/mt76/compat/include/linux/soc/airoha" || die
 	cp "${S}/compat-airoha-offload.h" \
 		"${build}/mt76/compat/include/linux/soc/airoha/airoha_offload.h" || die
@@ -81,8 +87,7 @@ src_prepare() {
 src_compile() {
 	local build="${WORKDIR}/_build"
 
-	# One `make M=.../mt76 modules` builds mt76, mt76-connac-lib, mt792x-lib
-	# and recurses into mt7921/ and mt7925/.
+	# WiFi tree.
 	local wifi_dir="${build}/mt76"
 	local modargs=( -C "${KV_OUT_DIR}" M="${wifi_dir}" )
 	local modlist=(
@@ -95,21 +100,30 @@ src_compile() {
 		mt7925e=updates:"${wifi_dir}":"${wifi_dir}/mt7925":modules
 	)
 	linux-mod-r1_src_compile
+
+	# Bluetooth tree.
+	local bt_dir="${build}/bluetooth"
+	modargs=( -C "${KV_OUT_DIR}" M="${bt_dir}" )
+	modlist=(
+		btusb=updates:"${bt_dir}":"${bt_dir}":modules
+		btmtk=updates:"${bt_dir}":"${bt_dir}":modules
+	)
+	linux-mod-r1_src_compile
 }
 
 src_install() {
 	linux-mod-r1_src_install
 
-	# WiFi firmware blobs only (the BT side uses the in-tree btmtk/MT7925 fw).
+	# WiFi + BT firmware blobs.
 	insinto /lib/firmware/mediatek/mt7927
-	doins "${WORKDIR}/${FW_P}"/WIFI_*.bin
+	doins "${WORKDIR}/${FW_P}"/*.bin
 
-	# Force the out-of-tree updates/ WiFi modules to override the in-tree copies.
+	# Force the out-of-tree updates/ modules to override the in-tree copies.
 	local mod depmod_conf="${T}/${PN}.conf"
 	{
-		echo "# Generated by ${CATEGORY}/${PF}: prefer out-of-tree MT7927 WiFi modules"
+		echo "# Generated by ${CATEGORY}/${PF}: prefer out-of-tree MT7927 modules"
 		for mod in mt76 mt76-connac-lib mt792x-lib mt7921-common mt7921e \
-			mt7925-common mt7925e
+			mt7925-common mt7925e btusb btmtk
 		do
 			echo "override ${mod} * updates"
 		done
@@ -121,12 +135,16 @@ src_install() {
 pkg_postinst() {
 	linux-mod-r1_pkg_postinst
 
-	elog "MediaTek MT7927 (Filogic 380) WiFi 7 driver installed (PCI 14c3:6639)."
-	elog "Bluetooth (MT6639, USB 13d3:3588) keeps using the in-tree btusb/btmtk"
-	elog "as an MT7925 device -- this package no longer overrides it."
+	elog "MediaTek MT7927 WiFi 7 (PCI 14c3:6639) + MT6639 Bluetooth (USB 13d3:3588)."
 	elog ""
-	elog "To activate the WiFi driver without rebooting:"
-	elog "    modprobe -r mt7925e mt7921e && modprobe mt7925e"
+	elog "IMPORTANT: for the Bluetooth controller to initialise, do a FULL"
+	elog "power-cycle after this install (shutdown, cut PSU power ~30s, power on)"
+	elog "-- a warm reboot does not reset the BT controller."
+	elog ""
+	elog "If the BT controller still fails (hci0: -108 / -16), the MT6639 BT on"
+	elog "this USB id is not supported yet; reinstall the WiFi-only build with"
+	elog "  emerge =${CATEGORY}/${PN}-2.11-r1"
+	elog "and keep using a USB BT dongle."
 	elog ""
 	elog "With USE=dist-kernel this is rebuilt automatically on kernel upgrades."
 }
