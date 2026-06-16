@@ -134,7 +134,7 @@ inherit cargo
 DESCRIPTION="Plasma Kameleon kded helper for QMK keyboard LED control"
 HOMEPAGE="https://invent.kde.org/plasma/kdeplasma-addons"
 SRC_URI="
-	mirror://kde/unstable/plasma/${PV}/kdeplasma-addons-${PV}.tar.xz
+	mirror://kde/stable/plasma/${PV}/kdeplasma-addons-${PV}.tar.xz
 	${CARGO_CRATE_URIS}
 "
 S="${WORKDIR}/kdeplasma-addons-${PV}/kdeds/kameleon/qmk/kameleon-qmk-helper"
