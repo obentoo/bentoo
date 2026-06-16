@@ -878,6 +878,7 @@ CRATES="
 	prost@0.9.0
 	protobuf-support@3.7.2
 	protobuf@3.7.2
+	proxyvars@0.2.0
 	psm@0.1.30
 	ptr_meta@0.1.4
 	ptr_meta_derive@0.1.4
@@ -1611,7 +1612,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="cb7721602b217662333a65986337a72c7257a50c"
+EGIT_COMMIT="ce22d1ab28b6b7545290de33d427d63c363d7f16"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
