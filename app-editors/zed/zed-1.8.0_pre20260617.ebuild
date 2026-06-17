@@ -6,12 +6,13 @@
 EAPI=8
 
 CRATES="
-	accesskit@0.24.0
+	accesskit@0.24.1
 	accesskit_atspi_common@0.18.0
 	accesskit_consumer@0.35.0
+	accesskit_consumer@0.37.0
 	accesskit_macos@0.26.0
 	accesskit_unix@0.21.0
-	accesskit_windows@0.32.1
+	accesskit_windows@0.33.1
 	addr2line@0.25.1
 	adler2@2.0.1
 	aes@0.8.4
@@ -1529,14 +1530,14 @@ CRATES="
 "
 
 declare -A GIT_CRATES=(
-	[alacritty_terminal]='https://github.com/zed-industries/alacritty;fcf32feacb367b75ec84dd40f041e4fd411d3cc1;alacritty-%commit%/alacritty_terminal'
+	[alacritty_terminal]='https://github.com/zed-industries/alacritty;4c129667ce56611becdc82de6e28218c80e2e88f;alacritty-%commit%/alacritty_terminal'
 	[async-pipe]='https://github.com/zed-industries/async-pipe-rs;82d00a04211cf4e1236029aa03e6b6ce2a74c553;async-pipe-rs-%commit%'
 	[async-process]='https://github.com/zed-industries/async-process;0b6d6713570af61806e1e5cb40e0f757cb93fd9d;async-process-%commit%'
 	[async-task]='https://github.com/smol-rs/async-task;b4486cd71e4e94fbda54ce6302444de14f4d190e;async-task-%commit%'
 	[calloop]='https://github.com/zed-industries/calloop;eb6b4fd17b9af5ecc226546bdd04185391b3e265;calloop-%commit%'
 	[dap-types]='https://github.com/zed-industries/dap-types;1b461b310481d01e02b2603c16d7144b926339f8;dap-types-%commit%/dap-types'
-	[dugong-graphlib]='https://github.com/zed-industries/merman;06094471f97acb10d0eebf8b92bac19ba2928eea;merman-%commit%/crates/dugong-graphlib'
-	[dugong]='https://github.com/zed-industries/merman;06094471f97acb10d0eebf8b92bac19ba2928eea;merman-%commit%/crates/dugong'
+	[dugong-graphlib]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/dugong-graphlib'
+	[dugong]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/dugong'
 	[gh-workflow-macros]='https://github.com/zed-industries/gh-workflow;37f3c0575d379c218a9c455ee67585184e40d43f;gh-workflow-%commit%/crates/gh-workflow-macros'
 	[gh-workflow]='https://github.com/zed-industries/gh-workflow;37f3c0575d379c218a9c455ee67585184e40d43f;gh-workflow-%commit%/crates/gh-workflow'
 	[libwebrtc]='https://github.com/zed-industries/livekit-rust-sdks;c3a55bbc207008f1ca3474b6037fdd3c443cad0f;livekit-rust-sdks-%commit%/libwebrtc'
@@ -1545,10 +1546,10 @@ declare -A GIT_CRATES=(
 	[livekit-runtime]='https://github.com/zed-industries/livekit-rust-sdks;c3a55bbc207008f1ca3474b6037fdd3c443cad0f;livekit-rust-sdks-%commit%/livekit-runtime'
 	[livekit]='https://github.com/zed-industries/livekit-rust-sdks;c3a55bbc207008f1ca3474b6037fdd3c443cad0f;livekit-rust-sdks-%commit%/livekit'
 	[lsp-types]='https://github.com/zed-industries/lsp-types;f4dfa89a21ca35cd929b70354b1583fabae325f8;lsp-types-%commit%'
-	[manatee]='https://github.com/zed-industries/merman;06094471f97acb10d0eebf8b92bac19ba2928eea;merman-%commit%/crates/manatee'
-	[merman-core]='https://github.com/zed-industries/merman;06094471f97acb10d0eebf8b92bac19ba2928eea;merman-%commit%/crates/merman-core'
-	[merman-render]='https://github.com/zed-industries/merman;06094471f97acb10d0eebf8b92bac19ba2928eea;merman-%commit%/crates/merman-render'
-	[merman]='https://github.com/zed-industries/merman;06094471f97acb10d0eebf8b92bac19ba2928eea;merman-%commit%/crates/merman'
+	[manatee]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/manatee'
+	[merman-core]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/merman-core'
+	[merman-render]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/merman-render'
+	[merman]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/merman'
 	[naga]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/naga'
 	[notify-types]='https://github.com/zed-industries/notify;faecbc33db4f59313e5225ef766bfd9e54a54cfd;notify-%commit%/notify-types'
 	[notify]='https://github.com/zed-industries/notify;faecbc33db4f59313e5225ef766bfd9e54a54cfd;notify-%commit%/notify'
@@ -1582,7 +1583,7 @@ declare -A GIT_CRATES=(
 	[proptest-macro]='https://github.com/proptest-rs/proptest;3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b;proptest-%commit%/proptest-macro'
 	[proptest]='https://github.com/proptest-rs/proptest;3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b;proptest-%commit%/proptest'
 	[rodio]='https://github.com/RustAudio/rodio;e50e726ddd0292f6ef9de0dda6b90af4ed1fb66a;rodio-%commit%'
-	[roughr-merman]='https://github.com/zed-industries/merman;06094471f97acb10d0eebf8b92bac19ba2928eea;merman-%commit%/crates/roughr'
+	[roughr-merman]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/roughr'
 	[trash]='https://github.com/zed-industries/trash-rs;3bf27effd4eb8699f2e484d3326b852fe3e53af7;trash-rs-%commit%'
 	[tree-sitter-cpp]='https://github.com/tree-sitter/tree-sitter-cpp;5cb9b693cfd7bfacab1d9ff4acac1a4150700609;tree-sitter-cpp-%commit%'
 	[tree-sitter-gitcommit]='https://github.com/zed-industries/tree-sitter-git-commit;88309716a69dd13ab83443721ba6e0b491d37ee9;tree-sitter-git-commit-%commit%'
@@ -1612,7 +1613,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="45afbac0a5ab0d396e316ce0247fd41330c94d88"
+EGIT_COMMIT="1bc9d8e80ec78a5f2d724c85105bd31a9e4b8898"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
