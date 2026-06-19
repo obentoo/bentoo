@@ -13,7 +13,7 @@ LICENSE="MIT"
 SLOT="0"
 KEYWORDS="~amd64 ~x86"
 RESTRICT="network-sandbox"
-IUSE="+secure playwright +browser btrbk snapper restic rclone systemd"
+IUSE="+secure kde playwright +browser btrbk snapper restic rclone systemd"
 
 # playwright and browser are two alternative backends for the same headless
 # "script" version parser, so at most one may be enabled.
@@ -23,6 +23,7 @@ REQUIRED_USE="?? ( playwright browser )"
 # Chrome/Chromium over the DevTools Protocol (it does not download a browser).
 RDEPEND="
 	dev-vcs/git
+	kde? ( kde-apps/kdialog )
 	browser? (
 		|| (
 			www-client/chromium
@@ -75,6 +76,15 @@ src_install() {
 		insinto /etc/bash/bashrc.d
 		doins "${FILESDIR}"/30-bentoo-safety.bash
 	fi
+
+	if use kde; then
+		# Helper de exclusão com código (chamado pelo Service Menu do Dolphin)
+		exeinto /usr/libexec/bentoo
+		doexe "${FILESDIR}"/bentoo-secure-delete
+		# Service Menu do Dolphin/KIO (Plasma 6)
+		insinto /usr/share/kio/servicemenus
+		doins "${FILESDIR}"/bentoo-secure-delete.desktop
+	fi
 }
 
 pkg_postinst() {
@@ -122,5 +132,16 @@ pkg_postinst() {
 		elog "(rm -rf, reboot, poweroff, etc.) in interactive shells."
 		elog "To bypass them consciously for a single command, prefix with:"
 		elog "  BENTOO_NO_GUARD=1"
+	fi
+
+	if use kde; then
+		elog ""
+		elog "A Dolphin service menu 'Excluir permanentemente (código Bentoo)'"
+		elog "was installed. It asks for a one-time code via kdialog before an"
+		elog "irreversible delete. Note: KDE/Dolphin use KIO and never call rm,"
+		elog "so this only covers the explicit menu action -- the native Delete"
+		elog "and Move-to-Trash entries are unaffected."
+		elog "To protect arbitrary critical paths against GUI deletion, use the"
+		elog "kernel immutable bit: chattr +i <path> (undo with chattr -i)."
 	fi
 }

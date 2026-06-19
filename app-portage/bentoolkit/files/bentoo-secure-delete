@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Bentoo: exclusão PERMANENTE com confirmação por código, via Service Menu do
+# Dolphin (KDE). Como gerenciadores de arquivos usam KIO/GIO e nunca chamam
+# /bin/rm, este wrapper é a única forma de injetar um passo de confirmação
+# extra — e só atua quando o usuário escolhe esta ação no menu de contexto.
+set -euo pipefail
+
+(( $# )) || exit 0
+
+# Código alfanumérico de 4 dígitos (sem caracteres ambíguos)
+chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+code=''
+for ((i = 0; i < 4; i++)); do code+=${chars:RANDOM%${#chars}:1}; done
+
+count=$#
+list=$(printf '%s\n' "$@")
+
+if ! command -v kdialog >/dev/null 2>&1; then
+    printf 'kdialog ausente; abortando.\n' >&2
+    exit 1
+fi
+
+answer=$(kdialog --title "Bentoo — Exclusão permanente" \
+    --password "Excluir PERMANENTEMENTE ${count} item(ns)?
+
+${list}
+
+Digite o código ${code} para confirmar:") || exit 0
+
+answer=${answer^^}
+if [[ $answer != "$code" ]]; then
+    kdialog --title "Bentoo" --error "Código incorreto. Nada foi excluído."
+    exit 1
+fi
+
+rm -rf -- "$@"
+kdialog --title "Bentoo" --passivepopup "Excluído(s) ${count} item(ns)." 5
