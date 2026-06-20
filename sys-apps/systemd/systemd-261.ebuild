@@ -354,6 +354,7 @@ multilib_src_configure() {
 			$(meson_feature importd bzip2)
 			$(meson_feature importd sysupdate)
 			$(meson_feature importd zlib)
+			$(meson_feature importd imds) # imds requires libcurl, gated by importd
 			$(meson_use kernel-install)
 			$(meson_feature kmod)
 			$(meson_feature libarchive)
