@@ -7,9 +7,9 @@
 # ebuild (Gentoo version rules: prefixes v/release-/ver-/version- stripped;
 # regex returns capture group 1 of the FIRST match on the raw body).
 #
-# 274 records (265 original + 9 added 2026-06-20: redis, playwright-bin, pyee,
-# cargo-deny, claude-agent-tui, frei0r-plugins, rclone, xvfb-run,
-# kquickimageeditor — all live-verified). The SKIPPED block below is empty.
+# 280 records (265 original + 9 added 2026-06-20 enabled + 6 Gentoo-mirror /
+# manual-cadence enabled=false: rust{,-bin,-common}, audacity, webkit-gtk,
+# sci-ml/ollama — all live-verified). The SKIPPED block below is empty.
 #
 # NOTE: BEGIN/END markers below are comments only. Do NOT use bare [BEGIN]/[END]
 # table syntax here — TOML would parse them as phantom packages.
@@ -1931,6 +1931,73 @@ url = "https://sources.debian.org/api/src/xorg-server/"
 parser = "regex"
 pattern = '"version":\s*"2:([0-9]+\.[0-9]+\.[0-9]+-[0-9]+)"'
 transform = [["-", "."]]
+
+# ============================================================================
+# Gentoo mirrors / series-pinned (enabled=false, added 2026-06-20) — bentoo
+# tracks these AHEAD of Gentoo but bumps them BY HAND (rust patchset+LLVM_COMPAT,
+# webkit dual-slot, audacity 3.7.x pin, ollama llama.cpp rearch), so the cron must
+# not auto-bump. The source is still correct: run `--check <pkg> --force` to probe.
+# ============================================================================
+
+# --- rust: source, -bin and -common share ONE stable Rust version (channel toml) ---
+
+["dev-lang/rust"]
+enabled = false
+url = "https://static.rust-lang.org/dist/channel-rust-stable.toml"
+parser = "regex"
+pattern = '\[pkg\.rust\]\s+version = "([0-9]+\.[0-9]+\.[0-9]+)'
+# Stable Rust toolchain, anchored on the sole [pkg.rust] block (the toml also has
+# cargo 0.97.x / rustc 0.1.x lines — an unanchored regex would grab the wrong one).
+# group1=clean X.Y.Z. rust-lang/rust /tags is WRONG (legacy 'release-0.7', not version-sorted).
+
+["dev-lang/rust-bin"]
+enabled = false
+url = "https://static.rust-lang.org/dist/channel-rust-stable.toml"
+parser = "regex"
+pattern = '\[pkg\.rust\]\s+version = "([0-9]+\.[0-9]+\.[0-9]+)'
+# Same stable Rust release as dev-lang/rust (binary toolchains from static.rust-lang.org/dist).
+
+["dev-lang/rust-common"]
+enabled = false
+url = "https://static.rust-lang.org/dist/channel-rust-stable.toml"
+parser = "regex"
+pattern = '\[pkg\.rust\]\s+version = "([0-9]+\.[0-9]+\.[0-9]+)'
+# Pure-rename package shadowing the rust source PV; bump in lockstep with dev-lang/rust.
+
+# --- audacity: pinned to stable 3.7.x (Audacity 4.x pre-release tags don't compile) ---
+
+["media-sound/audacity"]
+enabled = false
+url = "https://api.github.com/repos/audacity/audacity/tags?per_page=100"
+parser = "regex"
+pattern = 'Audacity-(3\.7\.[0-9]+)'
+select = "max"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# GitHub /tags is NOT version-sorted (first match=2.3.2) -> select=max over the 3.7.x
+# matches. Audacity-4.0.0-{alpha,beta} tags exist upstream but don't compile and are
+# excluded by the 3\.7\. series anchor. group1 has no prefix (normalizer no-op).
+
+# --- webkit-gtk: pinned to stable 2.52.x (both slots -r411/-r601 share PV) ---
+
+["net-libs/webkit-gtk"]
+enabled = false
+url = "https://www.webkitgtk.org/releases/"
+parser = "regex"
+pattern = 'webkitgtk-(2\.52\.[0-9]+)\.tar\.xz'
+select = "max"
+# webkitgtk.org HTML listing (ascending) -> select=max over the 2.52.x series; ignores
+# dev 2.53.x and the 2.48 LTS / 2.50 lines. One entry covers both slots (share PV 2.52.4).
+
+# --- ollama source: same upstream repo as sci-ml/ollama-bin ---
+
+["sci-ml/ollama"]
+enabled = false
+url = "https://api.github.com/repos/ollama/ollama/releases/latest"
+parser = "json"
+path = "tag_name"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# ollama source — same repo as ollama-bin; tag "vX.Y.Z" (leading v stripped). enabled=false:
+# the llama.cpp FetchContent rearch needs manual patchset/distfile work per bump.
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>  END PACKAGES  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
