@@ -7,8 +7,9 @@
 # ebuild (Gentoo version rules: prefixes v/release-/ver-/version- stripped;
 # regex returns capture group 1 of the FIRST match on the raw body).
 #
-# 265 records over 266 packages. 1 package has no usable upstream version
-# source and is documented in the SKIPPED block at the end of this file.
+# 274 records (265 original + 9 added 2026-06-20: redis, playwright-bin, pyee,
+# cargo-deny, claude-agent-tui, frei0r-plugins, rclone, xvfb-run,
+# kquickimageeditor — all live-verified). The SKIPPED block below is empty.
 #
 # NOTE: BEGIN/END markers below are comments only. Do NOT use bare [BEGIN]/[END]
 # table syntax here — TOML would parse them as phantom packages.
@@ -1841,6 +1842,94 @@ script = "@antigravity-hub.js"
 url = "https://cloud.gastecnologia.com.br/bb/downloads/ws/debian/warsaw_setup64.run"
 parser = "regex"
 pattern = 'warsaw_([0-9.]+-[0-9]+)_amd64\.deb'
+transform = [["-", "."]]
+
+# ============================================================================
+# Late additions (2026-06-20) — overlay packages that previously had no record.
+# Each endpoint/parser was verified live (real curl) at insertion time.
+# ============================================================================
+
+# --- GitHub Releases (parser=json, path=tag_name) ---
+
+["dev-db/redis"]
+url = "https://api.github.com/repos/redis/redis/releases/latest"
+parser = "json"
+path = "tag_name"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# redis/redis official Releases; tag is bare X.Y.Z (no "v"), matching the SRC_URI
+# archive tag and PV. Live latest=8.8.0 (prerelease=false) — the 8.x line, not a Valkey fork.
+
+["dev-util/claude-agent-tui"]
+url = "https://api.github.com/repos/lucascouts/claude-agent-tui/releases/latest"
+parser = "json"
+path = "tag_name"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# GitHub Releases; tag "vX.Y.Z" (leading v stripped by the normalizer). releases/latest
+# excludes drafts/prereleases. SRC_URI uses releases/download/v${PV}/${P}.tar.gz. Live=v0.3.1.
+
+["net-misc/rclone"]
+url = "https://api.github.com/repos/rclone/rclone/releases/latest"
+parser = "json"
+path = "tag_name"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# rclone/rclone Releases; tag_name "vX.Y.Z" (leading v stripped). Live=v1.74.3, prerelease=false.
+
+# --- GitHub tags (parser=json, path=[0].name) ---
+
+["media-plugins/frei0r-plugins"]
+url = "https://api.github.com/repos/dyne/frei0r/tags"
+parser = "json"
+path = "[0].name"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# dyne/frei0r; SRC_URI pulls archive/refs/tags/v${PV}.tar.gz, so track git tags (newest=[0]).
+# Leading "v" stripped. Use /tags not releases/latest: the latter lags (reports 3.2.1 while
+# v3.2.2 is tagged). Live [0]=v3.2.2 > ebuild 3.1.3 (a bump must also re-validate files/ patches).
+
+# --- PyPI (parser=json, path=info.version) ---
+
+["dev-python/playwright-bin"]
+url = "https://pypi.org/pypi/playwright/json"
+parser = "json"
+path = "info.version"
+# PyPI dist "playwright" (MY_PN=playwright); info.version is clean X.Y.Z, no prefix. Live=1.60.0 > ebuild 1.58.0.
+
+["dev-python/pyee"]
+url = "https://pypi.org/pypi/pyee/json"
+parser = "json"
+path = "info.version"
+# inherit pypi; PyPI info.version is canonical. Live=13.0.1 == current PV (no prefix to strip).
+
+# --- crates.io (parser=json, path=crate.max_stable_version) ---
+
+["dev-util/cargo-deny"]
+url = "https://crates.io/api/v1/crates/cargo-deny"
+parser = "json"
+path = "crate.max_stable_version"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# crates.io max_stable_version returns bare X.Y.Z (no prefix), matching PV/tag exactly.
+# Live=0.19.9 > ebuild 0.19.8 (crates.io rejects default UA — header required). A real bump
+# must regenerate CRATES= (pycargoebuild). GitHub releases/latest agrees (tag 0.19.9) as a cross-check.
+
+# --- KDE invent GitLab tags (parser=json, path=[0].name) ---
+
+["media-libs/kquickimageeditor"]
+url = "https://invent.kde.org/api/v4/projects/libraries%2Fkquickimageeditor/repository/tags"
+parser = "json"
+path = "[0].name"
+# KDE invent tags API, [0]=newest. Tags are clean vX.Y.Z (leading v stripped). Live=v0.6.2.
+# Watch for future beta/rc tags surfacing at [0]; fallback is regex over download.kde.org/stable listing.
+
+# --- Debian source package (xvfb-run tracks xorg-server's Debian diff revision) ---
+
+# xvfb-run PV = xorg-server X.Y.Z plus the Debian diff revision W => X.Y.Z.W; SRC_URI fetches
+# mirror://debian .../xorg-server_X.Y.Z-W.diff.gz. The Debian sources API JSON lists versions
+# newest-first; the first "version" (sid) carries the fixed "2:" epoch, so the regex captures
+# "X.Y.Z-W" after it and transform "-"->"." yields the 4-segment PV. Live: "2:21.1.23-1" -> 21.1.23.1.
+# (regex-over-body, like www-misc/warsaw, avoids a mid-path JSON index that has no precedent here.)
+["x11-misc/xvfb-run"]
+url = "https://sources.debian.org/api/src/xorg-server/"
+parser = "regex"
+pattern = '"version":\s*"2:([0-9]+\.[0-9]+\.[0-9]+-[0-9]+)"'
 transform = [["-", "."]]
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>  END PACKAGES  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
