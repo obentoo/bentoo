@@ -32,8 +32,6 @@ PATCHES=(
 	# OpenCV 5 moved CascadeClassifier/HOGDescriptor to the contrib xobjdetect
 	# module; include it explicitly in facedetect/facebl0r (not fixed upstream).
 	"${FILESDIR}/${P}-opencv5-xobjdetect.patch"
-	# Fix __m128/__m128i type mismatch in the tint0r SSE4.1 path (GCC 16).
-	"${FILESDIR}/${P}-tint0r-sse-types.patch"
 )
 
 src_prepare() {
