@@ -36,6 +36,8 @@ declare -A GIT_CRATES=(
 
 RUST_MIN_VER="1.95.0"
 
+MY_CRATES_TAG="rust-v${PV}-alpha.12"
+
 # python3 .github/scripts/rusty_v8_bazel.py resolved-v8-crate-version
 RUSTY_V8_TAG="147.4.0"
 
@@ -49,7 +51,7 @@ HOMEPAGE="https://github.com/openai/codex"
 # See .github/workflows/crates.yml for the generation process.
 SRC_URI="
 	https://github.com/openai/${PN}/archive/rust-v${PV}.tar.gz -> ${P}.tar.gz
-	https://github.com/gentoo-zh-drafts/codex/releases/download/rust-v${PV}/codex-rust-v${PV}-crates.tar.xz
+	https://github.com/gentoo-zh-drafts/codex/releases/download/${MY_CRATES_TAG}/codex-${MY_CRATES_TAG}-crates.tar.xz -> ${P}-crates.tar.xz
 	amd64? (
 		https://github.com/openai/codex/releases/download/rusty-v8-v${RUSTY_V8_TAG}/librusty_v8_release_x86_64-unknown-linux-musl.a.gz
 			-> rusty_v8_${RUSTY_V8_TAG}_librusty_v8_release_x86_64-unknown-linux-musl.a.gz
