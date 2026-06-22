@@ -21,8 +21,8 @@ else
 	MY_PV="$(ver_rs 3 '-')"
 	MY_P="ImageMagick-${MY_PV}"
 	SRC_URI="
-		mirror://imagemagick/${MY_P}.tar.xz
-		verify-sig? ( mirror://imagemagick/${MY_P}.tar.xz.asc )
+		https://github.com/ImageMagick/ImageMagick/archive/refs/tags/${MY_PV}.tar.gz
+			-> ${MY_P}.tar.gz
 	"
 
 	KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~m68k ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86 ~arm64-macos ~x64-macos ~x64-solaris"

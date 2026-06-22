@@ -68,6 +68,8 @@ HOMEPAGE="https://rustdesk.com/"
 _LIBWEBM_COMMIT="3b630045052e1e4d563207ab9e3be8d137c26067"
 # grep -i vcpkg .github/workflows/flutter-build.yml
 _VCPKG_TAG="2025.08.27"
+# last rustdesk-vcpkg release available for this vcpkg tag
+_VCPKG_PV="1.4.7"
 # fix: hwcodec-${_HWCODEC_COMMIT}"/externals is a empty directory
 # git clone https://github.com/rustdesk-org/hwcodec
 # git ls-tree HEAD externals
@@ -82,7 +84,8 @@ _KCP_COMMIT="7f9805887b0909c52c825925f123e7a84da37167"
 SRC_URI="
 	https://github.com/rustdesk/rustdesk/archive/refs/tags/${PV}.tar.gz
 		-> ${P}.tar.gz
-	https://github.com/gentoo-zh-drafts/rustdesk-vcpkg/releases/download/${PV}/${P}-vcpkg-${_VCPKG_TAG}-lite.tar.gz
+	https://github.com/gentoo-zh-drafts/rustdesk-vcpkg/releases/download/${_VCPKG_PV}/${PN}-${_VCPKG_PV}-vcpkg-${_VCPKG_TAG}-lite.tar.gz
+		-> ${PN}-vcpkg-${_VCPKG_TAG}-lite.tar.gz
 	https://github.com/webmproject/libwebm/archive/${_LIBWEBM_COMMIT}.tar.gz
 		-> libwebm-${_LIBWEBM_COMMIT}.tar.gz
 	https://github.com/skywind3000/kcp/archive/${_KCP_COMMIT}.tar.gz
