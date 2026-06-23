@@ -16,9 +16,9 @@ CRATES="
 	addr2line@0.25.1
 	adler2@2.0.1
 	aes@0.8.4
-	agent-client-protocol-derive@0.14.0
-	agent-client-protocol-schema@0.13.6
-	agent-client-protocol@0.14.0
+	agent-client-protocol-derive@0.15.0
+	agent-client-protocol-schema@0.14.0
+	agent-client-protocol@0.15.0
 	ahash@0.7.8
 	ahash@0.8.12
 	aho-corasick@1.1.3
@@ -209,6 +209,7 @@ CRATES="
 	clap@4.5.49
 	clap_builder@4.5.49
 	clap_complete@4.5.59
+	clap_complete_nushell@4.6.0
 	clap_derive@4.5.49
 	clap_lex@0.7.6
 	cmake@0.1.56
@@ -455,7 +456,6 @@ CRATES="
 	getrandom@0.2.16
 	getrandom@0.3.4
 	getrandom@0.4.1
-	gif@0.13.3
 	gif@0.14.2
 	gimli@0.32.3
 	gio-sys@0.21.5
@@ -559,7 +559,7 @@ CRATES="
 	ignore@0.4.24
 	image-webp@0.2.4
 	image@0.25.10
-	imagesize@0.13.0
+	imagesize@0.14.0
 	imara-diff@0.1.8
 	imgref@1.12.0
 	indenter@0.3.4
@@ -598,7 +598,6 @@ CRATES="
 	js-sys@0.3.97
 	json5@0.4.1
 	json_dotpath@1.1.0
-	jsonrpcmsg@0.1.2
 	jsonschema@0.37.4
 	jsonwebtoken@10.3.0
 	jupyter-protocol@1.4.0
@@ -607,7 +606,7 @@ CRATES="
 	khronos_api@3.1.0
 	kqueue-sys@1.0.4
 	kqueue@1.1.1
-	kurbo@0.11.3
+	kurbo@0.13.1
 	kurbo@0.9.5
 	kv-log-macro@1.0.7
 	lalrpop-util@0.20.2
@@ -844,6 +843,7 @@ CRATES="
 	polling@3.11.0
 	pollster@0.2.5
 	pollster@0.4.0
+	polycool@0.4.0
 	pori@0.0.0
 	portable-atomic-util@0.2.4
 	portable-atomic@1.11.1
@@ -947,7 +947,7 @@ CRATES="
 	renderdoc-sys@1.1.0
 	reqwest@0.11.27
 	reqwest@0.12.24
-	resvg@0.45.1
+	resvg@0.46.0
 	rfc6979@0.3.1
 	rgb@0.8.52
 	ring@0.17.14
@@ -956,6 +956,7 @@ CRATES="
 	rmp@0.8.14
 	rmpv@1.3.0
 	roxmltree@0.20.0
+	roxmltree@0.21.1
 	rpassword@7.5.2
 	rsa@0.9.10
 	rtoolbox@0.0.3
@@ -1118,7 +1119,7 @@ CRATES="
 	svg_fmt@0.4.5
 	svg_path_ops@0.11.0
 	svgtypes@0.11.0
-	svgtypes@0.15.3
+	svgtypes@0.16.1
 	swash@0.2.6
 	symphonia-bundle-flac@0.5.5
 	symphonia-bundle-mp3@0.5.5
@@ -1263,7 +1264,7 @@ CRATES="
 	untrusted@0.9.0
 	url@2.5.7
 	urlencoding@2.1.3
-	usvg@0.45.1
+	usvg@0.46.0
 	utf-8@0.7.6
 	utf8-chars@3.0.6
 	utf8_iter@1.0.4
@@ -1519,10 +1520,8 @@ CRATES="
 	zstd-safe@5.0.2+zstd.1.5.2
 	zstd-sys@2.0.16+zstd.1.5.7
 	zstd@0.11.2+zstd.1.5.2
-	zune-core@0.4.12
 	zune-core@0.5.1
 	zune-inflate@0.2.54
-	zune-jpeg@0.4.21
 	zune-jpeg@0.5.15
 	zvariant@5.11.0
 	zvariant_derive@5.11.0
@@ -1540,11 +1539,11 @@ declare -A GIT_CRATES=(
 	[dugong]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/dugong'
 	[gh-workflow-macros]='https://github.com/zed-industries/gh-workflow;37f3c0575d379c218a9c455ee67585184e40d43f;gh-workflow-%commit%/crates/gh-workflow-macros'
 	[gh-workflow]='https://github.com/zed-industries/gh-workflow;37f3c0575d379c218a9c455ee67585184e40d43f;gh-workflow-%commit%/crates/gh-workflow'
-	[libwebrtc]='https://github.com/zed-industries/livekit-rust-sdks;c3a55bbc207008f1ca3474b6037fdd3c443cad0f;livekit-rust-sdks-%commit%/libwebrtc'
-	[livekit-api]='https://github.com/zed-industries/livekit-rust-sdks;c3a55bbc207008f1ca3474b6037fdd3c443cad0f;livekit-rust-sdks-%commit%/livekit-api'
-	[livekit-protocol]='https://github.com/zed-industries/livekit-rust-sdks;c3a55bbc207008f1ca3474b6037fdd3c443cad0f;livekit-rust-sdks-%commit%/livekit-protocol'
-	[livekit-runtime]='https://github.com/zed-industries/livekit-rust-sdks;c3a55bbc207008f1ca3474b6037fdd3c443cad0f;livekit-rust-sdks-%commit%/livekit-runtime'
-	[livekit]='https://github.com/zed-industries/livekit-rust-sdks;c3a55bbc207008f1ca3474b6037fdd3c443cad0f;livekit-rust-sdks-%commit%/livekit'
+	[libwebrtc]='https://github.com/zed-industries/livekit-rust-sdks;d0e27be0cdad89eadab3e36207cda0a2b6e359ee;livekit-rust-sdks-%commit%/libwebrtc'
+	[livekit-api]='https://github.com/zed-industries/livekit-rust-sdks;d0e27be0cdad89eadab3e36207cda0a2b6e359ee;livekit-rust-sdks-%commit%/livekit-api'
+	[livekit-protocol]='https://github.com/zed-industries/livekit-rust-sdks;d0e27be0cdad89eadab3e36207cda0a2b6e359ee;livekit-rust-sdks-%commit%/livekit-protocol'
+	[livekit-runtime]='https://github.com/zed-industries/livekit-rust-sdks;d0e27be0cdad89eadab3e36207cda0a2b6e359ee;livekit-rust-sdks-%commit%/livekit-runtime'
+	[livekit]='https://github.com/zed-industries/livekit-rust-sdks;d0e27be0cdad89eadab3e36207cda0a2b6e359ee;livekit-rust-sdks-%commit%/livekit'
 	[lsp-types]='https://github.com/zed-industries/lsp-types;f4dfa89a21ca35cd929b70354b1583fabae325f8;lsp-types-%commit%'
 	[manatee]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/manatee'
 	[merman-core]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/merman-core'
@@ -1593,8 +1592,8 @@ declare -A GIT_CRATES=(
 	[tree-sitter-md]='https://github.com/tree-sitter-grammars/tree-sitter-markdown;9a23c1a96c0513d8fc6520972beedd419a973539;tree-sitter-markdown-%commit%'
 	[tree-sitter-typescript]='https://github.com/zed-industries/tree-sitter-typescript;e2c53597d6a5d9cf7bbe8dccde576fe1e46c5899;tree-sitter-typescript-%commit%'
 	[tree-sitter-yaml]='https://github.com/zed-industries/tree-sitter-yaml;baff0b51c64ef6a1fb1f8390f3ad6015b83ec13a;tree-sitter-yaml-%commit%'
-	[webrtc-sys-build]='https://github.com/zed-industries/livekit-rust-sdks;c3a55bbc207008f1ca3474b6037fdd3c443cad0f;livekit-rust-sdks-%commit%/webrtc-sys/build'
-	[webrtc-sys]='https://github.com/zed-industries/livekit-rust-sdks;c3a55bbc207008f1ca3474b6037fdd3c443cad0f;livekit-rust-sdks-%commit%/webrtc-sys'
+	[webrtc-sys-build]='https://github.com/zed-industries/livekit-rust-sdks;d0e27be0cdad89eadab3e36207cda0a2b6e359ee;livekit-rust-sdks-%commit%/webrtc-sys/build'
+	[webrtc-sys]='https://github.com/zed-industries/livekit-rust-sdks;d0e27be0cdad89eadab3e36207cda0a2b6e359ee;livekit-rust-sdks-%commit%/webrtc-sys'
 	[wgpu-core-deps-apple]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/wgpu-core/platform-deps/apple'
 	[wgpu-core-deps-emscripten]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/wgpu-core/platform-deps/emscripten'
 	[wgpu-core-deps-windows-linux-android]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/wgpu-core/platform-deps/windows-linux-android'
@@ -1764,7 +1763,7 @@ src_prepare() {
 	local CALLOOP_GIT="calloop = { git = \"https://github.com/zed-industries/calloop\""
 	local CALLOOP_PATH="calloop = \\{ path = \"${WORKDIR}/calloop-${CALLOOP_COMMIT}\""
 
-	local LIVEKIT_COMMIT="c3a55bbc207008f1ca3474b6037fdd3c443cad0f"
+	local LIVEKIT_COMMIT="d0e27be0cdad89eadab3e36207cda0a2b6e359ee"
 	local LIVEKIT_GIT="livekit = { git = \"https://github.com/zed-industries/livekit-rust-sdks\""
 	LIVEKIT_GIT+=", rev = \"${LIVEKIT_COMMIT}\""
 	local LIVEKIT_PATH="livekit = \\{ path = \"${WORKDIR}/livekit-rust-sdks-${LIVEKIT_COMMIT}/livekit\""
