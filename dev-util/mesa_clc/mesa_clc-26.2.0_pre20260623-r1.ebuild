@@ -4,7 +4,7 @@
 EAPI=8
 
 LLVM_COMPAT=( {18..22} )
-PYTHON_COMPAT=( python3_{11..14} )
+PYTHON_COMPAT=( python3_{12..14} )
 
 inherit llvm-r1 meson python-any-r1
 
@@ -39,8 +39,8 @@ RDEPEND="
 	$(llvm_gen_dep '
 		dev-util/spirv-llvm-translator:${LLVM_SLOT}
 		llvm-core/clang:${LLVM_SLOT}=
-		=llvm-core/libclc-${LLVM_SLOT}*
 		llvm-core/llvm:${LLVM_SLOT}=
+		=llvm-runtimes/libclc-${LLVM_SLOT}*
 	')
 "
 DEPEND="${RDEPEND}
@@ -65,7 +65,7 @@ python_check_deps() {
 }
 
 pkg_setup() {
-	llvm-r1_pkg_setup
+	llvm-r2_pkg_setup
 	python-any-r1_pkg_setup
 }
 
@@ -83,6 +83,7 @@ src_configure() {
 	use debug && EMESON_BUILDTYPE=debug
 
 	local emesonargs=(
+		-Dallow-broken-lto=true
 		-Dllvm=enabled
 		-Dshared-llvm=enabled
 		-Dmesa-clc=enabled
