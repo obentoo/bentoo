@@ -13,7 +13,7 @@ LICENSE="MIT"
 SLOT="0"
 KEYWORDS="~amd64 ~x86"
 RESTRICT="network-sandbox"
-IUSE="+secure kde playwright +browser btrbk snapper restic rclone systemd"
+IUSE="+secure kde playwright +browser +system-snapshot systemd"
 
 # playwright and browser are two alternative backends for the same headless
 # "script" version parser, so at most one may be enabled.
@@ -32,16 +32,19 @@ RDEPEND="
 	)
 "
 
-# Optional runtime backends for the `bentoo snapshot` manager:
-# engine (btrbk/snapper), cloud ship (restic/rclone) and scheduling
-# (systemd timers). The binary degrades gracefully without them -- at
-# runtime `bentoo snapshot detect` reports an actionable error naming
-# the exact package whenever an active config needs an absent backend.
+# Optional runtime backends for the `bentoo snapshot` manager. A single
+# system-snapshot flag pulls the full set (btrbk/snapper engines plus
+# restic/rclone cloud-ship); systemd adds timer-based scheduling. The
+# binary degrades gracefully -- `bentoo snapshot detect` reports an
+# actionable error naming the exact package whenever an active config
+# needs an absent backend.
 RDEPEND+="
-	btrbk? ( app-backup/btrbk )
-	snapper? ( app-backup/snapper )
-	restic? ( app-backup/restic )
-	rclone? ( net-misc/rclone )
+	system-snapshot? (
+		app-backup/btrbk
+		app-backup/snapper
+		app-backup/restic
+		net-misc/rclone
+	)
 	systemd? ( sys-apps/systemd )
 "
 
