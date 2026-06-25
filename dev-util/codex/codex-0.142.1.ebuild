@@ -36,7 +36,11 @@ declare -A GIT_CRATES=(
 
 RUST_MIN_VER="1.95.0"
 
-MY_CRATES_TAG="rust-v${PV}-alpha.12"
+# The crate-dist fork (gentoo-zh-drafts/codex) skipped the v0.142.1 patch release,
+# jumping from rust-v0.142.0 to rust-v0.143.0. The v0.142.1 Cargo.lock only adds two
+# dependency edges (sha2, windows-sys) on crates already present in v0.142.0, so the
+# v0.142.0 crate tarball provides the identical crate source set. Pin it explicitly.
+MY_CRATES_TAG="rust-v0.142.0"
 
 # python3 .github/scripts/rusty_v8_bazel.py resolved-v8-crate-version
 RUSTY_V8_TAG="147.4.0"
