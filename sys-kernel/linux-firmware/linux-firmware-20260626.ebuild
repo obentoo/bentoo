@@ -2,25 +2,16 @@
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
-inherit dist-kernel-utils eapi9-ver linux-info mount-boot savedconfig
+inherit dist-kernel-utils eapi9-ver linux-info mount-boot savedconfig git-r3
 
-# In case this is a real snapshot, fill in commit below.
-# For normal, tagged releases, leave blank
-MY_COMMIT=""
+# bentoo: pinned-commit snapshot ahead of Gentoo's tagged releases.
+# The gitlab archive tarball is unreachable (Cloudflare), so fetch the exact
+# commit over git from kernel.org (shallow, no distfile/Manifest).
+EGIT_REPO_URI="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/${PN}.git"
+EGIT_COMMIT="1bd9b36771d9087ea76588812995587fc0024245"
+EGIT_CLONE_TYPE="shallow"
 
-if [[ ${PV} == 99999999* ]]; then
-	inherit git-r3
-	EGIT_REPO_URI="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/${PN}.git"
-else
-	if [[ -n "${MY_COMMIT}" ]]; then
-		SRC_URI="https://gitlab.com/kernel-firmware/linux-firmware/-/archive/${MY_COMMIT}/linux-firmware-${MY_COMMIT}.tar.bz2 -> ${P}.tar.bz2"
-		S="${WORKDIR}/${PN}-${MY_COMMIT}"
-	else
-		SRC_URI="https://mirrors.edge.kernel.org/pub/linux/kernel/firmware/${P}.tar.xz"
-	fi
-
-	KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~m68k ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86"
-fi
+KEYWORDS="~amd64 ~arm64"
 
 DESCRIPTION="Linux firmware files"
 HOMEPAGE="https://git.kernel.org/?p=linux/kernel/git/firmware/linux-firmware.git"
@@ -98,15 +89,8 @@ pkg_setup() {
 }
 
 src_unpack() {
-	if [[ ${PV} == 99999999* ]]; then
-		git-r3_src_unpack
-	else
-		default
-		# rename directory from git snapshot tarball
-		if [[ ${#GIT_COMMIT} -gt 8 ]]; then
-			mv ${PN}-*/ ${P} || die
-		fi
-	fi
+	# bentoo: always a pinned git checkout (EGIT_COMMIT), no source tarball.
+	git-r3_src_unpack
 }
 
 src_prepare() {
