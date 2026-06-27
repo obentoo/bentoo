@@ -11,7 +11,7 @@ MY_P="${MY_PN}-${MY_PV}"
 
 # Kernel release whose mt76/bluetooth source the patches target. The mini source
 # tarball carries only those subtrees (paths preserved); compat headers/shims
-# cover 6.17 .. 7.0.
+# cover 6.17 .. 7.1.
 MT76_KVER="7.0"
 KSRC_P="mt7927-kernel-src-${MT76_KVER}"
 # Pre-extracted MT6639 WiFi + Bluetooth firmware blobs (proprietary, from the
@@ -75,6 +75,10 @@ src_prepare() {
 	pushd "${build}/mt76" >/dev/null || die
 	eapply "${S}/mt7902-wifi-6.19.patch"
 	eapply "${S}"/mt7927-wifi-*.patch
+	# Kernel 7.1 flattened struct ieee80211_mgmt's per-action union and turned
+	# IEEE80211_MIN_ACTION_SIZE into a function-like macro; the 7.0 mini source
+	# predates that, so guard the ADDBA action parsing on LINUX_VERSION_CODE.
+	eapply "${FILESDIR}/mt76-ieee80211-mgmt-action-7.1.patch"
 	popd >/dev/null || die
 
 	# Apply the MT6639 Bluetooth patch series: numbered patches (core support,
