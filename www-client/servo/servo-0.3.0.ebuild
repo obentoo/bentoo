@@ -21,7 +21,9 @@ EAPI=8
 RUST_MIN_VER="1.95.0"
 RUST_MAX_VER="1.96.0"
 
-inherit cargo desktop multiprocessing xdg
+# cargo.eclass already inherits multiprocessing (makeopts_jobs) and the rust /
+# rust-toolchain eclasses (which generate the rust BDEPEND from RUST_MIN_VER).
+inherit cargo desktop xdg
 
 DESCRIPTION="A web browser engine written in Rust (servoshell tech demo)"
 HOMEPAGE="https://servo.org/ https://github.com/servo/servo"
@@ -73,8 +75,9 @@ DEPEND="
 	)
 "
 RDEPEND="${DEPEND}"
+# The rust toolchain dependency is added automatically by cargo.eclass (slot-based,
+# derived from RUST_MIN_VER/RUST_MAX_VER); do NOT add a versioned virtual/rust atom.
 BDEPEND="
-	>=virtual/rust-${RUST_MIN_VER}
 	dev-util/gperf
 	llvm-core/clang
 	llvm-core/llvm
