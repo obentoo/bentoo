@@ -20,7 +20,9 @@ inherit eapi9-ver flag-o-matic linux-info toolchain-funcs python-r1 udev fcaps \
 		readme.gentoo-r1 pax-utils xdg-utils
 
 MY_P="${PN}-${PV/_rc/-rc}"
-SRC_URI="https://download.qemu.org/${MY_P}.tar.xz"
+# 11.0.2 tagged upstream but not yet published to download.qemu.org;
+# fetch the git tag archive (extracts to ${MY_P}) until the mirror catches up.
+SRC_URI="https://github.com/qemu/qemu/archive/refs/tags/v${PV/_rc/-rc}.tar.gz -> ${MY_P}.tar.gz"
 
 if [[ ${QEMU_DOCS_PREBUILT} == 1 ]] ; then
 	SRC_URI+=" !doc? ( https://dev.gentoo.org/~${QEMU_DOCS_PREBUILT_DEV}/distfiles/${CATEGORY}/${PN}/${PN}-${QEMU_DOCS_VERSION}-docs.tar.xz )"
