@@ -18,7 +18,7 @@ EAPI=8
 # overwrite the in-tree vendored config. We inherit cargo only for its
 # cargo_target_dir / RUSTFLAGS / RUST_MIN_VER plumbing and drive the build offline.
 
-RUST_MIN_VER="1.96.0"
+RUST_MIN_VER="1.95.0"
 RUST_MAX_VER="1.96.0"
 
 inherit cargo desktop multiprocessing xdg
