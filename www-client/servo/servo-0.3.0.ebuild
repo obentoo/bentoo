@@ -116,6 +116,21 @@ src_compile() {
 	export RUSTC_BOOTSTRAP="crown,script,script_bindings,style_tests,mozjs,mozjs_sys"
 	export CARGO_HOME="${ECARGO_HOME}"
 
+	# Force mozjs_sys to build SpiderMonkey from source. Without this, its
+	# build.rs first tries to download a prebuilt static library from GitHub
+	# Releases, which is forbidden under Portage's network-sandbox; the fetch
+	# fails and it falls back to a source build anyway, so make that the
+	# deterministic, network-free default (see mozjs_sys build.rs:
+	# should_build_from_source -> MOZJS_FROM_SOURCE).
+	export MOZJS_FROM_SOURCE=1
+
+	# SpiderMonkey's moz.configure probes for xargs via check_prog("XARGS").
+	# If a XARGS variable leaks in from the calling environment with a spaced
+	# value (e.g. "xargs -r"), mozbuild treats the whole string as the program
+	# name and aborts the build with "Cannot find xargs". Drop it so the
+	# default lookup finds the system xargs.
+	unset XARGS
+
 	CARGO_NET_OFFLINE=true \
 	cargo build --release --offline \
 		--manifest-path "${S}/Cargo.toml" \
