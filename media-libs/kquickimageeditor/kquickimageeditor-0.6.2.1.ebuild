@@ -14,7 +14,10 @@ HOMEPAGE="https://invent.kde.org/libraries/kquickimageeditor
 https://api.kde.org/kquickimageeditor/html/index.html"
 
 if [[ ${KDE_BUILD_TYPE} = release ]]; then
-	SRC_URI="mirror://kde/stable/${PN}/${P}.tar.xz"
+	# 0.6.2.1 is tagged upstream but not yet published on download.kde.org;
+	# fetch the tagged archive from invent.kde.org instead.
+	SRC_URI="https://invent.kde.org/libraries/${PN}/-/archive/v${PV}/${PN}-v${PV}.tar.gz -> ${P}.tar.gz"
+	S="${WORKDIR}/${PN}-v${PV}"
 	KEYWORDS="~amd64 ~arm64 ~loong ~ppc64 ~riscv ~x86"
 fi
 
