@@ -16,9 +16,9 @@ CRATES="
 	addr2line@0.25.1
 	adler2@2.0.1
 	aes@0.8.4
-	agent-client-protocol-derive@1.0.0
+	agent-client-protocol-derive@1.0.1
 	agent-client-protocol-schema@1.1.0
-	agent-client-protocol@1.0.0
+	agent-client-protocol@1.0.1
 	ahash@0.7.8
 	ahash@0.8.12
 	aho-corasick@1.1.3
@@ -1612,7 +1612,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="5fa184f8b63df7e084140ab3c2a91b4a6f262bab"
+EGIT_COMMIT="df33d7866100abb8b8a21bd61507402eb4c81b90"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
