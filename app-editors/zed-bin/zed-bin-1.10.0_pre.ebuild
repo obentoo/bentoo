@@ -19,7 +19,6 @@ SRC_URI="
 	)
 "
 
-S="${WORKDIR}/${MY_PN}.app"
 LICENSE="GPL-3+"
 SLOT="0"
 KEYWORDS="-* ~amd64 ~arm64"
@@ -51,6 +50,15 @@ QA_PREBUILT="
 	opt/zed-bin/lib/*
 "
 
+src_unpack() {
+	default
+	# Upstream tarballs unpack to a single top-level "*.app" directory whose
+	# name depends on the release channel: "zed.app" (stable) or
+	# "zed-preview.app" (preview, e.g. *_pre releases). Resolve S dynamically
+	# so the ebuild works regardless of channel.
+	S=$(echo "${WORKDIR}"/*.app)
+}
+
 src_install() {
 	# Install to /opt/zed-bin
 	insinto /opt/zed-bin
@@ -61,36 +69,47 @@ src_install() {
 	fperms +x /opt/zed-bin/libexec/zed-editor
 	fperms +x /opt/zed-bin/bin/zed
 
-	# Symlink CLI to /usr/bin as 'zedit' to avoid conflict with source ebuild
+	# Symlink CLI to /usr/bin as 'zedit-bin' to avoid conflict with source ebuild
 	dosym ../../opt/zed-bin/bin/zed /usr/bin/zedit-bin
 
-	# Install icons named after the Wayland app_id ("dev.zed.Zed") so that
-	# Wayland compositors resolve the window icon correctly. Without this,
-	# compositors fall back to the generic Wayland icon.
+	# Derive the runtime Wayland app_id from the bundled .desktop filename so
+	# both the stable ("dev.zed.Zed") and preview ("dev.zed.Zed-Preview")
+	# channels resolve their window icon correctly.
+	local desktop_src appid
+	desktop_src=$(echo share/applications/*.desktop)
+	if [[ -f ${desktop_src} ]]; then
+		appid=$(basename "${desktop_src}" .desktop)
+	else
+		appid="dev.zed.Zed"
+	fi
+
+	# Install icons named after the Wayland app_id so that Wayland compositors
+	# resolve the window icon correctly. Without this, compositors fall back to
+	# the generic Wayland icon.
 	if [[ -d share/icons ]]; then
 		local size icon
 		for icon in share/icons/hicolor/*/apps/zed.png; do
 			if [[ -f "${icon}" ]]; then
 				size="${icon#share/icons/hicolor/}"
 				size="${size%%x*}"
-				newicon -s "${size}" "${icon}" dev.zed.Zed.png
+				newicon -s "${size}" "${icon}" "${appid}.png"
 			fi
 		done
 	fi
 
-	# Install desktop file with filename matching the runtime Wayland app_id
-	# ("dev.zed.Zed"). This is what compositors look up to find the window icon.
-	if [[ -f share/applications/zed.desktop ]]; then
+	# Install desktop file with filename matching the runtime Wayland app_id.
+	# This is what compositors look up to find the window icon.
+	if [[ -f ${desktop_src} ]]; then
 		sed -e "s|^Exec=.*|Exec=/opt/zed-bin/bin/zed %U|" \
-			-e "s|^Icon=.*|Icon=dev.zed.Zed|" \
-			-e "/^Actions=/i StartupWMClass=dev.zed.Zed" \
-			share/applications/zed.desktop > "${T}/dev.zed.Zed.desktop" || die
-		domenu "${T}/dev.zed.Zed.desktop"
+			-e "s|^Icon=.*|Icon=${appid}|" \
+			-e "/^Actions=/i StartupWMClass=${appid}" \
+			"${desktop_src}" > "${T}/${appid}.desktop" || die
+		domenu "${T}/${appid}.desktop"
 	else
 		make_desktop_entry "/opt/zed-bin/bin/zed %U" \
-			"Zed" dev.zed.Zed \
+			"Zed" "${appid}" \
 			"Development;IDE;TextEditor;" \
-			"StartupNotify=true\nStartupWMClass=dev.zed.Zed\nMimeType=text/plain;inode/directory;"
+			"StartupNotify=true\nStartupWMClass=${appid}\nMimeType=text/plain;inode/directory;"
 	fi
 }
 
