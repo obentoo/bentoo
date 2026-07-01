@@ -7,12 +7,15 @@ PYTHON_COMPAT=( python3_{12..14} )
 inherit branding desktop python-any-r1 flag-o-matic scons-utils
 inherit shell-completion toolchain-funcs xdg
 
+MY_PV=${PV/_rc/-rc}
+MY_P=${PN}-${MY_PV}
+
 DESCRIPTION="Multi-platform 2D and 3D game engine with a feature-rich editor"
 HOMEPAGE="https://godotengine.org/"
 SRC_URI="
-	https://github.com/godotengine/godot/releases/download/${PV}-stable/${P}-stable.tar.xz
+	https://github.com/godotengine/godot-builds/releases/download/${MY_PV}/${MY_P}.tar.xz
 "
-S=${WORKDIR}/${P}-stable
+S=${WORKDIR}/${MY_P}
 
 LICENSE="
 	MIT
@@ -92,8 +95,8 @@ BDEPEND="
 
 PATCHES=(
 	"${FILESDIR}"/${PN}-4.5-scons.patch
-	"${FILESDIR}"/${P}-no-volk.patch
-	"${FILESDIR}"/${P}-harfbuzz-raster.patch
+	"${FILESDIR}"/${PN}-4.7-no-volk.patch
+	"${FILESDIR}"/${PN}-4.7-harfbuzz-raster.patch
 )
 
 src_prepare() {
