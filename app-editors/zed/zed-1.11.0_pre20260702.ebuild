@@ -1645,7 +1645,7 @@ LICENSE+="
 "
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
-IUSE="+X +claude-agent-tui collab extensions-cli +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
+IUSE="+X acp-beta +claude-agent-tui collab extensions-cli +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
 REQUIRED_USE="|| ( X wayland )"
 CHECKREQS_DISK_BUILD="18G"
 CHECKREQS_MEMORY="8G"
@@ -1726,6 +1726,12 @@ pkg_setup() {
 }
 
 src_prepare() {
+	# story 002: force-enable the acp-beta feature flag (ACP elicitation form/url UI).
+	# USE=acp-beta applies the patch; story 003 can append its patch series to this same branch.
+	if use acp-beta; then
+		PATCHES+=( "${FILESDIR}/0001-force-enable-acp-beta.patch" )
+	fi
+
 	default
 
 	export APP_CLI="zedit"
