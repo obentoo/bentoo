@@ -102,6 +102,7 @@ src_install() {
 	if [[ -f ${desktop_src} ]]; then
 		sed -e "s|^Exec=.*|Exec=/opt/zed-bin/bin/zed %U|" \
 			-e "s|^Icon=.*|Icon=${appid}|" \
+			-e "s|^TryExec=.*|TryExec=/opt/zed-bin/bin/zed|" \
 			-e "/^Actions=/i StartupWMClass=${appid}" \
 			"${desktop_src}" > "${T}/${appid}.desktop" || die
 		domenu "${T}/${appid}.desktop"
