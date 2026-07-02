@@ -95,8 +95,6 @@ BDEPEND="
 
 PATCHES=(
 	"${FILESDIR}"/${PN}-4.5-scons.patch
-	"${FILESDIR}"/${PN}-4.7-no-volk.patch
-	"${FILESDIR}"/${PN}-4.7-harfbuzz-raster.patch
 )
 
 src_prepare() {
