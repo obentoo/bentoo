@@ -690,6 +690,7 @@ CRATES="
 	moxcms@0.8.1
 	msvc_spectre_libs@0.1.3
 	multimap@0.8.3
+	naga@29.0.4
 	nalgebra@0.34.2
 	nanoid@0.4.0
 	nanorand@0.7.0
@@ -765,8 +766,8 @@ CRATES="
 	openssl-macros@0.1.1
 	openssl-probe@0.1.6
 	openssl-probe@0.2.1
-	openssl-sys@0.9.115
-	openssl@0.10.79
+	openssl-sys@0.9.117
+	openssl@0.10.81
 	optfield@0.4.0
 	option-ext@0.2.0
 	ordered-float@2.10.1
@@ -1349,6 +1350,14 @@ CRATES="
 	webpki-root-certs@0.26.8
 	webpki-roots@0.26.8
 	weezl@0.1.10
+	wgpu-core-deps-apple@29.0.4
+	wgpu-core-deps-emscripten@29.0.4
+	wgpu-core-deps-windows-linux-android@29.0.4
+	wgpu-core@29.0.4
+	wgpu-hal@29.0.4
+	wgpu-naga-bridge@29.0.4
+	wgpu-types@29.0.4
+	wgpu@29.0.4
 	which@4.4.2
 	which@6.0.3
 	whoami@1.6.1
@@ -1549,7 +1558,6 @@ declare -A GIT_CRATES=(
 	[merman-core]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/merman-core'
 	[merman-render]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/merman-render'
 	[merman]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/merman'
-	[naga]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/naga'
 	[notify-types]='https://github.com/zed-industries/notify;faecbc33db4f59313e5225ef766bfd9e54a54cfd;notify-%commit%/notify-types'
 	[notify]='https://github.com/zed-industries/notify;faecbc33db4f59313e5225ef766bfd9e54a54cfd;notify-%commit%/notify'
 	[nvim-rs]='https://github.com/KillTheMule/nvim-rs;764dd270c642f77f10f3e19d05cc178a6cbe69f3;nvim-rs-%commit%'
@@ -1594,14 +1602,6 @@ declare -A GIT_CRATES=(
 	[tree-sitter-yaml]='https://github.com/zed-industries/tree-sitter-yaml;baff0b51c64ef6a1fb1f8390f3ad6015b83ec13a;tree-sitter-yaml-%commit%'
 	[webrtc-sys-build]='https://github.com/zed-industries/livekit-rust-sdks;d0e27be0cdad89eadab3e36207cda0a2b6e359ee;livekit-rust-sdks-%commit%/webrtc-sys/build'
 	[webrtc-sys]='https://github.com/zed-industries/livekit-rust-sdks;d0e27be0cdad89eadab3e36207cda0a2b6e359ee;livekit-rust-sdks-%commit%/webrtc-sys'
-	[wgpu-core-deps-apple]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/wgpu-core/platform-deps/apple'
-	[wgpu-core-deps-emscripten]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/wgpu-core/platform-deps/emscripten'
-	[wgpu-core-deps-windows-linux-android]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/wgpu-core/platform-deps/windows-linux-android'
-	[wgpu-core]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/wgpu-core'
-	[wgpu-hal]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/wgpu-hal'
-	[wgpu-naga-bridge]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/wgpu-naga-bridge'
-	[wgpu-types]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/wgpu-types'
-	[wgpu]='https://github.com/zed-industries/wgpu;357a0c56e0070480ad9daea5d2eaa83150b79e88;wgpu-%commit%/wgpu'
 	[windows-capture]='https://github.com/zed-industries/windows-capture;f0d6c1b6691db75461b732f6d5ff56eed002eeb9;windows-capture-%commit%'
 	[wprcontrol]='https://github.com/zed-industries/wprcontrol;cd811f7d744f65291e13131b1d907fda63ed91a1;wprcontrol-%commit%'
 	[xim-ctext]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%/xim-ctext'
@@ -1612,7 +1612,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="552fc9f3c3c775276c2ce3f0fb93f1f4c2c18ba6"
+EGIT_COMMIT="6eaad52c29a026591b18acfc0ef6f35bce85d676"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
