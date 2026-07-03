@@ -258,19 +258,19 @@ CRATES="
 	cpal@0.17.1
 	cpp_demangle@0.4.5
 	cpufeatures@0.2.17
-	cranelift-assembler-x64-meta@0.123.9
-	cranelift-assembler-x64@0.123.9
-	cranelift-bforest@0.123.9
-	cranelift-bitset@0.123.9
-	cranelift-codegen-meta@0.123.9
-	cranelift-codegen-shared@0.123.9
-	cranelift-codegen@0.123.9
-	cranelift-control@0.123.9
-	cranelift-entity@0.123.9
-	cranelift-frontend@0.123.9
-	cranelift-isle@0.123.9
-	cranelift-native@0.123.9
-	cranelift-srcgen@0.123.9
+	cranelift-assembler-x64-meta@0.123.12
+	cranelift-assembler-x64@0.123.12
+	cranelift-bforest@0.123.12
+	cranelift-bitset@0.123.12
+	cranelift-codegen-meta@0.123.12
+	cranelift-codegen-shared@0.123.12
+	cranelift-codegen@0.123.12
+	cranelift-control@0.123.12
+	cranelift-entity@0.123.12
+	cranelift-frontend@0.123.12
+	cranelift-isle@0.123.12
+	cranelift-native@0.123.12
+	cranelift-srcgen@0.123.12
 	crash-context@0.6.3
 	crash-handler@0.7.0
 	crc-catalog@2.4.0
@@ -504,6 +504,7 @@ CRATES="
 	hashbrown@0.14.5
 	hashbrown@0.15.5
 	hashbrown@0.16.1
+	hashbrown@0.17.1
 	hashlink@0.10.0
 	hashlink@0.8.4
 	hdrhistogram@7.5.4
@@ -564,7 +565,7 @@ CRATES="
 	imgref@1.12.0
 	indenter@0.3.4
 	indexmap@1.9.3
-	indexmap@2.11.4
+	indexmap@2.14.0
 	indoc@2.0.6
 	inherent@1.0.13
 	inotify-sys@0.1.5
@@ -889,8 +890,8 @@ CRATES="
 	pulldown-cmark@0.10.3
 	pulldown-cmark@0.12.2
 	pulldown-cmark@0.13.0
-	pulley-interpreter@36.0.9
-	pulley-macros@36.0.9
+	pulley-interpreter@36.0.12
+	pulley-macros@36.0.12
 	pxfm@0.1.25
 	qoi@0.4.1
 	quick-error@1.2.3
@@ -1300,40 +1301,40 @@ CRATES="
 	wasm-bindgen-shared@0.2.120
 	wasm-bindgen@0.2.120
 	wasm-encoder@0.201.0
-	wasm-encoder@0.221.3
 	wasm-encoder@0.227.1
 	wasm-encoder@0.236.1
 	wasm-encoder@0.244.0
+	wasm-encoder@0.252.0
 	wasm-metadata@0.201.0
 	wasm-metadata@0.227.1
 	wasm-metadata@0.244.0
 	wasm-streams@0.4.2
 	wasm_thread@0.3.3
 	wasmparser@0.201.0
-	wasmparser@0.221.3
 	wasmparser@0.227.1
 	wasmparser@0.236.1
 	wasmparser@0.244.0
+	wasmparser@0.252.0
 	wasmprinter@0.236.1
 	wasmtime-c-api-impl@36.0.9
-	wasmtime-environ@36.0.9
-	wasmtime-internal-asm-macros@36.0.9
+	wasmtime-environ@36.0.12
+	wasmtime-internal-asm-macros@36.0.12
 	wasmtime-internal-c-api-macros@36.0.9
-	wasmtime-internal-component-macro@36.0.9
-	wasmtime-internal-component-util@36.0.9
-	wasmtime-internal-cranelift@36.0.9
-	wasmtime-internal-fiber@36.0.9
-	wasmtime-internal-jit-debug@36.0.9
-	wasmtime-internal-jit-icache-coherence@36.0.9
-	wasmtime-internal-math@36.0.9
-	wasmtime-internal-slab@36.0.9
-	wasmtime-internal-unwinder@36.0.9
-	wasmtime-internal-versioned-export-macros@36.0.9
-	wasmtime-internal-winch@36.0.9
-	wasmtime-internal-wit-bindgen@36.0.9
-	wasmtime-wasi-io@36.0.9
-	wasmtime-wasi@36.0.9
-	wasmtime@36.0.9
+	wasmtime-internal-component-macro@36.0.12
+	wasmtime-internal-component-util@36.0.12
+	wasmtime-internal-cranelift@36.0.12
+	wasmtime-internal-fiber@36.0.12
+	wasmtime-internal-jit-debug@36.0.12
+	wasmtime-internal-jit-icache-coherence@36.0.12
+	wasmtime-internal-math@36.0.12
+	wasmtime-internal-slab@36.0.12
+	wasmtime-internal-unwinder@36.0.12
+	wasmtime-internal-versioned-export-macros@36.0.12
+	wasmtime-internal-winch@36.0.12
+	wasmtime-internal-wit-bindgen@36.0.12
+	wasmtime-wasi-io@36.0.12
+	wasmtime-wasi@36.0.12
+	wasmtime@36.0.12
 	wast@35.0.2
 	wax@0.7.0
 	wayland-backend@0.3.11
@@ -1362,14 +1363,14 @@ CRATES="
 	which@6.0.3
 	whoami@1.6.1
 	wide@0.7.33
-	wiggle-generate@36.0.9
-	wiggle-macro@36.0.9
-	wiggle@36.0.9
+	wiggle-generate@36.0.12
+	wiggle-macro@36.0.12
+	wiggle@36.0.12
 	winapi-i686-pc-windows-gnu@0.4.0
 	winapi-util@0.1.11
 	winapi-x86_64-pc-windows-gnu@0.4.0
 	winapi@0.3.9
-	winch-codegen@36.0.9
+	winch-codegen@36.0.12
 	windows-bindgen@0.61.1
 	windows-collections@0.2.0
 	windows-collections@0.3.2
@@ -1612,7 +1613,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="6eaad52c29a026591b18acfc0ef6f35bce85d676"
+EGIT_COMMIT="4b7369481dcf36f22ff8f813d411e1d296aebe57"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
