@@ -1,0 +1,1696 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 5a64dbf..861f7dd 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3144,6 +3144,30 @@ version = "0.7.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
+ 
++[[package]]
++name = "claude_code_ide"
++version = "0.1.0"
++dependencies = [
++ "anyhow",
++ "async-tungstenite",
++ "buffer_diff",
++ "collections",
++ "editor",
++ "futures 0.3.32",
++ "gpui",
++ "language",
++ "log",
++ "paths",
++ "serde",
++ "serde_json",
++ "smol",
++ "text",
++ "ui",
++ "util",
++ "uuid",
++ "workspace",
++]
++
+ [[package]]
+ name = "cli"
+ version = "0.1.0"
+@@ -23014,6 +23038,7 @@ dependencies = [
+  "channel",
+  "chrono",
+  "clap",
++ "claude_code_ide",
+  "cli",
+  "client",
+  "clock",
+diff --git a/Cargo.toml b/Cargo.toml
+index 2adf179..c2cf034 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -25,6 +25,7 @@ members = [
+     "crates/buffer_diff",
+     "crates/call",
+     "crates/channel",
++    "crates/claude_code_ide",
+     "crates/cli",
+     "crates/client",
+     "crates/clock",
+@@ -290,6 +291,7 @@ breadcrumbs = { path = "crates/breadcrumbs" }
+ buffer_diff = { path = "crates/buffer_diff" }
+ call = { path = "crates/call" }
+ channel = { path = "crates/channel" }
++claude_code_ide = { path = "crates/claude_code_ide" }
+ cli = { path = "crates/cli" }
+ client = { path = "crates/client" }
+ clock = { path = "crates/clock" }
+diff --git a/crates/claude_code_ide/Cargo.toml b/crates/claude_code_ide/Cargo.toml
+new file mode 100644
+index 0000000..01913fc
+--- /dev/null
++++ b/crates/claude_code_ide/Cargo.toml
+@@ -0,0 +1,34 @@
++[package]
++name = "claude_code_ide"
++version = "0.1.0"
++edition.workspace = true
++publish = false
++license = "GPL-3.0-or-later"
++description = "IDE-side of the Claude Code editor integration protocol (WebSocket MCP server) so the Claude Code CLI connects to Zed like it does to VS Code and JetBrains"
++
++[lints]
++workspace = true
++
++[lib]
++path = "src/claude_code_ide.rs"
++doctest = false
++
++[dependencies]
++anyhow.workspace = true
++async-tungstenite.workspace = true
++buffer_diff.workspace = true
++collections.workspace = true
++editor.workspace = true
++futures.workspace = true
++gpui.workspace = true
++language.workspace = true
++log.workspace = true
++paths.workspace = true
++serde.workspace = true
++serde_json.workspace = true
++smol.workspace = true
++text.workspace = true
++ui.workspace = true
++util.workspace = true
++uuid.workspace = true
++workspace.workspace = true
+diff --git a/crates/claude_code_ide/README.md b/crates/claude_code_ide/README.md
+new file mode 100644
+index 0000000..eb59c5d
+--- /dev/null
++++ b/crates/claude_code_ide/README.md
+@@ -0,0 +1,66 @@
++# claude_code_ide
++
++Native [Claude Code](https://docs.claude.com/en/docs/claude-code) IDE integration
++for Zed.
++
++This crate lets the `claude` CLI connect to Zed the same way it connects to
++VS Code, JetBrains and Neovim — over Claude Code's native WebSocket + MCP
++"IDE integration" protocol. It is **not** ACP: Zed already exposes Claude Code
++as an ACP agent in the agent panel; this is the complementary direction, where
++`claude` running in Zed's integrated terminal drives the editor.
++
++## What you get
++
++- **Auto-connect** in Zed's integrated terminal — no `/ide` needed.
++- `@`-mentions of your current selection (`getCurrentSelection`).
++- Model-visible **diagnostics** (`getDiagnostics`).
++- Open editors / open file / save / dirty checks
++  (`getOpenEditors`, `openFile`, `saveDocument`, `checkDocumentDirty`).
++- **Blocking accept/reject diffs** (`openDiff`): Claude's proposed change opens
++  as a side-by-side diff tab, the view centers on the first change, and the CLI
++  blocks until you click **Keep** (green) or **Reject** (red).
++
++## How it works
++
++1. Each workspace starts a per-window server: it binds `127.0.0.1:0`, then
++   writes a lockfile to `~/.claude/ide/<port>.lock` (honoring
++   `CLAUDE_CONFIG_DIR`) with `0600` perms inside a `0700` dir. The lockfile
++   advertises `{pid, workspaceFolders, ideName: "Zed", transport: "ws",
++   authToken}` so the CLI can discover the IDE.
++2. The transport is a WebSocket authenticated by the
++   `x-claude-code-ide-authorization` header (which must equal `authToken`),
++   speaking JSON-RPC 2.0 / MCP (`initialize`, `tools/list`, `tools/call`),
++   protocol version `2024-11-05`.
++3. Auto-connect: the workspace publishes the server port onto `Project`, and
++   `crates/project/src/terminals.rs` injects `CLAUDE_CODE_SSE_PORT` and
++   `ENABLE_IDE_INTEGRATION=true` into the integrated terminal, so `claude`
++   connects automatically. An external terminal can still attach via `/ide`,
++   discovering Zed from the lockfile.
++
++Entry point: `claude_code_ide::init(cx)`, called from `crates/zed/src/main.rs`.
++
++## Tools
++
++| Tool | Purpose |
++| --- | --- |
++| `getCurrentSelection` / `getLatestSelection` | Active editor selection (for `@`-mentions). |
++| `getWorkspaceFolders` | Visible worktree roots. |
++| `getOpenEditors` | Open buffers with uri/label/language/dirty state. |
++| `getDiagnostics` | Language diagnostics, all buffers or one uri. |
++| `openFile` | Open a path, optionally selecting a line range. |
++| `saveDocument` / `checkDocumentDirty` | Save a buffer / query its dirty state. |
++| `openDiff` | Blocking side-by-side diff with Keep/Reject. |
++
++## Try it
++
++```bash
++cargo run --release -p zed   # Linux: run ./script/linux once for build deps
++```
++
++Open Zed's integrated terminal and run `claude` — it connects automatically.
++Edit a file through Claude and a Keep/Reject diff opens in the editor.
++
++## Limitations
++
++- Keep/Reject hotkeys are intentionally omitted; use the notification buttons.
++
+diff --git a/crates/claude_code_ide/src/claude_code_ide.rs b/crates/claude_code_ide/src/claude_code_ide.rs
+new file mode 100644
+index 0000000..7f0073f
+--- /dev/null
++++ b/crates/claude_code_ide/src/claude_code_ide.rs
+@@ -0,0 +1,164 @@
++//! IDE-side implementation of the Claude Code editor integration protocol.
++//!
++//! This lets the Claude Code CLI connect to Zed the same way it connects to the
++//! official VS Code and JetBrains extensions: Zed runs a localhost WebSocket
++//! server speaking a WebSocket variant of MCP, advertises it through a lock file
++//! under `~/.claude/ide/`, and points the CLI at it via the `CLAUDE_CODE_SSE_PORT`
++//! and `ENABLE_IDE_INTEGRATION` environment variables in its integrated terminal.
++//!
++//! [`init`] wires one [`ClaudeCodeIdeServer`] per [`Workspace`]: it binds a
++//! loopback port, writes the lock file, and serves connections until the window
++//! closes, at which point the lock file is removed.
++
++mod lockfile;
++mod open_diff;
++mod server;
++mod tools;
++
++use std::{cell::Cell, cell::RefCell, rc::Rc};
++
++use anyhow::{Context as _, Result};
++use collections::HashMap;
++use gpui::{
++    AnyWindowHandle, App, AppContext as _, AsyncApp, Context, Entity, EntityId, Task, WeakEntity,
++};
++use util::ResultExt as _;
++use workspace::Workspace;
++
++pub use lockfile::{IDE_NAME, generate_auth_token};
++pub use server::{Dispatcher, ProtocolError, ToolDescriptor, bind, serve_connection};
++pub use tools::WorkspaceDispatcher;
++
++/// Registers a Claude Code IDE server for every workspace window.
++///
++/// Call once during app startup. Each created [`Workspace`] gets its own server
++/// entity, kept alive in `servers` for the window's lifetime and dropped (which
++/// removes its lock file) when the workspace is released.
++pub fn init(cx: &mut App) {
++    let servers: Rc<RefCell<HashMap<EntityId, Entity<ClaudeCodeIdeServer>>>> = Rc::default();
++    cx.observe_new({
++        let servers = servers.clone();
++        move |_workspace: &mut Workspace, window, cx: &mut Context<Workspace>| {
++            let workspace_id = cx.entity_id();
++            let workspace_handle = cx.entity().downgrade();
++            let window_handle = window.map(|window| window.window_handle());
++            let server =
++                cx.new(|cx| ClaudeCodeIdeServer::new(workspace_handle, window_handle, cx));
++            servers.borrow_mut().insert(workspace_id, server);
++
++            cx.on_release({
++                let servers = servers.clone();
++                move |_workspace, _cx| {
++                    servers.borrow_mut().remove(&workspace_id);
++                }
++            })
++            .detach();
++        }
++    })
++    .detach();
++
++    // Lock files are removed when a window closes (see `Drop`), but a hard quit
++    // skips destructors, so clean them up explicitly on app exit too.
++    cx.on_app_quit({
++        let servers = servers.clone();
++        move |cx| {
++            for server in servers.borrow().values() {
++                server.update(cx, |server, _| server.remove_lockfile());
++            }
++            async move {}
++        }
++    })
++    .detach();
++}
++
++/// One running WebSocket server, bound to a single workspace window.
++struct ClaudeCodeIdeServer {
++    /// Set once the listener is bound; read by `Drop` to remove the lock file.
++    /// Shared with the accept-loop task, which is the writer.
++    port: Rc<Cell<Option<u16>>>,
++    /// The bind + accept loop. Dropping it (when the workspace closes) cancels
++    /// the loop, stopping the server.
++    _server_task: Task<()>,
++}
++
++impl ClaudeCodeIdeServer {
++    fn new(
++        workspace: WeakEntity<Workspace>,
++        window: Option<AnyWindowHandle>,
++        cx: &mut Context<Self>,
++    ) -> Self {
++        let port = Rc::new(Cell::new(None));
++        let server_task = cx.spawn({
++            let port = port.clone();
++            async move |_this, cx| {
++                if let Err(error) = Self::run(workspace, window, port, cx).await {
++                    log::error!("Claude Code IDE server stopped: {error:#}");
++                }
++            }
++        });
++        Self { port, _server_task: server_task }
++    }
++
++    async fn run(
++        workspace: WeakEntity<Workspace>,
++        window: Option<AnyWindowHandle>,
++        port_cell: Rc<Cell<Option<u16>>>,
++        cx: &mut AsyncApp,
++    ) -> Result<()> {
++        let (listener, port) = bind().await?;
++        let auth_token = generate_auth_token();
++
++        let workspace_folders = workspace
++            .update(cx, |workspace, cx| {
++                workspace
++                    .project()
++                    .read(cx)
++                    .visible_worktrees(cx)
++                    .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
++                    .collect::<Vec<_>>()
++            })
++            .context("reading workspace folders")?;
++
++        lockfile::create(port, &auth_token, &workspace_folders)?;
++        port_cell.set(Some(port));
++
++        // Publish the port to the project so newly opened terminals advertise it
++        // to the Claude CLI via `CLAUDE_CODE_SSE_PORT`.
++        workspace
++            .update(cx, |workspace, cx| {
++                workspace
++                    .project()
++                    .update(cx, |project, _| project.set_claude_code_ide_port(Some(port)));
++            })
++            .context("publishing IDE port to project")?;
++
++        log::info!("Claude Code IDE server listening on 127.0.0.1:{port}");
++
++        // Each accepted connection is served on the foreground executor so its
++        // tool handlers can touch workspace entities; the async I/O still yields,
++        // so it never blocks the UI.
++        while let Ok((stream, _addr)) = listener.accept().await {
++            let dispatcher = WorkspaceDispatcher::new(workspace.clone(), window, cx.clone());
++            let auth_token = auth_token.clone();
++            cx.spawn(async move |_cx| {
++                serve_connection(stream, auth_token, dispatcher).await.log_err();
++            })
++            .detach();
++        }
++
++        Ok(())
++    }
++
++    /// Removes this server's lock file, if one has been written. Idempotent.
++    fn remove_lockfile(&self) {
++        if let Some(port) = self.port.get() {
++            lockfile::remove(port).log_err();
++        }
++    }
++}
++
++impl Drop for ClaudeCodeIdeServer {
++    fn drop(&mut self) {
++        self.remove_lockfile();
++    }
++}
+diff --git a/crates/claude_code_ide/src/lockfile.rs b/crates/claude_code_ide/src/lockfile.rs
+new file mode 100644
+index 0000000..4ae7050
+--- /dev/null
++++ b/crates/claude_code_ide/src/lockfile.rs
+@@ -0,0 +1,138 @@
++//! Discovery lock files for the Claude Code IDE integration.
++//!
++//! The Claude Code CLI finds a running IDE WebSocket server by scanning
++//! `~/.claude/ide/*.lock`. Each file describes one server: which workspace it
++//! serves, the PID that owns it, and the auth token the CLI must present in the
++//! `x-claude-code-ide-authorization` header when it connects. We mirror the
++//! format the official VS Code and JetBrains extensions write.
++
++use anyhow::{Context as _, Result};
++use serde::Serialize;
++use std::{fs, path::PathBuf};
++
++/// The `ideName` reported to the CLI; shown in its `/ide` status output.
++pub const IDE_NAME: &str = "Zed";
++
++#[derive(Debug, Serialize)]
++#[serde(rename_all = "camelCase")]
++struct LockFileContents {
++    pid: u32,
++    workspace_folders: Vec<String>,
++    ide_name: &'static str,
++    transport: &'static str,
++    auth_token: String,
++}
++
++/// `$CLAUDE_CONFIG_DIR/ide` when that variable is set and non-empty, otherwise
++/// `~/.claude/ide` — the same resolution the CLI itself performs.
++pub fn lock_dir() -> PathBuf {
++    match std::env::var_os("CLAUDE_CONFIG_DIR") {
++        Some(dir) if !dir.is_empty() => PathBuf::from(dir).join("ide"),
++        _ => paths::home_dir().join(".claude").join("ide"),
++    }
++}
++
++pub fn lock_path(port: u16) -> PathBuf {
++    lock_dir().join(format!("{port}.lock"))
++}
++
++/// A fresh v4 UUID, matching the auth-token format the official extensions use.
++pub fn generate_auth_token() -> String {
++    uuid::Uuid::new_v4().to_string()
++}
++
++/// Writes the lock file for `port`, returning its path.
++///
++/// The write is atomic (temp file + rename) so the CLI never observes a
++/// partially written file while scanning the directory.
++pub fn create(port: u16, auth_token: &str, workspace_folders: &[PathBuf]) -> Result<PathBuf> {
++    let dir = lock_dir();
++    fs::create_dir_all(&dir).with_context(|| format!("creating lock dir {dir:?}"))?;
++    // The token is a secret, so restrict the directory to the current user
++    // (0700), matching what the official extensions do.
++    set_owner_only(&dir, 0o700)?;
++
++    let contents = LockFileContents {
++        pid: std::process::id(),
++        workspace_folders: workspace_folders
++            .iter()
++            .map(|path| path.to_string_lossy().into_owned())
++            .collect(),
++        ide_name: IDE_NAME,
++        transport: "ws",
++        auth_token: auth_token.to_owned(),
++    };
++    let json = serde_json::to_string(&contents).context("serializing lock file")?;
++
++    let path = dir.join(format!("{port}.lock"));
++    let temp = dir.join(format!("{port}.lock.tmp"));
++    fs::write(&temp, json).with_context(|| format!("writing {temp:?}"))?;
++    // Restrict to 0600 before the rename publishes the file, so the token is
++    // never briefly world-readable.
++    set_owner_only(&temp, 0o600)?;
++    fs::rename(&temp, &path).with_context(|| format!("renaming {temp:?} to {path:?}"))?;
++    Ok(path)
++}
++
++/// Sets owner-only Unix permissions (e.g. `0o700`, `0o600`). A no-op on
++/// platforms without Unix permission bits.
++#[cfg(unix)]
++fn set_owner_only(path: &std::path::Path, mode: u32) -> Result<()> {
++    use std::os::unix::fs::PermissionsExt as _;
++    fs::set_permissions(path, fs::Permissions::from_mode(mode))
++        .with_context(|| format!("setting mode {mode:o} on {path:?}"))
++}
++
++#[cfg(not(unix))]
++fn set_owner_only(_path: &std::path::Path, _mode: u32) -> Result<()> {
++    Ok(())
++}
++
++/// Removes the lock file for `port`. Succeeds if it is already gone.
++pub fn remove(port: u16) -> Result<()> {
++    let path = lock_path(port);
++    match fs::remove_file(&path) {
++        Ok(()) => Ok(()),
++        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
++        Err(error) => Err(error).with_context(|| format!("removing {path:?}")),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn auth_token_is_a_uuid() {
++        let token = generate_auth_token();
++        assert_eq!(token.len(), 36);
++        assert!(uuid::Uuid::parse_str(&token).is_ok());
++    }
++
++    #[test]
++    fn lock_file_matches_expected_wire_format() {
++        let contents = LockFileContents {
++            pid: 4321,
++            workspace_folders: vec!["/home/user/project".to_string()],
++            ide_name: IDE_NAME,
++            transport: "ws",
++            auth_token: "the-token".to_string(),
++        };
++        let value: serde_json::Value =
++            serde_json::from_str(&serde_json::to_string(&contents).unwrap()).unwrap();
++
++        assert_eq!(value["pid"], 4321);
++        assert_eq!(value["workspaceFolders"][0], "/home/user/project");
++        assert_eq!(value["ideName"], "Zed");
++        assert_eq!(value["transport"], "ws");
++        assert_eq!(value["authToken"], "the-token");
++    }
++
++    #[test]
++    fn lock_dir_honors_claude_config_dir() {
++        // Documents the resolution rule; we avoid mutating process env here to
++        // keep the test free of global state.
++        let default_dir = paths::home_dir().join(".claude").join("ide");
++        assert!(default_dir.ends_with(".claude/ide"));
++    }
++}
+diff --git a/crates/claude_code_ide/src/open_diff.rs b/crates/claude_code_ide/src/open_diff.rs
+new file mode 100644
+index 0000000..14a3c79
+--- /dev/null
++++ b/crates/claude_code_ide/src/open_diff.rs
+@@ -0,0 +1,219 @@
++//! The blocking `openDiff` tool.
++//!
++//! Shows Claude's proposed change as a side-by-side diff tab in Zed plus a
++//! Keep/Reject notification, then blocks until the user decides. On Keep we
++//! return `FILE_SAVED` together with the final buffer contents and let the
++//! Claude CLI perform the actual write (matching the official IDE protocol);
++//! on Reject we return `DIFF_REJECTED` and discard the change. The IDE
++//! deliberately does *not* write the file itself, which would race the CLI's
++//! own save.
++
++use crate::server::{ProtocolError, error_codes};
++use buffer_diff::BufferDiff;
++use editor::{DiffViewStyle, MultiBuffer, SelectionEffects, SplittableEditor, scroll::Autoscroll};
++use futures::channel::oneshot;
++use gpui::{AnyWindowHandle, AppContext as _, AsyncApp, DismissEvent, WeakEntity};
++use language::Buffer;
++use serde_json::{Value, json};
++use ui::{Color, IconName};
++use std::{cell::RefCell, rc::Rc};
++use workspace::{
++    SaveIntent, SplitDirection, Workspace,
++    notifications::{NotificationId, simple_message_notification::MessageNotification},
++};
++
++/// Distinguishes our notification from others in the notification registry.
++struct ClaudeDiffNotification;
++
++pub async fn open_diff(
++    workspace: WeakEntity<Workspace>,
++    window: Option<AnyWindowHandle>,
++    arguments: Value,
++    cx: &mut AsyncApp,
++) -> Result<Value, ProtocolError> {
++    let string_arg = |key: &str| arguments.get(key).and_then(Value::as_str).map(str::to_owned);
++
++    let old_file_path = string_arg("old_file_path")
++        .ok_or_else(|| ProtocolError::new(error_codes::INVALID_REQUEST, "missing old_file_path"))?;
++    let new_file_contents = string_arg("new_file_contents").ok_or_else(|| {
++        ProtocolError::new(error_codes::INVALID_REQUEST, "missing new_file_contents")
++    })?;
++    let tab_name = string_arg("tab_name").unwrap_or_else(|| "Proposed changes".to_owned());
++
++    let window =
++        window.ok_or_else(|| ProtocolError::internal("no window available to show a diff"))?;
++
++    // The current on-disk contents are the diff base (the "old" side).
++    let old_contents = {
++        let path = old_file_path.clone();
++        smol::unblock(move || std::fs::read_to_string(&path).unwrap_or_default()).await
++    };
++
++    let (decision_tx, decision_rx) = oneshot::channel::<bool>();
++    let decision_tx = Rc::new(RefCell::new(Some(decision_tx)));
++
++    let message = format!("Claude proposes changes to {old_file_path}");
++
++    // Build the proposed buffer and start computing the diff against the old
++    // contents (the base). `set_base_text` is asynchronous, so we await it
++    // before showing the editor to avoid flashing a "whole file added" diff.
++    let (buffer, diff, base_ready) = window
++        .update(cx, |_root, _window, cx| {
++            let buffer = cx.new(|cx| Buffer::local(new_file_contents.clone(), cx));
++            let snapshot = buffer.read(cx).text_snapshot();
++            let diff = cx.new(|cx| BufferDiff::new(&snapshot, None, None, cx));
++            let base_ready = diff.update(cx, |diff, cx| {
++                diff.set_base_text(Some(old_contents.into()), snapshot, cx)
++            });
++            (buffer, diff, base_ready)
++        })
++        .map_err(|error| ProtocolError::internal(error.to_string()))?;
++
++    base_ready.await;
++
++    let editor_id = window
++        .update(cx, |_root, window, cx| {
++            let multibuffer = cx.new(|cx| {
++                let mut multibuffer = MultiBuffer::singleton(buffer.clone(), cx);
++                multibuffer.add_diff(diff, cx);
++                multibuffer
++            });
++
++            let Some(workspace_entity) = workspace.upgrade() else {
++                return None;
++            };
++            let project = workspace_entity.read(cx).project().clone();
++
++            // `DiffViewStyle::Split` renders side-by-side (old on the left, new on
++            // the right) like the JetBrains diff viewer; `SplittableEditor` is
++            // itself a workspace item, so it can be opened directly as a tab.
++            let diff_editor = cx.new(|cx| {
++                SplittableEditor::new(
++                    DiffViewStyle::Split,
++                    multibuffer,
++                    project,
++                    workspace_entity.clone(),
++                    window,
++                    cx,
++                )
++            });
++            let editor_id = diff_editor.entity_id();
++
++            workspace_entity.update(cx, |workspace, cx| {
++                // The active pane holds Claude's integrated terminal: the CLI has
++                // focus there when it sends `openDiff`. Show the diff in any other
++                // pane so it doesn't cover the terminal; if the terminal is the
++                // only pane, split a new one off to its left.
++                let active_pane_id = workspace.active_pane().entity_id();
++                let other_pane = workspace
++                    .panes()
++                    .iter()
++                    .find(|pane| pane.entity_id() != active_pane_id)
++                    .cloned();
++                if let Some(target_pane) = other_pane {
++                    workspace.add_item(
++                        target_pane,
++                        Box::new(diff_editor.clone()),
++                        None,
++                        true,
++                        true,
++                        window,
++                        cx,
++                    );
++                } else {
++                    workspace.split_item(
++                        SplitDirection::Left,
++                        Box::new(diff_editor.clone()),
++                        window,
++                        cx,
++                    );
++                }
++
++                let tx_keep = decision_tx.clone();
++                let tx_reject = decision_tx.clone();
++                workspace.show_notification(
++                    NotificationId::composite::<ClaudeDiffNotification>(tab_name),
++                    cx,
++                    move |cx| {
++                        cx.new(|cx| {
++                            MessageNotification::new(message, cx)
++                                .primary_message("Keep")
++                                .primary_icon(IconName::Check)
++                                .primary_icon_color(Color::Success)
++                                .primary_on_click(move |_window, cx| {
++                                    if let Some(tx) = tx_keep.borrow_mut().take() {
++                                        let _ = tx.send(true);
++                                    }
++                                    cx.emit(DismissEvent);
++                                })
++                                .secondary_message("Reject")
++                                .secondary_icon(IconName::Close)
++                                .secondary_icon_color(Color::Error)
++                                .secondary_on_click(move |_window, cx| {
++                                    if let Some(tx) = tx_reject.borrow_mut().take() {
++                                        let _ = tx.send(false);
++                                    }
++                                    cx.emit(DismissEvent);
++                                })
++                        })
++                    },
++                );
++            });
++
++            // Center the view on the first change so the user lands on the diff
++            // rather than at the top of an otherwise-unchanged file.
++            diff_editor.update(cx, |diff_editor, cx| {
++                let editor = diff_editor.rhs_editor().clone();
++                editor.update(cx, |editor, cx| {
++                    let snapshot = editor.buffer().read(cx).snapshot(cx);
++                    if let Some(first_hunk) = snapshot.diff_hunks().next() {
++                        let start = first_hunk.multi_buffer_range.start;
++                        editor.change_selections(
++                            SelectionEffects::scroll(Autoscroll::center()),
++                            window,
++                            cx,
++                            |selections| selections.select_anchor_ranges([start..start]),
++                        );
++                    }
++                });
++            });
++            Some(editor_id)
++        })
++        .map_err(|error| ProtocolError::internal(error.to_string()))?;
++
++    // Block until the user clicks Keep/Reject. A dropped sender (e.g. window
++    // closed) resolves to `false`, i.e. rejected.
++    let accepted = decision_rx.await.unwrap_or(false);
++
++    // Read the final buffer contents (the user may have edited the proposed
++    // side) and close the diff tab now that the decision is made.
++    let final_contents = window
++        .update(cx, |_root, window, cx| {
++            let final_contents = buffer.read(cx).text();
++            if let Some(editor_id) = editor_id
++                && let Some(workspace_entity) = workspace.upgrade()
++            {
++                workspace_entity.update(cx, |workspace, cx| {
++                    for pane in workspace.panes().to_vec() {
++                        pane.update(cx, |pane, cx| {
++                            pane.close_item_by_id(editor_id, SaveIntent::Skip, window, cx)
++                        })
++                        .detach();
++                    }
++                });
++            }
++            final_contents
++        })
++        .map_err(|error| ProtocolError::internal(error.to_string()))?;
++
++    // The official IDE protocol has the IDE return the accepted contents and the
++    // CLI perform the write, so we must not write the file here ourselves.
++    if accepted {
++        Ok(json!({ "content": [
++            { "type": "text", "text": "FILE_SAVED" },
++            { "type": "text", "text": final_contents },
++        ] }))
++    } else {
++        Ok(json!({ "content": [{ "type": "text", "text": "DIFF_REJECTED" }] }))
++    }
++}
+diff --git a/crates/claude_code_ide/src/server.rs b/crates/claude_code_ide/src/server.rs
+new file mode 100644
+index 0000000..f66f9ad
+--- /dev/null
++++ b/crates/claude_code_ide/src/server.rs
+@@ -0,0 +1,329 @@
++//! WebSocket transport and JSON-RPC/MCP message routing for the Claude Code IDE
++//! integration.
++//!
++//! The Claude Code CLI connects to us as a WebSocket client and speaks a
++//! WebSocket variant of MCP (Model Context Protocol): newline-free JSON-RPC 2.0
++//! objects, one per WebSocket text frame. This module owns the wire protocol; it
++//! knows nothing about Zed's editor state. Everything that needs to read or act
++//! on the workspace is delegated through the [`Dispatcher`] trait, which the
++//! GPUI-aware layer implements.
++
++use anyhow::{Context as _, Result};
++use async_tungstenite::tungstenite::{
++    Message,
++    handshake::server::{ErrorResponse, Request, Response},
++    http,
++};
++use futures::{AsyncRead, AsyncWrite, StreamExt as _};
++use serde::Serialize;
++use serde_json::{Value, json};
++
++/// The MCP protocol revision the official extensions speak. Sent back from
++/// `initialize`; the CLI checks it for compatibility.
++pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
++
++const SERVER_NAME: &str = "zed";
++const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
++
++/// The HTTP header the CLI must send, carrying the token from the lock file.
++pub const AUTH_HEADER: &str = "x-claude-code-ide-authorization";
++
++/// JSON-RPC 2.0 standard error codes (see the spec, section 5.1).
++pub mod error_codes {
++    pub const PARSE_ERROR: i32 = -32700;
++    pub const INVALID_REQUEST: i32 = -32600;
++    pub const METHOD_NOT_FOUND: i32 = -32601;
++    pub const INTERNAL_ERROR: i32 = -32603;
++}
++
++/// An error a method handler can return; serialized into the JSON-RPC `error`
++/// field of the response.
++#[derive(Debug)]
++pub struct ProtocolError {
++    pub code: i32,
++    pub message: String,
++    pub data: Option<Value>,
++}
++
++impl ProtocolError {
++    pub fn new(code: i32, message: impl Into<String>) -> Self {
++        Self { code, message: message.into(), data: None }
++    }
++
++    pub fn method_not_found(method: &str) -> Self {
++        Self::new(error_codes::METHOD_NOT_FOUND, format!("Method not found: {method}"))
++    }
++
++    pub fn internal(message: impl Into<String>) -> Self {
++        Self::new(error_codes::INTERNAL_ERROR, message)
++    }
++}
++
++/// One MCP tool as advertised by `tools/list`. Serializes to
++/// `{"name": ..., "description": ..., "inputSchema": {...}}`.
++#[derive(Debug, Clone, Serialize)]
++pub struct ToolDescriptor {
++    pub name: &'static str,
++    pub description: &'static str,
++    #[serde(rename = "inputSchema")]
++    pub input_schema: Value,
++}
++
++/// The seam between the wire protocol (this module) and Zed's editor state.
++///
++/// Implementors live in the GPUI layer: `call_tool` reaches into the workspace
++/// to satisfy a `tools/call` request. The protocol layer only ever sees JSON.
++// The dispatcher runs on GPUI's single-threaded foreground executor, so its
++// futures are intentionally `!Send`; we don't need the `Send` bound the lint
++// asks us to consider.
++#[allow(async_fn_in_trait)]
++pub trait Dispatcher {
++    /// The tools advertised in response to `tools/list`.
++    fn tools(&self) -> Vec<ToolDescriptor>;
++
++    /// Execute a `tools/call`. `Ok` is the MCP result object (typically
++    /// `{"content": [{"type": "text", "text": "<json>"}]}`).
++    async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, ProtocolError>;
++}
++
++/// Binds a fresh WebSocket listener on the loopback interface, letting the OS
++/// pick a free port. Returns the listener and the port we got, which the caller
++/// writes into the lock file and injects into the terminal environment.
++pub async fn bind() -> Result<(smol::net::TcpListener, u16)> {
++    let listener = smol::net::TcpListener::bind("127.0.0.1:0")
++        .await
++        .context("binding Claude Code IDE WebSocket listener")?;
++    let port = listener.local_addr().context("reading bound port")?.port();
++    Ok((listener, port))
++}
++
++/// Performs the WebSocket handshake (validating the auth header against
++/// `auth_token`), then serves JSON-RPC requests until the client disconnects.
++pub async fn serve_connection<S, D>(stream: S, auth_token: String, dispatcher: D) -> Result<()>
++where
++    S: AsyncRead + AsyncWrite + Unpin,
++    D: Dispatcher,
++{
++    // The handshake callback runs during the HTTP upgrade. We reject the
++    // connection unless it presents the exact token we wrote into the lock file,
++    // so only the CLI that read our lock file (same user) can connect.
++    let authorize = move |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
++        let presented = request.headers().get(AUTH_HEADER).map(|value| value.as_bytes());
++        if presented == Some(auth_token.as_bytes()) {
++            Ok(response)
++        } else {
++            let denied = http::Response::builder()
++                .status(http::StatusCode::UNAUTHORIZED)
++                .body(Some("invalid or missing authorization token".to_string()))
++                .expect("static unauthorized response is valid");
++            Err(denied)
++        }
++    };
++
++    let websocket = async_tungstenite::accept_hdr_async(stream, authorize)
++        .await
++        .context("websocket handshake failed")?;
++
++    let (mut outgoing, mut incoming) = websocket.split();
++
++    while let Some(message) = incoming.next().await {
++        match message.context("reading websocket frame")? {
++            Message::Text(text) => {
++                if let Some(response) = handle_message(text.as_str(), &dispatcher).await {
++                    outgoing
++                        .send(Message::Text(response.into()))
++                        .await
++                        .context("sending response")?;
++                }
++            }
++            // Reply to keepalive pings so the CLI doesn't consider us dead.
++            Message::Ping(payload) => {
++                outgoing.send(Message::Pong(payload)).await.context("sending pong")?;
++            }
++            Message::Close(_) => break,
++            _ => {}
++        }
++    }
++
++    Ok(())
++}
++
++/// Routes a single incoming JSON-RPC message. Returns `Some(json)` to send back
++/// for requests (those with an `id`), or `None` for notifications and for
++/// messages we intentionally don't answer.
++///
++/// Kept free of sockets and GPUI so it is unit-testable against a mock
++/// [`Dispatcher`].
++pub async fn handle_message<D: Dispatcher>(raw: &str, dispatcher: &D) -> Option<String> {
++    let parsed: Value = match serde_json::from_str(raw) {
++        Ok(value) => value,
++        Err(_) => {
++            return Some(error_response(
++                Value::Null,
++                error_codes::PARSE_ERROR,
++                "Parse error",
++            ));
++        }
++    };
++
++    if parsed.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
++        let id = parsed.get("id").cloned().unwrap_or(Value::Null);
++        return Some(error_response(id, error_codes::INVALID_REQUEST, "Invalid Request"));
++    }
++
++    let method = parsed.get("method").and_then(Value::as_str).unwrap_or_default();
++    let params = parsed.get("params").cloned().unwrap_or(Value::Null);
++    let id = parsed.get("id").cloned();
++
++    match id {
++        // A request: the client expects a response carrying the same `id`.
++        Some(id) => Some(match route_request(method, params, dispatcher).await {
++            Ok(result) => success_response(id, result),
++            Err(error) => {
++                error_response_with_data(id, error.code, &error.message, error.data)
++            }
++        }),
++        // A notification: fire-and-forget, no response.
++        None => {
++            // `notifications/initialized` and friends need no action yet.
++            None
++        }
++    }
++}
++
++async fn route_request<D: Dispatcher>(
++    method: &str,
++    params: Value,
++    dispatcher: &D,
++) -> Result<Value, ProtocolError> {
++    match method {
++        "initialize" => Ok(json!({
++            "protocolVersion": MCP_PROTOCOL_VERSION,
++            "capabilities": {
++                "logging": {},
++                "prompts": { "listChanged": true },
++                "resources": { "subscribe": true, "listChanged": true },
++                "tools": { "listChanged": true },
++            },
++            "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION },
++        })),
++        "prompts/list" => Ok(json!({ "prompts": [] })),
++        "resources/list" => Ok(json!({ "resources": [] })),
++        "tools/list" => Ok(json!({ "tools": dispatcher.tools() })),
++        "tools/call" => {
++            let name = params
++                .get("name")
++                .and_then(Value::as_str)
++                .ok_or_else(|| ProtocolError::new(error_codes::INVALID_REQUEST, "missing tool name"))?;
++            let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
++            dispatcher.call_tool(name, arguments).await
++        }
++        other => Err(ProtocolError::method_not_found(other)),
++    }
++}
++
++fn success_response(id: Value, result: Value) -> String {
++    json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
++}
++
++fn error_response(id: Value, code: i32, message: &str) -> String {
++    error_response_with_data(id, code, message, None)
++}
++
++fn error_response_with_data(id: Value, code: i32, message: &str, data: Option<Value>) -> String {
++    let mut error = json!({ "code": code, "message": message });
++    if let Some(data) = data {
++        error["data"] = data;
++    }
++    json!({ "jsonrpc": "2.0", "id": id, "error": error }).to_string()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use futures::executor::block_on;
++
++    struct MockDispatcher;
++
++    impl Dispatcher for MockDispatcher {
++        fn tools(&self) -> Vec<ToolDescriptor> {
++            vec![ToolDescriptor {
++                name: "getCurrentSelection",
++                description: "Get the current selection",
++                input_schema: json!({ "type": "object" }),
++            }]
++        }
++
++        async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, ProtocolError> {
++            if name == "getCurrentSelection" {
++                Ok(json!({ "content": [{ "type": "text", "text": "ok" }] }))
++            } else {
++                Err(ProtocolError::method_not_found(name))
++            }
++            .map(|result| {
++                // Thread `arguments` through so the test exercises the path.
++                let _ = &arguments;
++                result
++            })
++        }
++    }
++
++    fn response(raw: &str) -> Value {
++        let json = block_on(handle_message(raw, &MockDispatcher)).expect("expected a response");
++        serde_json::from_str(&json).unwrap()
++    }
++
++    #[test]
++    fn initialize_reports_protocol_version() {
++        let value = response(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#);
++        assert_eq!(value["id"], 1);
++        assert_eq!(value["result"]["protocolVersion"], MCP_PROTOCOL_VERSION);
++        assert_eq!(value["result"]["serverInfo"]["name"], "zed");
++    }
++
++    #[test]
++    fn tools_list_returns_advertised_tools() {
++        let value = response(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
++        assert_eq!(value["result"]["tools"][0]["name"], "getCurrentSelection");
++        assert_eq!(value["result"]["tools"][0]["inputSchema"]["type"], "object");
++    }
++
++    #[test]
++    fn tools_call_wraps_result_in_mcp_content() {
++        let value = response(
++            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"getCurrentSelection","arguments":{}}}"#,
++        );
++        assert_eq!(value["result"]["content"][0]["type"], "text");
++        assert_eq!(value["result"]["content"][0]["text"], "ok");
++    }
++
++    #[test]
++    fn unknown_tool_is_a_method_not_found_error() {
++        let value = response(
++            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"nope","arguments":{}}}"#,
++        );
++        assert_eq!(value["error"]["code"], error_codes::METHOD_NOT_FOUND);
++    }
++
++    #[test]
++    fn unknown_method_is_a_method_not_found_error() {
++        let value = response(r#"{"jsonrpc":"2.0","id":5,"method":"frobnicate"}"#);
++        assert_eq!(value["error"]["code"], error_codes::METHOD_NOT_FOUND);
++    }
++
++    #[test]
++    fn notification_yields_no_response() {
++        let result = block_on(handle_message(
++            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
++            &MockDispatcher,
++        ));
++        assert!(result.is_none());
++    }
++
++    #[test]
++    fn malformed_json_is_a_parse_error() {
++        let value = response("not json at all");
++        assert_eq!(value["error"]["code"], error_codes::PARSE_ERROR);
++        assert_eq!(value["id"], Value::Null);
++    }
++}
+diff --git a/crates/claude_code_ide/src/tools.rs b/crates/claude_code_ide/src/tools.rs
+new file mode 100644
+index 0000000..2978e1b
+--- /dev/null
++++ b/crates/claude_code_ide/src/tools.rs
+@@ -0,0 +1,511 @@
++//! The GPUI-backed [`Dispatcher`] implementation: this is where the wire
++//! protocol meets Zed's editor state. Each `tools/call` is satisfied by reading
++//! the active workspace, editor, and buffers and shaping the result into the
++//! JSON the Claude Code CLI expects (mirroring the official extensions).
++
++use crate::server::{Dispatcher, ProtocolError, ToolDescriptor, error_codes};
++use editor::{Editor, SplittableEditor};
++use gpui::{AnyWindowHandle, AsyncApp, Entity, WeakEntity};
++use language::{Buffer, DiagnosticSeverity};
++use serde_json::{Value, json};
++use std::path::PathBuf;
++use text::Point;
++use workspace::{OpenOptions, SaveIntent, Workspace};
++
++/// Satisfies tool calls against a single Zed workspace.
++///
++/// Holds a weak handle to the workspace (so the server task never keeps the
++/// window alive) plus a cheap clone of the async app context, which lets each
++/// call hop onto the foreground thread to read entity state.
++pub struct WorkspaceDispatcher {
++    workspace: WeakEntity<Workspace>,
++    window: Option<AnyWindowHandle>,
++    cx: AsyncApp,
++}
++
++impl WorkspaceDispatcher {
++    pub fn new(
++        workspace: WeakEntity<Workspace>,
++        window: Option<AnyWindowHandle>,
++        cx: AsyncApp,
++    ) -> Self {
++        Self { workspace, window, cx }
++    }
++
++    fn get_current_selection(&self, cx: &mut AsyncApp) -> Result<Value, ProtocolError> {
++        let payload = self
++            .workspace
++            .update(cx, |workspace, cx| {
++                let Some(editor) = workspace.active_item_as::<Editor>(cx) else {
++                    return json!({ "success": false, "message": "No active editor found" });
++                };
++
++                editor.update(cx, |editor, cx| {
++                    let display_snapshot = editor.display_snapshot(cx);
++                    let cursor = editor.selections.newest::<Point>(&display_snapshot);
++
++                    let path = editor
++                        .buffer()
++                        .read(cx)
++                        .as_singleton()
++                        .and_then(|buffer| {
++                            buffer
++                                .read(cx)
++                                .file()
++                                .and_then(|file| file.as_local())
++                                .map(|file| file.abs_path(cx))
++                        })
++                        .map(|path| path.to_string_lossy().into_owned())
++                        .unwrap_or_default();
++
++                    let text: String = editor
++                        .buffer()
++                        .read(cx)
++                        .snapshot(cx)
++                        .text_for_range(cursor.start..cursor.end)
++                        .collect();
++
++                    json!({
++                        "success": true,
++                        "text": text,
++                        "filePath": path,
++                        "fileUrl": format!("file://{path}"),
++                        "selection": {
++                            "start": { "line": cursor.start.row, "character": cursor.start.column },
++                            "end": { "line": cursor.end.row, "character": cursor.end.column },
++                            "isEmpty": cursor.start == cursor.end,
++                        }
++                    })
++                })
++            })
++            .map_err(|error| ProtocolError::internal(error.to_string()))?;
++
++        Ok(mcp_text(payload))
++    }
++
++    fn get_workspace_folders(&self, cx: &mut AsyncApp) -> Result<Value, ProtocolError> {
++        let paths = self
++            .workspace
++            .update(cx, |workspace, cx| {
++                workspace
++                    .project()
++                    .read(cx)
++                    .visible_worktrees(cx)
++                    .map(|worktree| worktree.read(cx).abs_path().to_string_lossy().into_owned())
++                    .collect::<Vec<_>>()
++            })
++            .map_err(|error| ProtocolError::internal(error.to_string()))?;
++
++        let folders = paths
++            .iter()
++            .map(|path| {
++                let name = path.rsplit('/').next().filter(|name| !name.is_empty()).unwrap_or(path);
++                json!({ "name": name, "uri": format!("file://{path}"), "path": path })
++            })
++            .collect::<Vec<_>>();
++        let root_path = paths.first().cloned().unwrap_or_default();
++
++        Ok(mcp_text(json!({
++            "success": true,
++            "folders": folders,
++            "rootPath": root_path,
++        })))
++    }
++
++    /// Finds the open buffer for an absolute path, if any.
++    fn buffer_for_path(&self, path: &str, cx: &mut AsyncApp) -> Option<Entity<Buffer>> {
++        self.workspace
++            .update(cx, |workspace, cx| {
++                let project = workspace.project().read(cx);
++                let project_path = project.find_project_path(path, cx)?;
++                project.get_open_buffer(&project_path, cx)
++            })
++            .ok()
++            .flatten()
++    }
++
++    fn get_open_editors(&self, cx: &mut AsyncApp) -> Result<Value, ProtocolError> {
++        let tabs = self
++            .workspace
++            .update(cx, |workspace, cx| {
++                let active = workspace.active_item_as::<Editor>(cx);
++                workspace
++                    .items_of_type::<Editor>(cx)
++                    .filter_map(|editor| {
++                        let is_active = active.as_ref() == Some(&editor);
++                        let editor = editor.read(cx);
++                        let buffer = editor.buffer().read(cx).as_singleton()?;
++                        let buffer = buffer.read(cx);
++                        let path = buffer
++                            .file()
++                            .and_then(|file| file.as_local())
++                            .map(|file| file.abs_path(cx).to_string_lossy().into_owned())?;
++                        let language = buffer
++                            .language()
++                            .map(|language| language.name().to_string())
++                            .unwrap_or_else(|| "plaintext".to_owned());
++                        let line_count = buffer.text_snapshot().max_point().row + 1;
++                        let label = path.rsplit('/').next().unwrap_or(&path).to_owned();
++                        Some(json!({
++                            "uri": format!("file://{path}"),
++                            "fileName": path,
++                            "label": label,
++                            "languageId": language,
++                            "isActive": is_active,
++                            "isDirty": buffer.is_dirty(),
++                            "isPinned": false,
++                            "isPreview": false,
++                            "isUntitled": false,
++                            "lineCount": line_count,
++                            "groupIndex": 0,
++                            "viewColumn": 1,
++                            "isGroupActive": true,
++                        }))
++                    })
++                    .collect::<Vec<_>>()
++            })
++            .map_err(|error| ProtocolError::internal(error.to_string()))?;
++        Ok(mcp_text(json!({ "tabs": tabs })))
++    }
++
++    fn get_diagnostics(&self, arguments: &Value, cx: &mut AsyncApp) -> Result<Value, ProtocolError> {
++        let target = arguments
++            .get("uri")
++            .and_then(Value::as_str)
++            .map(|uri| uri.strip_prefix("file://").unwrap_or(uri).to_owned());
++
++        let diagnostics = self
++            .workspace
++            .update(cx, |workspace, cx| {
++                let buffers = workspace
++                    .project()
++                    .read(cx)
++                    .buffer_store()
++                    .read(cx)
++                    .buffers()
++                    .collect::<Vec<_>>();
++                let mut out = Vec::new();
++                for buffer in buffers {
++                    let buffer = buffer.read(cx);
++                    let Some(path) = buffer
++                        .file()
++                        .and_then(|file| file.as_local())
++                        .map(|file| file.abs_path(cx).to_string_lossy().into_owned())
++                    else {
++                        continue;
++                    };
++                    if target.as_ref().is_some_and(|target| target != &path) {
++                        continue;
++                    }
++                    let snapshot = buffer.snapshot();
++                    for entry in snapshot.diagnostics_in_range::<Point, Point>(
++                        Point::new(0, 0)..snapshot.max_point(),
++                        false,
++                    ) {
++                        out.push(json!({
++                            "filePath": path,
++                            "line": entry.range.start.row + 1,
++                            "character": entry.range.start.column + 1,
++                            "severity": severity_to_number(entry.diagnostic.severity),
++                            "message": entry.diagnostic.message.clone(),
++                            "source": entry.diagnostic.source.clone(),
++                        }));
++                    }
++                }
++                out
++            })
++            .map_err(|error| ProtocolError::internal(error.to_string()))?;
++
++        let content = diagnostics
++            .into_iter()
++            .map(|diagnostic| json!({ "type": "text", "text": diagnostic.to_string() }))
++            .collect::<Vec<_>>();
++        Ok(json!({ "content": content }))
++    }
++
++    fn check_document_dirty(
++        &self,
++        arguments: &Value,
++        cx: &mut AsyncApp,
++    ) -> Result<Value, ProtocolError> {
++        let path = required_path_field(arguments, "filePath")?;
++        match self.buffer_for_path(&path, cx) {
++            Some(buffer) => {
++                let is_dirty = buffer.update(cx, |buffer, _| buffer.is_dirty());
++                Ok(mcp_text(json!({
++                    "success": true,
++                    "filePath": path,
++                    "isDirty": is_dirty,
++                    "isUntitled": false,
++                })))
++            }
++            None => Ok(mcp_text(
++                json!({ "success": false, "message": format!("Document not open: {path}") }),
++            )),
++        }
++    }
++
++    /// Closes all open diff tabs (our `openDiff` views), returning the count.
++    fn close_diff_tabs(&self, cx: &mut AsyncApp) -> usize {
++        let Some(window) = self.window else {
++            return 0;
++        };
++        window
++            .update(cx, |_root, window, cx| {
++                let Some(workspace) = self.workspace.upgrade() else {
++                    return 0;
++                };
++                workspace.update(cx, |workspace, cx| {
++                    let ids = workspace
++                        .items_of_type::<SplittableEditor>(cx)
++                        .map(|editor| editor.entity_id())
++                        .collect::<Vec<_>>();
++                    let count = ids.len();
++                    for pane in workspace.panes().to_vec() {
++                        for id in &ids {
++                            pane.update(cx, |pane, cx| {
++                                pane.close_item_by_id(*id, SaveIntent::Skip, window, cx)
++                            })
++                            .detach();
++                        }
++                    }
++                    count
++                })
++            })
++            .unwrap_or(0)
++    }
++
++    async fn open_file(&self, arguments: Value, cx: &mut AsyncApp) -> Result<Value, ProtocolError> {
++        let path = required_path_field(&arguments, "filePath")?;
++        let start_line = arguments.get("startLine").and_then(Value::as_u64);
++        let end_line = arguments.get("endLine").and_then(Value::as_u64);
++        let window =
++            self.window.ok_or_else(|| ProtocolError::internal("no window available"))?;
++        let open_task = window
++            .update(cx, |_root, window, cx| {
++                self.workspace.upgrade().map(|workspace| {
++                    workspace.update(cx, |workspace, cx| {
++                        workspace.open_abs_path(
++                            PathBuf::from(&path),
++                            OpenOptions::default(),
++                            window,
++                            cx,
++                        )
++                    })
++                })
++            })
++            .map_err(|error| ProtocolError::internal(error.to_string()))?
++            .ok_or_else(|| ProtocolError::internal("workspace unavailable"))?;
++        let item = open_task.await.map_err(|error| ProtocolError::internal(error.to_string()))?;
++
++        // Optionally select the requested line range (1-indexed in the protocol).
++        if let (Some(start), Some(end)) = (start_line, end_line) {
++            window
++                .update(cx, |_root, window, cx| {
++                    if let Some(editor) = item.downcast::<Editor>() {
++                        editor.update(cx, |editor, cx| {
++                            let start = Point::new(start.saturating_sub(1) as u32, 0);
++                            let end = Point::new(end as u32, 0);
++                            editor.change_selections(Default::default(), window, cx, |selections| {
++                                selections.select_ranges([start..end]);
++                            });
++                        });
++                    }
++                })
++                .ok();
++        }
++
++        let message = match (start_line, end_line) {
++            (Some(start), Some(end)) => {
++                format!("Opened file and selected lines {start} to {end}")
++            }
++            _ => format!("Opened file: {path}"),
++        };
++        Ok(json!({ "content": [{ "type": "text", "text": message }] }))
++    }
++
++    async fn save_document(
++        &self,
++        arguments: Value,
++        cx: &mut AsyncApp,
++    ) -> Result<Value, ProtocolError> {
++        let path = required_path_field(&arguments, "filePath")?;
++        let Some(buffer) = self.buffer_for_path(&path, cx) else {
++            return Ok(mcp_text(
++                json!({ "success": false, "message": format!("Document not open: {path}") }),
++            ));
++        };
++        let save_task = self
++            .workspace
++            .update(cx, |workspace, cx| {
++                workspace
++                    .project()
++                    .update(cx, |project, cx| project.save_buffer(buffer, cx))
++            })
++            .map_err(|error| ProtocolError::internal(error.to_string()))?;
++        save_task.await.map_err(|error| ProtocolError::internal(error.to_string()))?;
++        Ok(mcp_text(json!({ "success": true, "filePath": path })))
++    }
++}
++
++fn required_path_field(arguments: &Value, field: &str) -> Result<String, ProtocolError> {
++    arguments
++        .get(field)
++        .and_then(Value::as_str)
++        .map(str::to_owned)
++        .ok_or_else(|| ProtocolError::new(error_codes::INVALID_REQUEST, format!("missing {field}")))
++}
++
++/// Maps Zed/LSP diagnostic severities to the numeric scale the protocol uses
++/// (1 = error, 2 = warning, 3 = information, 4 = hint).
++fn severity_to_number(severity: DiagnosticSeverity) -> u8 {
++    match severity {
++        DiagnosticSeverity::ERROR => 1,
++        DiagnosticSeverity::WARNING => 2,
++        DiagnosticSeverity::INFORMATION => 3,
++        DiagnosticSeverity::HINT => 4,
++        _ => 0,
++    }
++}
++
++impl Dispatcher for WorkspaceDispatcher {
++    fn tools(&self) -> Vec<ToolDescriptor> {
++        let empty_object_schema = json!({
++            "type": "object",
++            "additionalProperties": false,
++            "$schema": "http://json-schema.org/draft-07/schema#",
++        });
++        vec![
++            ToolDescriptor {
++                name: "getCurrentSelection",
++                description: "Get the current text selection in the editor",
++                input_schema: empty_object_schema.clone(),
++            },
++            ToolDescriptor {
++                name: "getLatestSelection",
++                description: "Get the most recent text selection (even if not in the active editor)",
++                input_schema: empty_object_schema.clone(),
++            },
++            ToolDescriptor {
++                name: "getWorkspaceFolders",
++                description: "Get all workspace folders currently open in the IDE",
++                input_schema: empty_object_schema.clone(),
++            },
++            ToolDescriptor {
++                name: "getOpenEditors",
++                description: "Get list of currently open files",
++                input_schema: empty_object_schema.clone(),
++            },
++            ToolDescriptor {
++                name: "closeAllDiffTabs",
++                description: "Close all diff tabs in the editor",
++                input_schema: empty_object_schema,
++            },
++            ToolDescriptor {
++                name: "getDiagnostics",
++                description: "Get language diagnostics (errors, warnings) from the editor",
++                input_schema: json!({
++                    "type": "object",
++                    "additionalProperties": false,
++                    "$schema": "http://json-schema.org/draft-07/schema#",
++                    "properties": {
++                        "uri": { "type": "string" },
++                    },
++                }),
++            },
++            ToolDescriptor {
++                name: "checkDocumentDirty",
++                description: "Check if a document has unsaved changes (is dirty)",
++                input_schema: json!({
++                    "type": "object",
++                    "additionalProperties": false,
++                    "$schema": "http://json-schema.org/draft-07/schema#",
++                    "properties": { "filePath": { "type": "string" } },
++                    "required": ["filePath"],
++                }),
++            },
++            ToolDescriptor {
++                name: "saveDocument",
++                description: "Save a document with unsaved changes",
++                input_schema: json!({
++                    "type": "object",
++                    "additionalProperties": false,
++                    "$schema": "http://json-schema.org/draft-07/schema#",
++                    "properties": { "filePath": { "type": "string" } },
++                    "required": ["filePath"],
++                }),
++            },
++            ToolDescriptor {
++                name: "openFile",
++                description: "Open a file in the editor and optionally select a range of text",
++                input_schema: json!({
++                    "type": "object",
++                    "additionalProperties": false,
++                    "$schema": "http://json-schema.org/draft-07/schema#",
++                    "properties": {
++                        "filePath": { "type": "string" },
++                        "preview": { "type": "boolean" },
++                        "startLine": { "type": "integer" },
++                        "endLine": { "type": "integer" },
++                        "startText": { "type": "string" },
++                        "endText": { "type": "string" },
++                        "makeFrontmost": { "type": "boolean" },
++                    },
++                    "required": ["filePath"],
++                }),
++            },
++            ToolDescriptor {
++                name: "openDiff",
++                description: "Open a diff view comparing old file content with new file content",
++                input_schema: json!({
++                    "type": "object",
++                    "additionalProperties": false,
++                    "$schema": "http://json-schema.org/draft-07/schema#",
++                    "properties": {
++                        "old_file_path": { "type": "string" },
++                        "new_file_path": { "type": "string" },
++                        "new_file_contents": { "type": "string" },
++                        "tab_name": { "type": "string" },
++                    },
++                    "required": ["old_file_path", "new_file_path", "new_file_contents", "tab_name"],
++                }),
++            },
++        ]
++    }
++
++    async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, ProtocolError> {
++        // Reading entity state has to happen on the foreground thread; a cloned
++        // `AsyncApp` lets `WeakEntity::update` marshal us there.
++        let mut cx = self.cx.clone();
++        match name {
++            "getCurrentSelection" => self.get_current_selection(&mut cx),
++            "getLatestSelection" => self.get_current_selection(&mut cx),
++            "getWorkspaceFolders" => self.get_workspace_folders(&mut cx),
++            "getOpenEditors" => self.get_open_editors(&mut cx),
++            "getDiagnostics" => self.get_diagnostics(&arguments, &mut cx),
++            "checkDocumentDirty" => self.check_document_dirty(&arguments, &mut cx),
++            "openFile" => self.open_file(arguments, &mut cx).await,
++            "saveDocument" => self.save_document(arguments, &mut cx).await,
++            "close_tab" => {
++                let closed = self.close_diff_tabs(&mut cx);
++                Ok(mcp_text(json!({ "success": true, "closed": closed })))
++            }
++            "closeAllDiffTabs" => {
++                let closed = self.close_diff_tabs(&mut cx);
++                Ok(mcp_text(json!({ "closedCount": closed })))
++            }
++            "openDiff" => {
++                crate::open_diff::open_diff(self.workspace.clone(), self.window, arguments, &mut cx)
++                    .await
++            }
++            other => Err(ProtocolError::method_not_found(other)),
++        }
++    }
++}
++
++/// Wraps a tool's payload in the MCP result envelope: the payload is
++/// JSON-stringified into a single text content block, exactly as the official
++/// extensions do.
++fn mcp_text(payload: Value) -> Value {
++    json!({ "content": [{ "type": "text", "text": payload.to_string() }] })
++}
+diff --git a/crates/project/src/project.rs b/crates/project/src/project.rs
+index 7043c24..b21ee81 100644
+--- a/crates/project/src/project.rs
++++ b/crates/project/src/project.rs
+@@ -251,6 +251,10 @@ pub struct Project {
+     agent_location: Option<AgentLocation>,
+     downloading_files: Arc<Mutex<HashMap<(WorktreeId, String), DownloadingFile>>>,
+     last_worktree_paths: WorktreePaths,
++    /// Port of this project's Claude Code IDE WebSocket server, if running.
++    /// Set by `claude_code_ide` after it binds; read when building terminals so
++    /// the Claude CLI auto-connects via `CLAUDE_CODE_SSE_PORT`.
++    claude_code_ide_port: Option<u16>,
+ }
+ 
+ struct DownloadingFile {
+@@ -1171,6 +1175,17 @@ impl Project {
+         context_server_store::init(cx);
+     }
+ 
++    /// The port of this project's running Claude Code IDE WebSocket server.
++    pub fn claude_code_ide_port(&self) -> Option<u16> {
++        self.claude_code_ide_port
++    }
++
++    /// Records the port of this project's Claude Code IDE WebSocket server so
++    /// terminals can advertise it to the Claude CLI.
++    pub fn set_claude_code_ide_port(&mut self, port: Option<u16>) {
++        self.claude_code_ide_port = port;
++    }
++
+     pub fn local(
+         client: Arc<Client>,
+         node: NodeRuntime,
+@@ -1372,6 +1387,7 @@ impl Project {
+                 agent_location: None,
+                 downloading_files: Default::default(),
+                 last_worktree_paths: WorktreePaths::default(),
++                claude_code_ide_port: None,
+             }
+         })
+     }
+@@ -1614,6 +1630,7 @@ impl Project {
+                 agent_location: None,
+                 downloading_files: Default::default(),
+                 last_worktree_paths: WorktreePaths::default(),
++                claude_code_ide_port: None,
+             };
+ 
+             // remote server -> local machine handlers
+@@ -1902,6 +1919,7 @@ impl Project {
+                 agent_location: None,
+                 downloading_files: Default::default(),
+                 last_worktree_paths: WorktreePaths::default(),
++                claude_code_ide_port: None,
+             };
+             project.set_role(role, cx);
+             for worktree in worktrees {
+diff --git a/crates/project/src/terminals.rs b/crates/project/src/terminals.rs
+index 46e78e2..8cdc04c 100644
+--- a/crates/project/src/terminals.rs
++++ b/crates/project/src/terminals.rs
+@@ -139,6 +139,14 @@ impl Project {
+         cx.spawn(async move |project, cx| {
+             let mut env = env_task.await.unwrap_or_default();
+             env.extend(settings.env);
++            if let Some(port) = project
++                .read_with(cx, |project, _| project.claude_code_ide_port())
++                .ok()
++                .flatten()
++            {
++                env.insert("CLAUDE_CODE_SSE_PORT".to_owned(), port.to_string());
++                env.insert("ENABLE_IDE_INTEGRATION".to_owned(), "true".to_owned());
++            }
+ 
+             let activation_script = maybe!(async {
+                 for toolchain in toolchains {
+@@ -382,6 +390,14 @@ impl Project {
+             let shell_kind = ShellKind::new(&shell, path_style.is_windows());
+             let mut env = env_task.await.unwrap_or_default();
+             env.extend(settings.env);
++            if let Some(port) = project
++                .read_with(cx, |project, _| project.claude_code_ide_port())
++                .ok()
++                .flatten()
++            {
++                env.insert("CLAUDE_CODE_SSE_PORT".to_owned(), port.to_string());
++                env.insert("ENABLE_IDE_INTEGRATION".to_owned(), "true".to_owned());
++            }
+ 
+             let activation_script = maybe!(async {
+                 for toolchain in toolchains {
+@@ -548,6 +564,14 @@ impl Project {
+         cx.spawn(async move |project, cx| {
+             let mut env = env_task.await.unwrap_or_default();
+             env.extend(settings.env);
++            if let Some(port) = project
++                .read_with(cx, |project, _| project.claude_code_ide_port())
++                .ok()
++                .flatten()
++            {
++                env.insert("CLAUDE_CODE_SSE_PORT".to_owned(), port.to_string());
++                env.insert("ENABLE_IDE_INTEGRATION".to_owned(), "true".to_owned());
++            }
+ 
+             project.update(cx, move |_, cx| {
+                 match remote_client {
+diff --git a/crates/zed/Cargo.toml b/crates/zed/Cargo.toml
+index 2b67736..f195327 100644
+--- a/crates/zed/Cargo.toml
++++ b/crates/zed/Cargo.toml
+@@ -80,6 +80,7 @@ breadcrumbs.workspace = true
+ call.workspace = true
+ chrono.workspace = true
+ channel.workspace = true
++claude_code_ide.workspace = true
+ clap.workspace = true
+ cli.workspace = true
+ client.workspace = true
+diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
+index 725db34..01ecce0 100644
+--- a/crates/zed/src/main.rs
++++ b/crates/zed/src/main.rs
+@@ -701,6 +701,7 @@ fn main() {
+         acp_tools::init(cx);
+         zed::telemetry_log::init(cx);
+         zed::remote_debug::init(cx);
++        claude_code_ide::init(cx);
+         edit_prediction_ui::init(cx);
+         web_search::init(cx);
+         web_search_providers::init(app_state.client.clone(), app_state.user_store.clone(), cx);

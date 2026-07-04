@@ -1646,7 +1646,7 @@ LICENSE+="
 "
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
-IUSE="+X acp-beta +claude-agent-tui collab extensions-cli +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
+IUSE="+X acp-beta +claude-agent-tui claude-code-ide collab extensions-cli +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
 REQUIRED_USE="|| ( X wayland )"
 CHECKREQS_DISK_BUILD="18G"
 CHECKREQS_MEMORY="8G"
@@ -1731,6 +1731,11 @@ src_prepare() {
 	# USE=acp-beta applies the patch; story 003 can append its patch series to this same branch.
 	if use acp-beta; then
 		PATCHES+=( "${FILESDIR}/0001-force-enable-acp-beta.patch" )
+	fi
+
+	# terminal-ide story 001: Claude Code IDE integration (upstream PR #58300 + API-drift fixes).
+	if use claude-code-ide; then
+		PATCHES+=( "${FILESDIR}/0002-claude-code-ide-integration.patch" )
 	fi
 
 	default
@@ -1901,5 +1906,16 @@ pkg_postinst() {
 		elog "    \"agent_servers\": {"
 		elog "        \"Claude Agent TUI\": { \"command\": \"claude-agent-acp\", \"args\": [] }"
 		elog "    }"
+	fi
+
+	if use claude-code-ide; then
+		elog ""
+		elog "Claude Code IDE integration uses an unofficial, reverse-engineered"
+		elog "protocol that may break without notice."
+		elog "It activates automatically in Zed-spawned terminals via environment"
+		elog "variables; no settings.json configuration is needed."
+		elog "The 'claude' CLI is required at runtime; it is distributed via npm"
+		elog "and is not packaged by this overlay."
+		elog "Verify the connection by running /ide inside 'claude'."
 	fi
 }
