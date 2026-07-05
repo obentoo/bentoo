@@ -29,6 +29,9 @@ src_unpack() {
 }
 
 src_compile() {
+	# Trivy (pkg/x/json) uses the experimental encoding/json/v2 stdlib API,
+	# which is gated behind the jsonv2 Go experiment.
+	export GOEXPERIMENT=jsonv2
 	ego build \
 		-ldflags="-s -X github.com/aquasecurity/trivy/pkg/version/app.ver=${PV}" \
 		-o trivy ./cmd/trivy
