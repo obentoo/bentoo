@@ -7,7 +7,8 @@ PYTHON_COMPAT=( python3_{12..14} )
 inherit branding desktop python-any-r1 flag-o-matic scons-utils
 inherit shell-completion toolchain-funcs xdg
 
-MY_PV=${PV/_rc/-rc}
+MY_PV=${PV/_alpha/-dev}
+MY_PV=${MY_PV/_rc/-rc}
 MY_P=${PN}-${MY_PV}
 
 DESCRIPTION="Multi-platform 2D and 3D game engine with a feature-rich editor"
