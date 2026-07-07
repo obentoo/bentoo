@@ -40,27 +40,32 @@ _bentoo_delay() {
 
     # Congela a entrada do terminal durante a contagem: sem eco e sem modo
     # canônico, as teclas digitadas vão para o buffer raw (não são exibidas
-    # nem confirmam nada) e são descartadas antes de pedir o código.
+    # nem confirmam nada). Qualquer tecla durante a contagem cancela.
     local stty_saved=
     stty_saved=$(stty -g 2>/dev/null) || stty_saved=
+
+    # Garante a restauração do terminal em QUALQUER saída (inclusive Ctrl-C).
+    # Sem o trap, o SIGINT abortaria a função antes de reativar o stty e
+    # deixaria o terminal preso em modo raw (você digita e nada aparece).
+    local _bentoo_cancel=
+    trap '_bentoo_cancel=1' INT
     [[ -n $stty_saved ]] && stty -echo -icanon 2>/dev/null
 
-    # Contagem regressiva (Ctrl-C cancela)
-    local i
+    # Contagem regressiva: Ctrl-C OU qualquer tecla cancela.
+    local i key
     for ((i=3; i>0; i--)); do
-        printf '\r\033[33m   %ds para cancelar (Ctrl-C)... \033[0m' "$i"
-        if ! sleep 1; then
+        printf '\r\033[33m   %ds para cancelar (Ctrl-C ou qualquer tecla)... \033[0m' "$i"
+        read -rsn1 -t 1 key && _bentoo_cancel=1   # tecla digitada => cancela
+        if [[ -n $_bentoo_cancel ]]; then
+            trap - INT
             [[ -n $stty_saved ]] && stty "$stty_saved" 2>/dev/null
-            printf '\n\033[32mCancelado.\033[0m\n'; return 1
+            printf '\r\033[K\n\033[32mCancelado.\033[0m aguarde o fim da contagem antes de digitar.\n'
+            return 1
         fi
     done
     printf '\r\033[K'
 
-    # Drena qualquer tecla digitada durante a contagem (ainda em modo raw)
-    local junk
-    while read -rsn1 -t 0.001 junk 2>/dev/null; do :; done
-
-    # Reativa a entrada normal só agora, para capturar a digitação do código
+    # Reativa a entrada normal só agora, para capturar a digitação do código.
     [[ -n $stty_saved ]] && stty "$stty_saved" 2>/dev/null
 
     # Confirmação com código alfanumérico de 4 dígitos (sem caracteres ambíguos)
@@ -68,9 +73,12 @@ _bentoo_delay() {
     for ((i=0; i<4; i++)); do code+=${chars:RANDOM%${#chars}:1}; done
 
     printf '\033[1;37mDigite o código \033[1;33m%s\033[1;37m para confirmar: \033[0m' "$code"
-    if ! read -r answer; then
+    _bentoo_cancel=
+    if ! read -r answer || [[ -n $_bentoo_cancel ]]; then
+        trap - INT
         printf '\n\033[32mCancelado.\033[0m\n'; return 1
     fi
+    trap - INT
     if [[ ${answer^^} != "$code" ]]; then
         printf '\033[1;41m Cancelado \033[0m código incorreto.\n'
         return 1
