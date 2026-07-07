@@ -52,7 +52,7 @@ BDEPEND="
 distutils_enable_tests unittest
 
 PATCHES=(
-	"${FILESDIR}"/${P}-fix_locale_test.patch
+	# ${PN}-6.0.0-fix_locale_test.patch (PR #2159) merged upstream in 6.0.2
 	"${FILESDIR}"/${PN}-6.0.0-noupdate.patch
 )
 
