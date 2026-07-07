@@ -1,0 +1,311 @@
+From 8bec4e4f799268982bb25f86a8e01dee8d7170d4 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 6 Jul 2026 23:56:02 -0300
+Subject: [PATCH 3/5] feat(agent_ui): parse per-option AskUserQuestion meta
+ into elicitation options
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../src/conversation_view/elicitation.rs      | 251 ++++++++++++++++--
+ 1 file changed, 231 insertions(+), 20 deletions(-)
+
+diff --git a/crates/agent_ui/src/conversation_view/elicitation.rs b/crates/agent_ui/src/conversation_view/elicitation.rs
+index ae3f3a8..51a1803 100644
+--- a/crates/agent_ui/src/conversation_view/elicitation.rs
++++ b/crates/agent_ui/src/conversation_view/elicitation.rs
+@@ -16,6 +16,8 @@ use ui::{
+ struct ElicitationOption {
+     value: String,
+     label: SharedString,
++    description: Option<SharedString>,
++    preview: Option<String>,
+ }
+ 
+ enum ElicitationFieldState {
+@@ -593,6 +595,164 @@ mod tests {
+             Editor::single_line(window, cx)
+         });
+     }
++
++    fn option_meta_entry(entry: serde_json::Value) -> acp::Meta {
++        let mut meta = serde_json::Map::new();
++        meta.insert("_claude/askUserQuestionOption".to_string(), entry);
++        meta
++    }
++
++    fn titled_option_with_meta(
++        value: &str,
++        title: &str,
++        entry: serde_json::Value,
++    ) -> acp::EnumOption {
++        let mut option = acp::EnumOption::new(value, title);
++        option.meta = Some(option_meta_entry(entry));
++        option
++    }
++
++    #[test]
++    fn option_detail_parses_description_and_preview() {
++        let meta = option_meta_entry(serde_json::json!({
++            "description": "The live environment",
++            "preview": "```rust\nfn main() {}\n```",
++        }));
++        let detail = ask_user_question_option_detail(Some(&meta));
++        assert_eq!(detail.description.as_deref(), Some("The live environment"));
++        assert_eq!(detail.preview.as_deref(), Some("```rust\nfn main() {}\n```"));
++    }
++
++    #[test]
++    fn option_detail_parses_description_only() {
++        let meta = option_meta_entry(serde_json::json!({ "description": "Just a note" }));
++        let detail = ask_user_question_option_detail(Some(&meta));
++        assert_eq!(detail.description.as_deref(), Some("Just a note"));
++        assert!(detail.preview.is_none());
++    }
++
++    #[test]
++    fn option_detail_parses_preview_only() {
++        let meta = option_meta_entry(serde_json::json!({ "preview": "# Heading" }));
++        let detail = ask_user_question_option_detail(Some(&meta));
++        assert!(detail.description.is_none());
++        assert_eq!(detail.preview.as_deref(), Some("# Heading"));
++    }
++
++    #[test]
++    fn option_detail_is_empty_when_meta_absent() {
++        let detail = ask_user_question_option_detail(None);
++        assert!(detail.description.is_none() && detail.preview.is_none());
++    }
++
++    #[test]
++    fn option_detail_is_empty_when_key_absent() {
++        let mut meta = serde_json::Map::new();
++        meta.insert(
++            "_other/extension".to_string(),
++            serde_json::json!({ "description": "ignored" }),
++        );
++        let detail = ask_user_question_option_detail(Some(&meta));
++        assert!(detail.description.is_none() && detail.preview.is_none());
++    }
++
++    #[test]
++    fn option_detail_ignores_non_object_entry() {
++        let meta = option_meta_entry(serde_json::json!("not-an-object"));
++        let detail = ask_user_question_option_detail(Some(&meta));
++        assert!(detail.description.is_none() && detail.preview.is_none());
++    }
++
++    #[test]
++    fn option_detail_ignores_wrong_field_types() {
++        let meta = option_meta_entry(serde_json::json!({
++            "description": 42,
++            "preview": ["not", "a", "string"],
++        }));
++        let detail = ask_user_question_option_detail(Some(&meta));
++        assert!(detail.description.is_none() && detail.preview.is_none());
++    }
++
++    #[test]
++    fn option_detail_tolerates_unknown_extra_fields() {
++        let meta = option_meta_entry(serde_json::json!({
++            "description": "kept",
++            "preview": "kept too",
++            "futureField": { "nested": true },
++        }));
++        let detail = ask_user_question_option_detail(Some(&meta));
++        assert_eq!(detail.description.as_deref(), Some("kept"));
++        assert_eq!(detail.preview.as_deref(), Some("kept too"));
++    }
++
++    #[test]
++    fn single_select_uses_value_as_label_when_description_present() {
++        let schema = acp::StringPropertySchema::new().one_of(vec![titled_option_with_meta(
++            "production",
++            "Production — the live environment",
++            serde_json::json!({ "description": "The live environment", "preview": "prod" }),
++        )]);
++        let options = single_select_options(&schema);
++        assert_eq!(options.len(), 1);
++        assert_eq!(options[0].value, "production");
++        assert_eq!(options[0].label.as_ref(), "production");
++        assert_eq!(
++            options[0].description.as_deref(),
++            Some("The live environment")
++        );
++        assert_eq!(options[0].preview.as_deref(), Some("prod"));
++    }
++
++    #[test]
++    fn single_select_uses_title_as_label_without_description() {
++        let schema = acp::StringPropertySchema::new()
++            .one_of(vec![acp::EnumOption::new("production", "Production")]);
++        let options = single_select_options(&schema);
++        assert_eq!(options[0].label.as_ref(), "Production");
++        assert!(options[0].description.is_none() && options[0].preview.is_none());
++    }
++
++    #[test]
++    fn enum_values_options_carry_no_detail() {
++        let schema = acp::StringPropertySchema::new()
++            .enum_values(vec!["alpha".to_string(), "beta".to_string()]);
++        let options = single_select_options(&schema);
++        assert_eq!(options[0].label.as_ref(), "alpha");
++        assert!(
++            options
++                .iter()
++                .all(|option| option.description.is_none() && option.preview.is_none())
++        );
++    }
++
++    #[test]
++    fn multi_select_titled_threads_detail() {
++        let schema = acp::MultiSelectPropertySchema::titled(vec![titled_option_with_meta(
++            "repository",
++            "Repository — repo access",
++            serde_json::json!({ "description": "Repo access", "preview": "```\ndiff\n```" }),
++        )]);
++        let options = multi_select_options(&schema);
++        assert_eq!(options[0].value, "repository");
++        assert_eq!(options[0].label.as_ref(), "repository");
++        assert_eq!(options[0].description.as_deref(), Some("Repo access"));
++        assert_eq!(options[0].preview.as_deref(), Some("```\ndiff\n```"));
++    }
++
++    #[test]
++    fn multi_select_untitled_options_carry_no_detail() {
++        let schema = acp::MultiSelectPropertySchema::new(vec![
++            "alpha".to_string(),
++            "beta".to_string(),
++        ]);
++        let options = multi_select_options(&schema);
++        assert_eq!(options[0].label.as_ref(), "alpha");
++        assert!(
++            options
++                .iter()
++                .all(|option| option.description.is_none() && option.preview.is_none())
++        );
++    }
+ }
+ 
+ #[derive(RegisterComponent)]
+@@ -803,14 +963,76 @@ fn preview_form_schema() -> acp::ElicitationSchema {
+         )
+ }
+ 
++/// Key under which the Claude Code adapter attaches per-option description and
++/// preview metadata to an elicitation enum option's `_meta` (adapter >= v0.46.0).
++const ASK_USER_QUESTION_OPTION_META_KEY: &str = "_claude/askUserQuestionOption";
++
++/// Parsed per-option detail extracted from an enum option's `_meta`.
++struct OptionDetail {
++    description: Option<SharedString>,
++    preview: Option<String>,
++}
++
++/// Extract `{description?, preview?}` from an enum option's `_meta` under
++/// [`ASK_USER_QUESTION_OPTION_META_KEY`], tolerantly. An absent key, a non-object
++/// entry, or wrong-typed fields all yield `None` — never an error (R1.2) — and
++/// unknown extra fields are ignored (R1.3).
++fn ask_user_question_option_detail(meta: Option<&acp::Meta>) -> OptionDetail {
++    let entry = meta
++        .and_then(|meta| meta.get(ASK_USER_QUESTION_OPTION_META_KEY))
++        .and_then(|value| value.as_object());
++    let Some(entry) = entry else {
++        return OptionDetail {
++            description: None,
++            preview: None,
++        };
++    };
++    OptionDetail {
++        description: entry
++            .get("description")
++            .and_then(|value| value.as_str())
++            .map(|description| SharedString::from(description.to_string())),
++        preview: entry
++            .get("preview")
++            .and_then(|value| value.as_str())
++            .map(|preview| preview.to_string()),
++    }
++}
++
++/// Build a titled option, applying the parsed `_meta` detail and the R2.2 label
++/// rule: when a description is present the option's `value` becomes the primary
++/// label (the adapter flattens "label — description" into `title` only when a
++/// description exists), otherwise the human-readable `title` is used.
++fn titled_option(value: &str, title: &str, meta: Option<&acp::Meta>) -> ElicitationOption {
++    let detail = ask_user_question_option_detail(meta);
++    let label = if detail.description.is_some() {
++        SharedString::from(value.to_string())
++    } else {
++        SharedString::from(title.to_string())
++    };
++    ElicitationOption {
++        value: value.to_string(),
++        label,
++        description: detail.description,
++        preview: detail.preview,
++    }
++}
++
++/// Build a plain option with no `_meta` detail (enum-values and untitled arms).
++fn plain_option(value: &str) -> ElicitationOption {
++    ElicitationOption {
++        value: value.to_string(),
++        label: SharedString::from(value.to_string()),
++        description: None,
++        preview: None,
++    }
++}
++
+ fn single_select_options(schema: &acp::StringPropertySchema) -> Vec<ElicitationOption> {
+     if let Some(options) = &schema.one_of {
+         return options
+             .iter()
+-            .map(|option| ElicitationOption {
+-                value: option.value.clone(),
+-                label: SharedString::from(option.title.clone()),
+-            })
++            .map(|option| titled_option(&option.value, &option.title, option.meta.as_ref()))
+             .collect();
+     }
+ 
+@@ -819,10 +1041,7 @@ fn single_select_options(schema: &acp::StringPropertySchema) -> Vec<ElicitationO
+         .as_deref()
+         .unwrap_or_default()
+         .iter()
+-        .map(|value| ElicitationOption {
+-            value: value.clone(),
+-            label: SharedString::from(value.clone()),
+-        })
++        .map(|value| plain_option(value))
+         .collect()
+ }
+ 
+@@ -843,21 +1062,13 @@ fn single_select_default_value(
+ 
+ fn multi_select_options(schema: &acp::MultiSelectPropertySchema) -> Vec<ElicitationOption> {
+     match &schema.items {
+-        acp::MultiSelectItems::Untitled(items) => items
+-            .values
+-            .iter()
+-            .map(|value| ElicitationOption {
+-                value: value.clone(),
+-                label: SharedString::from(value.clone()),
+-            })
+-            .collect(),
++        acp::MultiSelectItems::Untitled(items) => {
++            items.values.iter().map(|value| plain_option(value)).collect()
++        }
+         acp::MultiSelectItems::Titled(items) => items
+             .options
+             .iter()
+-            .map(|option| ElicitationOption {
+-                value: option.value.clone(),
+-                label: SharedString::from(option.title.clone()),
+-            })
++            .map(|option| titled_option(&option.value, &option.title, option.meta.as_ref()))
+             .collect(),
+         _ => Vec::new(),
+     }
+-- 
+2.55.0
+

@@ -1,0 +1,64 @@
+From ab91bccb15bb76f532396c831a4e40d718d55bcc Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 7 Jul 2026 00:25:37 -0300
+Subject: [PATCH 5/5] feat(agent_ui): multiline auto-growing string fields in
+ elicitation forms
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../src/conversation_view/elicitation.rs      | 32 ++++++++++++++++++-
+ 1 file changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/crates/agent_ui/src/conversation_view/elicitation.rs b/crates/agent_ui/src/conversation_view/elicitation.rs
+index d02e15f..fe7b7be 100644
+--- a/crates/agent_ui/src/conversation_view/elicitation.rs
++++ b/crates/agent_ui/src/conversation_view/elicitation.rs
+@@ -52,7 +52,7 @@ impl ElicitationFormState {
+                     let options = single_select_options(schema);
+                     if options.is_empty() {
+                         let editor = cx.new(|cx| {
+-                            let mut editor = Editor::single_line(window, cx);
++                            let mut editor = Editor::auto_height(1, 8, window, cx);
+                             if let Some(default) = &schema.default {
+                                 editor.set_text(default.clone(), window, cx);
+                             }
+@@ -860,6 +860,36 @@ mod tests {
+             Editor::single_line(window, cx)
+         });
+     }
++
++    #[gpui::test]
++    fn collect_preserves_multiline_string_value(cx: &mut TestAppContext) {
++        crate::conversation_view::tests::init_test(cx);
++
++        cx.add_window(|window, cx| {
++            let schema = acp::ElicitationSchema::new().property(
++                "notes",
++                acp::StringPropertySchema::new().title("Notes"),
++                true,
++            );
++            let form_state = ElicitationFormState::new(&schema, window, cx);
++            if let Some(ElicitationFieldState::Text(editor)) = form_state.fields.get("notes") {
++                editor.update(cx, |editor, cx| {
++                    editor.set_text("line 1\nline 2\nline 3", window, cx)
++                });
++            }
++            let content = form_state
++                .collect(&schema, cx)
++                .expect("multiline string should be submitted");
++            assert_eq!(
++                content.get("notes"),
++                Some(&acp::ElicitationContentValue::String(
++                    "line 1\nline 2\nline 3".to_string()
++                ))
++            );
++
++            Editor::single_line(window, cx)
++        });
++    }
+ }
+ 
+ #[derive(RegisterComponent)]
+-- 
+2.55.0
+

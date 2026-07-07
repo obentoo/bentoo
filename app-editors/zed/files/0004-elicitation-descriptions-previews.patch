@@ -1,0 +1,608 @@
+From 7c1a9f1ab04b0910d24b402b8e9e2dd86652cde3 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 7 Jul 2026 00:21:55 -0300
+Subject: [PATCH 4/5] feat(agent_ui): option descriptions and collapsible
+ markdown previews in elicitation
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ crates/agent_ui/src/conversation_view.rs      |  32 +-
+ .../src/conversation_view/elicitation.rs      | 381 +++++++++++++++---
+ .../src/conversation_view/thread_view.rs      |  16 +-
+ 3 files changed, 360 insertions(+), 69 deletions(-)
+
+diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
+index 65632e9..7d8e3f5 100644
+--- a/crates/agent_ui/src/conversation_view.rs
++++ b/crates/agent_ui/src/conversation_view.rs
+@@ -2491,13 +2491,33 @@ impl ConversationView {
+                     .log_err();
+                 }
+             },
+-            move |elicitation_id, field_name, value, selected, cx| {
++            {
++                let view = view.clone();
++                move |elicitation_id, field_name, value, selected, cx| {
++                    view.update(cx, |this, cx| {
++                        this.update_request_elicitation_form_state(
++                            &elicitation_id,
++                            |form| form.set_multi_select(&field_name, value, selected),
++                            cx,
++                        );
++                    })
++                    .log_err();
++                }
++            },
++            move |elicitation_id, field_name, value, preview_text, cx| {
+                 view.update(cx, |this, cx| {
+-                    this.update_request_elicitation_form_state(
+-                        &elicitation_id,
+-                        |form| form.set_multi_select(&field_name, value, selected),
+-                        cx,
+-                    );
++                    let toggled = if let Some(form) = this
++                        .request_elicitation_form_states
++                        .get_mut(&elicitation_id)
++                    {
++                        form.toggle_preview(&field_name, &value, &preview_text, cx);
++                        true
++                    } else {
++                        false
++                    };
++                    if toggled {
++                        this.notify_request_elicitation_renderers(cx);
++                    }
+                 })
+                 .log_err();
+             },
+diff --git a/crates/agent_ui/src/conversation_view/elicitation.rs b/crates/agent_ui/src/conversation_view/elicitation.rs
+index 51a1803..d02e15f 100644
+--- a/crates/agent_ui/src/conversation_view/elicitation.rs
++++ b/crates/agent_ui/src/conversation_view/elicitation.rs
+@@ -4,12 +4,18 @@ use collections::{HashMap, HashSet};
+ use component::{Component, ComponentScope, example_group_with_title, single_example};
+ use editor::Editor;
+ use futures::channel::oneshot;
+-use gpui::{AnyElement, App, Div, Empty, Entity, Hsla, SharedString, Window, div};
++use gpui::{
++    AnyElement, App, Div, Empty, Entity, Hsla, Refineable, SharedString, TextStyle,
++    TextStyleRefinement, Window, div,
++};
++use markdown::{Markdown, MarkdownElement, MarkdownStyle};
++use settings::Settings as _;
+ use std::collections::BTreeMap;
+ use std::rc::Rc;
++use theme_settings::ThemeSettings;
+ use ui::{
+-    Button, Checkbox, Color, Icon, IconName, IconSize, Indicator, Label, LabelSize, ToggleState,
+-    prelude::*,
++    Button, Checkbox, Color, Disclosure, Icon, IconName, IconSize, Indicator, Label, LabelSize,
++    TextSize, ToggleState, prelude::*,
+ };
+ 
+ #[derive(Clone)]
+@@ -30,6 +36,8 @@ enum ElicitationFieldState {
+ pub(crate) struct ElicitationFormState {
+     fields: HashMap<String, ElicitationFieldState>,
+     field_errors: HashMap<String, SharedString>,
++    expanded_previews: HashSet<(String, String)>,
++    preview_markdown: HashMap<(String, String), Entity<Markdown>>,
+ }
+ 
+ impl ElicitationFormState {
+@@ -101,6 +109,8 @@ impl ElicitationFormState {
+         Self {
+             fields,
+             field_errors: HashMap::default(),
++            expanded_previews: HashSet::default(),
++            preview_markdown: HashMap::default(),
+         }
+     }
+ 
+@@ -286,6 +296,41 @@ impl ElicitationFormState {
+             self.field_errors.remove(field_name);
+         }
+     }
++
++    /// Toggle the expanded state of an option's preview. The `Markdown` entity is
++    /// created lazily on first expansion and reused thereafter (never rebuilt per
++    /// render). Collapsing keeps the entity cached for a cheap re-expand.
++    pub(crate) fn toggle_preview(
++        &mut self,
++        field_name: &str,
++        option_value: &str,
++        preview_text: &str,
++        cx: &mut App,
++    ) {
++        let key = (field_name.to_string(), option_value.to_string());
++        if !self.expanded_previews.remove(&key) {
++            if !self.preview_markdown.contains_key(&key) {
++                let source = preview_markdown_source(preview_text);
++                let markdown = cx.new(|cx| Markdown::new(source.into(), None, None, cx));
++                self.preview_markdown.insert(key.clone(), markdown);
++            }
++            self.expanded_previews.insert(key);
++        }
++    }
++
++    fn is_preview_expanded(&self, field_name: &str, option_value: &str) -> bool {
++        self.expanded_previews
++            .contains(&(field_name.to_string(), option_value.to_string()))
++    }
++
++    fn preview_markdown_entity(
++        &self,
++        field_name: &str,
++        option_value: &str,
++    ) -> Option<&Entity<Markdown>> {
++        self.preview_markdown
++            .get(&(field_name.to_string(), option_value.to_string()))
++    }
+ }
+ 
+ #[cfg(test)]
+@@ -620,7 +665,10 @@ mod tests {
+         }));
+         let detail = ask_user_question_option_detail(Some(&meta));
+         assert_eq!(detail.description.as_deref(), Some("The live environment"));
+-        assert_eq!(detail.preview.as_deref(), Some("```rust\nfn main() {}\n```"));
++        assert_eq!(
++            detail.preview.as_deref(),
++            Some("```rust\nfn main() {}\n```")
++        );
+     }
+ 
+     #[test]
+@@ -741,10 +789,8 @@ mod tests {
+ 
+     #[test]
+     fn multi_select_untitled_options_carry_no_detail() {
+-        let schema = acp::MultiSelectPropertySchema::new(vec![
+-            "alpha".to_string(),
+-            "beta".to_string(),
+-        ]);
++        let schema =
++            acp::MultiSelectPropertySchema::new(vec!["alpha".to_string(), "beta".to_string()]);
+         let options = multi_select_options(&schema);
+         assert_eq!(options[0].label.as_ref(), "alpha");
+         assert!(
+@@ -753,6 +799,67 @@ mod tests {
+                 .all(|option| option.description.is_none() && option.preview.is_none())
+         );
+     }
++
++    #[test]
++    fn preview_markdown_source_fences_html_like_content() {
++        assert_eq!(
++            preview_markdown_source("<div>hi</div>"),
++            "```\n<div>hi</div>\n```"
++        );
++        assert_eq!(
++            preview_markdown_source("  \n  <span>x</span>"),
++            "```\n  \n  <span>x</span>\n```"
++        );
++    }
++
++    #[test]
++    fn preview_markdown_source_leaves_markdown_untouched() {
++        assert_eq!(preview_markdown_source("# Heading"), "# Heading");
++        assert_eq!(
++            preview_markdown_source("```rust\nfn main() {}\n```"),
++            "```rust\nfn main() {}\n```"
++        );
++    }
++
++    #[gpui::test]
++    fn toggle_preview_round_trips_and_reuses_entity(cx: &mut TestAppContext) {
++        crate::conversation_view::tests::init_test(cx);
++
++        cx.add_window(|window, cx| {
++            let schema = acp::ElicitationSchema::new().property(
++                "environment",
++                acp::StringPropertySchema::new()
++                    .title("Environment")
++                    .one_of(vec![titled_option_with_meta(
++                        "production",
++                        "Production",
++                        serde_json::json!({ "preview": "# Production" }),
++                    )]),
++                false,
++            );
++            let mut form_state = ElicitationFormState::new(&schema, window, cx);
++            assert!(!form_state.is_preview_expanded("environment", "production"));
++
++            form_state.toggle_preview("environment", "production", "# Production", cx);
++            assert!(form_state.is_preview_expanded("environment", "production"));
++            let first = form_state
++                .preview_markdown_entity("environment", "production")
++                .expect("entity created on first expansion")
++                .entity_id();
++
++            form_state.toggle_preview("environment", "production", "# Production", cx);
++            assert!(!form_state.is_preview_expanded("environment", "production"));
++
++            form_state.toggle_preview("environment", "production", "# Production", cx);
++            let second = form_state
++                .preview_markdown_entity("environment", "production")
++                .expect("entity retained across toggles")
++                .entity_id();
++            assert_eq!(first, second, "markdown entity is reused, not recreated");
++
++            Editor::single_line(window, cx)
++        });
++    }
+ }
+ 
+ #[derive(RegisterComponent)]
+@@ -1028,6 +1135,37 @@ fn plain_option(value: &str) -> ElicitationOption {
+     }
+ }
+ 
++/// Wrap an HTML-looking preview in a fenced code block so Markdown renders it as
++/// escaped plain text (R3.3) — the card never renders raw HTML.
++fn preview_markdown_source(preview: &str) -> String {
++    if preview.trim_start().starts_with('<') {
++        format!("```\n{preview}\n```")
++    } else {
++        preview.to_string()
++    }
++}
++
++/// Minimal muted Markdown style for inline option previews, built from theme
++/// settings (the render path has no `Window`, so `text_style()` is unavailable).
++fn preview_markdown_style(cx: &App) -> MarkdownStyle {
++    let colors = cx.theme().colors();
++    let theme_settings = ThemeSettings::get_global(cx);
++    let mut base_text_style = TextStyle::default();
++    base_text_style.refine(&TextStyleRefinement {
++        font_family: Some(theme_settings.ui_font.family.clone()),
++        font_fallbacks: theme_settings.ui_font.fallbacks.clone(),
++        font_features: Some(theme_settings.ui_font.features.clone()),
++        font_size: Some(TextSize::XSmall.rems(cx).into()),
++        color: Some(colors.text_muted),
++        ..Default::default()
++    });
++    MarkdownStyle {
++        base_text_style,
++        selection_background_color: colors.element_selection_background,
++        ..Default::default()
++    }
++}
++
+ fn single_select_options(schema: &acp::StringPropertySchema) -> Vec<ElicitationOption> {
+     if let Some(options) = &schema.one_of {
+         return options
+@@ -1062,9 +1200,11 @@ fn single_select_default_value(
+ 
+ fn multi_select_options(schema: &acp::MultiSelectPropertySchema) -> Vec<ElicitationOption> {
+     match &schema.items {
+-        acp::MultiSelectItems::Untitled(items) => {
+-            items.values.iter().map(|value| plain_option(value)).collect()
+-        }
++        acp::MultiSelectItems::Untitled(items) => items
++            .values
++            .iter()
++            .map(|value| plain_option(value))
++            .collect(),
+         acp::MultiSelectItems::Titled(items) => items
+             .options
+             .iter()
+@@ -1258,6 +1398,7 @@ type OpenUrlHandler = Rc<dyn Fn(ElicitationEntryId, String, &mut Window, &mut Ap
+ type BooleanHandler = Rc<dyn Fn(ElicitationEntryId, String, bool, &mut App)>;
+ type SelectHandler = Rc<dyn Fn(ElicitationEntryId, String, String, &mut App)>;
+ type MultiSelectHandler = Rc<dyn Fn(ElicitationEntryId, String, String, bool, &mut App)>;
++type TogglePreviewHandler = Rc<dyn Fn(ElicitationEntryId, String, String, String, &mut App)>;
+ 
+ #[derive(Clone)]
+ pub(crate) struct ElicitationCardHandlers {
+@@ -1268,6 +1409,7 @@ pub(crate) struct ElicitationCardHandlers {
+     on_boolean_change: BooleanHandler,
+     on_single_select_change: SelectHandler,
+     on_multi_select_change: MultiSelectHandler,
++    on_toggle_preview: TogglePreviewHandler,
+ }
+ 
+ impl ElicitationCardHandlers {
+@@ -1279,6 +1421,7 @@ impl ElicitationCardHandlers {
+         on_boolean_change: impl Fn(ElicitationEntryId, String, bool, &mut App) + 'static,
+         on_single_select_change: impl Fn(ElicitationEntryId, String, String, &mut App) + 'static,
+         on_multi_select_change: impl Fn(ElicitationEntryId, String, String, bool, &mut App) + 'static,
++        on_toggle_preview: impl Fn(ElicitationEntryId, String, String, String, &mut App) + 'static,
+     ) -> Self {
+         Self {
+             on_submit: Rc::new(on_submit),
+@@ -1288,6 +1431,7 @@ impl ElicitationCardHandlers {
+             on_boolean_change: Rc::new(on_boolean_change),
+             on_single_select_change: Rc::new(on_single_select_change),
+             on_multi_select_change: Rc::new(on_multi_select_change),
++            on_toggle_preview: Rc::new(on_toggle_preview),
+         }
+     }
+ 
+@@ -1300,6 +1444,7 @@ impl ElicitationCardHandlers {
+             |_, _, _, _| {},
+             |_, _, _, _| {},
+             |_, _, _, _, _| {},
++            |_, _, _, _, _| {},
+         )
+     }
+ }
+@@ -1612,37 +1757,77 @@ impl<'a> ElicitationCard<'a> {
+                             let elicitation_id = self.elicitation.id.clone();
+                             let field_name = field_name.to_string();
+                             let value = option.value.clone();
++                            let preview = option.preview.clone();
++                            let preview_field = field_name.clone();
++                            let preview_value = option.value.clone();
+                             let checkbox_id = format!(
+                                 "elicitation-multi-{}-{field_name}-{}",
+                                 self.entry_ix, option.value
+                             );
+-                            h_flex()
+-                                .id(SharedString::from(format!(
+-                                    "elicitation-multi-option-{}-{field_name}-{}",
+-                                    self.entry_ix, option.value
+-                                )))
+-                                .w_full()
+-                                .min_h(rems_from_px(28.))
+-                                .items_center()
+-                                .gap_2()
+-                                .rounded_sm()
+-                                .border_1()
+-                                .border_color(field_border_color.opacity(0.5))
+-                                .bg(row_background)
+-                                .px_2()
+-                                .py_1()
+-                                .hover(move |this| this.bg(hover_background).cursor_pointer())
+-                                .on_click(move |_, _window, cx| {
+-                                    on_multi_select_change(
+-                                        elicitation_id.clone(),
+-                                        field_name.clone(),
+-                                        value.clone(),
+-                                        !is_selected,
++                            v_flex()
++                                .gap_1()
++                                .child(
++                                    h_flex()
++                                        .id(SharedString::from(format!(
++                                            "elicitation-multi-option-{}-{field_name}-{}",
++                                            self.entry_ix, option.value
++                                        )))
++                                        .w_full()
++                                        .min_h(rems_from_px(28.))
++                                        .items_start()
++                                        .gap_2()
++                                        .rounded_sm()
++                                        .border_1()
++                                        .border_color(field_border_color.opacity(0.5))
++                                        .bg(row_background)
++                                        .px_2()
++                                        .py_1()
++                                        .hover(move |this| {
++                                            this.bg(hover_background).cursor_pointer()
++                                        })
++                                        .on_click(move |_, _window, cx| {
++                                            on_multi_select_change(
++                                                elicitation_id.clone(),
++                                                field_name.clone(),
++                                                value.clone(),
++                                                !is_selected,
++                                                cx,
++                                            );
++                                        })
++                                        .child(
++                                            div()
++                                                .mt_0p5()
++                                                .child(Checkbox::new(checkbox_id, checkbox_state)),
++                                        )
++                                        .child(
++                                            v_flex()
++                                                .min_w_0()
++                                                .flex_1()
++                                                .gap_0p5()
++                                                .child(
++                                                    Label::new(option.label.clone())
++                                                        .size(LabelSize::Small),
++                                                )
++                                                .when_some(
++                                                    option.description,
++                                                    |this, description| {
++                                                        this.child(
++                                                            Label::new(description)
++                                                                .size(LabelSize::Small)
++                                                                .color(Color::Muted),
++                                                        )
++                                                    },
++                                                ),
++                                        ),
++                                )
++                                .when_some(preview, |this, preview| {
++                                    this.child(self.render_option_preview(
++                                        &preview_field,
++                                        &preview_value,
++                                        &preview,
+                                         cx,
+-                                    );
++                                    ))
+                                 })
+-                                .child(Checkbox::new(checkbox_id, checkbox_state))
+-                                .child(Label::new(option.label).size(LabelSize::Small).truncate())
+                         }))
+                         .into_any_element()
+                 }
+@@ -1675,6 +1860,9 @@ impl<'a> ElicitationCard<'a> {
+             .gap_1()
+             .children(options.into_iter().map(move |option| {
+                 let option_value = option.value.clone();
++                let preview = option.preview.clone();
++                let preview_field = field_name.clone();
++                let preview_value = option.value.clone();
+                 let option_id =
+                     format!("elicitation-select-option-{entry_ix}-{field_name}-{option_value}");
+                 let is_selected =
+@@ -1686,37 +1874,108 @@ impl<'a> ElicitationCard<'a> {
+                 let field_name = field_name.clone();
+                 let on_single_select_change = on_single_select_change.clone();
+ 
+-                h_flex()
+-                    .id(option_id)
+-                    .w_full()
+-                    .min_h(rems_from_px(28.))
+-                    .items_center()
+-                    .gap_2()
+-                    .rounded_sm()
+-                    .border_1()
+-                    .border_color(border_color.opacity(0.5))
+-                    .bg(row_background)
+-                    .px_2()
+-                    .py_1()
+-                    .hover(move |this| this.bg(hover_background).cursor_pointer())
+-                    .on_click(move |_, _window, cx| {
+-                        on_single_select_change(
+-                            elicitation_id.clone(),
+-                            field_name.clone(),
+-                            option_value.clone(),
++                v_flex()
++                    .gap_1()
++                    .child(
++                        h_flex()
++                            .id(option_id)
++                            .w_full()
++                            .min_h(rems_from_px(28.))
++                            .items_start()
++                            .gap_2()
++                            .rounded_sm()
++                            .border_1()
++                            .border_color(border_color.opacity(0.5))
++                            .bg(row_background)
++                            .px_2()
++                            .py_1()
++                            .hover(move |this| this.bg(hover_background).cursor_pointer())
++                            .on_click(move |_, _window, cx| {
++                                on_single_select_change(
++                                    elicitation_id.clone(),
++                                    field_name.clone(),
++                                    option_value.clone(),
++                                    cx,
++                                );
++                            })
++                            .child(div().mt_0p5().child(Self::render_radio_indicator(
++                                is_selected,
++                                border_color,
++                                control_background,
++                            )))
++                            .child(
++                                v_flex()
++                                    .min_w_0()
++                                    .flex_1()
++                                    .gap_0p5()
++                                    .child(Label::new(option.label.clone()).size(LabelSize::Small))
++                                    .when_some(option.description, |this, description| {
++                                        this.child(
++                                            Label::new(description)
++                                                .size(LabelSize::Small)
++                                                .color(Color::Muted),
++                                        )
++                                    }),
++                            ),
++                    )
++                    .when_some(preview, |this, preview| {
++                        this.child(self.render_option_preview(
++                            &preview_field,
++                            &preview_value,
++                            &preview,
+                             cx,
+-                        );
++                        ))
+                     })
+-                    .child(Self::render_radio_indicator(
+-                        is_selected,
+-                        border_color,
+-                        control_background,
+-                    ))
+-                    .child(Label::new(option.label).size(LabelSize::Small).truncate())
+             }))
+             .into_any_element()
+     }
+ 
++    fn render_option_preview(
++        &self,
++        field_name: &str,
++        option_value: &str,
++        preview: &str,
++        cx: &App,
++    ) -> AnyElement {
++        let Some(state) = self.form_state else {
++            return Empty.into_any_element();
++        };
++        let is_open = state.is_preview_expanded(field_name, option_value);
++        let markdown = state
++            .preview_markdown_entity(field_name, option_value)
++            .cloned();
++        let disclosure_id = SharedString::from(format!(
++            "elicitation-preview-{}-{field_name}-{option_value}",
++            self.entry_ix
++        ));
++        let on_toggle_preview = self.handlers.on_toggle_preview.clone();
++        let elicitation_id = self.elicitation.id.clone();
++        let field_name = field_name.to_string();
++        let option_value = option_value.to_string();
++        let preview = preview.to_string();
++
++        v_flex()
++            .pl_5()
++            .gap_1()
++            .child(
++                Disclosure::new(disclosure_id, is_open).on_click(move |_, _window, cx| {
++                    on_toggle_preview(
++                        elicitation_id.clone(),
++                        field_name.clone(),
++                        option_value.clone(),
++                        preview.clone(),
++                        cx,
++                    );
++                }),
++            )
++            .when(is_open, |this| {
++                this.when_some(markdown, |this, markdown| {
++                    this.child(MarkdownElement::new(markdown, preview_markdown_style(cx)))
++                })
++            })
++            .into_any_element()
++    }
++
+     fn option_row_background(is_selected: bool, cx: &App) -> Hsla {
+         let editor_background = cx.theme().colors().editor_background;
+         if is_selected {
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 90ea600..bd9c757 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -6571,10 +6571,22 @@ impl ThreadView {
+                     .log_err();
+                 }
+             },
+-            move |elicitation_id, field_name, value, selected, cx| {
++            {
++                let view = view.clone();
++                move |elicitation_id, field_name, value, selected, cx| {
++                    view.update(cx, |this, cx| {
++                        if let Some(form) = this.elicitation_form_states.get_mut(&elicitation_id) {
++                            form.set_multi_select(&field_name, value, selected);
++                            cx.notify();
++                        }
++                    })
++                    .log_err();
++                }
++            },
++            move |elicitation_id, field_name, value, preview_text, cx| {
+                 view.update(cx, |this, cx| {
+                     if let Some(form) = this.elicitation_form_states.get_mut(&elicitation_id) {
+-                        form.set_multi_select(&field_name, value, selected);
++                        form.toggle_preview(&field_name, &value, &preview_text, cx);
+                         cx.notify();
+                     }
+                 })
+-- 
+2.55.0
+

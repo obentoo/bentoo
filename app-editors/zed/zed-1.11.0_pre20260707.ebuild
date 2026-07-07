@@ -1728,9 +1728,17 @@ pkg_setup() {
 
 src_prepare() {
 	# story 002: force-enable the acp-beta feature flag (ACP elicitation form/url UI).
-	# USE=acp-beta applies the patch; story 003 can append its patch series to this same branch.
+	# story 003: elicitation UI polish series (option meta parsing, descriptions +
+	# collapsible previews, multiline string fields) stacked on 0001.
+	# GOTCHA: 0001 and 0003..0005 touch overlapping regions — regenerate the whole
+	# series together on every pin bump (source branch: zed-src elicitation-polish).
 	if use acp-beta; then
-		PATCHES+=( "${FILESDIR}/0001-force-enable-acp-beta.patch" )
+		PATCHES+=(
+			"${FILESDIR}/0001-force-enable-acp-beta.patch"
+			"${FILESDIR}/0003-elicitation-option-meta.patch"
+			"${FILESDIR}/0004-elicitation-descriptions-previews.patch"
+			"${FILESDIR}/0005-elicitation-multiline-fields.patch"
+		)
 	fi
 
 	# terminal-ide story 001: Claude Code IDE integration (upstream PR #58300 + API-drift fixes).
