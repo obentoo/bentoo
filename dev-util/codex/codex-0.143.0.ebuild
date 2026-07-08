@@ -36,12 +36,9 @@ declare -A GIT_CRATES=(
 
 RUST_MIN_VER="1.95.0"
 
-# The crate-dist fork (gentoo-zh-drafts/codex) only publishes a crate tarball for a
-# subset of upstream tags; it skipped rust-v0.142.5 (jumping to the 0.143 alpha series).
-# codex-rs/Cargo.lock is byte-for-byte identical between rust-v0.142.4 and rust-v0.142.5
-# (same crates.io versions and same pinned git-crate commits), so the 0.142.4 crate
-# tarball is a valid, reproducible source for this version. Pin it explicitly.
-MY_CRATES_TAG="rust-v0.142.4"
+# Tag of the crate tarball published by the crate-dist fork
+# (gentoo-zh-drafts/codex); it tracks the upstream release for this version.
+MY_CRATES_TAG="rust-v0.143.0"
 
 # python3 .github/scripts/rusty_v8_bazel.py resolved-v8-crate-version
 RUSTY_V8_TAG="147.4.0"
