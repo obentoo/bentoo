@@ -11,7 +11,7 @@ HOMEPAGE="https://gstreamer.freedesktop.org/"
 LICENSE="metapackage"
 SLOT="1.0"
 KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~mips ppc ppc64 ~riscv ~sparc x86"
-IUSE="aac a52 alsa cdda dts dv dvb dvd ffmpeg flac http jack lame libass libde265 libvisual mp3 modplug mpeg nvcodec ogg opus oss pulseaudio taglib theora v4l vaapi vcd vorbis vpx wavpack X x264"
+IUSE="aac a52 alsa cdda dts dv dvb dvd ffmpeg flac http jack lame libass libde265 libvisual mp3 modplug nvcodec ogg opus oss pulseaudio taglib theora v4l vaapi vcd vorbis vpx wavpack X x264"
 REQUIRED_USE="opus? ( ogg ) theora? ( ogg ) vorbis? ( ogg )"
 
 RDEPEND="
@@ -32,7 +32,6 @@ RDEPEND="
 		>=media-libs/gst-plugins-ugly-${PV}:1.0[${MULTILIB_USEDEP}]
 		>=media-plugins/gst-plugins-a52dec-${PV}:1.0[${MULTILIB_USEDEP}]
 		>=media-plugins/gst-plugins-dvdread-${PV}:1.0[${MULTILIB_USEDEP}]
-		>=media-plugins/gst-plugins-mpeg2dec-${PV}:1.0[${MULTILIB_USEDEP}]
 		>=media-plugins/gst-plugins-resindvd-${PV}:1.0[${MULTILIB_USEDEP}] )
 	ffmpeg? ( >=media-plugins/gst-plugins-libav-${PV}:1.0[${MULTILIB_USEDEP}] )
 	flac? ( >=media-plugins/gst-plugins-flac-${PV}:1.0[${MULTILIB_USEDEP}] )
@@ -46,7 +45,6 @@ RDEPEND="
 	mp3? (
 		>=media-libs/gst-plugins-ugly-${PV}:1.0[${MULTILIB_USEDEP}]
 		>=media-plugins/gst-plugins-mpg123-${PV}:1.0[${MULTILIB_USEDEP}] )
-	mpeg? ( >=media-plugins/gst-plugins-mpeg2dec-${PV}:1.0[${MULTILIB_USEDEP}] )
 	nvcodec? ( >=media-plugins/gst-plugins-nvcodec-${PV}:1.0[${MULTILIB_USEDEP}] )
 	opus? ( >=media-plugins/gst-plugins-opus-${PV}:1.0[${MULTILIB_USEDEP}] )
 	oss? ( >=media-plugins/gst-plugins-oss-${PV}:1.0[${MULTILIB_USEDEP}] )
@@ -55,8 +53,7 @@ RDEPEND="
 	v4l? ( >=media-plugins/gst-plugins-v4l2-${PV}:1.0[${MULTILIB_USEDEP}] )
 	vaapi? ( >=media-libs/gst-plugins-bad-${PV}:1.0[vaapi,${MULTILIB_USEDEP}] )
 	vcd? (
-		>=media-plugins/gst-plugins-mplex-${PV}:1.0[${MULTILIB_USEDEP}]
-		>=media-plugins/gst-plugins-mpeg2dec-${PV}:1.0[${MULTILIB_USEDEP}] )
+		>=media-plugins/gst-plugins-mplex-${PV}:1.0[${MULTILIB_USEDEP}] )
 	vpx? ( >=media-plugins/gst-plugins-vpx-${PV}:1.0[${MULTILIB_USEDEP}] )
 	wavpack? ( >=media-plugins/gst-plugins-wavpack-${PV}:1.0[${MULTILIB_USEDEP}] )
 	x264? ( >=media-plugins/gst-plugins-x264-${PV}:1.0[${MULTILIB_USEDEP}] )
