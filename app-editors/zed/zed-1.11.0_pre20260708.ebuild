@@ -16,9 +16,9 @@ CRATES="
 	addr2line@0.25.1
 	adler2@2.0.1
 	aes@0.8.4
-	agent-client-protocol-derive@1.0.1
-	agent-client-protocol-schema@1.1.0
-	agent-client-protocol@1.0.1
+	agent-client-protocol-derive@1.1.0
+	agent-client-protocol-schema@1.4.0
+	agent-client-protocol@1.1.0
 	ahash@0.7.8
 	ahash@0.8.12
 	aho-corasick@1.1.3
@@ -1598,7 +1598,7 @@ declare -A GIT_CRATES=(
 	[tree-sitter-gomod]='https://github.com/camdencheek/tree-sitter-go-mod;2e886870578eeba1927a2dc4bd2e2b3f598c5f9a;tree-sitter-go-mod-%commit%'
 	[tree-sitter-gowork]='https://github.com/zed-industries/tree-sitter-go-work;acb0617bf7f4fda02c6217676cc64acb89536dc7;tree-sitter-go-work-%commit%'
 	[tree-sitter-heex]='https://github.com/zed-industries/tree-sitter-heex;1dd45142fbb05562e35b2040c6129c9bca346592;tree-sitter-heex-%commit%'
-	[tree-sitter-md]='https://github.com/tree-sitter-grammars/tree-sitter-markdown;9a23c1a96c0513d8fc6520972beedd419a973539;tree-sitter-markdown-%commit%'
+	[tree-sitter-md]='https://github.com/zed-industries/tree-sitter-markdown;b596e737286780d7bfa9fcddceaeeb754574b352;tree-sitter-markdown-%commit%'
 	[tree-sitter-typescript]='https://github.com/zed-industries/tree-sitter-typescript;e2c53597d6a5d9cf7bbe8dccde576fe1e46c5899;tree-sitter-typescript-%commit%'
 	[tree-sitter-yaml]='https://github.com/zed-industries/tree-sitter-yaml;baff0b51c64ef6a1fb1f8390f3ad6015b83ec13a;tree-sitter-yaml-%commit%'
 	[webrtc-sys-build]='https://github.com/zed-industries/livekit-rust-sdks;d0e27be0cdad89eadab3e36207cda0a2b6e359ee;livekit-rust-sdks-%commit%/webrtc-sys/build'
@@ -1731,8 +1731,10 @@ src_prepare() {
 	if use claude-agent-acp-plus; then
 		PATCHES+=(
 			"${FILESDIR}/0001-force-enable-claude-agent-acp-plus.patch"
-			"${FILESDIR}/0003-elicitation-option-meta.patch"
-			"${FILESDIR}/0004-elicitation-descriptions-previews.patch"
+			# 0003/0004 (per-option _meta description + preview) dropped: upstream
+			# 950ec79 now surfaces option descriptions natively via the ACP
+			# EnumOption.description field, superseding the _claude/askUserQuestionOption
+			# _meta machinery (and renamed MultiSelectItems::Untitled -> String).
 			"${FILESDIR}/0005-elicitation-multiline-fields.patch"
 		)
 	fi
