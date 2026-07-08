@@ -1737,6 +1737,7 @@ src_prepare() {
 			# _meta machinery (and renamed MultiSelectItems::Untitled -> String).
 			"${FILESDIR}/0005-elicitation-multiline-fields.patch"
 			"${FILESDIR}/0006-elicitation-option-previews.patch"
+			"${FILESDIR}/0007-manual-mode-badge.patch"
 		)
 	fi
 

@@ -1,0 +1,160 @@
+From 1e4132b63a936d3a41647d7d3ca9721f1cc14909 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Wed, 8 Jul 2026 19:01:24 -0300
+Subject: [PATCH] feat(agent_ui): manual-mode badge next to the mode selector
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ crates/agent_ui/src/mode_selector.rs | 116 ++++++++++++++++++++++++++-
+ 1 file changed, 115 insertions(+), 1 deletion(-)
+
+diff --git a/crates/agent_ui/src/mode_selector.rs b/crates/agent_ui/src/mode_selector.rs
+index 46c1543..8d63b3f 100644
+--- a/crates/agent_ui/src/mode_selector.rs
++++ b/crates/agent_ui/src/mode_selector.rs
+@@ -129,6 +129,16 @@ impl ModeSelector {
+     }
+ }
+ 
++/// Whether the Manual-mode badge is shown for the given session mode.
++///
++/// The Claude adapter's `default` permission mode is surfaced to users as
++/// "Manual": the agent waits for approval before acting. The badge is keyed
++/// strictly to the mode id (never the display name), so it shows for
++/// `default` only and disappears on any other mode.
++fn shows_manual_mode_badge(mode_id: &acp::SessionModeId) -> bool {
++    mode_id.0.as_ref() == "default"
++}
++
+ impl Render for ModeSelector {
+     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+         let current_mode_id = self.connection.current_mode();
+@@ -154,7 +164,7 @@ impl Render for ModeSelector {
+             .end_icon(Icon::new(icon).size(IconSize::XSmall).color(Color::Muted))
+             .disabled(self.setting_mode);
+ 
+-        PopoverMenu::new("mode-selector")
++        let selector_menu = PopoverMenu::new("mode-selector")
+             .trigger_with_tooltip(
+                 trigger_button,
+                 Tooltip::element({
+@@ -191,7 +201,31 @@ impl Render for ModeSelector {
+             .menu(move |window, cx| {
+                 this.update(cx, |this, cx| this.build_context_menu(window, cx))
+                     .ok()
++            });
++
++        h_flex()
++            .gap_1()
++            .when(shows_manual_mode_badge(&current_mode_id), |this| {
++                this.child(
++                    h_flex()
++                        .id("manual-mode-badge")
++                        .gap_0p5()
++                        .child(
++                            Icon::new(IconName::DebugPause)
++                                .size(IconSize::XSmall)
++                                .color(Color::Muted),
++                        )
++                        .child(
++                            Label::new("Waits for approval")
++                                .size(LabelSize::Small)
++                                .color(Color::Muted),
++                        )
++                        .tooltip(Tooltip::text(
++                            "Manual mode: the agent asks for approval before making changes",
++                        )),
++                )
+             })
++            .child(selector_menu)
+     }
+ }
+ 
+@@ -300,4 +334,84 @@ mod tests {
+             Task::ready(Ok(()))
+         }
+     }
++
++    // ---- R4.1/R4.2: badge visibility is keyed to the mode id `default`, nothing else ----
++
++    #[test]
++    fn manual_badge_shown_only_for_default_mode_id() {
++        assert!(shows_manual_mode_badge(&acp::SessionModeId::new("default")));
++
++        for other in ["acceptEdits", "bypassPermissions", "plan", "manual", ""] {
++            assert!(
++                !shows_manual_mode_badge(&acp::SessionModeId::new(other)),
++                "badge must be keyed to the id `default`, not shown for `{other}`"
++            );
++        }
++    }
++
++    // ---- R4.2: badge visibility clears when the session mode changes ----
++
++    #[gpui::test]
++    fn manual_badge_state_clears_when_mode_changes(cx: &mut TestAppContext) {
++        let agent_server = Rc::new(TestAgentServer::default());
++        let session_modes = Rc::new(BadgeTestSessionModes::new());
++        let fs: Arc<dyn Fs> = FakeFs::new(cx.executor());
++
++        cx.update(|cx| {
++            let session_modes: Rc<dyn AgentSessionModes> = session_modes.clone();
++            let agent_server: Rc<dyn AgentServer> = agent_server.clone();
++            let selector = cx.new(|_| ModeSelector::new(session_modes, agent_server, fs));
++
++            selector.update(cx, |selector, cx| {
++                assert!(
++                    shows_manual_mode_badge(&selector.mode()),
++                    "session starts in `default` (Manual): badge visible"
++                );
++
++                selector.set_mode(acp::SessionModeId::new("acceptEdits"), cx);
++                assert!(
++                    !shows_manual_mode_badge(&selector.mode()),
++                    "leaving `default` removes the badge"
++                );
++
++                selector.set_mode(acp::SessionModeId::new("default"), cx);
++                assert!(
++                    shows_manual_mode_badge(&selector.mode()),
++                    "returning to `default` restores the badge"
++                );
++            });
++        });
++    }
++
++    /// Session-modes double whose mode set mirrors the Claude adapter's permission
++    /// modes and starts in `default` (Manual).
++    struct BadgeTestSessionModes {
++        current_mode: RefCell<acp::SessionModeId>,
++    }
++
++    impl BadgeTestSessionModes {
++        fn new() -> Self {
++            Self {
++                current_mode: RefCell::new(acp::SessionModeId::new("default")),
++            }
++        }
++    }
++
++    impl AgentSessionModes for BadgeTestSessionModes {
++        fn current_mode(&self) -> acp::SessionModeId {
++            self.current_mode.borrow().clone()
++        }
++
++        fn all_modes(&self) -> Vec<acp::SessionMode> {
++            vec![
++                acp::SessionMode::new("default", "Manual"),
++                acp::SessionMode::new("acceptEdits", "Accept Edits"),
++            ]
++        }
++
++        fn set_mode(&self, mode: acp::SessionModeId, _cx: &mut App) -> Task<anyhow::Result<()>> {
++            *self.current_mode.borrow_mut() = mode;
++            Task::ready(Ok(()))
++        }
++    }
+ }
+-- 
+2.55.0
+
