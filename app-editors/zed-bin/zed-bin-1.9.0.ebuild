@@ -124,6 +124,16 @@ pkg_postinst() {
 	elog "This package conflicts with app-editors/zed (source build)."
 	elog "If you want the source-compiled version, use app-editors/zed instead."
 
+	if use claude-agent-acp-plus; then
+		elog ""
+		elog "The claude-agent-acp-plus ACP adapter was installed as 'claude-agent-acp-plus'."
+		elog "To enable it in Zed, add to ~/.config/zed/settings.json:"
+		elog ""
+		elog "    \"agent_servers\": {"
+		elog "        \"Claude Agent Plus\": { \"command\": \"claude-agent-acp-plus\", \"args\": [] }"
+		elog "    }"
+	fi
+
 	if use claude-agent-acp-tui; then
 		elog ""
 		elog "The claude-agent-acp-tui ACP bridge was installed as 'claude-agent-acp-tui'."

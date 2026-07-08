@@ -5,8 +5,10 @@ EAPI=8
 
 DESCRIPTION="ACP adapter for the Claude Agent SDK, VS Code-parity fork (checkbox-capable)"
 HOMEPAGE="https://github.com/lucascouts/claude-agent-acp-plus"
-SRC_URI="https://github.com/lucascouts/claude-agent-acp-plus/releases/download/v${PV}/${P}.tar.gz"
-S="${WORKDIR}/${P}"
+SRC_URI="https://github.com/lucascouts/claude-agent-acp-plus/releases/download/v${PV}/${P}-bundle.tar.gz -> ${P}.tar.gz"
+# The release bundle has no top-level directory (dist/, node_modules/,
+# package.json at the tarball root).
+S="${WORKDIR}"
 
 LICENSE="Apache-2.0"
 SLOT="0"
@@ -42,6 +44,10 @@ src_install() {
 		exec node /usr/lib/node_modules/${PN}/dist/index.js "\$@"
 	EOF
 	fperms +x /usr/bin/claude-agent-acp-plus
+
+	# doins also strips +x from the vendored Claude CLI, which the SDK
+	# spawns at session start — restore it.
+	fperms +x /usr/lib/node_modules/${PN}/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude
 }
 
 pkg_postinst() {
