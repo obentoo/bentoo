@@ -1738,6 +1738,7 @@ src_prepare() {
 			"${FILESDIR}/0005-elicitation-multiline-fields.patch"
 			"${FILESDIR}/0006-elicitation-option-previews.patch"
 			"${FILESDIR}/0007-manual-mode-badge.patch"
+			"${FILESDIR}/0008-clickable-attachments.patch"
 		)
 	fi
 

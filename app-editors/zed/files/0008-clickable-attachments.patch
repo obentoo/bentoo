@@ -1,0 +1,113 @@
+From 543b606814871a8ea17e8b60d092c05501d006ee Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Wed, 8 Jul 2026 19:12:48 -0300
+Subject: [PATCH] feat(agent_ui): clickable file mention links in replayed user
+ messages
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ crates/agent_ui/src/message_editor.rs | 80 +++++++++++++++++++++++++++
+ 1 file changed, 80 insertions(+)
+
+diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message_editor.rs
+index f9878d6..00c123a 100644
+--- a/crates/agent_ui/src/message_editor.rs
++++ b/crates/agent_ui/src/message_editor.rs
+@@ -1732,7 +1732,25 @@ impl MessageEditor {
+         for chunk in message {
+             match chunk {
+                 acp::ContentBlock::Text(text_content) => {
++                    let segment_start = text.len();
+                     append_normalized(&mut text, text_content.text);
++                    // Replayed messages carry file mentions as literal
++                    // markdown links (e.g. `[@name](file:///abs/path)`)
++                    // inside plain text chunks. Route them through the same
++                    // mention machinery as Resource/ResourceLink blocks so
++                    // they render as the standard clickable mention chips
++                    // instead of dead text. Parse the just-appended segment
++                    // (after line-ending normalization) so byte offsets map
++                    // directly into `text`.
++                    for (range, mention_uri) in
++                        parse_mention_links(&text[segment_start..], path_style)
++                    {
++                        mentions.push((
++                            (segment_start + range.start)..(segment_start + range.end),
++                            mention_uri,
++                            Mention::Link,
++                        ));
++                    }
+                 }
+                 acp::ContentBlock::Resource(acp::EmbeddedResource {
+                     resource: acp::EmbeddedResourceResource::TextResourceContents(resource),
+@@ -5593,6 +5611,68 @@ mod tests {
+         assert_eq!(mention_uris.len(), 1);
+     }
+ 
++    #[gpui::test]
++    async fn test_set_message_text_mention_links_become_mentions(cx: &mut TestAppContext) {
++        init_test(cx);
++        let (message_editor, cx) = setup_message_editor(cx).await;
++
++        // Replayed user messages arrive as plain Text chunks in which file
++        // mentions are literal markdown links (`[@name](file:///abs/path)`),
++        // the shape agents emit when replaying session history.
++        let mention_uri = MentionUri::File {
++            abs_path: PathBuf::from(path!("/project/file.txt")),
++        };
++        let link = mention_uri.as_link().to_string();
++        message_editor.update_in(cx, |editor, window, cx| {
++            editor.set_message(
++                vec![acp::ContentBlock::Text(acp::TextContent::new(format!(
++                    "Look at {link} please"
++                )))],
++                window,
++                cx,
++            );
++        });
++        cx.run_until_parked();
++
++        // The buffer keeps the literal link text (the crease folds it
++        // into a chip visually).
++        let text = message_editor.update(cx, |editor, cx| editor.text(cx));
++        assert_eq!(text, format!("Look at {link} please"));
++
++        // The link is registered as a real mention, exactly like a
++        // ResourceLink content block would be.
++        let mention_uris =
++            message_editor.update(cx, |editor, cx| editor.mention_set.read(cx).mentions());
++        assert_eq!(
++            mention_uris.len(),
++            1,
++            "Expected the markdown file link to register a mention, got: {mention_uris:?}"
++        );
++        assert!(
++            mention_uris.contains(&mention_uri),
++            "Expected {mention_uri:?} in {mention_uris:?}"
++        );
++
++        // Round-trip through contents(): the mention crease over the link
++        // yields a structured ResourceLink block between the surrounding
++        // text chunks, proving the crease covers exactly the link's range.
++        let (content, _) = message_editor
++            .update(cx, |message_editor, cx| message_editor.contents(false, cx))
++            .await
++            .unwrap();
++        pretty_assertions::assert_matches!(
++            content.as_slice(),
++            [
++                acp::ContentBlock::Text { .. },
++                acp::ContentBlock::ResourceLink { .. },
++                acp::ContentBlock::Text { .. },
++            ]
++        );
++        if let acp::ContentBlock::ResourceLink(resource_link) = &content[1] {
++            assert_eq!(resource_link.uri, mention_uri.to_uri().to_string());
++        }
++    }
++
+     #[gpui::test]
+     async fn test_set_message_replaces_existing_content(cx: &mut TestAppContext) {
+         init_test(cx);
+-- 
+2.55.0
+
