@@ -1736,6 +1736,7 @@ src_prepare() {
 			# EnumOption.description field, superseding the _claude/askUserQuestionOption
 			# _meta machinery (and renamed MultiSelectItems::Untitled -> String).
 			"${FILESDIR}/0005-elicitation-multiline-fields.patch"
+			"${FILESDIR}/0006-elicitation-option-previews.patch"
 		)
 	fi
 
