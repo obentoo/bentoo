@@ -23,7 +23,7 @@ LICENSE="GPL-3+"
 SLOT="0"
 KEYWORDS="-* ~amd64 ~arm64"
 RESTRICT="mirror strip bindist"
-IUSE="+claude-agent-acp-tui"
+IUSE="+claude-agent-acp-plus +claude-agent-acp-tui"
 
 RDEPEND="
 	app-arch/zstd:=
@@ -41,6 +41,7 @@ RDEPEND="
 	media-libs/fontconfig
 	media-libs/freetype
 	media-libs/vulkan-loader[X]
+	claude-agent-acp-plus? ( dev-util/claude-agent-acp-plus )
 	claude-agent-acp-tui? ( dev-util/claude-agent-acp-tui )
 "
 

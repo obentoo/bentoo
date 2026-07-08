@@ -17,7 +17,7 @@ RESTRICT="mirror strip bindist"
 # The Claude CLI is embedded as the SDK's native binary inside the bundle
 # (node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude), so unlike
 # the claude-agent-tui sibling this fork does NOT depend on dev-util/claude-code.
-RDEPEND=">=net-libs/nodejs-22"
+RDEPEND=">=net-libs/nodejs-24"
 
 # Only prebuilt ELF in the bundle (glibc/x64; zero .node addons).
 QA_PREBUILT="usr/lib/node_modules/${PN}/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"

@@ -1646,7 +1646,7 @@ LICENSE+="
 "
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
-IUSE="+X claude-agent-acp-plus +claude-agent-acp-tui claude-code-ide collab extensions-cli +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
+IUSE="+X +claude-agent-acp-plus +claude-agent-acp-tui +claude-code-ide collab extensions-cli +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
 REQUIRED_USE="|| ( X wayland )"
 CHECKREQS_DISK_BUILD="18G"
 CHECKREQS_MEMORY="8G"
@@ -1683,6 +1683,7 @@ DEPEND="
 "
 RDEPEND="
 	${DEPEND}
+	claude-agent-acp-plus? ( dev-util/claude-agent-acp-plus )
 	claude-agent-acp-tui? ( dev-util/claude-agent-acp-tui )
 	neovim? ( app-editors/neovim )
 "
@@ -1727,11 +1728,6 @@ pkg_setup() {
 }
 
 src_prepare() {
-	# story 002: force-enable the claude-agent-acp-plus feature flag (ACP elicitation form/url UI).
-	# story 003: elicitation UI polish series (option meta parsing, descriptions +
-	# collapsible previews, multiline string fields) stacked on 0001.
-	# GOTCHA: 0001 and 0003..0005 touch overlapping regions — regenerate the whole
-	# series together on every pin bump (source branch: zed-src elicitation-polish).
 	if use claude-agent-acp-plus; then
 		PATCHES+=(
 			"${FILESDIR}/0001-force-enable-claude-agent-acp-plus.patch"
