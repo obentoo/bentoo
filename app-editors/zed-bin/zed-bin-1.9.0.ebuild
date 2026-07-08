@@ -23,7 +23,7 @@ LICENSE="GPL-3+"
 SLOT="0"
 KEYWORDS="-* ~amd64 ~arm64"
 RESTRICT="mirror strip bindist"
-IUSE="+claude-agent-tui"
+IUSE="+claude-agent-acp-tui"
 
 RDEPEND="
 	app-arch/zstd:=
@@ -41,7 +41,7 @@ RDEPEND="
 	media-libs/fontconfig
 	media-libs/freetype
 	media-libs/vulkan-loader[X]
-	claude-agent-tui? ( dev-util/claude-agent-tui )
+	claude-agent-acp-tui? ( dev-util/claude-agent-acp-tui )
 "
 
 QA_PREBUILT="
@@ -123,13 +123,13 @@ pkg_postinst() {
 	elog "This package conflicts with app-editors/zed (source build)."
 	elog "If you want the source-compiled version, use app-editors/zed instead."
 
-	if use claude-agent-tui; then
+	if use claude-agent-acp-tui; then
 		elog ""
-		elog "The claude-agent-tui ACP bridge was installed as 'claude-agent-acp'."
+		elog "The claude-agent-acp-tui ACP bridge was installed as 'claude-agent-acp-tui'."
 		elog "To enable it in Zed, add to ~/.config/zed/settings.json:"
 		elog ""
 		elog "    \"agent_servers\": {"
-		elog "        \"Claude Agent TUI\": { \"command\": \"claude-agent-acp\", \"args\": [] }"
+		elog "        \"Claude Agent TUI\": { \"command\": \"claude-agent-acp-tui\", \"args\": [] }"
 		elog "    }"
 	fi
 }

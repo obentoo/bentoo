@@ -1646,7 +1646,7 @@ LICENSE+="
 "
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
-IUSE="+X acp-beta +claude-agent-tui claude-code-ide collab extensions-cli +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
+IUSE="+X claude-agent-acp-plus +claude-agent-acp-tui claude-code-ide collab extensions-cli +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
 REQUIRED_USE="|| ( X wayland )"
 CHECKREQS_DISK_BUILD="18G"
 CHECKREQS_MEMORY="8G"
@@ -1683,7 +1683,7 @@ DEPEND="
 "
 RDEPEND="
 	${DEPEND}
-	claude-agent-tui? ( dev-util/claude-agent-tui )
+	claude-agent-acp-tui? ( dev-util/claude-agent-acp-tui )
 	neovim? ( app-editors/neovim )
 "
 BDEPEND="
@@ -1727,14 +1727,14 @@ pkg_setup() {
 }
 
 src_prepare() {
-	# story 002: force-enable the acp-beta feature flag (ACP elicitation form/url UI).
+	# story 002: force-enable the claude-agent-acp-plus feature flag (ACP elicitation form/url UI).
 	# story 003: elicitation UI polish series (option meta parsing, descriptions +
 	# collapsible previews, multiline string fields) stacked on 0001.
 	# GOTCHA: 0001 and 0003..0005 touch overlapping regions — regenerate the whole
 	# series together on every pin bump (source branch: zed-src elicitation-polish).
-	if use acp-beta; then
+	if use claude-agent-acp-plus; then
 		PATCHES+=(
-			"${FILESDIR}/0001-force-enable-acp-beta.patch"
+			"${FILESDIR}/0001-force-enable-claude-agent-acp-plus.patch"
 			"${FILESDIR}/0003-elicitation-option-meta.patch"
 			"${FILESDIR}/0004-elicitation-descriptions-previews.patch"
 			"${FILESDIR}/0005-elicitation-multiline-fields.patch"
@@ -1906,13 +1906,13 @@ src_test () {
 pkg_postinst() {
 	xdg_pkg_postinst
 
-	if use claude-agent-tui; then
+	if use claude-agent-acp-tui; then
 		elog ""
-		elog "The claude-agent-tui ACP bridge was installed as 'claude-agent-acp'."
+		elog "The claude-agent-acp-tui ACP bridge was installed as 'claude-agent-acp-tui'."
 		elog "To enable it in Zed, add to ~/.config/zed/settings.json:"
 		elog ""
 		elog "    \"agent_servers\": {"
-		elog "        \"Claude Agent TUI\": { \"command\": \"claude-agent-acp\", \"args\": [] }"
+		elog "        \"Claude Agent TUI\": { \"command\": \"claude-agent-acp-tui\", \"args\": [] }"
 		elog "    }"
 	fi
 
