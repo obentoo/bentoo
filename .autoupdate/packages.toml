@@ -7,9 +7,10 @@
 # ebuild (Gentoo version rules: prefixes v/release-/ver-/version- stripped;
 # regex returns capture group 1 of the FIRST match on the raw body).
 #
-# 281 records (265 original + 9 added 2026-06-20 enabled + 6 Gentoo-mirror /
+# 292 records (265 original + 9 added 2026-06-20 enabled + 6 Gentoo-mirror /
 # manual-cadence enabled=false: rust{,-bin,-common}, audacity, webkit-gtk,
-# sci-ml/ollama — all live-verified). The SKIPPED block below is empty.
+# sci-ml/ollama + 11 added 2026-07-08 probe-gap audit, incl. rename
+# claude-agent-tui -> claude-agent-acp-tui — all live-verified). SKIPPED is empty.
 #
 # NOTE: BEGIN/END markers below are comments only. Do NOT use bare [BEGIN]/[END]
 # table syntax here — TOML would parse them as phantom packages.
@@ -1883,14 +1884,17 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 # redis/redis official Releases; tag is bare X.Y.Z (no "v"), matching the SRC_URI
 # archive tag and PV. Live latest=8.8.0 (prerelease=false) — the 8.x line, not a Valkey fork.
 
-["dev-util/claude-agent-tui"]
-enabled = false
+["dev-util/claude-agent-acp-tui"]
+enabled = true
 url = "https://api.github.com/repos/lucascouts/claude-agent-tui/releases/latest"
 parser = "json"
 path = "tag_name"
 headers = { "User-Agent" = "bentoo-autoupdate" }
-# GitHub Releases; tag "vX.Y.Z" (leading v stripped by the normalizer). releases/latest
-# excludes drafts/prereleases. SRC_URI uses releases/download/v${PV}/${P}.tar.gz. Live=v0.3.1.
+# Renamed from dev-util/claude-agent-tui (commit e8a05fdc: del old ebuild + add
+# claude-agent-acp-tui, same upstream repo lucascouts/claude-agent-tui, same PV).
+# GitHub Releases; tag "vX.Y.Z" (leading v stripped). releases/latest excludes
+# drafts/prereleases. SRC_URI uses releases/download/v${PV}/claude-agent-tui-${PV}.tar.gz.
+# Live=v0.7.0.
 
 ["net-misc/rclone"]
 enabled = true
@@ -2028,6 +2032,104 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 # re-enable it): the llama.cpp FetchContent rearch needs manual patchset/distfile
 # work per bump, so this is a deliberate maintainer hold, never auto-flipped.
 # I enabled for test the update
+
+# ============================================================================
+# Added 2026-07-08 — overlay packages that were untracked (probe gap audit).
+# All live-verified with `bentoo overlay autoupdate --check <pkg> --force`.
+# ============================================================================
+
+["dev-util/trivy"]
+url = "https://api.github.com/repos/aquasecurity/trivy/releases/latest"
+parser = "json"
+path = "tag_name"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# Trivy — GitHub releases/latest tag "vX.Y.Z" (leading v stripped). Live=v0.72.0.
+
+["dev-util/osv-scanner"]
+url = "https://api.github.com/repos/google/osv-scanner/releases/latest"
+parser = "json"
+path = "tag_name"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# OSV-Scanner — GitHub releases/latest tag "vX.Y.Z" (v stripped). Live=v2.4.0.
+
+["dev-vcs/gitleaks"]
+url = "https://api.github.com/repos/gitleaks/gitleaks/releases/latest"
+parser = "json"
+path = "tag_name"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# gitleaks — GitHub releases/latest tag "vX.Y.Z" (v stripped). Ebuild inherits
+# git-r3 for deps but PV is a concrete tag. Live=v8.30.1.
+
+["sys-apps/openrazer"]
+url = "https://api.github.com/repos/openrazer/openrazer/releases/latest"
+parser = "json"
+path = "tag_name"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# OpenRazer — GitHub releases/latest tag "vX.Y.Z" (v stripped). SRC_URI uses
+# archive/v${PV}.tar.gz; linux-mod but version comes from the tag. Live=v3.12.4.
+
+["dev-util/claude-agent-acp-plus"]
+url = "https://api.github.com/repos/lucascouts/claude-agent-acp-plus/releases/latest"
+parser = "json"
+path = "tag_name"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# claude-agent-acp-plus — GitHub releases/latest tag "vX.Y.Z" (v stripped).
+# SRC_URI releases/download/v${PV}/${P}-bundle.tar.gz. Live=v0.2.0.
+
+["app-admin/ansible"]
+url = "https://pypi.org/pypi/ansible/json"
+parser = "json"
+path = "info.version"
+# Ansible — PyPI info.version (community package); check resolves 14.1.0 = ebuild.
+# NOTE: PyPI's info.version for the ansible community package can occasionally lag
+# the highest uploaded release; if a bump seems missing, verify against .releases.
+
+["media-sound/audacity-bin"]
+url = "https://api.github.com/repos/audacity/audacity/releases?per_page=15"
+parser = "regex"
+pattern = '"tag_name":"Audacity-([0-9]+\.[0-9]+\.[0-9]+-beta-[0-9]+)"'
+transform = [["-beta-", "_beta"]]
+binary = true
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# Audacity (AppImage) — tracks the 4.x BETA line, not stable. releases/latest
+# would return the newest STABLE (3.7.x), so read the full /releases list and
+# regex the first "Audacity-X.Y.Z-beta-N" tag (first match skips interleaved
+# stable/alpha entries); transform "-beta-"->"_beta" yields PV=4.0.0_beta2.
+
+["dev-lang/flutter"]
+url = "https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json"
+parser = "regex"
+pattern = '"channel": "stable",\s+"version": "([0-9]+\.[0-9]+\.[0-9]+)"'
+# Flutter — official releases_linux.json (pretty-printed, newest-first). The
+# current_release.stable is a hash, not a version, so anchor the regex on the
+# first stable release object and capture its version. Live=3.44.5.
+
+["sys-power/upower"]
+url = "https://gitlab.freedesktop.org/api/v4/projects/upower%2Fupower/repository/tags?per_page=10"
+parser = "regex"
+pattern = '"name":"v([0-9]+\.[0-9]+\.[0-9]+)"'
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# upower — GitLab freedesktop tags API; first tag "vX.Y.Z" (v captured out).
+# CAVEAT: gitlab.freedesktop.org has intermittent Anubis anti-bot; the tags API
+# usually passes but a check can transiently fail. Live=v1.91.3.
+
+["www-client/librewolf"]
+url = "https://codeberg.org/api/v1/packages/librewolf?type=generic&q=librewolf-source"
+parser = "regex"
+pattern = '"version":"([0-9]+\.[0-9]+\.[0-9]+-[0-9]+)"'
+transform = [["-", "_p"]]
+# LibreWolf — Codeberg generic package registry (source tarball), newest-first.
+# Version "152.0.4-1" maps to ebuild PV "152.0.4_p1" (transform "-"->"_p").
+# Live=152.0.5-1.
+
+["www-client/librewolf-bin"]
+url = "https://codeberg.org/api/v1/packages/librewolf?type=generic&q=librewolf-source"
+parser = "regex"
+pattern = '"version":"([0-9]+\.[0-9]+\.[0-9]+-[0-9]+)"'
+transform = [["-", "_p"]]
+binary = true
+# LibreWolf (bin) — same upstream source version as www-client/librewolf.
+# "152.0.4-1" -> "152.0.4_p1". Live=152.0.5-1.
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>  END PACKAGES  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
