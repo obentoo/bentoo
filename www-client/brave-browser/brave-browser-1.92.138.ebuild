@@ -177,8 +177,9 @@ src_install() {
 	popd > /dev/null || die
 
 	# Remove unused Qt shims
-	rm "${BRAVE_HOME}/libqt5_shim.so" || die
-	if ! use qt6; then
+	if use qt6; then
+		rm "${BRAVE_HOME}/libqt5_shim.so" || die
+	else
 		rm "${BRAVE_HOME}/libqt6_shim.so" || die
 	fi
 
