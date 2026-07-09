@@ -1,35 +1,195 @@
-From 1e4132b63a936d3a41647d7d3ca9721f1cc14909 Mon Sep 17 00:00:00 2001
+From 422fe04a7ceb46573b9f69ef5fdb181ba00eebac Mon Sep 17 00:00:00 2001
 From: lucascouts <lucascs@protonmail.com>
 Date: Wed, 8 Jul 2026 19:01:24 -0300
-Subject: [PATCH] feat(agent_ui): manual-mode badge next to the mode selector
+Subject: [PATCH 7/8] feat(agent_ui): manual-mode badge next to the mode
+ selector
+
+Cover both mode-surface paths. Agents that expose session modes get the
+badge in ModeSelector; agents that return session configOptions (the
+claude-agent-acp-plus adapter) never instantiate ModeSelector -- Zed
+renders ConfigOptionSelector instead -- so the badge is now also
+rendered next to the Mode-category select trigger while its current
+value id is `default` (R4.1) and cleared on any other mode (R4.2). The
+badge element is identical on both paths (R4.3); the id predicate is
+shared via mode_selector::shows_manual_mode_badge.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
- crates/agent_ui/src/mode_selector.rs | 116 ++++++++++++++++++++++++++-
- 1 file changed, 115 insertions(+), 1 deletion(-)
+ crates/agent_ui/src/config_options.rs | 113 +++++++++++++++++++++--
+ crates/agent_ui/src/mode_selector.rs  | 127 +++++++++++++++++++++++++-
+ 2 files changed, 228 insertions(+), 12 deletions(-)
 
+diff --git a/crates/agent_ui/src/config_options.rs b/crates/agent_ui/src/config_options.rs
+index df4eeca..c5ce895 100644
+--- a/crates/agent_ui/src/config_options.rs
++++ b/crates/agent_ui/src/config_options.rs
+@@ -456,6 +456,8 @@ impl Render for ConfigOptionSelector {
+ 
+                 let trigger_button = self.render_trigger_button(window, cx);
+ 
++                let show_manual_badge = shows_manual_mode_badge_for_option(&option);
++
+                 let show_category_keybindings = option
+                     .category
+                     .as_ref()
+@@ -527,16 +529,40 @@ impl Render for ConfigOptionSelector {
+                     content.into_any()
+                 });
+ 
+-                PickerPopoverMenu::new(
+-                    picker,
+-                    trigger_button,
+-                    tooltip,
+-                    gpui::Anchor::BottomRight,
+-                    cx,
+-                )
+-                .with_handle(picker_handle)
+-                .render(window, cx)
+-                .into_any_element()
++                h_flex()
++                    .gap_1()
++                    .when(show_manual_badge, |this| {
++                        this.child(
++                            h_flex()
++                                .id("manual-mode-badge")
++                                .gap_0p5()
++                                .child(
++                                    Icon::new(IconName::DebugPause)
++                                        .size(IconSize::XSmall)
++                                        .color(Color::Muted),
++                                )
++                                .child(
++                                    Label::new("Waits for approval")
++                                        .size(LabelSize::Small)
++                                        .color(Color::Muted),
++                                )
++                                .tooltip(Tooltip::text(
++                                    "Manual mode: the agent asks for approval before making changes",
++                                )),
++                        )
++                    })
++                    .child(
++                        PickerPopoverMenu::new(
++                            picker,
++                            trigger_button,
++                            tooltip,
++                            gpui::Anchor::BottomRight,
++                            cx,
++                        )
++                        .with_handle(picker_handle)
++                        .render(window, cx),
++                    )
++                    .into_any_element()
+             }
+             acp::SessionConfigKind::Boolean(boolean) => {
+                 let option_id = option.id.clone();
+@@ -967,6 +993,22 @@ fn get_current_select_value(
+         })
+ }
+ 
++/// Whether the Manual-mode badge is shown next to a config-option selector.
++///
++/// Agents that surface their permission mode as a Mode-category select config
++/// option (rather than session modes) get the same badge as the dedicated
++/// mode selector: shown while the current value id is `default`, cleared on
++/// any other value.
++fn shows_manual_mode_badge_for_option(option: &acp::SessionConfigOption) -> bool {
++    option.category == Some(acp::SessionConfigOptionCategory::Mode)
++        && match &option.kind {
++            acp::SessionConfigKind::Select(select) => {
++                crate::mode_selector::shows_manual_mode_badge(select.current_value.0.as_ref())
++            }
++            _ => false,
++        }
++}
++
+ fn setting_value_for_config_option_value(
+     value: &acp::SessionConfigOptionValue,
+ ) -> Option<AgentConfigOptionValue> {
+@@ -1275,6 +1317,57 @@ mod tests {
+         assert!(!handled);
+     }
+ 
++    // ---- R4.1/R4.2: manual-mode badge next to the Mode-category select trigger ----
++
++    #[test]
++    fn manual_badge_shown_only_for_mode_category_select_with_default_value() {
++        let mode_option = |current_value: &'static str| {
++            acp::SessionConfigOption::select(
++                "permission-mode",
++                "Permission Mode",
++                current_value,
++                vec![
++                    acp::SessionConfigSelectOption::new("default", "Manual"),
++                    acp::SessionConfigSelectOption::new("auto", "Auto"),
++                    acp::SessionConfigSelectOption::new("acceptEdits", "Accept Edits"),
++                ],
++            )
++            .category(acp::SessionConfigOptionCategory::Mode)
++        };
++
++        assert!(
++            shows_manual_mode_badge_for_option(&mode_option("default")),
++            "Mode-category select with current value id `default` shows the badge"
++        );
++
++        for other in ["auto", "acceptEdits"] {
++            assert!(
++                !shows_manual_mode_badge_for_option(&mode_option(other)),
++                "badge is keyed to the value id `default`, not shown for `{other}`"
++            );
++        }
++
++        let non_mode_category = acp::SessionConfigOption::select(
++            "model",
++            "Model",
++            "default",
++            vec![acp::SessionConfigSelectOption::new("default", "Default")],
++        )
++        .category(acp::SessionConfigOptionCategory::Model);
++        assert!(
++            !shows_manual_mode_badge_for_option(&non_mode_category),
++            "badge only applies to the Mode category, even for a `default` value id"
++        );
++
++        let boolean_mode_option =
++            acp::SessionConfigOption::boolean("permission-mode", "Permission Mode", false)
++                .category(acp::SessionConfigOptionCategory::Mode);
++        assert!(
++            !shows_manual_mode_badge_for_option(&boolean_mode_option),
++            "badge only applies to select options"
++        );
++    }
++
+     #[derive(Default)]
+     struct TestAgentServer {
+         saved_defaults: Arc<Mutex<Vec<(String, Option<AgentConfigOptionValue>)>>>,
 diff --git a/crates/agent_ui/src/mode_selector.rs b/crates/agent_ui/src/mode_selector.rs
-index 46c1543..8d63b3f 100644
+index 46c1543..253aee8 100644
 --- a/crates/agent_ui/src/mode_selector.rs
 +++ b/crates/agent_ui/src/mode_selector.rs
-@@ -129,6 +129,16 @@ impl ModeSelector {
+@@ -129,6 +129,20 @@ impl ModeSelector {
      }
  }
  
-+/// Whether the Manual-mode badge is shown for the given session mode.
++/// Whether the Manual-mode badge is shown for the given mode id.
 +///
 +/// The Claude adapter's `default` permission mode is surfaced to users as
 +/// "Manual": the agent waits for approval before acting. The badge is keyed
 +/// strictly to the mode id (never the display name), so it shows for
 +/// `default` only and disappears on any other mode.
-+fn shows_manual_mode_badge(mode_id: &acp::SessionModeId) -> bool {
-+    mode_id.0.as_ref() == "default"
++///
++/// Shared between [`ModeSelector`] (session-modes agents) and the
++/// config-options selector (`crate::config_options`), which renders the same
++/// badge next to Mode-category select options.
++pub(crate) fn shows_manual_mode_badge(mode_id: &str) -> bool {
++    mode_id == "default"
 +}
 +
  impl Render for ModeSelector {
      fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
          let current_mode_id = self.connection.current_mode();
-@@ -154,7 +164,7 @@ impl Render for ModeSelector {
+@@ -154,7 +168,7 @@ impl Render for ModeSelector {
              .end_icon(Icon::new(icon).size(IconSize::XSmall).color(Color::Muted))
              .disabled(self.setting_mode);
  
@@ -38,39 +198,43 @@ index 46c1543..8d63b3f 100644
              .trigger_with_tooltip(
                  trigger_button,
                  Tooltip::element({
-@@ -191,7 +201,31 @@ impl Render for ModeSelector {
+@@ -191,7 +205,34 @@ impl Render for ModeSelector {
              .menu(move |window, cx| {
                  this.update(cx, |this, cx| this.build_context_menu(window, cx))
                      .ok()
+-            })
 +            });
 +
 +        h_flex()
 +            .gap_1()
-+            .when(shows_manual_mode_badge(&current_mode_id), |this| {
-+                this.child(
-+                    h_flex()
-+                        .id("manual-mode-badge")
-+                        .gap_0p5()
-+                        .child(
-+                            Icon::new(IconName::DebugPause)
-+                                .size(IconSize::XSmall)
-+                                .color(Color::Muted),
-+                        )
-+                        .child(
-+                            Label::new("Waits for approval")
-+                                .size(LabelSize::Small)
-+                                .color(Color::Muted),
-+                        )
-+                        .tooltip(Tooltip::text(
-+                            "Manual mode: the agent asks for approval before making changes",
-+                        )),
-+                )
-             })
++            .when(
++                shows_manual_mode_badge(current_mode_id.0.as_ref()),
++                |this| {
++                    this.child(
++                        h_flex()
++                            .id("manual-mode-badge")
++                            .gap_0p5()
++                            .child(
++                                Icon::new(IconName::DebugPause)
++                                    .size(IconSize::XSmall)
++                                    .color(Color::Muted),
++                            )
++                            .child(
++                                Label::new("Waits for approval")
++                                    .size(LabelSize::Small)
++                                    .color(Color::Muted),
++                            )
++                            .tooltip(Tooltip::text(
++                                "Manual mode: the agent asks for approval before making changes",
++                            )),
++                    )
++                },
++            )
 +            .child(selector_menu)
      }
  }
  
-@@ -300,4 +334,84 @@ mod tests {
+@@ -300,4 +341,86 @@ mod tests {
              Task::ready(Ok(()))
          }
      }
@@ -79,11 +243,13 @@ index 46c1543..8d63b3f 100644
 +
 +    #[test]
 +    fn manual_badge_shown_only_for_default_mode_id() {
-+        assert!(shows_manual_mode_badge(&acp::SessionModeId::new("default")));
++        assert!(shows_manual_mode_badge(
++            acp::SessionModeId::new("default").0.as_ref()
++        ));
 +
 +        for other in ["acceptEdits", "bypassPermissions", "plan", "manual", ""] {
 +            assert!(
-+                !shows_manual_mode_badge(&acp::SessionModeId::new(other)),
++                !shows_manual_mode_badge(acp::SessionModeId::new(other).0.as_ref()),
 +                "badge must be keyed to the id `default`, not shown for `{other}`"
 +            );
 +        }
@@ -104,19 +270,19 @@ index 46c1543..8d63b3f 100644
 +
 +            selector.update(cx, |selector, cx| {
 +                assert!(
-+                    shows_manual_mode_badge(&selector.mode()),
++                    shows_manual_mode_badge(selector.mode().0.as_ref()),
 +                    "session starts in `default` (Manual): badge visible"
 +                );
 +
 +                selector.set_mode(acp::SessionModeId::new("acceptEdits"), cx);
 +                assert!(
-+                    !shows_manual_mode_badge(&selector.mode()),
++                    !shows_manual_mode_badge(selector.mode().0.as_ref()),
 +                    "leaving `default` removes the badge"
 +                );
 +
 +                selector.set_mode(acp::SessionModeId::new("default"), cx);
 +                assert!(
-+                    shows_manual_mode_badge(&selector.mode()),
++                    shows_manual_mode_badge(selector.mode().0.as_ref()),
 +                    "returning to `default` restores the badge"
 +                );
 +            });
