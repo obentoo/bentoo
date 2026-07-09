@@ -95,7 +95,9 @@ src_install() {
 	doexe bin/ollama
 
 	insinto /opt/ollama/lib
+	insopts -m0755
 	doins -r lib/*
+insopts -m0644
 
 	dosym -r /opt/ollama/bin/ollama /usr/bin/ollama
 
