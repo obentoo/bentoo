@@ -164,7 +164,7 @@ src_install() {
 
 	# Create new symlink pointing to uncompressed file
 	# Portage will compress both files and update symlink automatically
-	dosym ${MY_PN}.1 usr/share/man/man1/brave-browser.1
+	dosym ${MY_PN}.1 /usr/share/man/man1/brave-browser.1
 
 	# Remove unused language packs
 	pushd "${BRAVE_HOME}/locales" > /dev/null || die
