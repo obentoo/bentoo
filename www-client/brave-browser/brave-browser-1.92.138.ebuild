@@ -111,8 +111,6 @@ pkg_pretend() {
 		ewarn "Multiple Brave versions detected."
 		ewarn "Consider using only one variant to avoid confusion."
 	fi
-
-	chromium_suid_sandbox_check_kernel_config
 }
 
 pkg_setup() {
@@ -164,7 +162,7 @@ src_install() {
 
 	# Create new symlink pointing to uncompressed file
 	# Portage will compress both files and update symlink automatically
-	dosym ${MY_PN}.1 usr/share/man/man1/brave-browser.1
+	dosym ${MY_PN}.1 /usr/share/man/man1/brave-browser.1
 
 	# Remove unused language packs
 	pushd "${BRAVE_HOME}/locales" > /dev/null || die
