@@ -339,7 +339,7 @@ CRATES="
 	dispatch2@0.3.1
 	dispatch@0.2.0
 	displaydoc@0.2.5
-	dlib@0.5.2
+	dlib@0.5.3
 	document-features@0.2.12
 	documented-macros@0.9.2
 	documented@0.9.2
@@ -1337,14 +1337,14 @@ CRATES="
 	wasmtime@36.0.12
 	wast@35.0.2
 	wax@0.7.0
-	wayland-backend@0.3.11
+	wayland-backend@0.3.15
 	wayland-client@0.31.11
 	wayland-cursor@0.31.11
 	wayland-protocols-plasma@0.3.9
 	wayland-protocols-wlr@0.3.9
 	wayland-protocols@0.32.9
 	wayland-scanner@0.31.7
-	wayland-sys@0.31.7
+	wayland-sys@0.31.11
 	web-sys@0.3.97
 	web-time@1.1.0
 	web_atoms@0.1.3
@@ -1613,7 +1613,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="23c0080d1dd5e8e550ede91c0d573658e5aabe76"
+EGIT_COMMIT="10504e3ce18bb1d2444baf1047fa4ea9835ff1cc"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
@@ -1739,6 +1739,11 @@ src_prepare() {
 			"${FILESDIR}/0006-elicitation-option-previews.patch"
 			"${FILESDIR}/0007-manual-mode-badge.patch"
 			"${FILESDIR}/0008-clickable-attachments.patch"
+			# 0009: adopt the agent's config-option response when applying
+			# per-agent defaults, so options that appear as a side effect (Fast
+			# mode once the resolved model supports it) surface without a manual
+			# model switch.
+			"${FILESDIR}/0009-Adopt-agent-s-config-option-response-when-applying-d.patch"
 		)
 	fi
 
