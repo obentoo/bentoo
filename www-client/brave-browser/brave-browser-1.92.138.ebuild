@@ -111,8 +111,6 @@ pkg_pretend() {
 		ewarn "Multiple Brave versions detected."
 		ewarn "Consider using only one variant to avoid confusion."
 	fi
-
-	chromium_suid_sandbox_check_kernel_config
 }
 
 pkg_setup() {
