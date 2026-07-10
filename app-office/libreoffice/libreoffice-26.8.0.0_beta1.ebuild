@@ -47,6 +47,9 @@ unset DEV_URI
 ADDONS_SRC=(
 	# not packaged in Gentoo
 	"${ADDONS_URI}/dragonbox-1.1.3.tar.gz"
+	# >=26.8 detects system box2d through pkg-config and wants the 3.x API;
+	# games-engines/box2d is stuck at 2.4.x and ships no box2d.pc at all.
+	"${ADDONS_URI}/box2d-3.1.1.tar.gz"
 	# not packaged in Gentoo, https://github.com/serge-sans-paille/frozen
 	"${ADDONS_URI}/frozen-1.2.0.tar.gz"
 	# not packaged in Gentoo, https://skia.org/
@@ -148,7 +151,6 @@ COMMON_DEPEND="${PYTHON_DEPS}
 	>=dev-libs/redland-1.0.16
 	dev-libs/zxcvbn-c
 	>=dev-libs/xmlsec-1.2.35:=[nss]
-	>=games-engines/box2d-2.4.1:0
 	media-gfx/fontforge
 	media-gfx/graphite2
 	media-libs/fontconfig
@@ -549,6 +551,7 @@ src_configure() {
 		--without-helppack-integration
 		--with-system-gpgmepp
 		--with-system-zxcvbn
+		--without-system-box2d
 		--without-system-dragonbox
 		--without-system-frozen
 		--without-system-java-websocket
