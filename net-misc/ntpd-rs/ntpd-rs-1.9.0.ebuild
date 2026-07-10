@@ -284,16 +284,13 @@ LICENSE="|| ( Apache-2.0 MIT )"
 LICENSE+=" Apache-2.0 BSD BSD-2 Boost-1.0 CDLA-Permissive-2.0 ISC MIT MPL-2.0 Unicode-3.0 ZLIB"
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
-# NTS (RFC 8915) is always built in via rustls; the openssl flag only switches
-# in OpenSSL as an alternative crypto provider alongside the default aws-lc/ring.
-IUSE="openssl"
-
+# NTS (RFC 8915) is always built in via rustls with the aws-lc-rs backend,
+# which also enables post-quantum key exchange (prefer-post-quantum) for NTS-KE.
 DEPEND="
 	acct-group/ntpd-rs
 	acct-group/ntpd-rs-observe
 	acct-user/ntpd-rs
 	acct-user/ntpd-rs-observe
-	openssl? ( dev-libs/openssl:= )
 "
 RDEPEND="${DEPEND}"
 BDEPEND="
@@ -305,9 +302,6 @@ BDEPEND="
 QA_FLAGS_IGNORED="usr/bin/ntp-.*"
 
 src_configure() {
-	local myfeatures=()
-	use openssl && myfeatures+=( openssl )
-
 	# Build only the ntpd workspace member (provides all three binaries:
 	# ntp-daemon, ntp-ctl, ntp-metrics-exporter).
 	cargo_src_configure --package ntpd
