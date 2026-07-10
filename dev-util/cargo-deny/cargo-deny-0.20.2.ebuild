@@ -12,7 +12,7 @@ CRATES="
 	anstyle-query@1.1.5
 	anstyle-wincon@3.0.11
 	anstyle@1.0.14
-	anyhow@1.0.102
+	anyhow@1.0.103
 	base64@0.22.1
 	bitflags@2.11.1
 	bitvec@1.0.1
@@ -27,7 +27,6 @@ CRATES="
 	cfg_aliases@0.2.1
 	clap@4.6.1
 	clap_builder@4.6.0
-	clap_derive@4.6.1
 	clap_lex@1.1.0
 	codespan-reporting@0.13.1
 	codespan@0.13.1
@@ -37,7 +36,7 @@ CRATES="
 	crc32fast@1.5.0
 	crossbeam-channel@0.5.15
 	crossbeam-deque@0.8.6
-	crossbeam-epoch@0.9.18
+	crossbeam-epoch@0.9.20
 	crossbeam-queue@0.3.12
 	crossbeam-utils@0.8.21
 	crossbeam@0.8.4
@@ -66,7 +65,6 @@ CRATES="
 	hashbrown@0.15.5
 	hashbrown@0.17.1
 	heck@0.5.0
-	home@0.5.12
 	http@1.4.0
 	httparse@1.10.1
 	icu_collections@2.2.0
@@ -94,7 +92,7 @@ CRATES="
 	lock_api@0.4.14
 	log@0.4.29
 	memchr@2.8.0
-	memmap2@0.9.10
+	memmap2@0.9.11
 	miniz_oxide@0.8.9
 	nu-ansi-term@0.50.3
 	once_cell@1.21.4
