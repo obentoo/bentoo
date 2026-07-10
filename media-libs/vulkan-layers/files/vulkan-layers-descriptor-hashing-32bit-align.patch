@@ -1,0 +1,19 @@
+https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues
+Fix static_assert(sizeof(Slot) == 32) on 32-bit platforms. On 32-bit x86,
+uint64_t has 4-byte alignment, so the Data union inside Entry lands at
+offset 12 instead of 16 and Slot ends up 28 bytes, breaking both the
+static_assert and the CPU->GPU layout the descriptor_heap shader expects
+(key@0, types@8, data@16). Force 8-byte alignment on the Data member so
+Entry (and thus Slot) matches the 64-bit layout on all platforms.
+
+--- a/layers/state_tracker/descriptor_hashing.h
++++ b/layers/state_tracker/descriptor_hashing.h
+@@ -57,7 +57,7 @@ struct DescriptorHashTable {
+         bool HasType(VkDescriptorType vk_type) const;
+         bool IsNullDescriptor() const;
+ 
+-        union Data {
++        alignas(8) union Data {
+             EntryBuffer buffer;
+             EntryImage image;
+             EntrySampler sampler;
