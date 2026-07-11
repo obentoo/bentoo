@@ -1016,6 +1016,7 @@ CRATES="
 	sea-query@0.32.7
 	seahash@4.1.0
 	sec1@0.3.0
+	seccompiler@0.5.0
 	secrecy@0.10.3
 	security-framework-sys@2.15.0
 	security-framework@2.11.1
@@ -1613,7 +1614,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="7344a31ddc144f12bd8ee52328cfb9bd275c97f5"
+EGIT_COMMIT="5f8a7413a31769e0882357f90dc424b3962ac72d"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.95.0"
 RUST_NEEDS_LLVM=1
