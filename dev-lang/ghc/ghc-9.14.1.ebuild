@@ -26,8 +26,6 @@ HOMEPAGE="https://www.haskell.org/ghc/"
 
 VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/ghc.asc
 
-GHC_BRANCH_COMMIT="902339d332fb4ce2b3c87dcac1ee6495d41ad886" # ghc-9.14.1-release
-
 GHC_BINARY_PV="9.10.1"
 SRC_URI="
 	https://downloads.haskell.org/~ghc/${PV}/${P}-src.tar.xz
@@ -41,8 +39,7 @@ SRC_URI="
 		)
 	)
 	test? (
-		https://gitlab.haskell.org/ghc/ghc/-/archive/${GHC_BRANCH_COMMIT}.tar.gz
-			-> ${PN}-${GHC_BRANCH_COMMIT}.tar.gz
+		https://downloads.haskell.org/~ghc/${PV}/${P}-testsuite.tar.xz
 	)
 "
 
@@ -577,10 +574,9 @@ src_prepare() {
 	sed -i -e 's/\(fptools_cv_alex_version=`"$AlexCmd" \)-v/\1--version/' \
 		"${S}/m4/fptools_alex.m4" || die
 
-	# Release tarball does not contain needed test data
+	# Release tarball does not contain needed test data; the upstream
+	# testsuite tarball unpacks straight into ${S}/testsuite.
 	if use test; then
-		cp -a "${WORKDIR}/${PN}-${GHC_BRANCH_COMMIT}/testsuite" "${S}" || die
-
 		[[ ${#GHC_BUGGY_TESTS[@]} -gt 0 ]] && einfo "Tests have been marked as buggy and will be deleted:"
 
 		local t
@@ -610,7 +606,7 @@ src_prepare() {
 		eapply "${FILESDIR}"/${PN}-8.2.1_rc1-win32-cross-2-hack.patch # bad workaround
 	popd
 
-	# Only applies to the testsuite directory copied from the git snapshot
+	# Only applies to the testsuite directory
 	if use test; then
 		eapply "${FILESDIR}/${PN}-9.8.2-fix-buggy-tests.patch"
 	fi
