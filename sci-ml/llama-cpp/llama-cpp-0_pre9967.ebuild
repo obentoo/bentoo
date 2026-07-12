@@ -109,10 +109,11 @@ src_unpack() {
 
 	if use webui; then
 		if [[ ${PV} == *9999* ]]; then
-			mkdir -p "${S}/tools/ui/dist"
+			mkdir -p "${S}/tools/ui/dist" || die
 			einfo Downloading webui dist from huggingface bucket...
 			wget -qO - "https://huggingface.co/buckets/ggml-org/llama-ui/resolve/latest/dist.tar.gz" \
 				| tar -xzC "${S}/tools/ui/dist"
+			assert "failed to fetch webui dist"
 		else
 			ln -s "${WORKDIR}/llama-${MY_PV}" "${S}/tools/ui/dist" || die
 		fi
