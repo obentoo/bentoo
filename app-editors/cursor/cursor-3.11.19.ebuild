@@ -10,7 +10,7 @@ CHROMIUM_LANGS="af am ar bg bn ca cs da de el en-GB es es-419 et fa fi fil fr gu
 inherit chromium-2 desktop pax-utils unpacker xdg optfeature shell-completion
 
 # curl -sL "https://www.cursor.com/api/download?platform=linux-x64&releaseTrack=latest" | jq -r '.commitSha'
-BUILD_ID="3f21b08f0b436a07be29fbfe00b304fa15553353"
+BUILD_ID="bf249e6efb5b097f23d7e21d7283429f0760b74a"
 DESCRIPTION="Cursor App - AI-first coding environment"
 HOMEPAGE="https://www.cursor.com/"
 SRC_URI="
