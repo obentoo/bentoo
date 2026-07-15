@@ -5,22 +5,22 @@ EAPI=8
 
 # Version tracks the LibreOffice langpack this dictionary is extracted from:
 # PV == LO_VER, so `bentoo overlay autoupdate` can follow the upstream source.
-# The "libreoffice26.2" paths use the LO series (major.minor); if upstream moves
+# The "libreoffice26.8" paths use the LO series (major.minor); if upstream moves
 # to a new series, bump those paths accordingly.
 LO_VER="${PV}"
 
 MYSPELL_DICT=(
-	"opt/libreoffice26.2/share/extensions/dict-hu/hu_HU.aff"
-	"opt/libreoffice26.2/share/extensions/dict-hu/hu_HU.dic"
+	"opt/libreoffice26.8/share/extensions/dict-hu/hu_HU.aff"
+	"opt/libreoffice26.8/share/extensions/dict-hu/hu_HU.dic"
 )
 
 MYSPELL_HYPH=(
-	"opt/libreoffice26.2/share/extensions/dict-hu/hyph_hu_HU.dic"
+	"opt/libreoffice26.8/share/extensions/dict-hu/hyph_hu_HU.dic"
 )
 
 MYSPELL_THES=(
-	"opt/libreoffice26.2/share/extensions/dict-hu/th_hu_HU_v2.dat"
-	"opt/libreoffice26.2/share/extensions/dict-hu/th_hu_HU_v2.idx"
+	"opt/libreoffice26.8/share/extensions/dict-hu/th_hu_HU_v2.dat"
+	"opt/libreoffice26.8/share/extensions/dict-hu/th_hu_HU_v2.idx"
 )
 
 RPM_COMPRESS_TYPE="none"
@@ -39,5 +39,5 @@ IUSE=""
 src_unpack() {
 	myspell-r2_src_unpack
 
-	rpm_unpack ./LibreOffice_${LO_VER}_Linux_x86-64_rpm_langpack_hu/RPMS/libreoffice26.2-dict-hu-${LO_VER}-1.x86_64.rpm
+	rpm_unpack ./LibreOffice_${LO_VER}_Linux_x86-64_rpm_langpack_hu/RPMS/libreoffice26.8-dict-hu-${LO_VER}-1.x86_64.rpm
 }
