@@ -1614,7 +1614,11 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
+<<<<<<< HEAD
 EGIT_COMMIT="b5fa67cfb31e0f754eb83d1e7918b93f6b15500c"
+=======
+EGIT_COMMIT="eb0e870042f39dfbe924a9507773e9a8d9db60bd"
+>>>>>>> e7fbc5f2 (add(metadata/{md5-cache/app-dicts/myspell-hu-26.8.0.1, md5-cache/app-editors/zed-1.12.0_pre20260715, md5-cache/media-libs/vulkan-layers-1.4.352_p20260715, md5-cache/sci-ml/llama-cpp-0_pre10020}), up(app-dicts/myspell-hu-26.2.5.1 -> 26.8.0.1, app-editors/zed-1.12.0_pre20260714 -> 1.12.0_pre20260715, media-libs/vulkan-layers-1.4.352_p20260714 -> 1.4.352_p20260715, sci-ml/llama-cpp-0_pre10012 -> 0_pre10020))
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.96.0"
 RUST_NEEDS_LLVM=1

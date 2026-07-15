@@ -12,7 +12,11 @@ if [[ ${PV} == *9999* ]]; then
 	EGIT_SUBMODULES=()
 	inherit git-r3
 else
+<<<<<<< HEAD
 	EGIT_COMMIT="02d14088571ab118c2e127663bc0631626100389"
+=======
+	EGIT_COMMIT="ed28098207b52e15f8b80acf5dac0838c1fe47c8"
+>>>>>>> e7fbc5f2 (add(metadata/{md5-cache/app-dicts/myspell-hu-26.8.0.1, md5-cache/app-editors/zed-1.12.0_pre20260715, md5-cache/media-libs/vulkan-layers-1.4.352_p20260715, md5-cache/sci-ml/llama-cpp-0_pre10020}), up(app-dicts/myspell-hu-26.2.5.1 -> 26.8.0.1, app-editors/zed-1.12.0_pre20260714 -> 1.12.0_pre20260715, media-libs/vulkan-layers-1.4.352_p20260714 -> 1.4.352_p20260715, sci-ml/llama-cpp-0_pre10012 -> 0_pre10020))
 	SRC_URI="https://github.com/KhronosGroup/${MY_PN}/archive/${EGIT_COMMIT}.tar.gz -> ${P}.tar.gz"
 	KEYWORDS="amd64 arm arm64 ~loong ppc ppc64 ~riscv x86"
 	S="${WORKDIR}"/${MY_PN}-${EGIT_COMMIT}
