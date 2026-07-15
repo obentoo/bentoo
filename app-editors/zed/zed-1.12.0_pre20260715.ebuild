@@ -73,7 +73,7 @@ CRATES="
 	async-std@1.13.2
 	async-stream-impl@0.3.6
 	async-stream@0.3.6
-	async-tar@0.5.1
+	async-tar@0.6.1
 	async-trait@0.1.89
 	async-tungstenite@0.31.0
 	async_zip@0.0.18
@@ -367,6 +367,7 @@ CRATES="
 	endi@1.1.0
 	enumflags2@0.7.12
 	enumflags2_derive@0.7.12
+	enumn@0.1.14
 	env_filter@0.1.4
 	env_logger@0.10.2
 	env_logger@0.11.8
@@ -401,7 +402,7 @@ CRATES="
 	fdeflate@0.3.7
 	ff@0.12.1
 	filedescriptor@0.8.3
-	filetime@0.2.26
+	filetime@0.2.29
 	find-msvc-tools@0.1.5
 	fixedbitset@0.4.2
 	fixedbitset@0.5.7
@@ -411,6 +412,7 @@ CRATES="
 	float_next_after@1.0.0
 	fluent-uri@0.4.1
 	flume@0.11.1
+	flume@0.12.0
 	fnv@1.0.7
 	foldhash@0.1.5
 	foldhash@0.2.0
@@ -694,7 +696,6 @@ CRATES="
 	naga@29.0.4
 	nalgebra@0.34.2
 	nanoid@0.4.0
-	nanorand@0.7.0
 	native-tls@0.2.18
 	nbformat@1.2.0
 	ndk-context@0.1.1
@@ -933,8 +934,8 @@ CRATES="
 	rdrand@0.4.0
 	read-fonts@0.35.0
 	read-fonts@0.37.0
-	redox_syscall@0.2.16
 	redox_syscall@0.5.18
+	redox_syscall@0.7.5
 	redox_users@0.4.6
 	redox_users@0.5.2
 	ref-cast-impl@1.0.25
@@ -1490,7 +1491,7 @@ CRATES="
 	x11@2.21.0
 	x11rb-protocol@0.13.2
 	x11rb@0.13.2
-	xattr@0.2.3
+	xattr@1.6.1
 	xcb@1.6.0
 	xcursor@0.3.10
 	xkbcommon@0.8.0
