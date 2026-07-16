@@ -10,7 +10,7 @@ CHROMIUM_LANGS="af am ar bg bn ca cs da de el en-GB es es-419 et fa fi fil fr gu
 inherit chromium-2 desktop optfeature pax-utils unpacker xdg
 
 # curl -sA 'Mozilla/5.0' "https://claude.ai/api/desktop/linux/x64/deb/latest" | jq -r '.url'
-BUILD_ID="f7518fa0f482cfd68e6ef7fb78e3924e013b5160"
+BUILD_ID="e0f338aea51a130071b62788fee794575c1b9d0e"
 
 MY_PN="${PN%-bin}"
 
