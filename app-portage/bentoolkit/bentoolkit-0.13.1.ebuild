@@ -81,10 +81,10 @@ src_install() {
 	fi
 
 	if use kde; then
-		# Helper de exclusão com código (chamado pelo Service Menu do Dolphin)
+		# Secure deletion helper with status code output (called by the Dolphin Service Menu)
 		exeinto /usr/libexec/bentoo
 		doexe "${FILESDIR}"/bentoo-secure-delete
-		# Service Menu do Dolphin/KIO (Plasma 6)
+		# Dolphin/KIO Service Menu entry (Plasma 6)
 		insinto /usr/share/kio/servicemenus
 		doins "${FILESDIR}"/bentoo-secure-delete.desktop
 	fi
