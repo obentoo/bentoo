@@ -15,8 +15,10 @@ MY_P="${MY_PN}-${MY_PV}"
 MT76_KVER="7.0"
 KSRC_P="mt7927-kernel-src-${MT76_KVER}"
 # Pre-extracted MT6639 WiFi + Bluetooth firmware blobs (proprietary, from the
-# ASUS driver package).
-FW_P="mt7927-firmware-${PV}"
+# ASUS driver package V5603998_20250709R). The blobs do not change with the
+# dkms release, so pin the repackaged distfile version independently of ${PV}.
+FW_PV="2.11"
+FW_P="mt7927-firmware-${FW_PV}"
 
 # Base URL of the R2 bucket hosting the two repackaged distfiles above.
 R2_BASE="https://distfiles.obentoo.org/DRV_WiFi_MTK_MT7925_MT7927_TP_W11_64_V5603998_20250709R"

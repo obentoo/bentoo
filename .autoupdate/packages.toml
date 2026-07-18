@@ -111,6 +111,14 @@ path = "tag_name"
 headers = { "User-Agent" = "bentoo-autoupdate" }
 # Proton Mail Bridge — GitHub release tag "vX.Y.Z" ("v" stripped).
 
+["dev-lang/go"]
+url = "https://go.dev/dl/?mode=json"
+parser = "json"
+path = "[0].version"
+transform = [['^go', ""]]
+# go — official go.dev/dl JSON; [0] is the newest stable release. "version" is "goX.Y.Z";
+# transform strips the "go" prefix to match PV. Live=1.26.5.
+
 # ============================================================================
 # Vendor HTML / regex scraping
 # ============================================================================
@@ -580,6 +588,21 @@ url = "https://gitlab.freedesktop.org/api/v4/projects/NetworkManager%2FNetworkMa
 parser = "regex"
 pattern = '"name":"([0-9]+\.[0-9]+\.[0-9]+)"'
 # networkmanager — version sort + per_page=40; regex skips *-dev/*-rc, first stable X.Y.Z.
+
+["dev-libs/wayland"]
+url = "https://gitlab.freedesktop.org/api/v4/projects/wayland%2Fwayland/repository/tags?order_by=version&sort=desc&per_page=10"
+parser = "regex"
+pattern = '"name":"([0-9]+\.[0-9]+\.[0-9]+)"'
+# wayland — version sort, first stable X.Y.Z. NOTE: upstream .9x tags are pre-releases
+# (1.25.91 == 1.26 RC); regex still matches them, so a future 1.26.91 would read as "new".
+# Live=1.26.0 > ebuild 1.25.91 (RC). Anubis may need a retry.
+
+["dev-util/wayland-scanner"]
+url = "https://gitlab.freedesktop.org/api/v4/projects/wayland%2Fwayland/repository/tags?order_by=version&sort=desc&per_page=10"
+parser = "regex"
+pattern = '"name":"([0-9]+\.[0-9]+\.[0-9]+)"'
+# wayland-scanner — sub-extracted from the same wayland/wayland repo, shares wayland's PV.
+# Same rule/caveat as dev-libs/wayland. Live=1.26.0 > ebuild 1.25.91.
 
 # ============================================================================
 # Project site / FTP / SourceForge / Launchpad
@@ -1908,6 +1931,24 @@ transform = [["-", "."]]
 
 # --- GitHub Releases (parser=json, path=tag_name) ---
 
+["net-misc/ntpd-rs"]
+url = "https://api.github.com/repos/pendulum-project/ntpd-rs/releases?per_page=10"
+parser = "regex"
+pattern = '"tag_name":\s*"v([0-9]+\.[0-9]+\.[0-9]+)"'
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# ntpd-rs — pendulum-project/ntpd-rs. CANNOT use releases/latest: upstream mismarks the
+# "v2.0.0-alpha.*" pre-release as non-prerelease, so /latest returns the alpha. Instead scan
+# releases (recency order) with a regex anchored to "vX.Y.Z" (trailing quote) — this skips
+# any -alpha/-beta/-rc suffix. First match is the newest stable. Live=1.9.0.
+
+["www-client/servo"]
+url = "https://api.github.com/repos/servo/servo/releases/latest"
+parser = "json"
+path = "tag_name"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# servo — GitHub release tag "vX.Y.Z" ("v" stripped). SRC_URI pulls the src-vendored tarball
+# from the same release. Live=0.3.0. (A bump must re-check the mozjs/xargs build gotchas.)
+
 ["dev-db/redis"]
 enabled = false
 url = "https://api.github.com/repos/redis/redis/releases/latest"
@@ -1948,6 +1989,16 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 # Leading "v" stripped. Use /tags not releases/latest: the latter lags (reports 3.2.1 while
 # v3.2.2 is tagged). Live [0]=v3.2.2 > ebuild 3.1.3 (a bump must also re-validate files/ patches).
 
+["net-wireless/mt7927-dkms"]
+url = "https://api.github.com/repos/jetm/mediatek-mt7927-dkms/tags"
+parser = "json"
+path = "[0].name"
+transform = [['^v', ""], ['-[0-9]+$', ""]]
+headers = { "User-Agent" = "bentoo-autoupdate" }
+# mt7927-dkms — jetm/mediatek-mt7927-dkms tags "vMAJOR.MINOR-N"; transform strips "v" and the
+# trailing "-N" (the ebuild carries N via MY_PV="${PV}-1"). Live [0]=v2.13-1 -> 2.13 > ebuild 2.11.
+# A bump re-checks the dkms revision AND Secure Boot module signing (linux-mod-r1, SIG_FORCE).
+
 # --- PyPI (parser=json, path=info.version) ---
 
 ["dev-python/playwright-bin"]
@@ -1961,6 +2012,13 @@ url = "https://pypi.org/pypi/pyee/json"
 parser = "json"
 path = "info.version"
 # inherit pypi; PyPI info.version is canonical. Live=13.0.1 == current PV (no prefix to strip).
+
+["dev-python/toml"]
+url = "https://pypi.org/pypi/toml/json"
+parser = "json"
+path = "info.version"
+# toml — MUST use PyPI, not GitHub: uiri/toml has no releases and its /tags [0] is v0.6.5
+# (non-semver order, project dead since 0.10.2/2020). info.version is canonical. Live=0.10.2.
 
 # --- crates.io (parser=json, path=crate.max_stable_version) ---
 
