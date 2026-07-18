@@ -10,9 +10,10 @@ MY_PV="${PV}-1"
 MY_P="${MY_PN}-${MY_PV}"
 
 # Kernel release whose mt76/bluetooth source the patches target. The mini source
-# tarball carries only those subtrees (paths preserved); compat headers/shims
-# cover 6.17 .. 7.1.
-MT76_KVER="7.0"
+# tarball carries only those subtrees (paths preserved). Upstream 2.13 moved the
+# base from 7.0 to 7.1.3; the version-guarded compat shims in the patch series
+# let the 7.1.3 code build against hosts from 6.17 up to 7.2.
+MT76_KVER="7.1.3"
 KSRC_P="mt7927-kernel-src-${MT76_KVER}"
 # Pre-extracted MT6639 WiFi + Bluetooth firmware blobs (proprietary, from the
 # ASUS driver package V5603998_20250709R). The blobs do not change with the
@@ -47,12 +48,12 @@ CONFIG_CHECK="~MAC80211 ~CFG80211 ~BT ~BT_HCIBTUSB"
 MODULES_KERNEL_MIN="6.17"
 
 # This package ships BOTH the WiFi side (mt7925e + mt76 stack) and the MT6639
-# Bluetooth side (patched btusb/btmtk). The in-tree btusb/btmtk bind the BT USB
-# interface (13d3:3588) as an MT7925 device and fail to reset it
-# ("hci0: Opcode 0x0c03 failed: -16"); the upstream patches retarget it as the
-# MT6639 (0x6639) variant, filter the firmware sections (only the 5 BT sections
-# of 9 are sent to the chip) and load BT_RAM_CODE_MT6639, which neither the
-# in-tree driver nor linux-firmware provide yet.
+# Bluetooth side (btusb/btmtk). Kernel 7.1 carries native MT6639 support plus
+# the known MT6639/MT7927 USB IDs -- including 13d3:3588 -- so the retarget
+# patch series this ebuild used to carry is gone as of upstream 2.13; only an
+# ID addition (0489:e156) and the pre-7.0 build shims remain. The modules are
+# still rebuilt out-of-tree because the 7.1.3 mt76 side carries the MT7927
+# fixes, and BT_RAM_CODE_MT6639 is still absent from linux-firmware.
 
 src_unpack() {
 	unpack "${P}.tar.gz"
@@ -73,19 +74,19 @@ src_prepare() {
 		-C "${build}/bt" \
 		"linux-${MT76_KVER}/drivers/bluetooth" || die
 
-	# Apply the upstream MT7927 WiFi patch series (same order as upstream).
+	# Apply the upstream MT7927 WiFi patch series (same order as upstream: the
+	# numbered 01..32 patches first, then the version-guarded compat shims).
+	# The glob also picks up mt7927-wifi-compat-action-frame-for-pre-7.1-kernels
+	# and -kzalloc_flex-for-pre-7.0-kernels, which replace the local shim this
+	# ebuild used to carry back when the mini source was still 7.0-based.
 	pushd "${build}/mt76" >/dev/null || die
-	eapply "${S}/mt7902-wifi-6.19.patch"
 	eapply "${S}"/mt7927-wifi-*.patch
-	# Kernel 7.1 flattened struct ieee80211_mgmt's per-action union and turned
-	# IEEE80211_MIN_ACTION_SIZE into a function-like macro; the 7.0 mini source
-	# predates that, so guard the ADDBA action parsing on LINUX_VERSION_CODE.
-	eapply "${FILESDIR}/mt76-ieee80211-mgmt-action-7.1.patch"
 	popd >/dev/null || die
 
-	# Apply the MT6639 Bluetooth patch series: numbered patches (core support,
-	# ISO interface fix, per-board USB IDs incl. 13d3:3588) plus the
-	# version-guarded compat shim -- same set, same order as the jetm Makefile.
+	# Apply the MT6639 Bluetooth patches: the numbered one adds the HP EliteMini
+	# 0489:e156 ID missing from the 7.1 tables, then the version-guarded compat
+	# shim (kmalloc_obj, hci_discovery_active) for pre-7.0 hosts -- same set,
+	# same order as the jetm Makefile.
 	pushd "${build}/bt" >/dev/null || die
 	eapply "${S}"/mt6639-bt-[0-9]*.patch
 	eapply "${S}"/mt6639-bt-compat-*.patch
