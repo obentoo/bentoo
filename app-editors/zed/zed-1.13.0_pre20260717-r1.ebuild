@@ -91,8 +91,8 @@ CRATES="
 	avif-serialize@0.8.6
 	aws-config@1.8.14
 	aws-credential-types@1.2.12
-	aws-lc-rs@1.16.3
-	aws-lc-sys@0.40.0
+	aws-lc-rs@1.17.1
+	aws-lc-sys@0.42.0
 	aws-runtime@1.7.0
 	aws-sdk-bedrockruntime@1.125.0
 	aws-sdk-kinesis@1.100.0
@@ -655,6 +655,7 @@ CRATES="
 	lyon_geom@1.0.17
 	lyon_path@1.0.16
 	lyon_tessellation@1.0.16
+	mac-notification-sys@0.6.15
 	mac@0.1.1
 	mach2@0.4.3
 	mach2@0.5.0
@@ -710,6 +711,7 @@ CRATES="
 	noop_proc_macro@0.3.0
 	normpath@1.5.0
 	notify-debouncer-mini@0.4.1
+	notify-rust@4.18.0
 	notify@6.1.1
 	ntapi@0.4.1
 	nu-ansi-term@0.50.3
@@ -743,6 +745,7 @@ CRATES="
 	objc2-core-data@0.2.2
 	objc2-core-foundation@0.3.2
 	objc2-core-image@0.2.2
+	objc2-core-location@0.3.2
 	objc2-core-services@0.3.2
 	objc2-encode@4.1.0
 	objc2-foundation@0.2.2
@@ -752,6 +755,7 @@ CRATES="
 	objc2-metal@0.3.2
 	objc2-quartz-core@0.2.2
 	objc2-quartz-core@0.3.2
+	objc2-user-notifications@0.3.2
 	objc2@0.5.2
 	objc2@0.6.3
 	objc@0.2.7
@@ -1152,12 +1156,13 @@ CRATES="
 	system-configuration@0.6.1
 	system-deps@7.0.7
 	system-interface@0.27.3
-	taffy@0.12.1
+	taffy@0.12.2
 	tagptr@0.2.0
 	take-until@0.2.0
 	tao-core-video-sys@0.2.0
 	tap@1.0.1
 	target-lexicon@0.13.3
+	tauri-winrt-notification@0.7.3
 	tempfile@3.23.0
 	tendril@0.4.3
 	term@0.7.0
@@ -1418,6 +1423,7 @@ CRATES="
 	windows-targets@0.53.5
 	windows-threading@0.1.0
 	windows-threading@0.2.1
+	windows-version@0.1.7
 	windows@0.56.0
 	windows@0.57.0
 	windows@0.58.0
