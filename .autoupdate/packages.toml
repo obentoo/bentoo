@@ -2309,32 +2309,48 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 # dlpack — tag "vX.Y". Pulled in as a hard dependency of sci-libs/onnxruntime.
 
 ["sci-ml/stable-diffusion-cpp"]
-enabled = true
 url = "https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest"
 parser = "regex"
 pattern = '"tag_name":\s*"master-([0-9]+)-[0-9a-f]+"'
+transform = [['^(\d+)$', "0_pre$1"]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
-# stable-diffusion-cpp — DISABLED deliberately, not because the probe fails.
-# The probe is correct: tags are "master-<build>-<shorthash>" and the regex
-# yields <build>, which is PV=0_pre<build>. But a bump needs TWO pinned values
-# updated together — MY_COMMIT (the tag's short hash) and GGML_COMMIT (the
-# leejet/ggml submodule gitlink at that tag). The applier only syncs PV and a
-# 40-hex SHA, so an enabled record would produce bumps that die in src_unpack.
-# Re-enable once the applier can carry a second pinned value.
+# stable-diffusion-cpp — tags are "master-<build>-<shorthash>"; the regex yields
+# <build> and the transform restores the ebuild's PV=0_pre<build> scheme.  The
+# transform is load-bearing: without it the applier renames the package to a
+# bare "782", destroying the snapshot versioning (observed 2026-07-19).
+#
+# NOT SAFE TO AUTO-APPLY.  A real bump needs TWO pinned values updated together
+# — MY_COMMIT (the tag's short hash) and GGML_COMMIT (the leejet/ggml submodule
+# gitlink at that tag) — and the applier syncs neither.  When upstream cuts a
+# new build, --apply will bump PV and leave both stale, so SRC_URI points at a
+# tag that does not exist and the fetch 404s.  That is a loud failure, not
+# silent corruption, but bump this package BY HAND: read the new tag, update
+# MY_COMMIT from its short hash and GGML_COMMIT from
+# `git ls-tree stable-diffusion.cpp <tag> -- ggml`.
+#
+# `enabled = false` does NOT stick: bentoolkit re-enables any record whose
+# package is present in the overlay (commit ba706dc8 flipped it back).
 
 ["sci-ml/ik_llama-cpp"]
-enabled = true
-url = "https://api.github.com/repos/ikawrakow/ik_llama.cpp/tags"
+url = "https://api.github.com/repos/ikawrakow/ik_llama.cpp/commits/main"
 parser = "json"
-path = "[0].name"
+path = "commit.committer.date"
+transform = [["T.*", ""], ["-", ""], ['^(\d+)$', "0_pre$1"]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
-# ik_llama-cpp — DISABLED: upstream publishes no usable release series.
-# Verified 2026-07-19: the repo has exactly ONE tag, "t0002" (prerelease,
-# 2025-07-22), roughly a year behind an actively developed HEAD, and
-# releases/latest 404s because that lone release is flagged prerelease. The
-# ebuild is therefore pinned to a dated commit snapshot (0_pre<YYYYMMDD> +
-# EGIT-less commit archive), which no tag-based probe can track. Bump by hand:
-# pick a new HEAD commit, use its committer date as PV, update SRC_URI and S.
+# ik_llama-cpp — upstream publishes no usable release series.  Verified
+# 2026-07-19: the repo has exactly ONE tag, "t0002" (prerelease, 2025-07-22),
+# roughly a year behind an actively developed HEAD, and releases/latest 404s
+# because that lone release is flagged prerelease.  A tags-based probe reports
+# `"t0002" not comparable to current 0_pre20260718` on every run, so this
+# tracks the default branch's committer date instead, which IS the ebuild's
+# versioning scheme (0_pre<YYYYMMDD>).
+#
+# NOT SAFE TO AUTO-APPLY.  SRC_URI pins a full 40-hex commit SHA that must move
+# with PV; --apply bumping the date alone yields a 404. Bump BY HAND: pick the
+# new HEAD commit, use its COMMITTER date (not author date) as PV, and update
+# SRC_URI and S together.
+#
+# `enabled = false` does NOT stick — see the note on stable-diffusion-cpp.
 
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>  END PACKAGES  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
