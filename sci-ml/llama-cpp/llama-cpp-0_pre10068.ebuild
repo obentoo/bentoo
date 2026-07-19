@@ -64,27 +64,25 @@ CPU_FLAGS=( "${X86_CPU_FLAGS[@]/#/cpu_flags_x86_}" )
 ARM_CPU_FLAGS=( asimddp asimdhp sve i8mm sve2 )
 CPU_FLAGS+=( "${ARM_CPU_FLAGS[@]/#/cpu_flags_arm_}" )
 
-IUSE="openblas +openmp blis rocm cuda opencl vulkan flexiblas wmma examples rpc +server webui ${CPU_FLAGS[*]}"
+IUSE="openblas +openmp blis hip cuda opencl vulkan flexiblas wmma examples rpc +server webui ${CPU_FLAGS[*]}"
 
-# The ROCm trio (dev-util/hip, sci-libs/hipBLAS, sci-libs/rocWMMA) is
-# ~amd64-only, so arm64? ( !rocm ) makes the combination unselectable and
-# portage will refuse it.  pkgcheck nevertheless reports
-# NonsolvableDeps{InDev,InStable} for the rocm branch on arm64 profiles.
-# Note this is package-specific, not a blanket pkgcheck limitation: the
-# sibling sci-ml/whisper-cpp guards hip the same way and scans clean.  Several
-# candidate causes were ruled out by experiment (dropping
-# rocm? ( ${ROCM_REQUIRED_USE} ), un-nesting the wmma? block, adding an
-# explicit arm64? ( !wmma )) — none changed the result.  ::gentoo suppresses
-# the equivalent for sci-ml/ggml via profiles/arch/arm64/package.use.mask,
-# which an overlay cannot reach: the profile in use comes from ::gentoo and
-# does not inherit ours.  Treated as known-benign until bentoo ships its own
-# profile tree.  See story 002 design D1.4a.
+# The ROCm stack behind USE=hip (dev-util/hip, sci-libs/hipBLAS and
+# sci-libs/rocWMMA) is ~amd64-only, so arm64? ( !hip ) makes the combination
+# unselectable rather than leaving arm64 users with an unsatisfiable dependency.
+#
+# The flag is deliberately named "hip" and not "rocm".  Empirically, naming it
+# "rocm" makes pkgcheck report NonsolvableDeps{InDev,InStable} on arm64
+# profiles while "hip" scans clean -- reproduced in both directions on this
+# package and on sci-ml/whisper-cpp.  The mechanism is NOT understood, and the
+# pruning is not universal (an equivalent arm64? ( !webm ) guard in
+# sci-ml/stable-diffusion-cpp does not silence libwebm).  Treat the naming as a
+# recorded empirical workaround, not a rule.  See story 002 design D1.4a.
 REQUIRED_USE="
 	?? ( openblas blis flexiblas )
-	rocm? ( ${ROCM_REQUIRED_USE} )
-	wmma? ( rocm )
+	hip? ( ${ROCM_REQUIRED_USE} )
+	wmma? ( hip )
 	webui? ( server )
-	arm64? ( !rocm )
+	arm64? ( !hip )
 	cpu_flags_arm_sve2? ( cpu_flags_arm_sve )
 "
 
@@ -94,7 +92,7 @@ CDEPEND="
 	openblas? ( sci-libs/openblas:= )
 	blis? ( sci-libs/blis:= )
 	flexiblas? ( sci-libs/flexiblas:= )
-	rocm? (
+	hip? (
 		>=dev-util/hip-${ROCM_VERSION}
 		>=sci-libs/hipBLAS-${ROCM_VERSION}
 		wmma? ( >=sci-libs/rocWMMA-${ROCM_VERSION} )
@@ -117,7 +115,7 @@ BDEPEND="
 "
 
 pkg_setup() {
-	if use rocm; then
+	if use hip; then
 		linux-info_pkg_setup
 		if linux-info_get_any_version && linux_config_exists; then
 			if ! linux_chkconfig_present HSA_AMD_SVM; then
@@ -251,7 +249,7 @@ src_configure() {
 		addpredict "/dev/char/"
 	fi
 
-	if use rocm; then
+	if use hip; then
 		export HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)"
 		mycmakeargs+=(
 			-DAMDGPU_TARGETS="$(get_amdgpu_flags)"

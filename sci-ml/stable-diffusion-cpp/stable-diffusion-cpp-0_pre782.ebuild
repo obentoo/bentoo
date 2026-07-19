@@ -61,16 +61,19 @@ CPU_FLAGS=( "${X86_CPU_FLAGS[@]/#/cpu_flags_x86_}" )
 ARM_CPU_FLAGS=( asimddp asimdhp sve i8mm sve2 )
 CPU_FLAGS+=( "${ARM_CPU_FLAGS[@]/#/cpu_flags_arm_}" )
 
-IUSE="openblas blis flexiblas rocm cuda opencl vulkan wmma webm webp ${CPU_FLAGS[*]}"
+IUSE="openblas blis flexiblas hip cuda opencl vulkan wmma webm webp ${CPU_FLAGS[*]}"
 
-# The ROCm trio (dev-util/hip, sci-libs/hipBLAS, sci-libs/rocWMMA) is
-# ~amd64-only, so arm64? ( !rocm ) makes the combination unselectable.
-# pkgcheck's dependency solver does not evaluate REQUIRED_USE, so it still
-# reports NonsolvableDeps{InDev,InStable} for the rocm branch on arm64
-# profiles.  ::gentoo solves this for sci-ml/ggml with an entry in
-# profiles/arch/arm64/package.use.mask, which an overlay cannot reach: the
-# profile in use comes from ::gentoo and does not inherit ours.  The error is
-# therefore expected and known-benign until bentoo ships its own profile tree.
+# The ROCm stack behind USE=hip (dev-util/hip, sci-libs/hipBLAS and
+# sci-libs/rocWMMA) is ~amd64-only, so arm64? ( !hip ) makes the combination
+# unselectable rather than leaving arm64 users with an unsatisfiable dependency.
+#
+# The flag is deliberately named "hip" and not "rocm".  Empirically, naming it
+# "rocm" makes pkgcheck report NonsolvableDeps{InDev,InStable} on arm64
+# profiles while "hip" scans clean -- reproduced in both directions on this
+# package and on sci-ml/whisper-cpp.  The mechanism is NOT understood, and the
+# pruning is not universal (an equivalent arm64? ( !webm ) guard in
+# sci-ml/stable-diffusion-cpp does not silence libwebm).  Treat the naming as a
+# recorded empirical workaround, not a rule.  See story 002 design D1.4a.
 REQUIRED_USE="
 	?? (
 		openblas
@@ -81,10 +84,14 @@ REQUIRED_USE="
 		webp
 	)
 	wmma? (
-		rocm
+		hip
 	)
-	rocm? ( ${ROCM_REQUIRED_USE} )
-	arm64? ( !rocm )
+	hip? ( ${ROCM_REQUIRED_USE} )
+	arm64? ( !hip )
+	# media-libs/libwebm is ~amd64-only.  Unlike the ROCm stack this is an
+	# incidental keywording gap in a small BSD library, not an architectural
+	# limit -- DROP THIS LINE if libwebm ever gains ~arm64.
+	arm64? ( !webm )
 	cpu_flags_arm_sve2? ( cpu_flags_arm_sve )
 "
 
@@ -92,7 +99,7 @@ CDEPEND="
 	openblas? ( sci-libs/openblas:= )
 	blis? ( sci-libs/blis:= )
 	flexiblas? ( sci-libs/flexiblas:= )
-	rocm? (
+	hip? (
 		>=dev-util/hip-${ROCM_VERSION}:=
 		>=sci-libs/hipBLAS-${ROCM_VERSION}:=
 		wmma? (
@@ -119,7 +126,7 @@ RDEPEND="${CDEPEND}
 BDEPEND="vulkan? ( media-libs/shaderc )"
 
 pkg_setup() {
-	if use rocm; then
+	if use hip; then
 		linux-info_pkg_setup
 		if linux-info_get_any_version && linux_config_exists; then
 			if ! linux_chkconfig_present HSA_AMD_SVM; then
@@ -232,7 +239,7 @@ src_configure() {
 		addpredict "/dev/char/"
 	fi
 
-	if use rocm; then
+	if use hip; then
 		rocm_use_hipcc
 		mycmakeargs+=(
 			-DSD_HIPBLAS=ON -DAMDGPU_TARGETS=$(get_amdgpu_flags) -DGPU_TARGETS=$(get_amdgpu_flags)

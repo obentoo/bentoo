@@ -47,17 +47,17 @@ X86_CPU_FLAGS=(
 )
 CPU_FLAGS=( "${X86_CPU_FLAGS[@]/#/cpu_flags_x86_}" )
 
-IUSE="curl cuda +openmp rocm vulkan ${CPU_FLAGS[*]}"
+IUSE="curl cuda +openmp hip vulkan ${CPU_FLAGS[*]}"
 
 REQUIRED_USE="
-	rocm? ( ${ROCM_REQUIRED_USE} )
+	hip? ( ${ROCM_REQUIRED_USE} )
 "
 
 # curl is needed for pulling models from huggingface
 CDEPEND="
 	curl? ( net-misc/curl:= )
 	openmp? ( llvm-runtimes/openmp:= )
-	rocm? (
+	hip? (
 		>=dev-util/hip-${ROCM_VERSION}
 		>=sci-libs/hipBLAS-${ROCM_VERSION}
 		>=sci-libs/rocBLAS-${ROCM_VERSION}
@@ -75,7 +75,7 @@ BDEPEND="
 "
 
 pkg_setup() {
-	if use rocm; then
+	if use hip; then
 		linux-info_pkg_setup
 		if linux-info_get_any_version && linux_config_exists; then
 			if ! linux_chkconfig_present HSA_AMD_SVM; then
@@ -153,7 +153,7 @@ src_configure() {
 		addpredict "/dev/char/"
 	fi
 
-	if use rocm; then
+	if use hip; then
 		export HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)"
 		mycmakeargs+=(
 			-DAMDGPU_TARGETS="$(get_amdgpu_flags)"

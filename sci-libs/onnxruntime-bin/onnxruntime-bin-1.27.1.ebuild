@@ -54,11 +54,25 @@ src_unpack() {
 }
 
 src_install() {
-	dodir /usr/include
-	cp -R include/. "${ED}"/usr/include/. || die
+	# Upstream's libonnxruntime.pc and its CMake config both declare
+	# includedir=${prefix}/include/onnxruntime, so the headers go there rather
+	# than flat into /usr/include.  Installing them flat (as the source ebuild
+	# did) leaves every consumer that resolves through pkg-config or
+	# find_package() pointing at a directory that does not exist.
+	dodir /usr/include/onnxruntime
+	cp -R include/. "${ED}"/usr/include/onnxruntime/. || die
 
 	dodir /usr/$(get_libdir)
 	cp -R lib/. "${ED}"/usr/$(get_libdir)/. || die
+
+	# The shipped .pc is generated for a /usr/local install and hardcodes
+	# lib64.  Left alone, `pkg-config --libs libonnxruntime` emits
+	# -L/usr/local/lib64 and the link fails.  Retarget it at the real prefix
+	# and libdir.
+	sed -i \
+		-e "s:^prefix=/usr/local$:prefix=${EPREFIX}/usr:" \
+		-e "s:^libdir=\${prefix}/lib64$:libdir=\${prefix}/$(get_libdir):" \
+		"${ED}"/usr/$(get_libdir)/pkgconfig/libonnxruntime.pc || die
 
 	einstalldocs
 }

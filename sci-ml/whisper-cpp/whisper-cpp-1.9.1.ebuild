@@ -45,9 +45,9 @@ CPU_FLAGS=( "${X86_CPU_FLAGS[@]/#/cpu_flags_x86_}" )
 ARM_CPU_FLAGS=( asimddp asimdhp sve i8mm sve2 )
 CPU_FLAGS+=( "${ARM_CPU_FLAGS[@]/#/cpu_flags_arm_}" )
 
-IUSE="blas cuda ffmpeg hip opencl sdl2 vulkan ${CPU_FLAGS[*]}"
+IUSE="blas cuda ffmpeg opencl hip sdl2 vulkan ${CPU_FLAGS[*]}"
 
-# The ROCm stack behind USE=hip (sci-libs/hipBLAS and the dev-util/hip and
+# The ROCm stack behind USE=rocm (sci-libs/hipBLAS and the dev-util/hip and
 # sci-libs/rocBLAS packages it pulls) is ~amd64-only, so arm64? ( !hip ) makes
 # the combination unselectable instead of leaving arm64 users with an
 # unsatisfiable dependency.  ::gentoo expresses the same thing for sci-ml/ggml
@@ -56,7 +56,7 @@ IUSE="blas cuda ffmpeg hip opencl sdl2 vulkan ${CPU_FLAGS[*]}"
 #
 # sci-ml/llama-cpp carries the equivalent constraint and still trips
 # NonsolvableDeps{InDev,InStable} on arm64 profiles, because pkgcheck's solver
-# gives up on its rocm? ( ${ROCM_REQUIRED_USE} ) branch.  The simpler constraint
+# gives up on its hip? ( ${ROCM_REQUIRED_USE} ) branch.  The simpler constraint
 # below is honoured, so this package scans clean; should that ever regress to a
 # NonsolvableDeps report it is benign for the same reason it is benign there.
 REQUIRED_USE="
