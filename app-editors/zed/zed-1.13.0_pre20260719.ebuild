@@ -563,7 +563,7 @@ CRATES="
 	image-webp@0.2.4
 	image@0.25.10
 	imagesize@0.14.0
-	imara-diff@0.1.8
+	imara-diff@0.2.0
 	imgref@1.12.0
 	indenter@0.3.4
 	indexmap@1.9.3
@@ -1621,7 +1621,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="c9e8e611dbc279afa0914d28c4d37ad07f38c03b"
+EGIT_COMMIT="0c51c7fd2481859e9da5c490ef8e41ddbcf1a341"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.96.0"
 RUST_NEEDS_LLVM=1
