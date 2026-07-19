@@ -142,6 +142,10 @@ src_prepare() {
 		has "${x##*/}" "${keep[@]}" || rm -r "${x}" || die
 	done
 
+	# Control libdispatch dependency from here, as there's no
+	# CMAKE_DISABLE_FIND_PACKAGE for find_library
+	: > cmake/external/dispatch/CMakeLists.txt || die
+
 	# Control QtDBus dependency from here, to avoid messing with QtGui.
 	# QtGui will use find_package to find QtDbus as well, which
 	# conflicts with the -DCMAKE_DISABLE_FIND_PACKAGE method.
