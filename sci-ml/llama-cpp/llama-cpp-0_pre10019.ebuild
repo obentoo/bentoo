@@ -109,11 +109,14 @@ src_unpack() {
 
 	if use webui; then
 		if [[ ${PV} == *9999* ]]; then
-			mkdir -p "${S}/tools/ui/dist" || die
-			einfo Downloading webui dist from huggingface bucket...
-			wget -qO - "https://huggingface.co/buckets/ggml-org/llama-ui/resolve/latest/dist.tar.gz" \
-				| tar -xzC "${S}/tools/ui/dist"
-			assert "failed to fetch webui dist"
+			# Upstream publishes the prebuilt webui dist only per release
+			# tag.  The mutable bucket pointer this used to fetch carries no
+			# Manifest checksum, so it cannot be expressed in SRC_URI and
+			# cannot be verified; fetching it here would also need
+			# RESTRICT="network-sandbox" for an unverifiable input.  Every
+			# versioned snapshot carries the dist tarball as a real SRC_URI
+			# entry, so use one of those instead.
+			die "USE=webui is unsupported on a live ebuild: the webui dist has no verifiable source"
 		else
 			ln -s "${WORKDIR}/llama-${MY_PV}" "${S}/tools/ui/dist" || die
 		fi

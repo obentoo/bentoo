@@ -1,0 +1,29 @@
+#!/sbin/openrc-run
+# Copyright 1999-2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License, v2
+
+supervisor=supervise-daemon
+description="Whisper-CPP Service"
+command="/usr/bin/whisper-server"
+command_args+=" -m ${whisper_model}"
+required_files="${whisper_model}"
+
+# Set WHISPER_USER in /etc/conf.d/whisper-cpp. No default -- the service
+# refuses to start until it names an existing local user (there is no
+# dedicated 'whisper' account in the tree).
+: ${WHISPER_USER:=}
+
+start_pre() {
+	if [ -z "${WHISPER_USER}" ]; then
+		eerror "WHISPER_USER is not set in /etc/conf.d/whisper-cpp."
+		eerror "Set it to a local user that can read ${whisper_model}."
+		return 1
+	fi
+	if ! getent passwd "${WHISPER_USER}" > /dev/null; then
+		eerror "User '${WHISPER_USER}' not found on this system."
+		return 1
+	fi
+	command_user="${WHISPER_USER}"
+	checkpath --directory --owner "${WHISPER_USER}" --mode 0775 \
+		/var/log/$RC_SVCNAME
+}

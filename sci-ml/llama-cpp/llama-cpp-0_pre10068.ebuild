@@ -24,7 +24,7 @@ else
 		)
 	"
 	S="${WORKDIR}/llama.cpp-${MY_PV}"
-	KEYWORDS="~amd64"
+	KEYWORDS="~amd64 ~arm64"
 fi
 
 SRC_URI+="
@@ -55,13 +55,37 @@ X86_CPU_FLAGS=(
 )
 CPU_FLAGS=( "${X86_CPU_FLAGS[@]/#/cpu_flags_x86_}" )
 
+# ggml exposes no per-feature -DGGML_* option on ARM.  The only lever is
+# GGML_CPU_ARM_ARCH, an accumulated -march= string, so these flags are gated at
+# compile time via -march tags rather than by individual cmake options.
+# ggml SME (armv9.2-a) is deliberately not exposed: it has no cpu_flags_arm_*
+# value in profiles/desc/cpu_flags_arm.desc, and forcing armv9.2-a would exclude
+# every pre-Armv9 core.  Users who want it set GGML_CPU_ARM_ARCH themselves.
+ARM_CPU_FLAGS=( asimddp asimdhp sve i8mm sve2 )
+CPU_FLAGS+=( "${ARM_CPU_FLAGS[@]/#/cpu_flags_arm_}" )
+
 IUSE="openblas +openmp blis rocm cuda opencl vulkan flexiblas wmma examples rpc +server webui ${CPU_FLAGS[*]}"
 
+# The ROCm trio (dev-util/hip, sci-libs/hipBLAS, sci-libs/rocWMMA) is
+# ~amd64-only, so arm64? ( !rocm ) makes the combination unselectable and
+# portage will refuse it.  pkgcheck nevertheless reports
+# NonsolvableDeps{InDev,InStable} for the rocm branch on arm64 profiles.
+# Note this is package-specific, not a blanket pkgcheck limitation: the
+# sibling sci-ml/whisper-cpp guards hip the same way and scans clean.  Several
+# candidate causes were ruled out by experiment (dropping
+# rocm? ( ${ROCM_REQUIRED_USE} ), un-nesting the wmma? block, adding an
+# explicit arm64? ( !wmma )) — none changed the result.  ::gentoo suppresses
+# the equivalent for sci-ml/ggml via profiles/arch/arm64/package.use.mask,
+# which an overlay cannot reach: the profile in use comes from ::gentoo and
+# does not inherit ours.  Treated as known-benign until bentoo ships its own
+# profile tree.  See story 002 design D1.4a.
 REQUIRED_USE="
 	?? ( openblas blis flexiblas )
 	rocm? ( ${ROCM_REQUIRED_USE} )
 	wmma? ( rocm )
 	webui? ( server )
+	arm64? ( !rocm )
+	cpu_flags_arm_sve2? ( cpu_flags_arm_sve )
 "
 
 CDEPEND="
@@ -79,7 +103,10 @@ CDEPEND="
 "
 DEPEND="${CDEPEND}
 	opencl? ( dev-util/opencl-headers )
-	vulkan? ( dev-util/vulkan-headers )
+	vulkan? (
+		dev-util/spirv-headers
+		dev-util/vulkan-headers
+	)
 "
 RDEPEND="${CDEPEND}
 	opencl? ( dev-libs/opencl-icd-loader )
@@ -109,11 +136,14 @@ src_unpack() {
 
 	if use webui; then
 		if [[ ${PV} == *9999* ]]; then
-			mkdir -p "${S}/tools/ui/dist" || die
-			einfo Downloading webui dist from huggingface bucket...
-			wget -qO - "https://huggingface.co/buckets/ggml-org/llama-ui/resolve/latest/dist.tar.gz" \
-				| tar -xzC "${S}/tools/ui/dist"
-			assert "failed to fetch webui dist"
+			# Upstream publishes the prebuilt webui dist only per release
+			# tag.  The mutable bucket pointer this used to fetch carries no
+			# Manifest checksum, so it cannot be expressed in SRC_URI and
+			# cannot be verified; fetching it here would also need
+			# RESTRICT="network-sandbox" for an unverifiable input.  Every
+			# versioned snapshot carries the dist tarball as a real SRC_URI
+			# entry, so use one of those instead.
+			die "USE=webui is unsupported on a live ebuild: the webui dist has no verifiable source"
 		else
 			ln -s "${WORKDIR}/llama-${MY_PV}" "${S}/tools/ui/dist" || die
 		fi
@@ -178,6 +208,22 @@ src_configure() {
 		mycmakeargs+=( -DGGML_AVX512=ON )
 	else
 		mycmakeargs+=( -DGGML_AVX512=OFF )
+	fi
+
+	if use arm64; then
+		# Mirrors upstream's escalation table in ggml/src/ggml-cpu/CMakeLists.txt:
+		# each feature bumps the baseline to the first architecture level that
+		# supported it, and the tags accumulate.  Order is load-bearing —
+		# last write wins, so the highest required level ends up in arm_arch.
+		# Setting GGML_CPU_ARM_ARCH bypasses that table entirely (it is the
+		# first branch of an if/elseif), which is why it is replicated here.
+		local arm_arch="armv8-a" arm_tags=""
+		if use cpu_flags_arm_asimddp; then arm_arch="armv8.2-a"; arm_tags+="+dotprod"; fi
+		if use cpu_flags_arm_asimdhp; then arm_arch="armv8.2-a"; arm_tags+="+fp16";    fi
+		if use cpu_flags_arm_sve;     then arm_arch="armv8.2-a"; arm_tags+="+sve";     fi
+		if use cpu_flags_arm_i8mm;    then arm_arch="armv8.6-a"; arm_tags+="+i8mm";    fi
+		if use cpu_flags_arm_sve2;    then arm_arch="armv8.6-a"; arm_tags+="+sve2";    fi
+		mycmakeargs+=( -DGGML_CPU_ARM_ARCH="${arm_arch}${arm_tags}" )
 	fi
 
 	if use openblas; then

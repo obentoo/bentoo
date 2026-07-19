@@ -1,0 +1,20 @@
+Honor a pre-set SDCPP_BUILD_VERSION/SDCPP_BUILD_COMMIT so a release-tarball
+build embeds the real version instead of "unknown". Upstream unconditionally
+runs `git describe` in the source dir, which is not a git checkout when built
+from a tarball, so its empty output overwrites the -D values the ebuild passes.
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -240,7 +240,11 @@
+ )
+ 
+ find_program(GIT_EXE NAMES git git.exe NO_CMAKE_FIND_ROOT_PATH)
+-if(GIT_EXE)
++# Gentoo: honor -DSDCPP_BUILD_VERSION / -DSDCPP_BUILD_COMMIT passed from the
++# ebuild so a release-tarball build embeds the real version instead of
++# "unknown". git describe runs in the source dir (not a git checkout here) and
++# would otherwise clobber the pre-set values with empty output.
++if(GIT_EXE AND NOT SDCPP_BUILD_VERSION)
+     execute_process(COMMAND ${GIT_EXE} describe --tags --abbrev=7 --dirty=+
+         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+         OUTPUT_VARIABLE SDCPP_BUILD_VERSION
