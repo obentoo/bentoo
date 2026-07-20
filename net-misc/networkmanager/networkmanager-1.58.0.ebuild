@@ -22,7 +22,7 @@ SLOT="0"
 
 KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~ppc ~ppc64 ~riscv ~sparc ~x86"
 
-IUSE="audit bluetooth +concheck connection-sharing debug dhclient dhcpcd elogind gnutls gtk-doc +introspection iptables iwd libedit +modemmanager nbft +nss nftables ofono ovs policykit +ppp psl resolvconf selinux syslog systemd teamd test +tools vala +wext +wifi"
+IUSE="audit bluetooth +concheck connection-sharing debug dhcpcd elogind gnutls gtk-doc +introspection iptables iwd libedit +modemmanager nbft +nss nftables ofono ovs policykit +ppp psl resolvconf selinux syslog systemd teamd test +tools vala +wext +wifi"
 RESTRICT="!test? ( test )"
 
 REQUIRED_USE="
@@ -35,7 +35,6 @@ REQUIRED_USE="
 	wext? ( wifi )
 	^^ ( gnutls nss )
 	?? ( elogind systemd )
-	?? ( dhclient dhcpcd )
 	?? ( syslog systemd )
 "
 
@@ -53,7 +52,6 @@ COMMON_DEPEND="
 		iptables? ( net-firewall/iptables )
 		nftables? ( net-firewall/nftables )
 	)
-	dhclient? ( >=net-misc/dhcp-4[client] )
 	dhcpcd? ( >=net-misc/dhcpcd-9.3.3 )
 	elogind? ( >=sys-auth/elogind-219 )
 	gnutls? (
@@ -241,7 +239,6 @@ multilib_src_configure() {
 		-Dconfig_dns_rc_manager_default=auto
 
 		# dhcp clients
-		$(meson_nm_program dhclient "" /sbin/dhclient)
 		$(meson_nm_program dhcpcd "" /sbin/dhcpcd)
 
 		# miscellaneous
@@ -281,9 +278,7 @@ multilib_src_configure() {
 		emesonargs+=( -Dconfig_logging_backend_default=default )
 	fi
 
-	if multilib_is_native_abi && use dhclient; then
-		emesonargs+=( -Dconfig_dhcp_default=dhclient )
-	elif multilib_is_native_abi && use dhcpcd; then
+	if multilib_is_native_abi && use dhcpcd; then
 		emesonargs+=( -Dconfig_dhcp_default=dhcpcd )
 	else
 		emesonargs+=( -Dconfig_dhcp_default=internal )
@@ -412,16 +407,12 @@ pkg_postinst() {
 		ewarn "value to '0'."
 	fi
 
-	if use dhclient || use dhcpcd; then
-		ewarn "You have enabled USE=dhclient and/or USE=dhcpcd, but NetworkManager since"
-		ewarn "version 1.20 defaults to the internal DHCP client. If the internal client"
-		ewarn "works for you, and you're happy with, the alternative USE flags can be"
-		ewarn "disabled. If you want to use dhclient or dhcpcd, then you need to tweak"
-		ewarn "the main.dhcp configuration option to use one of them instead of internal."
-		# https://gitlab.freedesktop.org/NetworkManager/NetworkManager/-/merge_requests/1988
-		ewarn
-		ewarn "Note that dhclient has been deprecated and support for that will be removed"
-		ewarn "in a future release."
+	if use dhcpcd; then
+		ewarn "You have enabled USE=dhcpcd, but NetworkManager since version 1.20"
+		ewarn "defaults to the internal DHCP client. If the internal client works for"
+		ewarn "you, and you're happy with, the alternative USE flag can be disabled."
+		ewarn "If you want to use dhcpcd, then you need to tweak the main.dhcp"
+		ewarn "configuration option to use it instead of internal."
 	fi
 }
 
