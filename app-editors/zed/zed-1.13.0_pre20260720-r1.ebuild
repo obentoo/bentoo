@@ -123,6 +123,7 @@ CRATES="
 	base64@0.22.1
 	base64ct@1.8.0
 	beef@0.5.2
+	betlang@0.1.0
 	bigdecimal@0.4.8
 	bincode@1.3.3
 	bindgen@0.71.1
@@ -400,6 +401,7 @@ CRATES="
 	fax_derive@0.2.0
 	fd-lock@4.0.4
 	fdeflate@0.3.7
+	fearless_simd@0.4.1
 	ff@0.12.1
 	filedescriptor@0.8.3
 	filetime@0.2.29
@@ -1621,7 +1623,7 @@ declare -A GIT_CRATES=(
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="f7d9ae33b5ce1debd2b5962aacc6f7641de2bb0e"
+EGIT_COMMIT="e651b6ddc31f4e9e2816d40d9498fd69ed117b44"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.96.0"
 RUST_NEEDS_LLVM=1
