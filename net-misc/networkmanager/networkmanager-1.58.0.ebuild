@@ -211,7 +211,8 @@ multilib_src_configure() {
 		-Dlibaudit=$(multilib_native_usex audit)
 
 		# features
-		$(meson_native_use_bool wext)
+		# wext is deprecated upstream; 'true' is a hard error, only 'force' enables it
+		-Dwext=$(multilib_native_usex wext force false)
 		$(meson_native_use_bool wifi)
 		$(meson_native_use_bool iwd)
 		$(meson_native_use_bool ppp)
