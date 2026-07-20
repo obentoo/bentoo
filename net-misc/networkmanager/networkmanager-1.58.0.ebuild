@@ -22,7 +22,7 @@ SLOT="0"
 
 KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~ppc ~ppc64 ~riscv ~sparc ~x86"
 
-IUSE="audit bluetooth +concheck connection-sharing debug dhcpcd elogind gnutls gtk-doc +introspection iptables iwd libedit +modemmanager nbft +nss nftables ofono ovs policykit +ppp psl resolvconf selinux syslog systemd teamd test +tools vala +wext +wifi"
+IUSE="audit bluetooth clat +concheck connection-sharing debug dhcpcd elogind gnutls gtk-doc +introspection iptables iwd libedit +modemmanager nbft +nss nftables ofono ovs policykit +ppp psl resolvconf selinux syslog systemd teamd test +tools vala +wext +wifi"
 RESTRICT="!test? ( test )"
 
 REQUIRED_USE="
@@ -46,6 +46,10 @@ COMMON_DEPEND="
 	>=dev-libs/glib-2.42:2[${MULTILIB_USEDEP}]
 	audit? ( sys-process/audit )
 	bluetooth? ( >=net-wireless/bluez-5:= )
+	clat? (
+		>=dev-libs/libbpf-1.3.0
+		>=net-libs/libndp-1.9
+	)
 	concheck? ( net-misc/curl )
 	connection-sharing? (
 		net-dns/dnsmasq[dbus,dhcp]
@@ -108,6 +112,7 @@ DEPEND="${COMMON_DEPEND}
 "
 BDEPEND="
 	app-text/docbook-xsl-stylesheets
+	clat? ( dev-util/bpftool )
 	>=dev-util/gdbus-codegen-2.80.5-r1
 	dev-util/glib-utils
 	>=sys-devel/gettext-0.17
@@ -202,7 +207,8 @@ multilib_src_configure() {
 		-Ddist_version=${PVR}
 		$(meson_native_use_bool policykit polkit)
 		$(meson_native_use_bool policykit config_auth_polkit_default)
-		-Dmodify_system=true
+		# modify_system=true is rejected since 1.58 (security); the plugdev
+		# polkit rule installed in src_install covers the same use case
 		-Dpolkit_agent_helper_1=/usr/lib/polkit-1/polkit-agent-helper-1
 		$(meson_native_use_bool selinux)
 		$(meson_native_use_bool systemd systemd_journal)
@@ -213,6 +219,7 @@ multilib_src_configure() {
 		# features
 		# wext is deprecated upstream; 'true' is a hard error, only 'force' enables it
 		-Dwext=$(multilib_native_usex wext force false)
+		$(meson_native_use_bool clat)
 		$(meson_native_use_bool wifi)
 		$(meson_native_use_bool iwd)
 		$(meson_native_use_bool ppp)
