@@ -207,8 +207,8 @@ multilib_src_configure() {
 		-Ddist_version=${PVR}
 		$(meson_native_use_bool policykit polkit)
 		$(meson_native_use_bool policykit config_auth_polkit_default)
-		# modify_system=true is rejected since 1.58 (security); the plugdev
-		# polkit rule installed in src_install covers the same use case
+		# modify_system was dropped in 1.58 (option is now a no-op); the
+		# plugdev polkit rule installed in src_install covers the same use case
 		-Dpolkit_agent_helper_1=/usr/lib/polkit-1/polkit-agent-helper-1
 		$(meson_native_use_bool selinux)
 		$(meson_native_use_bool systemd systemd_journal)
