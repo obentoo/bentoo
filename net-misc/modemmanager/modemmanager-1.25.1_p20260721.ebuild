@@ -8,7 +8,7 @@ inherit bash-completion-r1 meson python-any-r1 optfeature systemd udev vala xdg
 DESCRIPTION="Modem and mobile broadband management libraries"
 HOMEPAGE="https://www.freedesktop.org/wiki/Software/ModemManager/ https://gitlab.freedesktop.org/mobile-broadband/ModemManager"
 
-GIT_COMMIT="de4306bfdaf6990ed31c41157d9d6fdc066a03d4"
+GIT_COMMIT="9a2d5863eb21957767dbc826b481080c08736590"
 SRC_URI="https://gitlab.freedesktop.org/mobile-broadband/ModemManager/-/archive/${GIT_COMMIT}/ModemManager-${GIT_COMMIT}.tar.gz"
 
 LICENSE="GPL-2+"
