@@ -16,9 +16,9 @@ CRATES="
 	addr2line@0.25.1
 	adler2@2.0.1
 	aes@0.8.4
-	agent-client-protocol-derive@1.1.0
+	agent-client-protocol-derive@1.3.0
 	agent-client-protocol-schema@1.4.0
-	agent-client-protocol@1.1.0
+	agent-client-protocol@1.3.0
 	ahash@0.7.8
 	ahash@0.8.12
 	aho-corasick@1.1.3
@@ -91,8 +91,8 @@ CRATES="
 	avif-serialize@0.8.6
 	aws-config@1.8.14
 	aws-credential-types@1.2.12
-	aws-lc-rs@1.16.3
-	aws-lc-sys@0.40.0
+	aws-lc-rs@1.17.1
+	aws-lc-sys@0.42.0
 	aws-runtime@1.7.0
 	aws-sdk-bedrockruntime@1.125.0
 	aws-sdk-kinesis@1.100.0
@@ -135,7 +135,7 @@ CRATES="
 	bit-vec@0.9.1
 	bit_field@0.10.3
 	bitflags@1.3.2
-	bitflags@2.10.0
+	bitflags@2.13.1
 	bitstream-io@4.9.0
 	bitvec@1.0.1
 	block-buffer@0.10.4
@@ -563,7 +563,7 @@ CRATES="
 	image-webp@0.2.4
 	image@0.25.10
 	imagesize@0.14.0
-	imara-diff@0.1.8
+	imara-diff@0.2.0
 	imgref@1.12.0
 	indenter@0.3.4
 	indexmap@1.9.3
@@ -607,8 +607,8 @@ CRATES="
 	jupyter-websocket-client@1.1.0
 	khronos-egl@6.0.0
 	khronos_api@3.1.0
-	kqueue-sys@1.0.4
-	kqueue@1.1.1
+	kqueue-sys@1.1.2
+	kqueue@1.2.0
 	kurbo@0.13.1
 	kurbo@0.9.5
 	kv-log-macro@1.0.7
@@ -655,6 +655,7 @@ CRATES="
 	lyon_geom@1.0.17
 	lyon_path@1.0.16
 	lyon_tessellation@1.0.16
+	mac-notification-sys@0.6.15
 	mac@0.1.1
 	mach2@0.4.3
 	mach2@0.5.0
@@ -710,6 +711,7 @@ CRATES="
 	noop_proc_macro@0.3.0
 	normpath@1.5.0
 	notify-debouncer-mini@0.4.1
+	notify-rust@4.18.0
 	notify@6.1.1
 	ntapi@0.4.1
 	nu-ansi-term@0.50.3
@@ -743,6 +745,7 @@ CRATES="
 	objc2-core-data@0.2.2
 	objc2-core-foundation@0.3.2
 	objc2-core-image@0.2.2
+	objc2-core-location@0.3.2
 	objc2-core-services@0.3.2
 	objc2-encode@4.1.0
 	objc2-foundation@0.2.2
@@ -752,6 +755,7 @@ CRATES="
 	objc2-metal@0.3.2
 	objc2-quartz-core@0.2.2
 	objc2-quartz-core@0.3.2
+	objc2-user-notifications@0.3.2
 	objc2@0.5.2
 	objc2@0.6.3
 	objc@0.2.7
@@ -1152,12 +1156,13 @@ CRATES="
 	system-configuration@0.6.1
 	system-deps@7.0.7
 	system-interface@0.27.3
-	taffy@0.12.1
+	taffy@0.12.2
 	tagptr@0.2.0
 	take-until@0.2.0
 	tao-core-video-sys@0.2.0
 	tap@1.0.1
 	target-lexicon@0.13.3
+	tauri-winrt-notification@0.7.3
 	tempfile@3.23.0
 	tendril@0.4.3
 	term@0.7.0
@@ -1352,6 +1357,7 @@ CRATES="
 	web_atoms@0.1.3
 	webpki-root-certs@0.26.8
 	webpki-roots@0.26.8
+	webpki-roots@1.0.8
 	weezl@0.1.10
 	wgpu-core-deps-apple@29.0.4
 	wgpu-core-deps-emscripten@29.0.4
@@ -1418,6 +1424,7 @@ CRATES="
 	windows-targets@0.53.5
 	windows-threading@0.1.0
 	windows-threading@0.2.1
+	windows-version@0.1.7
 	windows@0.56.0
 	windows@0.57.0
 	windows@0.58.0
@@ -1504,7 +1511,6 @@ CRATES="
 	y4m@0.8.0
 	yaml-rust2@0.8.1
 	yansi@1.0.1
-	yawc@0.2.5
 	yazi@0.2.1
 	yeslogic-fontconfig-sys@6.0.0
 	yoke-derive@0.8.0
@@ -1561,8 +1567,8 @@ declare -A GIT_CRATES=(
 	[merman-core]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/merman-core'
 	[merman-render]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/merman-render'
 	[merman]='https://github.com/zed-industries/merman;9acc3960f04a7deeb08079d60fa8183f15e8bde1;merman-%commit%/crates/merman'
-	[notify-types]='https://github.com/zed-industries/notify;faecbc33db4f59313e5225ef766bfd9e54a54cfd;notify-%commit%/notify-types'
-	[notify]='https://github.com/zed-industries/notify;faecbc33db4f59313e5225ef766bfd9e54a54cfd;notify-%commit%/notify'
+	[notify-types]='https://github.com/zed-industries/notify;0890bbb8ca40a4b5d1f67031698dd7918b37d991;notify-%commit%/notify-types'
+	[notify]='https://github.com/zed-industries/notify;0890bbb8ca40a4b5d1f67031698dd7918b37d991;notify-%commit%/notify'
 	[nvim-rs]='https://github.com/KillTheMule/nvim-rs;764dd270c642f77f10f3e19d05cc178a6cbe69f3;nvim-rs-%commit%'
 	[pet-conda]='https://github.com/microsoft/python-environment-tools;9e61a22af989fe54937bf07c9f9cff1bc53d9056;python-environment-tools-%commit%/crates/pet-conda'
 	[pet-core]='https://github.com/microsoft/python-environment-tools;9e61a22af989fe54937bf07c9f9cff1bc53d9056;python-environment-tools-%commit%/crates/pet-core'
@@ -1609,13 +1615,14 @@ declare -A GIT_CRATES=(
 	[wprcontrol]='https://github.com/zed-industries/wprcontrol;cd811f7d744f65291e13131b1d907fda63ed91a1;wprcontrol-%commit%'
 	[xim-ctext]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%/xim-ctext'
 	[xim-parser]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%/xim-parser'
+	[yawc]='https://github.com/zed-industries/yawc;71a452f551cac178367eaac5d7418a09afa1f3a2;yawc-%commit%'
 	[zed-font-kit]='https://github.com/zed-industries/font-kit;94b0f28166665e8fd2f53ff6d268a14955c82269;font-kit-%commit%'
 	[zed-reqwest]='https://github.com/zed-industries/reqwest;c15662463bda39148ba154100dd44d3fba5873a4;reqwest-%commit%'
 	[zed-scap]='https://github.com/zed-industries/scap;4afea48c3b002197176fb19cd0f9b180dd36eaac;scap-%commit%'
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
-EGIT_COMMIT="962e3f3e4be79f4d40f4c08203ec9291b395d273"
+EGIT_COMMIT="4605a0f8dc09461747fee50b987da5e7dd1d76f5"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.96.0"
 RUST_NEEDS_LLVM=1
@@ -1644,7 +1651,8 @@ LICENSE+=" BSD"
 # Dependent crate licenses
 LICENSE+="
 	Apache-2.0 Apache-2.0-with-LLVM-exceptions BSD-2 BSD Boost-1.0
-	CC0-1.0 ISC LGPL-3 MIT MIT-0 MPL-2.0 UoI-NCSA Unicode-3.0 ZLIB BZIP2
+	CC0-1.0 CDLA-Permissive-2.0 ISC LGPL-3 MIT MIT-0 MPL-2.0 UoI-NCSA
+	Unicode-3.0 ZLIB BZIP2
 "
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
@@ -1809,7 +1817,7 @@ src_prepare() {
 	WEBRTC_SYS_GIT+=", rev = \"${LIVEKIT_COMMIT}\""
 	local WEBRTC_SYS_PATH="webrtc-sys = \\{ path = \"${WORKDIR}/livekit-rust-sdks-${LIVEKIT_COMMIT}/webrtc-sys\""
 
-	local NOTIFY_COMMIT="faecbc33db4f59313e5225ef766bfd9e54a54cfd"
+	local NOTIFY_COMMIT="0890bbb8ca40a4b5d1f67031698dd7918b37d991"
 	local NOTIFY_GIT="notify = { git = \"https://github.com/zed-industries/notify\""
 	NOTIFY_GIT+=", rev = \"${NOTIFY_COMMIT}\""
 	local NOTIFY_PATH="notify = \\{ path = \"${WORKDIR}/notify-${NOTIFY_COMMIT}/notify\""
