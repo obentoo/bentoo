@@ -7,13 +7,72 @@
 # ebuild (Gentoo version rules: prefixes v/release-/ver-/version- stripped;
 # regex returns capture group 1 of the FIRST match on the raw body).
 #
-# 292 records (265 original + 9 added 2026-06-20 enabled + 6 Gentoo-mirror /
-# manual-cadence enabled=false: rust{,-bin,-common}, audacity, webkit-gtk,
-# sci-ml/ollama + 11 added 2026-07-08 probe-gap audit, incl. rename
-# claude-agent-tui -> claude-agent-acp-tui — all live-verified). SKIPPED is empty.
+# 314 records — all live-verified. 88 disabled (enabled = false), 4 held
+# (hold = true), 0 skipped.
 #
 # NOTE: BEGIN/END markers below are comments only. Do NOT use bare [BEGIN]/[END]
 # table syntax here — TOML would parse them as phantom packages.
+#
+# ============================================================================
+#                        RECORD MODEL — follow it verbatim
+# ============================================================================
+# Every record obeys the field ORDER below (bookkeeping → source → extraction →
+# post-processing → auxiliary substitution → transport → classification → doc).
+# Omit every field you do not need; never reorder, never invent a key —
+# bentoolkit's PackageConfig (internal/autoupdate/config.go) is the sole
+# authority on what parses, and an unknown key is silently ignored.
+#
+#   ["category/package"]                # header: quoted, exactly as in the overlay
+#   enabled = false                     # ONLY when false. Absent = enabled.
+#   hold = true                         # ONLY when true. See "enabled vs hold".
+#   track = "commit"                    # omit for tag/version tracking
+#   url = "https://…"                   # REQUIRED — the endpoint being probed
+#   timeout = 60                        # seconds, only for reliably slow hosts
+#   parser = "json"                     # REQUIRED — json | regex | html | script
+#   path = "tag_name"                   # REQUIRED for parser=json
+#   pattern = 'name-([0-9.]+)\.tar\.xz' # REQUIRED for parser=regex (1 capture group)
+#   selector = "a.release-tag"          # REQUIRED for parser=html (or xpath)
+#   script = "@vendor.js"               # REQUIRED for parser=script (scripts/vendor.js)
+#   transform = [['^v', ""]]            # ordered regex substitutions on the result
+#   select = "max"                      # first (default) | max | last
+#   commit_sha_path = "[0].sha"         # REQUIRED with track="commit"
+#   commit_message_path = "commit.message"
+#   commit_version_pattern = 'sdk-([0-9.]+)'
+#   aux_var = "MY_BUILD"                # free-text ebuild var kept in sync…
+#   aux_pattern = 'esr-bb([0-9]+)'      # …always paired with aux_var
+#   headers = { "User-Agent" = "bentoo-autoupdate" }
+#   binary = true                       # binary package → manifest-only testing
+#   type = "bin"                        # ONLY to override the -bin/RESTRICT heuristic
+#   meta = { key = "value" }            # documentation only; NEVER a secret
+#   # package — one line saying WHY this source/parser, plus every caveat a
+#   # future bump must know (stale endpoints, prerelease traps, hand-edited vars).
+#
+# Rules that are not obvious from the field list:
+#
+# * DOC COMMENT goes BELOW the fields, as the last lines of the record, and
+#   starts with the package name. Never above the header (a section banner does
+#   live above, and the two must not be confused). It is mandatory whenever the
+#   record deviates from its section's default; records in a uniform family
+#   (KDE Plasma, GStreamer) are covered by the section banner alone.
+# * REGEX values (pattern, aux_pattern, commit_version_pattern, and the left
+#   side of every transform rule) use TOML LITERAL strings '…'. A basic string
+#   "…" rejects \. and \d outright. Replacements use basic strings "…".
+# * ENABLED vs HOLD. enabled is BOOKKEEPING the checker flips on its own: it
+#   writes enabled = false when the ebuild vanishes from the overlay and back to
+#   true when it reappears. hold is a MAINTAINER DECISION ("present, but never
+#   auto-bump") that reconciliation never touches. A package that needs manual
+#   work each release (patchset, pinned SHA, bootstrap compiler) takes hold —
+#   enabled = false would be silently reverted. Both skip the fetch entirely.
+# * USER-AGENT is required by api.github.com and crates.io — always the literal
+#   "bentoo-autoupdate". A browser UA is a last resort for a Cloudflare-fronted
+#   host and must be justified in the doc comment.
+# * REGEX returns capture group 1 of the FIRST match on the raw body; anchor it
+#   so a page listing several releases cannot yield an older one (or use
+#   select = "max"). The result is normalized before comparison (leading
+#   v/release-/ver-/version- stripped) and must end up a Gentoo-shaped version.
+# * VERIFY BEFORE COMMITTING: probe the real endpoint
+#   (`bentoo overlay autoupdate --check <category/package> --force`) — never
+#   hand-write a record from a guessed URL shape.
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>  BEGIN PACKAGES  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
@@ -22,7 +81,6 @@
 # ============================================================================
 
 ["dev-util/claude-code"]
-enabled = true
 url = "https://registry.npmjs.org/@anthropic-ai/claude-code"
 parser = "json"
 path = "dist-tags.latest"
@@ -54,13 +112,12 @@ path = "currentRelease"
 # Kiro — kiro.dev SPA metadata endpoint (found via DevTools); "currentRelease" is authoritative.
 
 ["app-misc/claude-desktop-bin"]
-enabled = true
 url = "https://claude.ai/api/desktop/linux/x64/deb/latest"
 parser = "json"
 path = "version"
-headers = { "User-Agent" = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0" }
 aux_var = "BUILD_ID"
 aux_pattern = 'Claude-([0-9a-f]{40})\.deb'
+headers = { "User-Agent" = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0" }
 # Claude Desktop — official download API behind the claude.ai/download button
 # ({"version","url"}). claude.ai sits behind Cloudflare: a plain curl/wget UA gets
 # a 403 challenge, but the autoupdate UA passes. The .deb has a per-release 40-hex
@@ -71,7 +128,6 @@ aux_pattern = 'Claude-([0-9a-f]{40})\.deb'
 # itself has no Cloudflare challenge, so SRC_URI fetches fine under portage's wget.
 
 ["app-office/obsidian"]
-enabled = true
 url = "https://raw.githubusercontent.com/obsidianmd/obsidian-releases/HEAD/desktop-releases.json"
 parser = "json"
 path = "latestVersion"
@@ -168,14 +224,13 @@ pattern = 'Current version:\s*Betterbird\s*([0-9]+\.[0-9]+\.[0-9]+)esr-bb[0-9]+'
 url = "https://gitlab.com/api/v4/projects/inkscape%2Finkscape/repository/tags?per_page=20"
 parser = "regex"
 pattern = '"name":"INKSCAPE_([0-9]+_[0-9]+_[0-9]+)"'
-transform = [["_", "."]]
+transform = [['_', "."]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
 # Inkscape — inkscape.org/release/ now 502s sitewide; read tags off the GitLab API.
 # Tags are "INKSCAPE_X_Y_Z" (the trailing quote skips _RC/_BETA pre-releases); the
 # transform rewrites underscores to dots. First match in the body is the newest stable.
 
 ["app-office/openoffice-bin"]
-enabled = true
 url = "https://www.openoffice.org/"
 parser = "regex"
 pattern = 'Apache OpenOffice ([0-9]+\.[0-9]+\.[0-9]+)'
@@ -228,7 +283,6 @@ parser = "regex"
 pattern = '<a name="([0-9]+\.[0-9]+\.[0-9]+)"'
 select = "max"
 binary = true
-type = "bin"
 # CrossOver — changelog page lists each release as `<a name="X.Y.Z">`, newest first;
 # present in the raw HTML (not JS-only). Download is the .deb under media.codeweavers.com
 # named by ${PV}; the .bin installer (install-crossover-X.Y.Z.bin) mirrors the same version.
@@ -485,7 +539,6 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 # Cadence: upstream cuts ~6 releases/day, so nearly every check run yields a bump.
 
 ["sys-apps/bleachbit"]
-enabled = true
 url = "https://api.github.com/repos/bleachbit/bleachbit/releases/latest"
 parser = "json"
 path = "tag_name"
@@ -500,7 +553,6 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 # flatpak — releases/latest is older stable; tags[0] tracks the newer line.
 
 ["sys-apps/fwupd"]
-enabled = true
 url = "https://api.github.com/repos/fwupd/fwupd/releases/latest"
 parser = "regex"
 pattern = '"tag_name":\s*"([0-9]+\.[0-9]+\.[0-9]+)'
@@ -609,7 +661,6 @@ pattern = 'xf86-video-qxl-([0-9][0-9.]*)"'
 # xf86-video-qxl — tags carry "xf86-video-qxl-" prefix; regex extracts the version.
 
 ["net-misc/networkmanager"]
-enabled = true
 url = "https://gitlab.freedesktop.org/api/v4/projects/NetworkManager%2FNetworkManager/repository/tags?order_by=version&sort=desc&per_page=40"
 parser = "regex"
 pattern = '"name":"([0-9]+\.[0-9]+\.[0-9]+)"'
@@ -707,8 +758,8 @@ track = "commit"
 url = "https://gitlab.freedesktop.org/api/v4/projects/mesa%2Fmesa/repository/commits?ref_name=main&per_page=50"
 parser = "json"
 path = "[0].committed_date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].id"
-transform = [["T.*", ""], ["-", ""]]
 # mesa — commit-tracked on main; _pre suffix preserved from current ebuild.
 
 ["dev-util/mesa_clc"]
@@ -716,8 +767,8 @@ track = "commit"
 url = "https://gitlab.freedesktop.org/api/v4/projects/mesa%2Fmesa/repository/commits?ref_name=main&per_page=50"
 parser = "json"
 path = "[0].committed_date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].id"
-transform = [["T.*", ""], ["-", ""]]
 # mesa_clc — part of the mesa tree; same source/rule as media-libs/mesa.
 
 ["app-editors/zed"]
@@ -725,8 +776,8 @@ track = "commit"
 url = "https://api.github.com/repos/zed-industries/zed/commits?sha=main&per_page=50"
 parser = "json"
 path = "[0].commit.committer.date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].sha"
-transform = [["T.*", ""], ["-", ""]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
 # zed — commit-tracked on main; _pre suffix preserved from current ebuild.
 
@@ -735,8 +786,8 @@ track = "commit"
 url = "https://api.github.com/repos/zeule/asus-ec-sensors/commits?sha=master&per_page=50"
 parser = "json"
 path = "[0].commit.committer.date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].sha"
-transform = [["T.*", ""], ["-", ""]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
 # asus-ec-sensors — the single upstream tag (v0.1.0) is stale and board support
 # lands as plain commits on master, so track master. PV base stays "0"; the _p
@@ -756,8 +807,8 @@ track = "commit"
 url = "https://api.github.com/repos/sqlitebrowser/sqlitebrowser/commits?sha=master&per_page=50"
 parser = "json"
 path = "[0].commit.committer.date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].sha"
-transform = [["T.*", ""], ["-", ""]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
 # sqlitebrowser — commit-tracked on master (uses COMMIT= without quotes); date YYYYMMDD becomes _pDATE suffix.
 
@@ -766,8 +817,8 @@ track = "commit"
 url = "https://gitlab.freedesktop.org/api/v4/projects/mobile-broadband%2Flibqmi/repository/commits?ref_name=main&per_page=50"
 parser = "json"
 path = "[0].committed_date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].id"
-transform = [["T.*", ""], ["-", ""]]
 # libqmi — commit-tracked on main; _pre suffix preserved from current ebuild.
 
 ["net-misc/modemmanager"]
@@ -775,8 +826,8 @@ track = "commit"
 url = "https://gitlab.freedesktop.org/api/v4/projects/mobile-broadband%2FModemManager/repository/commits?ref_name=main&per_page=50"
 parser = "json"
 path = "[0].committed_date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].id"
-transform = [["T.*", ""], ["-", ""]]
 # modemmanager — commit-tracked on main (GitLab); date YYYYMMDD becomes _pDATE suffix.
 
 ["dev-util/breakpad"]
@@ -791,10 +842,10 @@ track = "commit"
 url = "https://api.github.com/repos/KhronosGroup/glslang/commits?sha=main&per_page=50"
 parser = "json"
 path = "[0].commit.committer.date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].sha"
 commit_message_path = "commit.message"
 commit_version_pattern = 'vulkan-sdk-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
-transform = [["T.*", ""], ["-", ""]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
 # glslang — commit-tracked on main; scans titles for vulkan-sdk-X.Y.Z.W to detect base bump.
 
@@ -803,10 +854,10 @@ track = "commit"
 url = "https://api.github.com/repos/KhronosGroup/SPIRV-Headers/commits?sha=main&per_page=50"
 parser = "json"
 path = "[0].commit.committer.date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].sha"
 commit_message_path = "commit.message"
 commit_version_pattern = 'vulkan-sdk-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
-transform = [["T.*", ""], ["-", ""]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
 # spirv-headers — commit-tracked on main; scans titles for vulkan-sdk-X.Y.Z.W to detect base bump.
 
@@ -815,10 +866,10 @@ track = "commit"
 url = "https://api.github.com/repos/KhronosGroup/SPIRV-Tools/commits?sha=main&per_page=50"
 parser = "json"
 path = "[0].commit.committer.date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].sha"
 commit_message_path = "commit.message"
 commit_version_pattern = 'vulkan-sdk-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
-transform = [["T.*", ""], ["-", ""]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
 # spirv-tools — commit-tracked on main; scans titles for vulkan-sdk-X.Y.Z.W to detect base bump.
 
@@ -827,10 +878,10 @@ track = "commit"
 url = "https://api.github.com/repos/KhronosGroup/Vulkan-Headers/commits?sha=main&per_page=50"
 parser = "json"
 path = "[0].commit.committer.date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].sha"
 commit_message_path = "commit.message"
 commit_version_pattern = 'Update for Vulkan-Docs ([0-9]+\.[0-9]+\.[0-9]+)'
-transform = [["T.*", ""], ["-", ""]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
 # vulkan-headers — commit-tracked on main; scans titles "Update for Vulkan-Docs X.Y.Z" to detect base bump.
 
@@ -839,10 +890,10 @@ track = "commit"
 url = "https://api.github.com/repos/KhronosGroup/Vulkan-Tools/commits?sha=main&per_page=50"
 parser = "json"
 path = "[0].commit.committer.date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].sha"
 commit_message_path = "commit.message"
 commit_version_pattern = 'Update for Vulkan-Docs ([0-9]+\.[0-9]+\.[0-9]+)'
-transform = [["T.*", ""], ["-", ""]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
 # vulkan-tools — commit-tracked on main; scans titles "Update for Vulkan-Docs X.Y.Z" to detect base bump.
 
@@ -858,10 +909,10 @@ track = "commit"
 url = "https://api.github.com/repos/KhronosGroup/Vulkan-ValidationLayers/commits?sha=main&per_page=50"
 parser = "json"
 path = "[0].commit.committer.date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].sha"
 commit_message_path = "commit.message"
 commit_version_pattern = 'Update for Vulkan-Docs ([0-9]+\.[0-9]+\.[0-9]+)'
-transform = [["T.*", ""], ["-", ""]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
 # vulkan-layers — commit-tracked on main (Vulkan-ValidationLayers); scans for "Update for Vulkan-Docs X.Y.Z".
 
@@ -870,10 +921,10 @@ track = "commit"
 url = "https://api.github.com/repos/KhronosGroup/Vulkan-Loader/commits?sha=main&per_page=50"
 parser = "json"
 path = "[0].commit.committer.date"
+transform = [['T.*', ""], ['-', ""]]
 commit_sha_path = "[0].sha"
 commit_message_path = "commit.message"
 commit_version_pattern = 'Update for Vulkan-Docs ([0-9]+\.[0-9]+\.[0-9]+)'
-transform = [["T.*", ""], ["-", ""]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
 # vulkan-loader — commit-tracked on main; scans for "Update for Vulkan-Docs X.Y.Z" to detect base bump.
 
@@ -1374,7 +1425,6 @@ path = "[0].name"
 headers = { "User-Agent" = "bentoo-autoupdate" }
 
 ["kde-plasma/spectacle"]
-enabled = true
 url = "https://api.github.com/repos/KDE/plasma-workspace/tags"
 parser = "json"
 path = "[0].name"
@@ -1627,7 +1677,6 @@ parser = "regex"
 pattern = '"name":"([0-9]+\.[0-9]+\.[0-9]+)"'
 
 ["media-plugins/gst-plugins-mpeg2dec"]
-enabled = true
 url = "https://gitlab.freedesktop.org/api/v4/projects/gstreamer%2Fgstreamer/repository/tags?per_page=20"
 parser = "regex"
 pattern = '"name":"([0-9]+\.[0-9]+\.[0-9]+)"'
@@ -1854,7 +1903,6 @@ binary = true
 # current version (single version on page → deterministic first match).
 
 ["app-office/freeoffice"]
-enabled = true
 url = "https://www.freeoffice.com/en/download/applications"
 parser = "regex"
 pattern = 'Revision ([0-9]+)'
@@ -1892,16 +1940,16 @@ binary = true
 url = "https://api.github.com/repos/ImageMagick/ImageMagick/tags"
 parser = "json"
 path = "[0].name"
-transform = [["-", "."]]
+transform = [['-', "."]]
+headers = { "User-Agent" = "bentoo-autoupdate" }
 # imagemagick — GitHub tags newest-first ("7.1.2-24"); transform hyphen→dot so it
 # compares against the ebuild "7.1.2.24" (was SKIP: "not comparable").
 
 ["dev-games/godot"]
-enabled = true
 url = "https://godotengine.org/download/archive/"
 parser = "regex"
 pattern = '(\d+\.\d+(?:\.\d+)?-(?:stable|beta\d*|rc\d*|dev\d*))'
-transform = [["-stable", ""], ["-beta", "_beta"], ["-rc", "_rc"], ["-dev", "_alpha"]]
+transform = [['-stable', ""], ['-beta', "_beta"], ['-rc', "_rc"], ['-dev', "_alpha"]]
 # godot — download archive lists newest first; transform the upstream suffix to
 # Gentoo form (-stable→bare, -beta→_beta, -rc→_rc, -dev→_alpha).
 
@@ -1914,7 +1962,6 @@ select = "max"
 # highest (was SKIP: assumed git-only, but the mirror does host versioned tarballs).
 
 ["app-office/libreoffice"]
-enabled = true
 url = "https://download.documentfoundation.org/libreoffice/src/"
 parser = "script"
 script = "@libreoffice.js"
@@ -1922,7 +1969,6 @@ script = "@libreoffice.js"
 # dir and reads the 4-segment tarball version inside it.
 
 ["app-office/libreoffice-l10n"]
-enabled = true
 url = "https://download.documentfoundation.org/libreoffice/src/"
 parser = "script"
 script = "@libreoffice.js"
@@ -1954,16 +2000,16 @@ script = "@antigravity-hub.js"
 # product from the IDE above. Same Angular SPA page; the script reads the GCS
 # "antigravity-hub" link, returning PV "X.Y.Z.BUILD" (e.g. 2.0.10.5119448496078848).
 
+["www-misc/warsaw"]
+url = "https://cloud.gastecnologia.com.br/bb/downloads/ws/debian/warsaw_setup64.run"
+parser = "regex"
+pattern = 'warsaw_([0-9.]+-[0-9]+)_amd64\.deb'
+transform = [['-', "."]]
 # Warsaw — banking security blob. The download URL is version-less
 # (warsaw_setup64.run), but the .run is a ZIP whose embedded Debian package name
 # "warsaw_<ver>-<rev>_amd64.deb" appears in plaintext ~590 KB in (well under the
 # 10 MiB body cap), so a regex over the raw body recovers it. transform turns the
 # "X.Y.Z-R" deb revision into the ebuild's 4-segment PV (2.21.5-1 -> 2.21.5.1).
-["www-misc/warsaw"]
-url = "https://cloud.gastecnologia.com.br/bb/downloads/ws/debian/warsaw_setup64.run"
-parser = "regex"
-pattern = 'warsaw_([0-9.]+-[0-9]+)_amd64\.deb'
-transform = [["-", "."]]
 
 # ============================================================================
 # Late additions (2026-06-20) — overlay packages that previously had no record.
@@ -1992,7 +2038,6 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 # from the same release. Live=0.3.0. (A bump must re-check the mozjs/xargs build gotchas.)
 
 ["dev-db/redis"]
-enabled = true
 url = "https://api.github.com/repos/redis/redis/releases/latest"
 parser = "json"
 path = "tag_name"
@@ -2001,7 +2046,6 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 # archive tag and PV. Live latest=8.8.0 (prerelease=false) — the 8.x line, not a Valkey fork.
 
 ["dev-util/claude-agent-acp-tui"]
-enabled = true
 url = "https://api.github.com/repos/lucascouts/claude-agent-tui/releases/latest"
 parser = "json"
 path = "tag_name"
@@ -2085,22 +2129,24 @@ path = "[0].name"
 
 # --- Debian source package (xvfb-run tracks xorg-server's Debian diff revision) ---
 
+["x11-misc/xvfb-run"]
+url = "https://sources.debian.org/api/src/xorg-server/"
+parser = "regex"
+pattern = '"version":\s*"2:([0-9]+\.[0-9]+\.[0-9]+-[0-9]+)"'
+transform = [['-', "."]]
 # xvfb-run PV = xorg-server X.Y.Z plus the Debian diff revision W => X.Y.Z.W; SRC_URI fetches
 # mirror://debian .../xorg-server_X.Y.Z-W.diff.gz. The Debian sources API JSON lists versions
 # newest-first; the first "version" (sid) carries the fixed "2:" epoch, so the regex captures
 # "X.Y.Z-W" after it and transform "-"->"." yields the 4-segment PV. Live: "2:21.1.23-1" -> 21.1.23.1.
 # (regex-over-body, like www-misc/warsaw, avoids a mid-path JSON index that has no precedent here.)
-["x11-misc/xvfb-run"]
-url = "https://sources.debian.org/api/src/xorg-server/"
-parser = "regex"
-pattern = '"version":\s*"2:([0-9]+\.[0-9]+\.[0-9]+-[0-9]+)"'
-transform = [["-", "."]]
 
 # ============================================================================
-# Gentoo mirrors / series-pinned (enabled=false, added 2026-06-20) — bentoo
-# tracks these AHEAD of Gentoo but bumps them BY HAND (rust patchset+LLVM_COMPAT,
-# webkit dual-slot, audacity 3.7.x pin, ollama llama.cpp rearch), so the cron must
-# not auto-bump. The source is still correct: run `--check <pkg> --force` to probe.
+# Gentoo mirrors / series-pinned (added 2026-06-20) — bentoo tracks these AHEAD
+# of Gentoo but bumps them BY HAND (rust patchset+LLVM_COMPAT, webkit dual-slot,
+# audacity 3.7.x pin, ghc bootstrap compiler, ollama llama.cpp rearch), so the
+# cron must not auto-bump. Records whose ebuild is PRESENT in the overlay use
+# hold = true (reconciliation would revert enabled = false); the rest stay
+# enabled = false. The source is still correct: `--check <pkg> --force` to probe.
 # ============================================================================
 
 # --- rust: source, -bin and -common share ONE stable Rust version (channel toml) ---
@@ -2131,14 +2177,14 @@ pattern = '\[pkg\.rust\]\s+version = "([0-9]+\.[0-9]+\.[0-9]+)'
 # --- ghc: manual cadence (a version bump is never a pure PV swap) ---
 
 ["dev-lang/ghc"]
-enabled = true
+hold = true
 url = "https://downloads.haskell.org/~ghc/latest/"
 parser = "regex"
 pattern = 'ghc-([0-9]+\.[0-9]+\.[0-9]+)-src\.tar\.xz'
 # GHC — the ~ghc/latest/ directory listing is authoritative: it only exists once the
 # release tarballs are actually published, so it can't report a version whose distfiles
 # 404 (gitlab tags do appear earlier). group1=clean X.Y.Z (normalizer no-op).
-# enabled=false ON PURPOSE: the applier only swaps PV/SHA, but a GHC bump also needs
+# hold = true ON PURPOSE: the applier only swaps PV/SHA, but a GHC bump also needs
 # GHC_BINARY_PV (the bootstrap compiler, whose bindists must exist under the new
 # release) plus a re-validation of the version-specific patches in files/ — an auto-bump
 # would commit an ebuild that doesn't build. Probe kept live: `--check dev-lang/ghc --force`.
@@ -2159,27 +2205,28 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 # --- webkit-gtk: pinned to stable 2.52.x (both slots -r411/-r601 share PV) ---
 
 ["net-libs/webkit-gtk"]
-enabled = true
+hold = true
 url = "https://www.webkitgtk.org/releases/"
 parser = "regex"
 pattern = 'webkitgtk-(2\.52\.[0-9]+)\.tar\.xz'
 select = "max"
 # webkitgtk.org HTML listing (ascending) -> select=max over the 2.52.x series; ignores
 # dev 2.53.x and the 2.48 LTS / 2.50 lines. One entry covers both slots (share PV 2.52.4).
+# hold = true (NOT enabled = false, which reconciliation would revert since both
+# ebuilds ARE present): the dual-slot pin (-r411/-r601) is bumped by hand.
 
 # --- ollama source: same upstream repo as sci-ml/ollama-bin ---
 
 ["sci-ml/ollama"]
-enabled = true
+hold = true
 url = "https://api.github.com/repos/ollama/ollama/releases/latest"
 parser = "json"
 path = "tag_name"
 headers = { "User-Agent" = "bentoo-autoupdate" }
-# ollama source — same repo as ollama-bin; tag "vX.Y.Z" (leading v stripped). hold=true
-# (NOT enabled=false, whose ebuild is present so the overlay reconciliation would
-# re-enable it): the llama.cpp FetchContent rearch needs manual patchset/distfile
-# work per bump, so this is a deliberate maintainer hold, never auto-flipped.
-# I enabled for test the update
+# ollama source — same repo as ollama-bin; tag "vX.Y.Z" (leading v stripped).
+# hold = true (NOT enabled = false, which the overlay reconciliation would revert
+# since the ebuild IS present): the llama.cpp FetchContent rearch needs manual
+# patchset/distfile work per bump, so this is a deliberate maintainer hold.
 
 # ============================================================================
 # Added 2026-07-08 — overlay packages that were untracked (probe gap audit).
@@ -2255,7 +2302,6 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 # dry-run the PATCHES array against the new tarball after an auto-bump.
 
 ["app-admin/ansible"]
-enabled = true
 url = "https://pypi.org/pypi/ansible/json"
 parser = "json"
 path = "info.version"
@@ -2267,9 +2313,9 @@ path = "info.version"
 url = "https://api.github.com/repos/audacity/audacity/releases?per_page=15"
 parser = "regex"
 pattern = '"tag_name":"Audacity-([0-9]+\.[0-9]+\.[0-9]+-beta-[0-9]+)"'
-transform = [["-beta-", "_beta"]]
-binary = true
+transform = [['-beta-', "_beta"]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
+binary = true
 # Audacity (AppImage) — tracks the 4.x BETA line, not stable. releases/latest
 # would return the newest STABLE (3.7.x), so read the full /releases list and
 # regex the first "Audacity-X.Y.Z-beta-N" tag (first match skips interleaved
@@ -2297,7 +2343,7 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 url = "https://codeberg.org/api/v1/repos/librewolf/source/tags?page=1&limit=1"
 parser = "regex"
 pattern = '"name":"([0-9]+\.[0-9]+(?:\.[0-9]+)?-[0-9]+)"'
-transform = [["-", "_p"]]
+transform = [['-', "_p"]]
 # LibreWolf — Codeberg repo tags API (source), newest-first "name" field.
 # The generic packages endpoint times out; tags API is fast and reliable.
 # Version "152.0.4-1" maps to ebuild PV "152.0.4_p1" (transform "-"->"_p").
@@ -2307,7 +2353,7 @@ transform = [["-", "_p"]]
 url = "https://codeberg.org/api/v1/repos/librewolf/source/tags"
 parser = "regex"
 pattern = '"name":"([0-9]+\.[0-9]+\.[0-9]+-[0-9]+)"'
-transform = [["-", "_p"]]
+transform = [['-', "_p"]]
 binary = true
 # LibreWolf (bin) — same upstream source version as www-client/librewolf.
 # "152.0.4-1" -> "152.0.4_p1". Live=152.0.5-1.
@@ -2357,6 +2403,7 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 # dlpack — tag "vX.Y". Pulled in as a hard dependency of sci-libs/onnxruntime.
 
 ["sci-ml/stable-diffusion-cpp"]
+hold = true
 url = "https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest"
 parser = "regex"
 pattern = '"tag_name":\s*"master-([0-9]+)-[0-9a-f]+"'
@@ -2376,14 +2423,16 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 # MY_COMMIT from its short hash and GGML_COMMIT from
 # `git ls-tree stable-diffusion.cpp <tag> -- ggml`.
 #
-# `enabled = false` does NOT stick: bentoolkit re-enables any record whose
-# package is present in the overlay (commit ba706dc8 flipped it back).
+# Hence hold = true, not enabled = false: the latter does NOT stick, because
+# bentoolkit re-enables any record whose package is present in the overlay
+# (commit ba706dc8 flipped it back). hold is never auto-flipped.
 
 ["sci-ml/ik_llama-cpp"]
+hold = true
 url = "https://api.github.com/repos/ikawrakow/ik_llama.cpp/commits/main"
 parser = "json"
 path = "commit.committer.date"
-transform = [["T.*", ""], ["-", ""], ['^(\d+)$', "0_pre$1"]]
+transform = [['T.*', ""], ['-', ""], ['^(\d+)$', "0_pre$1"]]
 headers = { "User-Agent" = "bentoo-autoupdate" }
 # ik_llama-cpp — upstream publishes no usable release series.  Verified
 # 2026-07-19: the repo has exactly ONE tag, "t0002" (prerelease, 2025-07-22),
@@ -2398,7 +2447,8 @@ headers = { "User-Agent" = "bentoo-autoupdate" }
 # new HEAD commit, use its COMMITTER date (not author date) as PV, and update
 # SRC_URI and S together.
 #
-# `enabled = false` does NOT stick — see the note on stable-diffusion-cpp.
+# Hence hold = true — `enabled = false` does NOT stick; see the note on
+# stable-diffusion-cpp.
 
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>  END PACKAGES  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
