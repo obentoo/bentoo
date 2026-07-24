@@ -1,0 +1,53 @@
+Use a pre-populated node_modules tree instead of running `npm ci` at build time.
+
+The web app is bundled by webpack, which upstream drives through
+BuildWebApp.cmake: it stages src/app and src/web-app into the build tree and
+then runs `npm ci --ignore-scripts` there.  That step needs the network, which
+a distribution build does not have.  Gentoo ships the dependency tree as a
+separate distfile generated from this release's package-lock.json and points
+LEMONADE_PREBUILT_NODE_MODULES at it, so the install step can be skipped and
+`npm run build` runs fully offline.
+
+Not sent upstream: this is a packaging hook rather than a bug fix.
+--- a/src/web-app/BuildWebApp.cmake
++++ b/src/web-app/BuildWebApp.cmake
+@@ -65,6 +65,27 @@
+ # the staged web-app directory, which now sits at staging/web-app/.
+ set(WEB_APP_BUILD_SOURCE_DIR "${STAGED_WEB_APP_DIR}")
+ 
++# Distribution builds have no network access at build time, so `npm ci` cannot
++# run. When LEMONADE_PREBUILT_NODE_MODULES points at a node_modules tree that
++# was populated ahead of time from this release's package-lock.json, link it
++# into the freshly staged web-app directory and skip the install step below.
++if(NOT "$ENV{LEMONADE_PREBUILT_NODE_MODULES}" STREQUAL "")
++    if(NOT EXISTS "$ENV{LEMONADE_PREBUILT_NODE_MODULES}")
++        message(FATAL_ERROR
++            "LEMONADE_PREBUILT_NODE_MODULES is set to $ENV{LEMONADE_PREBUILT_NODE_MODULES} but that directory does not exist")
++    endif()
++    message(STATUS "Using pre-populated node_modules from $ENV{LEMONADE_PREBUILT_NODE_MODULES}")
++    execute_process(
++        COMMAND "${CMAKE_COMMAND}" -E create_symlink
++            "$ENV{LEMONADE_PREBUILT_NODE_MODULES}"
++            "${WEB_APP_BUILD_SOURCE_DIR}/node_modules"
++        RESULT_VARIABLE LINK_RESULT
++    )
++    if(NOT LINK_RESULT EQUAL 0)
++        message(FATAL_ERROR "Failed to link pre-populated node_modules (exit code ${LINK_RESULT})")
++    endif()
++endif()
++
+ # System nodejs modules and KaTeX fonts integration
+ if(USE_SYSTEM_NODEJS_MODULES_ENABLED)
+     set(SYSTEM_NODE_MODULES "/usr/share/nodejs")
+@@ -105,8 +126,9 @@
+     find_program(WEBPACK_EXECUTABLE webpack)
+ endif()
+ 
+-# Install dependencies only in non-system mode
+-if(NOT USE_SYSTEM_NODEJS_MODULES_ENABLED)
++# Install dependencies only in non-system mode, and only when the staged tree
++# does not already carry a node_modules (see LEMONADE_PREBUILT_NODE_MODULES).
++if(NOT USE_SYSTEM_NODEJS_MODULES_ENABLED AND NOT EXISTS "${WEB_APP_BUILD_SOURCE_DIR}/node_modules")
+     if(NOT NPM_EXECUTABLE)
+         message(FATAL_ERROR "npm not found - non-system web app build requires npm")
+     endif()
