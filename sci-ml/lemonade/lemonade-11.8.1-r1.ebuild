@@ -86,8 +86,14 @@ src_prepare() {
 	# calls that have no option() to turn them off, so the detection itself has
 	# to be neutralised or the build links them behind the USE flag's back.
 	if ! use systemd; then
-		sed -i -e 's/pkg_check_modules(SYSTEMD QUIET libsystemd)/set(SYSTEMD_FOUND FALSE)/' \
-			CMakeLists.txt || die
+		local mbedtls_probe='pkg_check_modules(MBEDTLS QUIET mbedtls mbedx509 mbedcrypto)'
+		local mbedtls_probe_fixed='pkg_check_modules(MBEDTLS QUIET mbedtls-3 mbedx509-3 mbedcrypto-3)'
+
+		grep -qF "${mbedtls_probe}" CMakeLists.txt ||
+			die "mbedTLS pkg-config probe not found"
+
+		sed -i "s|${mbedtls_probe}|${mbedtls_probe_fixed}|" CMakeLists.txt ||
+			die
 	fi
 	if ! use caps; then
 		sed -i -e 's/pkg_check_modules(LIBCAP QUIET libcap)/set(LIBCAP_FOUND FALSE)/' \
