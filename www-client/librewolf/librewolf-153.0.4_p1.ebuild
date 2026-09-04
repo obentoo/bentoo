@@ -29,8 +29,14 @@ HOMEPAGE="https://librewolf.net/"
 
 MOZ_PN="firefox"
 
+# rust-toolchain is inherited on top of rust for rust_abi alone: rust.eclass
+# does not provide it, and src_prepare needs it to set RUST_TARGET. See the
+# comment there. Neither eclass defines a symbol the other does -- rust.eclass
+# has the slot/path helpers, rust-toolchain.eclass only rust_abi and the two
+# URI builders.
 inherit check-reqs desktop flag-o-matic gnome2-utils linux-info llvm-r1 multiprocessing \
-	optfeature pax-utils python-any-r1 readme.gentoo-r1 rust toolchain-funcs virtualx xdg
+	optfeature pax-utils python-any-r1 readme.gentoo-r1 rust rust-toolchain \
+	toolchain-funcs virtualx xdg
 
 LIBREWOLF_SRC_URI="https://codeberg.org/librewolf/source/releases/download/${LIBREWOLF_PV}/librewolf-${LIBREWOLF_PV}.source.tar.gz"
 
@@ -580,7 +586,6 @@ src_prepare() {
 
 	# Workaround for bgo#915651 and bmo#1988166 on musl
 	if use elibc_glibc ; then
-		rm -v "${WORKDIR}"/firefox-patches/*bgo-748849-RUST_TARGET_override.patch || die
 		rm -v "${WORKDIR}"/firefox-patches/*bgo-967694-musl-prctrl-exception-on-musl.patch || die
 	fi
 
@@ -592,8 +597,30 @@ src_prepare() {
 	# Make cargo respect MAKEOPTS
 	export CARGO_BUILD_JOBS="$(makeopts_jobs)"
 
+	# RUST_TARGET is read by firefox-patches' bgo-748849 override, which is why
+	# that patch is no longer deleted on glibc above. Without it, Mozilla picks
+	# the rustc triplet itself, and since rust 1.98.0 it cannot: that release
+	# added five *-oe-* (OpenEmbedded) targets, so x86_64-oe-linux-gnu now sits
+	# beside x86_64-unknown-linux-gnu. detect_rustc_target() narrows candidates
+	# by raw_os, which matches BOTH, and every later tiebreak fails -- no rustc
+	# target carries vendor "pc", and the vendor_aliases table only maps
+	# "gentoo". The build dies in configure with
+	#   ERROR: Don't know how to translate x86_64-pc-linux-gnu for rustc
+	# which reads like a broken toolchain rather than an ambiguity. Measured
+	# here: rust-bin-1.97.1 lists zero *-oe-* targets and resolves fine;
+	# rust{,-bin}-1.98.0 and 1.98.1 list five and fail. It is not a Gentoo
+	# patch -- upstream's own binary release carries them.
+	#
+	# rust_abi maps CHOST to the canonical rustc triplet
+	# (x86_64-pc-linux-gnu -> x86_64-unknown-linux-gnu), which is exactly the
+	# candidate the ambiguity was hiding. It is set for host and target alike;
+	# that is correct for a native build and matches what the musl path below
+	# has always done.
+	#
 	# Workaround for bgo#915651
-	if ! use elibc_glibc ; then
+	if use elibc_glibc ; then
+		export RUST_TARGET="$(rust_abi)"
+	else
 		if use amd64 ; then
 			export RUST_TARGET="x86_64-unknown-linux-musl"
 		elif use x86 ; then
