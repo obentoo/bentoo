@@ -3,9 +3,12 @@
 
 EAPI=8
 
-PYTHON_COMPAT=( python3_{11..13} )
+PYTHON_COMPAT=( python3_{12..14} )
 
-inherit check-reqs cmake cuda edo flag-o-matic optfeature python-single-r1 qmake-utils toolchain-funcs xdg virtualx
+# BENTOO-DIVERGENCE: INHERIT - everything ::gentoo inherits except branding,
+# whose blurb is "Branding variables with Gentoo defaults". bentoo ships its
+# own identity, so inheriting Gentoo branding would be wrong here.
+inherit check-reqs cmake cuda edo flag-o-matic optfeature python-single-r1 qt-utils toolchain-funcs xdg virtualx
 
 DESCRIPTION="Qt based Computer Aided Design application"
 HOMEPAGE="https://www.freecad.org/ https://github.com/FreeCAD/FreeCAD"
@@ -39,6 +42,9 @@ IUSE="debug designer +gui netgen pcl +smesh spacenav test X"
 # cMake/FreeCAD_Helpers/InitializeFreeCADBuildOptions.cmake
 # To get their dependencies:
 # 'grep REQUIRES_MODS cMake/FreeCAD_Helpers/CheckInterModuleDependencies.cmake'
+# BENTOO-DIVERGENCE: IUSE - cloud, an upstream workbench 1.1.3 ships and the
+# 1.1.1 in ::gentoo does not. It is determinate, not automagic: the deps sit
+# under cloud? ( ) and configure passes -DBUILD_CLOUD=$(usex cloud).
 IUSE+=" addonmgr assembly +bim cam cloud fem idf inspection +mesh openscad points reverse robot surface"
 
 REQUIRED_USE="
@@ -60,6 +66,8 @@ RESTRICT="!test? ( test )"
 
 # if opencascade[tbb], we link to tbb
 # if vtk[cuda], we use cuda
+# BENTOO-DIVERGENCE: RDEPEND - openssl and curl, behind USE=cloud below.
+# BENTOO-DIVERGENCE: DEPEND - same pair, through RDEPEND.
 RDEPEND="
 	${PYTHON_DEPS}
 	dev-cpp/tbb:=
@@ -135,7 +143,20 @@ BDEPEND="
 	)
 "
 
-PATCHES=( )
+# BENTOO-DIVERGENCE: PATCHES - one of ::gentoo's five, and only one. Verified
+# against the 1.1.3 tarball rather than assumed:
+#   qt-6.11             upstream PR 29905 is IN 1.1.3 (SetupQt.cmake:32), so
+#                       the patch reverses and is not needed
+#   pybind11-slots      marked "fixed in pybind-3.0.1" and the oldest pybind11
+#                       available here is 3.0.1, so it has no subject
+#   don-t-check-vcs     done by sed in src_prepare below
+#   Qt-only-build-test  same, by sed
+#   fix-sketcher-toolbars  NOT in 1.1.3 -- it applies clean, so the overlay was
+#                       silently missing a real fix. Added here under ::gentoo's
+#                       exact filename so the sweep can pair them.
+PATCHES=(
+	"${FILESDIR}"/freecad-1.1.1-fix-sketcher-toolbars.patch
+)
 
 DOCS=( CODE_OF_CONDUCT.md README.md )
 
