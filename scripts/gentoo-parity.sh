@@ -305,6 +305,52 @@ PARITY_STALE_CACHE=()      # <category>/<pn> TAB <PV> TAB <eclass> TAB <note>
                            # reported outside the four verdicts and outside the
                            # divergence row count
 
+# The 2026-09-04 parity audit added two more, and both sit outside the four
+# verdicts for the same reason PARITY_STALE_CACHE does: neither is a divergence
+# a human has to judge. One is a broken ebuild, the other is stale prose.
+
+PARITY_MISSING_DIGEST=()   # <category>/<pn> TAB <PV> TAB <distfile> TAB <note>
+                           # A distfile named in SRC_URI with no DIST line in
+                           # the package Manifest. The ebuild cannot be merged
+                           # at all: portage stops at "Insufficient data for
+                           # checksum verification".
+                           #
+                           # WHY THIS AXIS EXISTS. On 2026-09-04 net-misc/
+                           # rclone-1.75.0 and sci-ml/ollama-0.33.2 were both
+                           # found in exactly this state, each shadowing a
+                           # WORKING ::gentoo copy of the same version - the
+                           # overlay wins on repo priority, so the user gets the
+                           # broken one. Nothing caught it: the ebuild parses,
+                           # pkgcheck is quiet, and md5-cache is happily
+                           # regenerated. It surfaces only when someone emerges
+                           # the package.
+                           #
+                           # Unlike every other axis here this one does NOT
+                           # compare the two trees, so it is not restricted to
+                           # shared packages. A missing digest is broken whether
+                           # or not ::gentoo has an opinion, and the 101
+                           # overlay-only packages are exactly where nobody
+                           # would look. It DOES fail the run: this is not drift
+                           # to schedule, it is an ebuild nobody can install.
+
+PARITY_STALE_TAGS=()       # <category>/<pf> TAB <axis> TAB <note>
+                           # A "# BENTOO-DIVERGENCE: <axis>" tag naming an axis
+                           # on which the two trees no longer differ.
+                           #
+                           # WHY IT MATTERS MORE HERE THAN IN A NORMAL OVERLAY.
+                           # bentoo never sends anything upstream, so a
+                           # divergence is not a queue entry that eventually
+                           # drains - it is permanent until someone notices
+                           # ::gentoo caught up. That noticing is what this
+                           # array automates. Without it the overlay rebases a
+                           # patch long after the reason evaporated, which is
+                           # how dev-games/godot ended up mirroring an upstream
+                           # commit byte-for-byte.
+                           #
+                           # It does NOT fail the run: a stale tag misleads a
+                           # reader but breaks nothing, and a guard that goes
+                           # red over prose is a guard people learn to skip.
+
 # <category>/<pf> -> <pn>, for every ebuild in scope. Published by stage 1 and
 # read by every stage after it, because PN cannot be recovered from PF alone:
 # net-libs/webkit-gtk-2.52.5-r411 splits at the second hyphen, not the first,
@@ -2459,6 +2505,53 @@ write_parity_report() {
 			printf -- '- none\n\n'
 		fi
 
+		# Integrity, not divergence: both sections below describe the
+		# overlay on its own terms rather than against ::gentoo.
+		printf "## Distfiles with no digest\n\n"
+		printf -- 'A file named in `SRC_URI` with no `DIST` line in the package\n'
+		printf -- '`Manifest`. Portage stops at "Insufficient data for checksum\n'
+		printf -- 'verification", so the ebuild cannot be merged at all -- and if\n'
+		printf -- '`::gentoo` ships the same version, the overlay shadows a working\n'
+		printf -- 'copy with a broken one.\n\n'
+		printf -- 'Unlike everything above, this axis does **not** compare the two\n'
+		printf -- 'trees, so overlay-only packages are in scope too. It **does** fail\n'
+		printf -- 'the run.\n\n'
+		if (( ${#PARITY_MISSING_DIGEST[@]} )); then
+			printf "| Package | \`PV\` | Distfile | Observation |\n"
+			printf '|---|---|---|---|\n'
+			for name in "${PARITY_MISSING_DIGEST[@]}"; do
+				IFS=$'\t' read -r key overlay gentoo verdict <<<"${name}"
+				printf -- "| \`%s\` | \`%s\` | \`%s\` | %s |\n" \
+					"${key}" "${overlay}" "${gentoo}" "${verdict}"
+			done
+			printf '\n'
+			printf -- "Remediation: \`pkgdev manifest <category/package>\` -- always with an\n"
+			printf -- 'explicit target.\n\n'
+		else
+			printf -- '- none\n\n'
+		fi
+
+		printf "## Divergence tags whose reason evaporated\n\n"
+		printf -- 'A `# BENTOO-DIVERGENCE:` tag naming an axis on which the two\n'
+		printf -- 'trees no longer differ. `::gentoo` caught up; the tag now\n'
+		printf -- 'documents a difference that is not there.\n\n'
+		printf -- 'This overlay sends nothing upstream, so a divergence never drains\n'
+		printf -- 'on its own -- noticing that it became unnecessary is the only way\n'
+		printf -- 'the maintenance debt ever shrinks. These rows do **not** fail the\n'
+		printf -- 'run.\n\n'
+		if (( ${#PARITY_STALE_TAGS[@]} )); then
+			printf "| Ebuild | Axis | Observation |\n"
+			printf '|---|---|---|\n'
+			for name in "${PARITY_STALE_TAGS[@]}"; do
+				IFS=$'\t' read -r key overlay gentoo <<<"${name}"
+				printf -- "| \`%s\` | \`%s\` | %s |\n" \
+					"${key}" "${overlay}" "${gentoo}"
+			done
+			printf '\n'
+		else
+			printf -- '- none\n\n'
+		fi
+
 		printf '## What this report does not cover\n\n'
 		printf -- "- \`SRC_URI\` and \`DESCRIPTION\` are excluded by design: the first differs\n"
 		printf '  by construction whenever the version differs, the second is cosmetic.\n'
@@ -2468,6 +2561,184 @@ write_parity_report() {
 			"${#PARITY_EXCLUDED[@]}"
 		printf '  scope; auditing them against the devmanual is separate work.\n'
 	} >"${PARITY_REPORT}"
+}
+
+### the two integrity checks the 2026-09-04 audit added #################
+
+# src_uri_distfiles <SRC_URI value>
+# The distfile NAMES a SRC_URI resolves to, one per line.
+#
+# This is deliberately a name extractor and not a SRC_URI parser. It walks the
+# token stream and keeps only what portage would end up fetching into DISTDIR:
+#
+#   "a? ( ... )"  the conditional wrapper and its parens are structure, not
+#                 files. Every branch is kept, because a Manifest must cover
+#                 the distfiles of EVERY USE combination, not of this one.
+#   "|| ( ... )"  same; any arm may be the one used.
+#   "URL -> name" the arrow renames, so the DIST line carries `name`, not the
+#                 basename of the URL. Missing this is how a rename-heavy
+#                 package would report a false positive on every fetch.
+#   "URL"         plain: the basename after the last slash.
+#
+# A token with no slash and no arrow is not a URL - it is a leftover operator
+# from some construct not enumerated above - and is skipped rather than guessed
+# at. Guessing here would invent a distfile name and report a missing digest for
+# a file that was never meant to exist.
+src_uri_distfiles() {
+	local src_uri=$1
+	local -a tokens
+	local i tok
+
+	read -r -a tokens <<<"${src_uri}"
+
+	for (( i = 0; i < ${#tokens[@]}; i++ )); do
+		tok=${tokens[i]}
+
+		case ${tok} in
+			'('|')'|'||') continue ;;
+			*'?')         continue ;;
+		esac
+
+		# "URL -> name": consume both and emit the rename target.
+		if [[ ${tokens[i+1]-} == '->' && -n ${tokens[i+2]-} ]]; then
+			printf '%s\n' "${tokens[i+2]}"
+			i=$(( i + 2 ))
+			continue
+		fi
+
+		[[ ${tok} == *'/'* ]] || continue
+		printf '%s\n' "${tok##*/}"
+	done
+}
+
+# Every overlay package with a Manifest, filtered the way the sweep is.
+#
+# Not PARITY_SCOPE_EBUILDS: that array holds only packages ::gentoo also ships,
+# and a missing digest is broken independently of ::gentoo. See the note on
+# PARITY_MISSING_DIGEST.
+check_manifest_digests() {
+	local cache_entry pkg category pn pf pv src_uri manifest distfile
+
+	for cache_entry in "${OVERLAY_ROOT}"/metadata/md5-cache/*/*; do
+		[[ -f ${cache_entry} ]] || continue
+
+		pf=${cache_entry##*/}
+		category=${cache_entry%/*}
+		category=${category##*/}
+
+		# The filter is a category or a category/package; match the same
+		# way the sweep does so a targeted run stays targeted.
+		if [[ -n ${FILTER} ]]; then
+			case ${FILTER} in
+				*/*) [[ ${category}/${pf} == "${FILTER}"-* ]] || continue ;;
+				*)   [[ ${category} == "${FILTER}" ]] || continue ;;
+			esac
+		fi
+
+		src_uri=$(sed -n 's/^SRC_URI=//p' "${cache_entry}")
+		[[ -n ${src_uri} ]] || continue
+
+		# md5-cache is keyed by PF and carries no PN, so the package
+		# directory is found by asking which one holds this ebuild.
+		pn=""
+		for pkg in "${OVERLAY_ROOT}/${category}"/*/; do
+			if [[ -f ${pkg}${pf}.ebuild ]]; then
+				pn=$(basename -- "${pkg}")
+				break
+			fi
+		done
+		# No ebuild: a stale cache entry, which is a different problem
+		# and is not this check's to report.
+		[[ -n ${pn} ]] || continue
+
+		pv=${pf#"${pn}-"}
+		manifest="${OVERLAY_ROOT}/${category}/${pn}/Manifest"
+
+		while IFS= read -r distfile; do
+			[[ -n ${distfile} ]] || continue
+			if [[ ! -f ${manifest} ]] ||
+				! grep -qF "DIST ${distfile} " "${manifest}"; then
+				PARITY_MISSING_DIGEST+=(
+					"${category}/${pn}"$'\t'"${pv}"$'\t'"${distfile}"$'\t'"named in SRC_URI, no DIST line in Manifest - the ebuild cannot be fetched"
+				)
+			fi
+		# sort -u: two mirrors of one file resolve to the same name, and
+		# two identical rows describe one problem twice.
+		done < <(src_uri_distfiles "${src_uri}" | sort -u)
+	done
+
+	printf '  [digest]   %d distfile(s) named in SRC_URI with no DIST line in a Manifest\n' \
+		"${#PARITY_MISSING_DIGEST[@]}"
+}
+
+# Which tagged axes no longer name a real divergence.
+#
+# Reads two things stage 5 and stage 6 already published - PARITY_TAGGED_AXES
+# and the axis column of PARITY_ROWS - so it re-derives nothing. A tag is stale
+# when its axis produced no row for that ebuild, which covers both ways the
+# reason can evaporate: ::gentoo adopted the same value, or the whole ebuild
+# went byte-identical and stage 6 suppressed its rows.
+#
+# A tag naming an axis this script does not compare is NOT reported. It may be a
+# typo, or it may name something real that md5-cache does not carry; calling
+# either one "stale" would be a claim the evidence does not support.
+#
+# ONLY EXACT-DISTANCE EBUILDS ARE JUDGED, and this restriction is the whole
+# correctness of the check. "No row for this axis" has two causes that look
+# identical from here: the two sides agreed, or the axis was never compared.
+# Stage 4 compares dependency bounds ONLY at exact distance, because a newer
+# overlay version legitimately raises a minimum -- so at any other distance a
+# DEPEND tag produces no row no matter how far apart the trees are.
+#
+# Measured on the first full sweep, before this guard was added: all six tags it
+# reported as stale were same-series or package-distance Vulkan/SPIR-V ebuilds
+# whose DEPEND had simply not been compared. Six false positives out of six is
+# how a new check gets switched off in its first week.
+check_stale_tags() {
+	local key entry axis row rowpkg rowaxis rowpv found baseline distance
+	local -a known_axes=(
+		EAPI SLOT HOMEPAGE REQUIRED_USE
+		INHERIT DEFINED_PHASES LICENSE
+		DEPEND RDEPEND BDEPEND
+		IUSE IUSE_DEFAULTS KEYWORDS
+		PATCHES
+	)
+
+	for key in "${!PARITY_TAGGED_AXES[@]}"; do
+		entry=${key%|*}
+		axis=${key##*|}
+
+		axis_in "${axis}" "${known_axes[@]}" || continue
+
+		# Silence unless the pair is at exact distance, where every axis
+		# above really was compared and "no row" really does mean "equal".
+		distance=""
+		for baseline in "${PARITY_BASELINES[@]}"; do
+			if [[ ${baseline%%$'\t'*} == "${entry}" ]]; then
+				distance=${baseline##*$'\t'}
+				break
+			fi
+		done
+		[[ ${distance} == exact ]] || continue
+
+		found=0
+		for row in "${PARITY_ROWS[@]}"; do
+			IFS=$'\t' read -r rowpkg rowpv _ _ rowaxis _ <<<"${row}"
+			if [[ "${rowpkg}-${rowpv}" == "${entry}" && ${rowaxis} == "${axis}" ]]; then
+				found=1
+				break
+			fi
+		done
+
+		if (( ! found )); then
+			PARITY_STALE_TAGS+=(
+				"${entry}"$'\t'"${axis}"$'\t'"tag names this axis but the two trees no longer differ on it - ::gentoo caught up; drop the tag and whatever it justified"
+			)
+		fi
+	done
+
+	printf '  [tags]     %d of %d divergence tag(s) name an axis the two trees no longer differ on\n' \
+		"${#PARITY_STALE_TAGS[@]}" "${#PARITY_TAGGED_AXES[@]}"
 }
 
 # Stage 7. Write the machine-readable table and the human-readable report.
@@ -2497,6 +2768,18 @@ write_reports() {
 sweep_exit_code() {
 	local row verdict
 
+	# A missing digest is not drift to schedule - it is an ebuild nobody can
+	# install, shadowing whatever ::gentoo ships at the same version. It fails
+	# the run on its own, ahead of the verdict scan.
+	#
+	# PARITY_STALE_TAGS deliberately does not: it misleads a reader and breaks
+	# nothing, and a guard that turns red over prose is one people learn to
+	# skip - the same reasoning that keeps check-edk2-dbx-freshness.sh out of
+	# the pre-commit hook.
+	if (( ${#PARITY_MISSING_DIGEST[@]} )); then
+		return 1
+	fi
+
 	for row in "${PARITY_ROWS[@]}"; do
 		verdict=${row##*$'\t'}
 		if [[ ${verdict} == ALIGN || ${verdict} == UNDOCUMENTED ]]; then
@@ -2525,6 +2808,8 @@ run_sweep() {
 	compare_axes
 	compare_auxiliary_files
 	assign_verdicts
+	check_manifest_digests
+	check_stale_tags
 	write_reports
 
 	# The verdict lands here: non-zero when any package needs action.
@@ -3322,7 +3607,110 @@ self_test_assertions() {
 		'exit=0 rows=0 stale=present' \
 		"$(stale_cache_run "${scratch}")"
 
+	# --- 2026-09-04 audit: the two integrity checks -------------------
+
+	# A22 exercises the extractor against the three SRC_URI shapes that
+	# actually occur, because every false positive this check could produce
+	# comes from mis-reading one of them: a USE-conditional whose parens must
+	# not be read as files, an arrow whose TARGET is the distfile name rather
+	# than the URL basename, and a plain URL.
+	#
+	# The arrow is the one worth a test of its own. Reading the basename of
+	# the URL instead of the rename target would report a missing digest for
+	# every renamed distfile in the overlay - which is most of the GitHub
+	# ones - and a check that cries wolf on its first run is a check that gets
+	# deleted.
+	assert_eq A22 \
+		'SRC_URI extractor: USE-conditional, rename arrow, and plain URL' \
+		'gstreamer-1.28.6.tar.xz gstreamer-1.28.6.tar.xz.asc|renamed.tar.gz|plain.tar.gz' \
+		"$(
+			printf '%s' "$(src_uri_distfiles 'https://e.invalid/gstreamer-1.28.6.tar.xz verify-sig? ( https://e.invalid/gstreamer-1.28.6.tar.xz.asc )' | tr '\n' ' ' | sed 's/ $//')"
+			printf '|%s' "$(src_uri_distfiles 'https://e.invalid/v1.tar.gz -> renamed.tar.gz')"
+			printf '|%s' "$(src_uri_distfiles 'https://e.invalid/dir/plain.tar.gz')"
+		)"
+
+	# A23 is the rclone-1.75.0 shape, built from scratch under $TMPDIR: an
+	# ebuild whose distfile has no DIST line, in a package whose Manifest
+	# carries a DIST for a DIFFERENT version. That second half is what makes
+	# the real defect invisible - the Manifest is not empty, it is merely not
+	# about this ebuild - so a check that only asked "does a Manifest exist"
+	# would pass it.
+	#
+	# Paired with a clean package in the same scratch tree, so "1" cannot be
+	# reached by flagging everything.
+	assert_eq A23 \
+		'a distfile with no DIST line is caught; a package with one is not' \
+		'missing=1 caught=broken-1.0.tar.gz' \
+		"$(missing_digest_run "${scratch}")"
+
+	# A24 locks the false positive the first sweep produced. A tag on a
+	# same-series pair must stay silent, because stage 4 never compared its
+	# axis; only an exact-distance pair carries the evidence to call a tag
+	// stale. Both halves are asserted together, so a regression that silences
+	# everything cannot pass either.
+	assert_eq A24 \
+		'a stale tag is reported at exact distance and NEVER at same-series' \
+		'exact=stale same-series=silent' \
+		"$(stale_tag_distance_run)"
+
 	rm -rf -- "${scratch}"
+}
+
+# Run check_stale_tags twice over the same tagged axis, changing only the
+# baseline distance, and report what each run concluded. A subshell per run: the
+# check appends to globals the sweep also uses.
+stale_tag_distance_run() {
+	local exact same
+
+	exact=$(
+		PARITY_TAGGED_AXES=( ["cat/pkg-1.0|DEPEND"]=1 )
+		PARITY_ROWS=()
+		PARITY_BASELINES=( "cat/pkg-1.0"$'\t'"1.0"$'\t'"exact" )
+		PARITY_STALE_TAGS=()
+		check_stale_tags >/dev/null
+		(( ${#PARITY_STALE_TAGS[@]} )) && printf 'stale' || printf 'silent'
+	)
+	same=$(
+		PARITY_TAGGED_AXES=( ["cat/pkg-1.0|DEPEND"]=1 )
+		PARITY_ROWS=()
+		PARITY_BASELINES=( "cat/pkg-1.0"$'\t'"1.1"$'\t'"same-series" )
+		PARITY_STALE_TAGS=()
+		check_stale_tags >/dev/null
+		(( ${#PARITY_STALE_TAGS[@]} )) && printf 'stale' || printf 'silent'
+	)
+	printf 'exact=%s same-series=%s' "${exact}" "${same}"
+}
+
+# Build a two-package tree under scratch - one broken, one clean - and report
+# what check_manifest_digests found. A subshell, because the check appends to a
+# global the real sweep also uses.
+missing_digest_run() {
+	local scratch=$1
+	local root="${scratch}/digest-tree"
+
+	mkdir -p "${root}/net-misc/broken" "${root}/net-misc/clean" \
+		"${root}/metadata/md5-cache/net-misc"
+
+	: >"${root}/net-misc/broken/broken-1.0.ebuild"
+	# A DIST for a version that is NOT the one being built: the rclone shape.
+	printf 'DIST broken-1.1.tar.gz 1 BLAKE2B ab SHA512 cd\n' >"${root}/net-misc/broken/Manifest"
+	printf 'SRC_URI=https://e.invalid/v1.0.tar.gz -> broken-1.0.tar.gz\n' \
+		>"${root}/metadata/md5-cache/net-misc/broken-1.0"
+
+	: >"${root}/net-misc/clean/clean-2.0.ebuild"
+	printf 'DIST clean-2.0.tar.gz 1 BLAKE2B ab SHA512 cd\n' >"${root}/net-misc/clean/Manifest"
+	printf 'SRC_URI=https://e.invalid/clean-2.0.tar.gz\n' \
+		>"${root}/metadata/md5-cache/net-misc/clean-2.0"
+
+	(
+		OVERLAY_ROOT="${root}"
+		FILTER=""
+		PARITY_MISSING_DIGEST=()
+		check_manifest_digests >/dev/null
+		printf 'missing=%d caught=%s' \
+			"${#PARITY_MISSING_DIGEST[@]}" \
+			"$(IFS=$'\t'; set -- ${PARITY_MISSING_DIGEST[0]-}; printf '%s' "${3-none}")"
+	)
 }
 
 run_self_test() {
