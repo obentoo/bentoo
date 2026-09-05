@@ -23,6 +23,7 @@ RESTRICT="test"
 
 RDEPEND="
 	${PYTHON_DEPS}
+	dev-python/pygobject[${PYTHON_USEDEP}]
 	>=dev-libs/glib-2.40.0:2
 	dev-libs/libxml2:2=
 	>=media-libs/gstreamer-${PV}:1.0[introspection?]
