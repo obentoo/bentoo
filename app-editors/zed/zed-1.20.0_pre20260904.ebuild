@@ -1617,6 +1617,14 @@ REQUIRED_USE="|| ( X wayland )"
 CHECKREQS_DISK_BUILD="18G"
 CHECKREQS_MEMORY="8G"
 
+# sys-apps/xdg-desktop-portal in DEPEND below: ashpd is used from BOTH gpui
+# backends (x11/client.rs and wayland/client.rs), so the portal is needed
+# whichever of the two USE flags is on -- unconditional, as ::gentoo has it.
+# Without it file dialogs and screen capture fail at runtime, not at build.
+#
+# The note is out here because a "#" inside DEPEND="..." is not a comment: it is
+# content, and portage parses it as a package atom. Putting it inside made the
+# whole depset unparseable while still passing bash -n.
 DEPEND="
 	dev-libs/glib:2
 	|| (
@@ -1629,10 +1637,6 @@ DEPEND="
 	media-libs/fontconfig
 	media-libs/freetype
 	media-libs/vulkan-loader[X?]
-	# ashpd is used from BOTH gpui backends (x11/client.rs and
-	# wayland/client.rs), so the portal is needed whichever of the two
-	# USE flags is on -- unconditional, as ::gentoo has it. Without it
-	# file dialogs and screen capture fail at runtime, not at build.
 	sys-apps/xdg-desktop-portal
 	virtual/zlib:=
 	pulseaudio? ( media-libs/libpulse )

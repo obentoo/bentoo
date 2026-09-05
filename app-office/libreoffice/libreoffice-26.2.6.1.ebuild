@@ -86,7 +86,7 @@ LICENSE="|| ( LGPL-3 MPL-1.1 )"
 SLOT="0"
 
 [[ ${MY_PV} == *9999* ]] || \
-KEYWORDS="~amd64 ~arm ~arm64 ~loong ~ppc64 ~riscv ~x86 ~amd64-linux"
+KEYWORDS="~amd64 ~arm ~arm64 ~loong ~ppc64 ~riscv ~x86"
 
 # Extensions that need extra work:
 LO_EXTS="nlpsolver scripting-beanshell scripting-javascript wiki-publisher"
@@ -236,6 +236,21 @@ COMMON_DEPEND="${PYTHON_DEPS}
 #        after everything upstream is under gbuild
 #        as dmake execute tests right away
 #        tests apparently also need google-carlito-fonts (not packaged)
+# BENTOO-DIVERGENCE: DEPEND - abseil-cpp, fast_float and libeot in the dependency
+# string below, none of which ::gentoo depends on. All three are unbundlings this
+# overlay does and it does not: --with-system-abseil where ::gentoo passes
+# --without-system-abseil, and --with-system-libeot where it passes nothing.
+# BENTOO-DIVERGENCE: RDEPEND - the same three atoms, same reason.
+#
+# KNOWN CONSEQUENCE, not yet decided: media-libs/libeot is keyworded only
+# amd64/x86/riscv, so a hard dependency on it leaves this package unresolvable on
+# the arm, arm64, loong and ppc64 keywords the 26.2 ebuild carries. Three ways
+# out: keyword libeot wider, make the dep conditional and pass
+# --without-system-libeot elsewhere, or narrow this package. Leaving it is the
+# only wrong answer.
+#
+# These lines live OUTSIDE the string for the reason spelled out in webkit-gtk:
+# a "#" inside DEPEND="..." is parsed as an atom, not as a comment.
 DEPEND="${COMMON_DEPEND}
 	>=dev-libs/libatomic_ops-7.2d
 	dev-perl/Archive-Zip
@@ -288,6 +303,11 @@ else
 	RDEPEND+=" !app-office/libreoffice-l10n"
 fi
 
+# BENTOO-DIVERGENCE: PATCHES - ::gentoo's three, plus one upstream backport
+# they do not carry (svlockbytes, Gerrit 197842 / commit e3ea377f2daa). The
+# three shared entries are byte-identical; only the fourth diverges, and it
+# is a cherry-pick rather than a fork -- drop it at the release that
+# includes the commit.
 PATCHES=(
 	# "${WORKDIR}"/${PATCHSET/.tar.xz/}
 
@@ -540,6 +560,11 @@ src_configure() {
 		--with-lang=""
 		--with-parallelism=$(makeopts_jobs)
 		--with-system-abseil
+		# media-libs/libeot is in DEPEND, so say so instead of letting
+		# libo_CHECK_SYSTEM_MODULE decide: without the flag the build
+		# silently uses the system copy when installed and the bundled
+		# one when not, which is an automagic dependency.
+		--with-system-libeot
 		--with-system-openjpeg
 		--with-tls=nss
 		--with-vendor="Gentoo Foundation"

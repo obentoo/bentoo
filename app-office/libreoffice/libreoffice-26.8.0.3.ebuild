@@ -47,6 +47,10 @@ unset DEV_URI
 ADDONS_SRC=(
 	# not packaged in Gentoo
 	"${ADDONS_URI}/dragonbox-1.1.3.tar.gz"
+	# BENTOO-DIVERGENCE: DEPEND - games-engines/box2d is ABSENT here where
+	# ::gentoo depends on it. This is the rare case of bundling being the
+	# correct call, and the next two lines say why. ::gentoo can depend on it
+	# because their newest is 25.2, which still wants the 2.x API.
 	# >=26.8 detects system box2d through pkg-config and wants the 3.x API;
 	# games-engines/box2d is stuck at 2.4.x and ships no box2d.pc at all.
 	"${ADDONS_URI}/box2d-3.1.1.tar.gz"
@@ -236,6 +240,21 @@ COMMON_DEPEND="${PYTHON_DEPS}
 #        after everything upstream is under gbuild
 #        as dmake execute tests right away
 #        tests apparently also need google-carlito-fonts (not packaged)
+# BENTOO-DIVERGENCE: DEPEND - abseil-cpp, fast_float and libeot in the dependency
+# string below, none of which ::gentoo depends on. All three are unbundlings this
+# overlay does and it does not: --with-system-abseil where ::gentoo passes
+# --without-system-abseil, and --with-system-libeot where it passes nothing.
+# BENTOO-DIVERGENCE: RDEPEND - the same three atoms, same reason.
+#
+# KNOWN CONSEQUENCE, not yet decided: media-libs/libeot is keyworded only
+# amd64/x86/riscv, so a hard dependency on it leaves this package unresolvable on
+# the arm, arm64, loong and ppc64 keywords the 26.2 ebuild carries. Three ways
+# out: keyword libeot wider, make the dep conditional and pass
+# --without-system-libeot elsewhere, or narrow this package. Leaving it is the
+# only wrong answer.
+#
+# These lines live OUTSIDE the string for the reason spelled out in webkit-gtk:
+# a "#" inside DEPEND="..." is parsed as an atom, not as a comment.
 DEPEND="${COMMON_DEPEND}
 	>=dev-libs/libatomic_ops-7.2d
 	dev-perl/Archive-Zip
@@ -288,6 +307,11 @@ else
 	RDEPEND+=" !app-office/libreoffice-l10n"
 fi
 
+# BENTOO-DIVERGENCE: PATCHES - ::gentoo's three, plus one upstream backport
+# they do not carry (svlockbytes, Gerrit 197842 / commit e3ea377f2daa). The
+# three shared entries are byte-identical; only the fourth diverges, and it
+# is a cherry-pick rather than a fork -- drop it at the release that
+# includes the commit.
 PATCHES=(
 	# "${WORKDIR}"/${PATCHSET/.tar.xz/}
 
@@ -541,6 +565,11 @@ src_configure() {
 		--with-lang=""
 		--with-parallelism=$(makeopts_jobs)
 		--with-system-abseil
+		# media-libs/libeot is in DEPEND, so say so instead of letting
+		# libo_CHECK_SYSTEM_MODULE decide: without the flag the build
+		# silently uses the system copy when installed and the bundled
+		# one when not, which is an automagic dependency.
+		--with-system-libeot
 		--with-system-openjpeg
 		--with-tls=nss
 		--with-vendor="Gentoo Foundation"

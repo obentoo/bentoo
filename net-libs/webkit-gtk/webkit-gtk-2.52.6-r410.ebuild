@@ -105,12 +105,18 @@ RDEPEND="
 		dev-libs/wayland
 		dev-libs/wayland-protocols
 	)
-	# BENTOO-DIVERGENCE: DEPEND - the cross-slot blocker below.
-	# BENTOO-DIVERGENCE: RDEPEND - the same atom; both exist only because
-	# USE=webdriver above can be on in one slot at a time. Absent from
-	# ::gentoo because it never builds the binary in either slot.
 	webdriver? ( !net-libs/webkit-gtk:6[webdriver] )
 "
+# BENTOO-DIVERGENCE: DEPEND - the cross-slot "!net-libs/webkit-gtk:<other>[webdriver]"
+# blocker inside the dependency string below.
+# BENTOO-DIVERGENCE: RDEPEND - the same atom. Both exist only because USE=webdriver
+# can be on in one slot at a time; ::gentoo has neither, because it never builds
+# the binary in either slot.
+#
+# NOTE FOR WHOEVER EDITS THIS NEXT: these two lines live OUTSIDE the DEPEND
+# string on purpose. A "#" inside DEPEND="..." is not a comment -- it is content,
+# and portage parses it as a package atom. Putting them inside made both depsets
+# unparseable ("invalid package atom: '#'") while still looking fine to bash -n.
 DEPEND="${RDEPEND}"
 # Need real bison, not yacc
 BDEPEND="
