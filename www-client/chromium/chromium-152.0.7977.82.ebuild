@@ -52,7 +52,14 @@ CHROMIUM_LANGS="af am ar bg bn ca cs da de el en-GB es es-419 et fa fi fil fr gu
 	hi hr hu id it ja kn ko lt lv ml mr ms nb nl pl pt-BR pt-PT ro ru sk sl sr
 	sv sw ta te th tr uk ur vi zh-CN zh-TW"
 
-# bentoo: slot 22 enabled downstream (::gentoo ships 21 only). The only
+# bentoo: slot 22 SUBSTITUTED for 21 downstream (::gentoo ships 21 only).
+# Corrected 2026-09-04: this line used to read "slot 22 enabled", which
+# describes an addition. Commit 2ff7214ee narrowed LLVM_COMPAT=( 21 22 ) to
+# ( 22 ), so slot 21 was dropped, not joined -- a system carrying only LLVM 21
+# can no longer build chromium at all. Whether that is intended is an open
+# decision: ( 21 22 ) supports both and is what this overlay shipped before.
+# The reasoning below justifies 22 being INSIDE the gate; it does not justify
+# 21 being outside it. The only
 # version-gated patches are chromium-patches' llvm/lt-23/, which 22 shares
 # with 21, and every other slot reference is dynamic (${LLVM_SLOT}).
 # Re-measured against the 152 tag on 2026-08-27: llvm/ still holds exactly

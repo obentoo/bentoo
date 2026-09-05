@@ -5,11 +5,12 @@ EAPI=8
 
 RUST_OPTIONAL=1
 RUST_MIN_VER=1.48
-inherit gstreamer-meson rust
+inherit gstreamer-meson rust verify-sig
 
 DESCRIPTION="Open source multimedia framework"
 HOMEPAGE="https://gstreamer.freedesktop.org/"
 SRC_URI="https://${PN}.freedesktop.org/src/${PN}/${P}.tar.xz"
+SRC_URI+=" verify-sig? ( https://${PN}.freedesktop.org/src/${PN}/${P}.tar.xz.asc )"
 
 LICENSE="LGPL-2+"
 SLOT="1.0"
@@ -28,6 +29,7 @@ RDEPEND="
 "
 DEPEND="${RDEPEND}"
 BDEPEND="
+	verify-sig? ( sec-keys/openpgp-keys-tpm )
 	dev-util/glib-utils
 	app-alternatives/yacc
 	app-alternatives/lex
@@ -39,6 +41,8 @@ DOCS=( README.md )
 PATCHES=(
 	"${FILESDIR}"/gstreamer-1.24.10-disable-test-with-no-tools.patch
 )
+
+VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/tpm.asc
 
 src_prepare() {
 	default

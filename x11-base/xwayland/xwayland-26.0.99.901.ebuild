@@ -46,12 +46,19 @@ COMMON_DEPEND="
 	unwind? ( sys-libs/libunwind )
 "
 # BENTOO-DIVERGENCE: DEPEND - two test-only deps ::gentoo's 24.1.13 does not
-# carry, because the test suite they serve does not exist in 24.1.x. The 26.x
-# tree adds test/pyxtest/ (a pytest-driven suite that launches X servers to send
-# crafted protocol) and test/{sync,damage,bigreq}/ (xcb-sync, xcb-damage,
-# xcb-xinput). Every one of those meson dependency() calls is required: false,
-# so without these atoms the new tests are skipped in silence and USE=test
-# reports a pass it never earned. Drop this once ::gentoo ships a 26.x ebuild.
+# carry. Corrected 2026-09-04: an earlier version of this comment claimed
+# test/{sync,damage,bigreq}/ do not exist in 24.1.x. They do -- all three are
+# present at tag xwayland-24.1.13 and are subdir()ed in both trees. Only
+# test/pyxtest/ (a pytest-driven suite that launches X servers to send crafted
+# protocol) is genuinely new in 26.x; verified against the GitLab API, which
+# returns 404 for that path at 24.1.13 and 200 for the other three.
+#
+# The dependency is still right, for the reason that survived the check rather
+# than the one that did not: every one of those meson dependency() calls is
+# required: false, so without these atoms the tests are skipped in silence and
+# USE=test reports a pass it never earned -- which is equally true of the three
+# directories 24.1.13 already has. ::gentoo's own 24.1.13 has that same silent
+# skip. Drop this once ::gentoo ships a 26.x ebuild carrying the deps itself.
 DEPEND="
 	${COMMON_DEPEND}
 	>=x11-base/xorg-proto-2024.1

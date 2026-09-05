@@ -27,9 +27,26 @@
 # plugin, consider adding media-plugins/gst-plugins-meta dependency, but
 # also list any packages that provide explicitly requested plugins.
 #
-# Bentoo overlay: Patched to support meson.options (Meson 1.1+) in
-# addition to the legacy meson_options.txt filename. GStreamer 1.28.0+
-# uses the new naming convention.
+# Limitation to PROVIDES: multilib-minimal is provided by default, unless
+# GST_PLUGINS_MULTILIB is set to false - then, shadow phase functions are
+# calling the same gstreamer_multilib_* functions instead.
+#
+# BENTOO-DIVERGENCE: two additions over ::gentoo's copy, both required by the
+# 1.28/1.29 series this overlay ships and neither wanted upstream yet.
+#
+#  1. meson.options support.  GStreamer 1.28.0 renamed meson_options.txt to
+#     meson.options (the Meson 1.1+ spelling).  ::gentoo's eclass reads the old
+#     name unconditionally, so gstreamer_get_plugins() would die on every one of
+#     the 153 gst-plugins-* 1.28/1.29 ebuilds here.  _gstreamer_get_meson_options_file
+#     resolves whichever of the two exists and dies only if neither does.
+#
+#  2. -Dtests=disabled on split plugins.  A split plugin carries RESTRICT="test",
+#     but meson still evaluates the tests/ subdirs, which reference variables
+#     belonging to plugins this ebuild is not building (gstmse_private_test_dep
+#     in 1.28.3 was the first case).  Forcing the option off stops the
+#     configure-time failure.
+#
+# Drop either one once ::gentoo's eclass covers it -- check before every bump.
 
 case "${EAPI:-0}" in
 	8)
@@ -39,9 +56,42 @@ case "${EAPI:-0}" in
 		;;
 esac
 
-# multilib-minimal goes last
 PYTHON_COMPAT=( python3_{11..14} )
-inherit python-any-r1 meson multilib toolchain-funcs xdg-utils multilib-minimal
+
+inherit meson multilib python-any-r1 toolchain-funcs xdg-utils
+
+# @ECLASS_VARIABLE: GST_PLUGINS_MULTILIB
+# @PRE_INHERIT
+# @DESCRIPTION:
+# Default value is true, which means eclass provides multilib-minimal and
+# is setting up dependencies with MULTILIB_USEDEP accordingly.
+# If set to false, does not add MULTILIB_USEDEP nor exports multilib phases.
+: "${GST_PLUGINS_MULTILIB:=true}"
+
+# @ECLASS_VARIABLE: _GST_PLUGINS_MULTILIB_USEDEP
+# @DESCRIPTION:
+# Contains [${MULTILIB_USEDEP}] if GST_PLUGINS_MULTILIB is true, otherwise
+# empty.
+_GST_PLUGINS_MULTILIB_USEDEP=""
+
+case ${GST_PLUGINS_MULTILIB} in
+	true)
+		# multilib-minimal goes last
+		inherit multilib-minimal
+		_GST_PLUGINS_MULTILIB_USEDEP="[${MULTILIB_USEDEP}]"
+		;;
+	false)
+		;;
+	*)
+		eerror "Unknown value for \${GST_PLUGINS_MULTILIB}"
+		die "Value ${GST_PLUGINS_MULTILIB} is not supported"
+		;;
+esac
+
+# Bump based on upstream release notes
+if [[ ${PV} =~ 1.26.* ]]; then
+	BDEPEND=">=dev-build/meson-1.4"
+fi
 
 # @ECLASS_VARIABLE: GST_PLUGINS_ENABLED
 # @DESCRIPTION:
@@ -58,7 +108,8 @@ inherit python-any-r1 meson multilib toolchain-funcs xdg-utils multilib-minimal
 # @INTERNAL
 # @DESCRIPTION:
 # Returns the path to the meson options file, supporting both the new
-# meson.options (Meson 1.1+) and legacy meson_options.txt filenames.
+# meson.options (Meson 1.1+, used by GStreamer >= 1.28.0) and the legacy
+# meson_options.txt filename.  Dies if neither is present.
 _gstreamer_get_meson_options_file() {
 	local dir="${1:-${S}}"
 	if [[ -f "${dir}/meson.options" ]]; then
@@ -67,6 +118,18 @@ _gstreamer_get_meson_options_file() {
 		echo "${dir}/meson_options.txt"
 	else
 		die "No meson options file found in ${dir}"
+	fi
+}
+
+# @FUNCTION: _gstreamer_native_usex
+# @INTERNAL
+# @DESCRIPTION:
+# Calls multilib_native_usex if GST_PLUGINS_MULTILIB is true, otherwise usex.
+_gstreamer_native_usex() {
+	if [[ ${GST_PLUGINS_MULTILIB} == true ]]; then
+		multilib_native_usex "$@"
+	else
+		usex "$@"
 	fi
 }
 
@@ -221,7 +284,7 @@ LICENSE="GPL-2"
 SLOT="1.0"
 
 RDEPEND="
-	>=dev-libs/glib-2.64.0:2[${MULTILIB_USEDEP}]
+	>=dev-libs/glib-2.64.0:2${_GST_PLUGINS_MULTILIB_USEDEP}
 "
 BDEPEND="
 	${PYTHON_DEPS}
@@ -237,23 +300,15 @@ fi
 if [[ "${PN}" != "gstreamer" ]]; then
 	RDEPEND="
 		${RDEPEND}
-		>=media-libs/gstreamer-$(ver_cut 1-2):${SLOT}[${MULTILIB_USEDEP}]
+		>=media-libs/gstreamer-$(ver_cut 1-2):${SLOT}${_GST_PLUGINS_MULTILIB_USEDEP}
 	"
 fi
-
-# Export common multilib phases.
-multilib_src_configure() { gstreamer_multilib_src_configure; }
-multilib_src_compile() { gstreamer_multilib_src_compile; }
-multilib_src_install() { gstreamer_multilib_src_install; }
 
 if [[ "${PN}" != "${GST_ORG_MODULE}" ]]; then
 	# Do not run test phase for individual plugin ebuilds.
 	RESTRICT="test"
 	RDEPEND="${RDEPEND}
-		>=media-libs/${GST_ORG_MODULE}-${PV}:${SLOT}[${MULTILIB_USEDEP}]"
-
-	# Export multilib phases used for split builds.
-	multilib_src_install_all() { gstreamer_multilib_src_install_all; }
+		>=media-libs/${GST_ORG_MODULE}-${PV}:${SLOT}${_GST_PLUGINS_MULTILIB_USEDEP}"
 else
 	inherit virtualx
 
@@ -269,8 +324,6 @@ else
 			nls? ( >=sys-devel/gettext-0.17 )
 		"
 	fi
-
-	multilib_src_test() { gstreamer_multilib_src_test; }
 fi
 
 DEPEND="${DEPEND} ${RDEPEND}"
@@ -346,7 +399,7 @@ gstreamer_multilib_src_configure() {
 
 	if grep -q "option('introspection'" "${emeson_opts_file}" ; then
 		if in_iuse introspection ; then
-			gst_conf+=( -Dintrospection=$(multilib_native_usex introspection enabled disabled) )
+			gst_conf+=( -Dintrospection=$(_gstreamer_native_usex introspection enabled disabled) )
 		else
 			gst_conf+=( -Dintrospection=disabled )
 			if [[ "${PN}" == "${GST_ORG_MODULE}" ]]; then
@@ -380,9 +433,10 @@ gstreamer_multilib_src_configure() {
 			gst_conf+=( $(meson_feature test tests) )
 		fi
 	else
-		# Split plugins have RESTRICT="test"; force tests disabled to avoid
-		# meson evaluating tests/ subdirs that reference variables from
-		# plugins not being built (e.g. gstmse_private_test_dep in 1.28.3).
+		# BENTOO-DIVERGENCE (2): split plugins carry RESTRICT="test", but meson
+		# still evaluates the tests/ subdirs, which reference variables owned by
+		# plugins this ebuild does not build -- gstmse_private_test_dep in
+		# 1.28.3 was the first case.  Force the option off.
 		if grep -q "option('tests'" "${emeson_opts_file}" ; then
 			gst_conf+=( -Dtests=disabled )
 		fi
@@ -489,7 +543,9 @@ gstreamer-meson_pkg_setup() {
 # @DESCRIPTION:
 # Tests the gstreamer plugin (non-split)
 gstreamer_multilib_src_test() {
-	GST_GL_WINDOW=x11 virtx meson test --timeout-multiplier 5
+	if [[ "${PN}" == "${GST_ORG_MODULE}" ]]; then
+		GST_GL_WINDOW=x11 virtx meson test --timeout-multiplier 5
+	fi
 }
 
 # @FUNCTION: gstreamer_multilib_src_install
@@ -504,7 +560,7 @@ gstreamer_multilib_src_install() {
 		for plugin_dir in ${GST_PLUGINS_BUILD_DIR} ; do
 			for plugin in $(_gstreamer_get_target_filename $(gstreamer_get_plugin_dir ${plugin_dir})); do
 				local install_filename="${plugin##*:}"
-				install_filename="${install_filename#${EPREFIX}}"
+				install_filename="${install_filename#"${EPREFIX}"}"
 				insinto "${install_filename%/*}"
 				doins "${plugin%%:*}"
 			done
@@ -528,5 +584,38 @@ gstreamer_multilib_src_install_all() {
 		fi
 	done
 }
+
+if [[ ${GST_PLUGINS_MULTILIB} == true ]]; then
+	# Export common multilib phases.
+	multilib_src_configure() { gstreamer_multilib_src_configure; }
+	multilib_src_compile() { gstreamer_multilib_src_compile; }
+	multilib_src_test() { gstreamer_multilib_src_test; }
+	multilib_src_install() { gstreamer_multilib_src_install; }
+	if [[ "${PN}" != "${GST_ORG_MODULE}" ]]; then
+		# Export multilib phases used for split builds.
+		multilib_src_install_all() { gstreamer_multilib_src_install_all; }
+	fi
+else
+	gstreamer-meson_src_configure() { gstreamer_multilib_src_configure; }
+	gstreamer-meson_src_compile() {
+		pushd "${BUILD_DIR}" >/dev/null || die
+			gstreamer_multilib_src_compile
+		popd >/dev/null || die
+	}
+	gstreamer-meson_src_test() {
+		pushd "${BUILD_DIR}" >/dev/null || die
+			gstreamer_multilib_src_test
+		popd >/dev/null || die
+	}
+	gstreamer-meson_src_install() {
+		pushd "${BUILD_DIR}" >/dev/null || die
+			gstreamer_multilib_src_install
+		popd >/dev/null || die
+		if [[ "${PN}" != "${GST_ORG_MODULE}" ]]; then
+			gstreamer_multilib_src_install_all
+		fi
+	}
+	EXPORT_FUNCTIONS src_configure src_compile src_test src_install
+fi
 
 EXPORT_FUNCTIONS pkg_setup

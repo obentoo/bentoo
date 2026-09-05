@@ -3,15 +3,17 @@
 
 EAPI=8
 GST_ORG_MODULE="gst-plugins-bad"
-inherit gstreamer-meson
+inherit gstreamer-meson verify-sig
 
 DESCRIPTION="Less plugins for GStreamer"
 HOMEPAGE="https://gstreamer.freedesktop.org/"
+SRC_URI+=" verify-sig? ( https://gstreamer.freedesktop.org/src/${GST_ORG_MODULE}/${GST_ORG_MODULE}-${PV}.tar.xz.asc )"
 
 LICENSE="LGPL-2"
 KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~mips ~ppc ~ppc64 ~riscv ~sparc ~x86"
 
-IUSE="X bzip2 +introspection +orc udev vaapi vnc wayland"
+IUSE="X bzip2 +introspection +orc udev vaapi vnc vulkan wayland"
+REQUIRED_USE="vulkan? ( || ( X wayland ) )"
 
 # X11 is automagic for now, upstream #709530 - only used by librfb USE=vnc plugin
 # Baseline requirement for libva is 1.6, but 1.15 gets more features
@@ -24,6 +26,13 @@ RDEPEND="
 
 	bzip2? ( >=app-arch/bzip2-1.0.6-r4[${MULTILIB_USEDEP}] )
 	vnc? ( X? ( x11-libs/libX11[${MULTILIB_USEDEP}] ) )
+	vulkan? (
+		media-libs/vulkan-loader[${MULTILIB_USEDEP}]
+		X? (
+			x11-libs/libxcb:=[${MULTILIB_USEDEP}]
+			x11-libs/libxkbcommon[${MULTILIB_USEDEP}]
+		)
+	)
 	wayland? (
 		>=dev-libs/wayland-1.4.0[${MULTILIB_USEDEP}]
 		>=x11-libs/libdrm-2.4.98[${MULTILIB_USEDEP}]
@@ -47,6 +56,9 @@ BDEPEND="
 
 DOCS=( README.md )
 
+BDEPEND+=" verify-sig? ( sec-keys/openpgp-keys-tpm )"
+VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/tpm.asc
+
 src_prepare() {
 	default
 	addpredict /dev # Prevent sandbox violations bug #570624
@@ -56,7 +68,7 @@ src_prepare() {
 }
 
 multilib_src_configure() {
-	GST_PLUGINS_NOAUTO="bz2 hls ipcpipeline lcevcdecoder lcevcencoder librfb shm va wayland"
+	GST_PLUGINS_NOAUTO="bz2 hls ipcpipeline lcevcdecoder lcevcencoder librfb shm va vulkan wayland"
 
 	local emesonargs=(
 		-Dshm=enabled
@@ -67,11 +79,23 @@ multilib_src_configure() {
 
 		$(meson_feature bzip2 bz2)
 		$(meson_feature vaapi va)
+		$(meson_feature vulkan)
+		$(meson_feature vulkan vulkan-video)
 		-Dudev=$(usex udev $(usex vaapi enabled disabled) disabled)
 		$(meson_feature vnc librfb)
 		-Dx11=$(usex X $(usex vnc enabled disabled) disabled)
 		$(meson_feature wayland)
 	)
+
+	if use vulkan; then
+		local windowing=(
+			$(usev X x11)
+			$(usev wayland)
+		)
+		emesonargs+=(
+			-Dvulkan-windowing=$(IFS=','; echo "${windowing[*]}")
+		)
+	fi
 
 	gstreamer_multilib_src_configure
 }
@@ -87,6 +111,6 @@ multilib_src_install() {
 	# Remove the VA plugin - it is provided by media-plugins/gst-plugins-va
 	# to avoid file collisions. We only ship the library (libgstva-1.0.so).
 	if use vaapi; then
-		rm -f "${D}"/usr/$(get_libdir)/gstreamer-1.0/libgstva.so || die
+		rm "${D}"/usr/$(get_libdir)/gstreamer-1.0/libgstva.so || die
 	fi
 }

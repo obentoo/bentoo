@@ -19,7 +19,7 @@ LICENSE="LGPL-2+ BSD"
 SLOT="4.1/0" # soname version of libwebkit2gtk-4.1
 KEYWORDS="~amd64 ~arm ~arm64 ~loong ~ppc ~ppc64 ~riscv ~sparc ~x86"
 
-IUSE="aqua avif custom-cflags examples gamepad keyring +gstreamer +introspection pdf jpegxl +jumbo-build lcms seccomp spell systemd wayland webdriver X"
+IUSE="aqua avif cpu_flags_x86_sse cpu_flags_x86_sse2 custom-cflags examples gamepad keyring +gstreamer +introspection pdf jpegxl +jumbo-build lcms seccomp spell systemd wayland webdriver X"
 REQUIRED_USE="|| ( aqua wayland X )"
 
 # Tests do not run when built from tarballs
@@ -125,6 +125,10 @@ PATCHES=(
 	"${FILESDIR}"/2.52.5-EventTarget-gcc16.patch
 	"${FILESDIR}"/2.52.1-documentloader-eventloop-h.patch
 	"${FILESDIR}"/2.52.4-disable-nvidia-dmabuf.patch
+	# https://bugs.gentoo.org/730044 -- x86 without SSE2
+	"${FILESDIR}"/2.52.6-no-sse2.patch
+	# FTBFS with USE=-gstreamer
+	"${FILESDIR}"/2.52.6-no-video.patch
 )
 
 pkg_pretend() {
@@ -254,6 +258,32 @@ src_configure() {
 		-DUSE_SYSPROF_CAPTURE=OFF
 		-DUSE_WOFF2=ON
 	)
+
+	# Do our best to support x86 machines lacking SSE,
+	# https://bugs.gentoo.org/730044
+	if use x86; then
+		if use cpu_flags_x86_sse2; then
+			# These are normally added by the build system, but our
+			# patch changes the way an x86 CPU is detected, bypassing
+			# that addition.
+			append-flags "-msse2 -mfpmath=sse"
+		elif use cpu_flags_x86_sse; then
+			# If you have SSE1 but not SSE2, these are needed to
+			# avoid static_assert failures.
+			append-flags "-msse -mfpmath=sse"
+		else
+			# Neither? This is reportedly crashy, but better than
+			# nothing if you really don't have the hardware.
+			mycmakeargs+=( -DENABLE_WEBGL=OFF )
+			append-cppflags -DSKCMS_HAS_MUSTTAIL=0
+		fi
+	fi
+
+	if use riscv || use ppc64; then
+		# https://bugs.gentoo.org/970556
+		# https://bugs.webkit.org/show_bug.cgi?id=305745
+		append-cppflags -DSKCMS_HAS_MUSTTAIL=0
+	fi
 
 	if use riscv; then
 		# https://bugs.webkit.org/show_bug.cgi?id=305745

@@ -30,6 +30,13 @@ RESTRICT="!test? ( test )"
 # bentoo ships snapshots that bump on independent dates, so an exact pin can
 # never be satisfied. Floors on the companion snapshots keep the coupling the
 # pins exist to enforce. Raise them on every glslang/vulkan-headers/loader bump.
+#
+# Recorded 2026-09-04, previously undocumented: the same edit that rewrote the
+# pins also deleted ::gentoo's `test? ( dev-cpp/gtest )`. That is a second,
+# independent divergence -- the tests that need gtest are gated behind
+# USE=test, so it is invisible until someone enables it. Restore the atom or
+# state why it is unwanted; do not leave it as an unexplained side effect of
+# the pin rewrite.
 BDEPEND="${PYTHON_DEPS}
 	cube? ( >=dev-util/glslang-1.4.357.0_p20260813:=[${MULTILIB_USEDEP}] )
 "

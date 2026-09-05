@@ -56,14 +56,14 @@ COMMON_DEPEND=">=app-arch/brotli-1.2.0:=
 	>=dev-libs/simdjson-4.6.1:=
 	>=net-dns/c-ares-1.34.6:=
 	>=net-libs/nghttp2-1.69.0:=
-	>=net-libs/nghttp3-1.15.0:=
+	>=net-libs/nghttp3-1.18.0:=
 	virtual/zlib:=
 	system-icu? ( >=dev-libs/icu-73:= )
 	system-ssl? (
-		>=net-libs/ngtcp2-1.22.0:=
+		>=net-libs/ngtcp2-1.22.1:=
 		>=dev-libs/openssl-3.5.6:0=
 	)
-	!system-ssl? ( >=net-libs/ngtcp2-1.22.0:=[-gnutls] )
+	!system-ssl? ( >=net-libs/ngtcp2-1.22.1:=[-gnutls] )
 	|| (
 		sys-devel/gcc:*
 		llvm-runtimes/libatomic-stub

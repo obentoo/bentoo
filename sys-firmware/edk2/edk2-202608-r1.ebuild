@@ -61,6 +61,7 @@ RDEPEND="
 "
 
 PATCHES=(
+	"${FILESDIR}/${PN}-202608-fix-gic-hvf.patch"
 	"${FILESDIR}/${PN}-202608-werror.patch"
 	"${FILESDIR}/${PN}-202505-UninstallMemAttrProtocol.patch"
 )

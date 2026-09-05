@@ -32,12 +32,15 @@ RESTRICT="!test? ( test )"
 # core_tables_body.inc is generated from grammar files that only newer
 # spirv-headers ship (obentoo/bentoo#37). Raise it on every spirv-headers bump.
 #
-# -r1: no source change, same EGIT_COMMIT. The rebuild is the point --
+# Why a revbump is sometimes needed, even with no source change:
 # core_tables_body.inc is generated at build time from the grammar the header
 # package installs, so a spirv-headers bump silently leaves an already-merged
 # spirv-tools generating tables for the OLD grammar. Raising the floor alone
-# does not recompile anything; the revision is what makes portage do it.
-# Here it picks up SPV_QCOM_subgroup_size from spirv-headers-1.4.357.0_p20260826-r1.
+# does not recompile anything; only a revision makes portage do it. The
+# 1.4.357.0_p20260826-r1 case (picking up SPV_QCOM_subgroup_size) was the
+# precedent. Corrected 2026-09-04: this paragraph used to describe that -r1 in
+# the present tense. It no longer exists and EGIT_COMMIT has moved since --
+# what survives is the mechanism, which applies to every future header bump.
 DEPEND=">=dev-util/spirv-headers-1.4.357.0_p20260826-r1"
 # RDEPEND=""
 BDEPEND="${PYTHON_DEPS}"

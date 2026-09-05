@@ -2,13 +2,14 @@
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
-PYTHON_COMPAT=( python3_{11..13} )
+PYTHON_COMPAT=( python3_{12..14} )
 
-inherit meson python-r1
+inherit meson python-r1 verify-sig
 
 DESCRIPTION="SDK for making video editors and more"
 HOMEPAGE="http://wiki.pitivi.org/wiki/GES"
 SRC_URI="https://gstreamer.freedesktop.org/src/${PN}/${P/gstreamer/gst}.tar.xz"
+SRC_URI+=" verify-sig? ( https://gstreamer.freedesktop.org/src/${PN}/${P/gstreamer/gst}.tar.xz.asc )"
 S="${WORKDIR}"/${P/gstreamer/gst}
 
 LICENSE="LGPL-2+"
@@ -31,6 +32,9 @@ RDEPEND="
 "
 DEPEND="${RDEPEND}"
 BDEPEND="virtual/pkgconfig"
+
+BDEPEND+=" verify-sig? ( sec-keys/openpgp-keys-tpm )"
+VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/tpm.asc
 
 src_configure() {
 	python_setup

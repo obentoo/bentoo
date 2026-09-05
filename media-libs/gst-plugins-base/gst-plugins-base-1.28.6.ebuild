@@ -4,13 +4,14 @@
 EAPI=8
 GST_ORG_MODULE="gst-plugins-base"
 
-inherit flag-o-matic gstreamer-meson
+inherit flag-o-matic meson-multilib gstreamer-meson verify-sig
 
 DESCRIPTION="Basepack of plugins for gstreamer"
 HOMEPAGE="https://gstreamer.freedesktop.org/"
+SRC_URI+=" verify-sig? ( https://gstreamer.freedesktop.org/src/${GST_ORG_MODULE}/${GST_ORG_MODULE}-${PV}.tar.xz.asc )"
 
 LICENSE="GPL-2+ LGPL-2+"
-KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~mips ppc ppc64 ~riscv ~sparc x86 ~x64-macos ~x64-solaris"
+KEYWORDS="~alpha amd64 ~arm ~arm64 ~hppa ~loong ~mips ~ppc ppc64 ~riscv ~sparc x86 ~x64-macos ~x64-solaris"
 
 # For OpenGL we have three separate concepts, with a list of possibilities in each:
 #  * opengl APIs - opengl and/or gles2; USE=opengl and USE=gles2 enable these accordingly; if neither is enabled, OpenGL helper library and elements are not built at all and all the other options aren't relevant
@@ -60,7 +61,7 @@ GL_DEPS="
 	)
 
 	>=media-libs/graphene-1.4.0[${MULTILIB_USEDEP}]
-	media-libs/libpng:0[${MULTILIB_USEDEP}]
+	media-libs/libpng:0=[${MULTILIB_USEDEP}]
 	media-libs/libjpeg-turbo:0=[${MULTILIB_USEDEP}]
 " # graphene for optional gltransformation and glvideoflip elements and more GLSL Uniforms support in glshader; libpng/jpeg for gloverlay element
 # >=media-libs/graphene-1.4.0[${MULTILIB_USEDEP}]
@@ -96,6 +97,9 @@ DOCS=( README.md )
 PATCHES=(
 )
 
+BDEPEND+=" verify-sig? ( sec-keys/openpgp-keys-tpm )"
+VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/tpm.asc
+
 src_prepare() {
 	default
 	# GStreamer 1.28+ uses meson.options but the eclass expects meson_options.txt
@@ -110,7 +114,7 @@ multilib_src_configure() {
 	GST_PLUGINS_NOAUTO="alsa gl ogg pango theora vorbis x11 xshm xvideo"
 
 	local emesonargs=(
-		-Dtools=enabled
+		$(meson_native_enabled tools)
 
 		$(meson_feature alsa)
 		$(meson_feature kernel_linux drm)

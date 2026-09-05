@@ -12,7 +12,7 @@ KEYWORDS="~amd64 ~arm64"
 RDEPEND="
 	>=media-plugins/gst-plugins-sctp-${PV}:1.0[${MULTILIB_USEDEP}]
 	>=media-libs/webrtc-audio-processing-1.0:1[${MULTILIB_USEDEP}]
-	>=net-libs/libnice-0.1.21[${MULTILIB_USEDEP}]
+	>=net-libs/libnice-0.1.23[${MULTILIB_USEDEP}]
 "
 DEPEND="${RDEPEND}"
 
@@ -20,7 +20,7 @@ GST_PLUGINS_ENABLED="webrtc webrtcdsp"
 GST_PLUGINS_BUILD_DIR="webrtc webrtcdsp"
 
 PATCHES=(
-	"${FILESDIR}/${PN}-1.24.10-disable-srtp-sctp-dtls-options.patch"
+	"${FILESDIR}/${PN}-1.26.11-disable-srtp-sctp-dtls-options.patch"
 )
 
 src_prepare() {

@@ -4,13 +4,14 @@
 EAPI=8
 GST_ORG_MODULE="gst-plugins-good"
 
-inherit gstreamer-meson
+inherit gstreamer-meson verify-sig
 
 DESCRIPTION="Basepack of plugins for GStreamer"
 HOMEPAGE="https://gstreamer.freedesktop.org/"
+SRC_URI+=" verify-sig? ( https://gstreamer.freedesktop.org/src/${GST_ORG_MODULE}/${GST_ORG_MODULE}-${PV}.tar.xz.asc )"
 
 LICENSE="LGPL-2.1+"
-KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~mips ppc ppc64 ~riscv ~sparc x86"
+KEYWORDS="~alpha amd64 ~arm ~arm64 ~hppa ~loong ~mips ~ppc ppc64 ~riscv ~sparc x86"
 IUSE="+orc"
 
 # Old media-libs/gst-plugins-ugly blocker for xingmux moving from ugly->good
@@ -24,6 +25,9 @@ RDEPEND="
 DEPEND="${RDEPEND}"
 
 DOCS=( README.md )
+
+BDEPEND+=" verify-sig? ( sec-keys/openpgp-keys-tpm )"
+VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/tpm.asc
 
 src_prepare() {
 	default
