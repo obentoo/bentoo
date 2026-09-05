@@ -29,13 +29,6 @@ BDEPEND=""
 BDEPEND+=" verify-sig? ( sec-keys/openpgp-keys-tpm )"
 VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/tpm.asc
 
-src_prepare() {
-	default
-	# GStreamer 1.28+ uses meson.options but the eclass expects meson_options.txt
-	[[ -f "${S}/meson.options" && ! -f "${S}/meson_options.txt" ]] && \
-		ln -s meson.options "${S}/meson_options.txt" || die
-}
-
 multilib_src_configure() {
 	local emesonargs=(
 		-Dintrospection=$(multilib_native_usex introspection enabled disabled)

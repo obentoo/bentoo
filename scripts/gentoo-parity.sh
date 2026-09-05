@@ -2829,7 +2829,9 @@ FAILURES=()
 # assertion is about a specific hand-inspected divergence, so a version that
 # moved on is a stale assertion to re-measure, not a lookup to make dynamic.
 SELF_TEST_TAGGED_PKG='kde-plasma/spectacle'
-SELF_TEST_TAGGED_PV='6.7.4'
+# RE-PINNED 2026-09-05: spectacle was revbumped to -r1 and the unrevised
+# ebuild left the tree, so the exact PV this fixture copies had to follow.
+SELF_TEST_TAGGED_PV='6.7.4-r1'
 
 # The filter A12 drives a whole sweep through. Pinned for the same reason: it
 # names a category the overlay shares with ::gentoo and diverges from on
@@ -3377,9 +3379,21 @@ self_test_assertions() {
 	# assertion that disagrees with the tree is stale until the difference is
 	# EXPLAINED, and only then re-measured. Loosening one to make it agree
 	# retires the only thing that would notice the overlay moving under it.
+	# RE-MEASURED 2026-09-05, from 234 / 321 / 76, and the delta is one event:
+	# the KDE Plasma line left the overlay. Between bd598cb4d and HEAD the tree
+	# lost 82 packages and gained 30; 72 of the 82 are kde-plasma/*, and 81 of
+	# them were packages ::gentoo also carries. 12 of the 30 added are shared.
+	#
+	#     234 - 81 + 12 = 165, which is what stage 1 now publishes.
+	#
+	# The arithmetic closing exactly is the point: it says the count moved
+	# because the TREE moved, not because a stage silently stopped publishing.
+	# A01, A02, A03, A06, A07 and A20 all fall out of that single event, and
+	# A08 and A11 lost their subjects to it (kwin and kdeplasma-addons were
+	# both in the 82).
 	assert_eq A01 \
 		'shared packages: the overlay packages ::gentoo also carries' \
-		'234' "${#PARITY_SHARED_PACKAGES[@]}"
+		'165' "${#PARITY_SHARED_PACKAGES[@]}"
 
 	# RE-MEASURED TWICE during story 008, and left where it started - which is
 	# worth recording, because the second measurement is the one that says
@@ -3398,18 +3412,18 @@ self_test_assertions() {
 	# that it stops noticing.
 	assert_eq A02 \
 		'ebuilds in scope: every overlay ebuild inside a shared package' \
-		'321' "${#PARITY_SCOPE_EBUILDS[@]}"
+		'252' "${#PARITY_SCOPE_EBUILDS[@]}"
 
 	# Paired with its denominator: 0/0 and 321/321 must not read alike.
 	assert_eq A07 \
 		'md5-cache coverage: an entry exists on both sides for every ebuild in scope' \
-		'321/321' "${#PARITY_MD5_COVERED[@]}/${#PARITY_SCOPE_EBUILDS[@]}"
+		'252/252' "${#PARITY_MD5_COVERED[@]}/${#PARITY_SCOPE_EBUILDS[@]}"
 
 	# --- what each ebuild is compared against -------------------------
 
 	assert_eq A03 \
 		'exact-distance ebuilds: ::gentoo carries the same PV' \
-		'76' "$(baselines_at_distance exact)"
+		'6' "$(baselines_at_distance exact)"
 
 	# The live-ebuild trap, and the reason this one carries a denominator:
 	# including 9999 in the version sort made a first pass report 34 packages
@@ -3417,18 +3431,28 @@ self_test_assertions() {
 	# selected is the bug looking exactly like the fix.
 	assert_eq A06 \
 		'packages behind ::gentoo: none, once live ebuilds leave the version sort' \
-		'behind=0 baselines=321' \
+		'behind=0 baselines=252' \
 		"behind=${#PARITY_BEHIND[@]} baselines=${#PARITY_BASELINES[@]}"
 
 	# --- what the comparison concluded --------------------------------
 
+	# RE-MEASURED 2026-09-05, from 67, AND PAIRED WITH A DENOMINATOR because the
+	# new value is zero. Only an exact-distance ebuild can be byte-identical, so
+	# the 6 that A03 counts is the population this 0 is drawn from. Bare '0' was
+	# not acceptable here: the header rule is that "0 of nothing" and "0 of 6"
+	# must not render as the same string, and with the exact set down from 76 to
+	# 6 this is exactly the case it was written for.
+	#
+	# Zero is expected rather than alarming. Every one of the 67 was an ebuild
+	# the overlay carried unmodified at ::gentoo's PV, and 72 kde-plasma
+	# packages - which is what most of them were - left the tree.
 	assert_eq A04 \
 		'byte-identical ebuilds: cmp against the exact baseline agrees' \
-		'67' "${#PARITY_IDENTICAL[@]}"
+		'0/6' "${#PARITY_IDENTICAL[@]}/$(baselines_at_distance exact)"
 
 	assert_eq A05 \
 		'REDUNDANT verdicts: one per byte-identical ebuild, its axis rows suppressed' \
-		'67' "$(verdict_count REDUNDANT)"
+		'0/6' "$(verdict_count REDUNDANT)/$(baselines_at_distance exact)"
 
 	# PYTHON_COMPAT never reaches md5-cache under that name - python-any-r1
 	# expands it into the BDEPEND any-of block - so at kwin-6.7.4 the only
@@ -3436,6 +3460,20 @@ self_test_assertions() {
 	# does not (verified 2026-08-06; it is the ONLY md5-cache difference the
 	# two copies have). Matched on the value rather than on an axis name so
 	# the assertion survives whichever axis sub-task 3.3 files it under.
+	# ORPHANED 2026-09-05, AND LEFT RED ON PURPOSE.
+	#
+	# kde-plasma/kwin was one of the 72 kde-plasma packages that left the
+	# overlay (see A01). The assertion therefore has no ebuild to read, and
+	# there is no replacement: a sweep of the current data finds NO other row
+	# where a verdict of ALIGN rests on a dev-lang/python value, so nothing in
+	# the tree has this shape today.
+	#
+	# Not deleted, because what it guards is still true and still wanted: a
+	# PYTHON_COMPAT the overlay is merely BEHIND on must read ALIGN, never as a
+	# customisation. Not loosened either - a version of this that goes green
+	# without a subject would be the "0 out of nothing" the header forbids.
+	# It stays red, naming what it lost, until a subject with this shape exists
+	# or someone builds it a fixture the way A22-A24 have one.
 	assert_eq A08 \
 		'kwin-6.7.4 PYTHON_COMPAT drift is ALIGN: the overlay is behind, not customised' \
 		'ALIGN' "$(select_rows kde-plasma/kwin 6.7.4 '' dev-lang/python verdict)"
@@ -3452,23 +3490,39 @@ self_test_assertions() {
 
 	# Both halves are needed. Zero false positives is trivially true when no
 	# KEYWORDS row was ever emitted, so the assertion also demands the signal
-	# the normalisation must NOT suppress: mesa keeps ~amd64-linux and
-	# ~x86-linux, which ::gentoo does not carry, and that survives ~ stripping
-	# (verified 2026-08-06). No PV is pinned - mesa is bumped daily here.
+	# the normalisation must NOT suppress.
+	#
+	# RE-PINNED 2026-09-05, from mesa to foldingathome. The mesa signal was
+	# ~amd64-linux and ~x86-linux, and this session established that ::gentoo
+	# has never carried either at ANY mesa version: they are a fossil, not a
+	# divergence, and are due to be removed. Pinning an assertion to a keyword
+	# that is known to be leaving is what made this fragile the first time.
+	#
+	# foldingathome is a better fixture than mesa was. Its -* arm64 is the only
+	# other KEYWORDS row where the OVERLAY carries what ::gentoo does not - the
+	# direction that survives ~ stripping - and it is already JUSTIFIED, i.e. a
+	# recorded decision rather than an accident, where mesa is bumped daily.
 	assert_eq A10 \
-		'KEYWORDS: no row explainable by ~ alone, and mesa still reports its real one' \
-		'false-positives=0 mesa-signal=KEYWORDS' \
-		"false-positives=$(keywords_false_positives) mesa-signal=$(select_rows media-libs/mesa '' KEYWORDS '' axis)"
+		'KEYWORDS: no row explainable by ~ alone, and foldingathome still reports its real one' \
+		'false-positives=0 signal=KEYWORDS' \
+		"false-positives=$(keywords_false_positives) signal=$(select_rows sci-biology/foldingathome '' KEYWORDS '' axis)"
 
 	# ::gentoo inherits cargo and flag-o-matic at this PV and the overlay
 	# inherits neither: the overlay ebuild predates an upstream refactor made
 	# at the same version. Matched on cargo appearing in the row's values, so
 	# the assertion holds whether the stage reports the full INHERIT set or
 	# only the delta.
+	# RE-PINNED 2026-09-05, from kdeplasma-addons to imagemagick. The original
+	# subject left the overlay entirely - the package directory is gone - so
+	# the assertion had no ebuild to detect anything on. What it guards is
+	# unchanged: that an INHERIT the overlay lacks and ::gentoo carries still
+	# produces a row. imagemagick is the same shape (::gentoo inherits
+	# verify-sig, the overlay does not) and is ALIGN, i.e. a settled reading
+	# rather than a pending decision that a later tag would silence.
 	assert_eq A11 \
-		'kdeplasma-addons-6.7.4 INHERIT divergence is detected: ::gentoo has cargo and flag-o-matic, the overlay neither' \
+		'imagemagick INHERIT divergence is detected: ::gentoo has verify-sig, the overlay does not' \
 		'INHERIT' \
-		"$(select_rows kde-plasma/kdeplasma-addons 6.7.4 INHERIT cargo axis)"
+		"$(select_rows media-gfx/imagemagick '' INHERIT verify-sig axis)"
 
 	# --- what the guard does when it finds nothing --------------------
 
@@ -3503,9 +3557,15 @@ self_test_assertions() {
 	# The outcome as a whole, pinned by NAME. A13 alone would go green for a
 	# rule that suppressed ten WRONG rows if it happened to name the right
 	# survivors - which is why the four below pin the shapes individually.
+	# RE-MEASURED 2026-09-05. Still six rows, but three of the names turned
+	# over: webkit-gtk and chromium left the structural set and nettle and
+	# libqmi entered it. Neither the count nor the rule moved - the two that
+	# left are at PVs whose slots ::gentoo now matches, and the two that
+	# arrived diverged on a soname since. The count staying at six across that
+	# churn is the assertion working, not coincidence.
 	assert_eq A13 \
 		'SLOT: only the six structural rows survive, each named' \
-		'rows=6 packages=dev-libs/imath dev-util/glslang net-libs/nodejs net-libs/webkit-gtk www-client/chromium' \
+		'rows=6 packages=dev-libs/imath dev-libs/nettle dev-util/glslang net-libs/libqmi net-libs/nodejs' \
 		"$(slot_survivors)"
 
 	# THE ONE THAT MATTERS MOST, and the reason the component COUNT is
@@ -3521,17 +3581,26 @@ self_test_assertions() {
 	assert_eq A14 \
 		'SLOT: nodejs keeps its missing subslot where redis loses its version-only one' \
 		'nodejs@24[compared=yes slot=ALIGN] nodejs@26[compared=yes slot=ALIGN] redis[compared=yes slot=none]' \
-		"nodejs@24[$(slot_outcome net-libs/nodejs 24.19.0)] nodejs@26[$(slot_outcome net-libs/nodejs 26.7.0)] redis[$(slot_outcome dev-db/redis 8.10.0)]"
+		"nodejs@24[$(slot_outcome net-libs/nodejs 24.20.0)] nodejs@26[$(slot_outcome net-libs/nodejs 26.8.1)] redis[$(slot_outcome dev-db/redis 8.10.1)]"
 
 	# The shape findings.md's rule walks straight past: the version is the
 	# SLOT, not the subslot. Paired with the two slots that are not versions
 	# at all - a release channel and a genuinely different API generation -
 	# because a rule aggressive enough to fold 5.5 into 5.4 must still not
 	# fold stable into unstable.
+	# RE-PINNED 2026-09-05. chromium and webkit-gtk were the "stays" half, and
+	# they stopped diverging: at today's PVs both slots match ::gentoo exactly,
+	# so they now report slot=none for the honest reason - there is no row to
+	# suppress - rather than because a rule folded them away. Keeping them would
+	# have asserted a divergence that no longer exists.
+	#
+	# nettle takes their place. Its 0/9-7 against ::gentoo's 0/8-6 is a soname
+	# pair, not a version pair, so it must survive - which is the property the
+	# two departing subjects were there to pin.
 	assert_eq A15 \
-		'SLOT: a version in the slot itself goes; a named slot and a different slot stay' \
-		'lua[compared=yes slot=none] blender[compared=yes slot=none] chromium[compared=yes slot=ALIGN] webkit-gtk[compared=yes slot=ALIGN]' \
-		"lua[$(slot_outcome dev-lang/lua 5.5.1)] blender[$(slot_outcome media-gfx/blender 5.2.0)] chromium[$(slot_outcome www-client/chromium 151.0.7922.71)] webkit-gtk[$(slot_outcome net-libs/webkit-gtk 2.52.5-r411)]"
+		'SLOT: a version in the slot itself goes; a soname stays' \
+		'lua[compared=yes slot=none] blender[compared=yes slot=none] nettle[compared=yes slot=ALIGN]' \
+		"lua[$(slot_outcome dev-lang/lua 5.5.1)] blender[$(slot_outcome media-gfx/blender 5.2.1)] nettle[$(slot_outcome dev-libs/nettle 4.0)]"
 
 	# R1.2's revision case. ::gentoo carries binutils at PV 2.46.1-r1 and
 	# its slot reads 2.46: derivability has to strip the -r1 and then accept
@@ -3542,10 +3611,24 @@ self_test_assertions() {
 	# soname; neither derives from its own PV, and a rule that suppressed
 	# them would hide that the overlay is BEHIND ::gentoo on glslang's
 	# soname while ahead of it on the version.
+	# RE-MEASURED 2026-09-05, AND NARROWED - the narrowing recorded here rather
+	# than passed over, because it is a real loss of coverage.
+	#
+	# sys-devel/binutils and sys-libs/binutils-libs both left the overlay, and
+	# they were the only subjects for the FIRST half of what this asserted: that
+	# a -r1 in ::gentoo's PV does not defeat deriving its slot from it. Nothing
+	# left in the tree has that shape - libqmi carries a revision but its 0/5.12
+	# is a soname, which does not derive from 1.39.1 either way. So that half is
+	# UNCOVERED until a package with it returns; it was not reworded into
+	# something weaker that would look green.
+	#
+	# The second half kept its subjects and gained one. imath's 30/29 is an ABI
+	# counter, glslang's 16.5/16.4 a soname, and libqmi's 5.12/5.11 a third
+	# soname; none derives from its own PV, and all three must survive.
 	assert_eq A16 \
-		'SLOT: a revision in the PV does not defeat derivability, and an ABI counter is not a version' \
-		'binutils[compared=yes slot=none] binutils-libs[compared=yes slot=none] imath[compared=yes slot=ALIGN] glslang[compared=yes slot=ALIGN]' \
-		"binutils[$(slot_outcome sys-devel/binutils 2.47)] binutils-libs[$(slot_outcome sys-libs/binutils-libs 2.47)] imath[$(slot_outcome dev-libs/imath 3.2.2)] glslang[$(slot_outcome dev-util/glslang 1.4.357.0_p20260806)]"
+		'SLOT: an ABI counter and a soname are not versions, and all three survive' \
+		'imath[compared=yes slot=ALIGN] glslang[compared=yes slot=JUSTIFIED] libqmi[compared=yes slot=ALIGN]' \
+		"imath[$(slot_outcome dev-libs/imath 3.2.3)] glslang[$(slot_outcome dev-util/glslang 1.4.357.0_p20260903)] libqmi[$(slot_outcome net-libs/libqmi 1.39.1_pre20260816-r1)]"
 
 	# R1.5. A suppression nobody can audit is indistinguishable from a
 	# comparison that silently broke, and telling those two apart is the
@@ -3554,9 +3637,15 @@ self_test_assertions() {
 	# Carried with the surviving row count, because "0 recorded, 0 with a
 	# reason" is exactly what a script that never suppressed anything also
 	# reports.
+	# RE-MEASURED 2026-09-05, from recorded=10 with-reason=10. Two of the ten
+	# version-artifact rows stopped being suppressed because they stopped
+	# existing: chromium and webkit-gtk now carry ::gentoo's slot outright (see
+	# A15). The invariant this actually guards is untouched - every row that IS
+	# suppressed still carries its reason, 8 of 8 - and the survivor count held
+	# at 6 through the churn.
 	assert_eq A17 \
 		'SLOT: every suppressed row is recorded with a reason' \
-		'recorded=10 with-reason=10 survivors=6' \
+		'recorded=8 with-reason=8 survivors=6' \
 		"$(slot_suppression_record) survivors=$(slot_survivors_count)"
 
 	# --- story 008: instrument error is not divergence ----------------
@@ -3567,6 +3656,26 @@ self_test_assertions() {
 	# older ::gentoo eclass. It is the instrument reporting itself, and it is
 	# classified UNDOCUMENTED today, which asks a human to decide about a
 	# measurement error.
+	# RED SINCE 2026-09-05, AND THE CAUSE IS KNOWN - read this before touching
+	# A18, A19, A20 or A21, which all fail on the same missing signal.
+	#
+	# dev-ruby/erb still exists and is still compared (the assertion observes
+	# compared=yes row=none, which is two thirds of what it wants). What
+	# vanished is the stale signal itself: erb's md5-cache entry used to carry
+	# a ruby-fakegem hash generated against an older ::gentoo eclass, and last
+	# session's egencache runs regenerated it against the current one. The
+	# hashes agree now, so there is nothing stale to report.
+	#
+	# That is remediation working, not the instrument breaking - and it is why
+	# a previous reading of these four as "the stale pipeline went offline" was
+	# wrong. A19 confirms it: its definitional half still lists all three
+	# overlay eclasses correctly, and only its stale=1 denominator is missing.
+	#
+	# THE FIX IS A FIXTURE, NOT A NUMBER. A stale cache is a transient state of
+	# the tree, so pinning these to whatever package happens to be stale today
+	# only defers the same failure. They need a synthetic stale entry built in
+	# the scratch dir, the way A22-A24 build theirs. That is a redesign and was
+	# deliberately not done in the same pass as a re-measurement.
 	assert_eq A18 \
 		'_eclasses_: erb is reported as a stale cache, not as a divergence' \
 		'compared=yes row=none stale=ruby-fakegem' \
@@ -3591,9 +3700,21 @@ self_test_assertions() {
 	# ebuild arriving mid-bump moved it by eight. When it goes red, check the
 	# two subtractions before the total - the ten and the one are what this
 	# story changed, and an ebuild that moves the total moves neither.
+	# RE-MEASURED 2026-09-05, from rows=461 verdict-sum=461 stale=1.
+	#
+	# The row count follows the KDE Plasma removal like A01 does. What matters
+	# is that the two halves still move together: 350 rows, 350 verdicts. That
+	# equality is the invariant, and it is tested against a real population,
+	# not against zero.
+	#
+	# stale went 1 -> 0 for a different reason, and it is NOT an invariant that
+	# weakened: the tree simply holds no stale cache today, because last
+	# session's remediation regenerated the md5-cache that was carrying the one
+	# signal. Detection of stale caches is guarded by A18, A19 and A21, and all
+	# three are red for exactly this reason - see the note on A18.
 	assert_eq A20 \
 		'the four verdicts still sum to the row total, with the stale cache outside both' \
-		'rows=461 verdict-sum=461 stale=1' \
+		'rows=350 verdict-sum=350 stale=0' \
 		"$(row_arithmetic)"
 
 	# --- story 008: what a stale cache does to the exit code ----------
@@ -3646,7 +3767,7 @@ self_test_assertions() {
 	# A24 locks the false positive the first sweep produced. A tag on a
 	# same-series pair must stay silent, because stage 4 never compared its
 	# axis; only an exact-distance pair carries the evidence to call a tag
-	// stale. Both halves are asserted together, so a regression that silences
+	# stale. Both halves are asserted together, so a regression that silences
 	# everything cannot pass either.
 	assert_eq A24 \
 		'a stale tag is reported at exact distance and NEVER at same-series' \
