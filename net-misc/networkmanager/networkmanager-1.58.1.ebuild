@@ -22,6 +22,11 @@ SLOT="0"
 
 KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~ppc ~ppc64 ~riscv ~sparc ~x86"
 
+# BENTOO-DIVERGENCE: IUSE - clat gained, dhclient gone, and both are upstream
+# 1.58 decisions rather than ours. Verified against the tarball's
+# meson_options.txt: it declares option('clat', ... value: true), and the DHCP
+# choices are now dhcpcd / internal / nettools with no dhclient among them --
+# upstream dropped ISC DHCP. ::gentoo is on 1.56, before both.
 IUSE="audit bluetooth clat +concheck connection-sharing debug dhcpcd elogind gnutls gtk-doc +introspection iptables iwd libedit +modemmanager nbft +nss nftables ofono ovs policykit +ppp psl resolvconf selinux syslog systemd teamd test +tools vala +wext +wifi"
 RESTRICT="!test? ( test )"
 
@@ -93,6 +98,7 @@ COMMON_DEPEND="
 		!libedit? ( sys-libs/readline:= )
 	)
 "
+# BENTOO-DIVERGENCE: RDEPEND - same swap as DEPEND below.
 RDEPEND="${COMMON_DEPEND}
 	acct-group/plugdev
 	|| (
@@ -104,12 +110,16 @@ RDEPEND="${COMMON_DEPEND}
 		iwd? ( net-wireless/iwd )
 	)
 "
+# BENTOO-DIVERGENCE: DEPEND - libbpf for clat, where ::gentoo has net-misc/dhcp
+# for dhclient. Both follow the IUSE swap above.
 DEPEND="${COMMON_DEPEND}
 	>=sys-kernel/linux-headers-3.18
 	net-libs/libndp[${MULTILIB_USEDEP}]
 	ppp? ( elibc_musl? ( net-libs/ppp-defs ) )
 	test? ( >=dev-libs/jansson-2.7 )
 "
+# BENTOO-DIVERGENCE: BDEPEND - dev-util/bpftool, which compiles the CLAT BPF
+# program; nothing in 1.56 needs it.
 BDEPEND="
 	app-text/docbook-xsl-stylesheets
 	clat? ( dev-util/bpftool )

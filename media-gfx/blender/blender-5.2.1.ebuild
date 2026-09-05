@@ -102,6 +102,18 @@ REQUIRED_USE="${PYTHON_REQUIRED_USE}
 # Library versions for official builds can be found in the blender source directory in:
 # build_files/build_environment/cmake/versions.cmake
 
+# BENTOO-DIVERGENCE: RDEPEND - sci-libs/ceres-solver, and this one is NOT
+# settled. blender exposes WITH_SYSTEM_ for bullet, eigen3, freetype, gflags
+# and glog, all of which this ebuild passes; there is no WITH_SYSTEM_CERES to
+# pass, and ::gentoo takes gflags and glog from the system without declaring
+# ceres at all. So the dependency looks inert -- installed for the user, never
+# reached by the build. Left in place rather than dropped on inference:
+# confirming it needs the 5.2 tarball, which is not cached here.
+#
+# It is not free to leave, either: pkgcheck reports ceres-solver among the
+# solutions for NonsolvableDepsInDev on ~arm64, so a dependency that may do
+# nothing is helping to cost an arch the overlay is supposed to cover.
+# BENTOO-DIVERGENCE: DEPEND - same ceres-solver, through RDEPEND below.
 RDEPEND="${PYTHON_DEPS}
 	app-arch/zstd
 	dev-cpp/gflags:=
@@ -256,6 +268,9 @@ BDEPEND="
 	)
 "
 
+# BENTOO-DIVERGENCE: PATCHES - FindClang rebased from ::gentoo's onto 4.0.2,
+# plus an eigen-3.4 jacobiSvd fix for 5.1+. ::gentoo is on 5.0 and carries a
+# system-glog patch this series does not need.
 PATCHES=(
 	"${FILESDIR}/${PN}-4.0.2-FindClang.patch"
 	"${FILESDIR}/${PN}-4.1.1-FindLLVM.patch"

@@ -15,6 +15,11 @@ S="${WORKDIR}"
 LICENSE="CROSSOVER-3"
 SLOT="0"
 KEYWORDS="-* ~amd64"
+# BENTOO-DIVERGENCE: IUSE - capi, exposing the ISDN/CAPI support the shipped
+# binary already contains; ::gentoo does not offer the flag. Also
+# python_single_target_python3_14, from a wider PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: RDEPEND - net-libs/libcapi behind that flag. It lives in
+# ::gentoo, so the dependency resolves; only the flag is ours.
 IUSE="+capi +cups +gphoto2 +gstreamer +jpeg +lcms +mp3 +nls osmesa +openal +opencl +opengl +pcap +png +scanner +ssl +v4l +vulkan"
 REQUIRED_USE="${PYTHON_REQUIRED_USE}"
 

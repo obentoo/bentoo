@@ -28,6 +28,10 @@ BDEPEND="
 
 DOCS=( AUTHORS.md README.md )
 
+# BENTOO-DIVERGENCE: PATCHES - opencv5-xobjdetect. OpenCV 5 moved
+# CascadeClassifier and HOGDescriptor out of objdetect into the contrib
+# xobjdetect module, so facedetect and facebl0r stop building. ::gentoo needs
+# no counterpart because it has not moved to OpenCV 5.
 PATCHES=(
 	# OpenCV 5 moved CascadeClassifier/HOGDescriptor to the contrib xobjdetect
 	# module; include it explicitly in facedetect/facebl0r (not fixed upstream).
