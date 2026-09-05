@@ -135,6 +135,8 @@ RDEPEND="
 "
 
 DEPEND="${RDEPEND}"
+# BENTOO-DIVERGENCE: BDEPEND - dev-haskell/alex under ghcbootstrap, required to
+# bootstrap series 9.14; ::gentoo stops at 9.8.4 and needs no such entry.
 BDEPEND="
 	virtual/pkgconfig
 	doc? (
@@ -508,6 +510,8 @@ src_unpack() {
 	unpacker ${nosig}
 }
 
+# BENTOO-DIVERGENCE: PATCHES - carried for series 9.14, which ::gentoo does not
+# package at all (its newest is 9.8.4), so there is no counterpart to align to.
 PATCHES=(
 	"${FILESDIR}/${PN}-9.12.1-allow-cross-bootstrap.patch"
 

@@ -19,12 +19,19 @@ LICENSE="GPL-3+"
 
 SLOT="0"
 
+# BENTOO-DIVERGENCE: IUSE - vulkan, an upstream cmake option (-DUSE_VULKAN)
+# that series 26 exposes and the 25.08 in ::gentoo does not.
 IUSE="debug vulkan"
 
+# BENTOO-DIVERGENCE: BDEPEND - virtual/pkgconfig, needed by the series 26 build.
 BDEPEND="
 	dev-qt/qttools:6[linguist]
 	virtual/pkgconfig
 "
+# BENTOO-DIVERGENCE: DEPEND - qtwebsockets, fftw and libX11 are series 26
+# requirements; ::gentoo is still on 25.08, whose dep set predates them. They
+# are unconditional upstream and unrelated to USE=vulkan.
+# BENTOO-DIVERGENCE: RDEPEND - same set, RDEPEND is DEPEND plus virtual/jack.
 DEPEND="
 	dev-qt/qtbase:6[concurrent,dbus,gui,network,opengl,sql,vulkan,widgets,xml]
 	dev-qt/qtdeclarative:6[widgets]

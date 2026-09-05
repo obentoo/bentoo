@@ -2,6 +2,10 @@
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
+# BENTOO-DIVERGENCE: INHERIT - git-r3, because this tracks upstream by pinned
+# commit (EGIT_COMMIT) rather than by release tarball. ::gentoo ships dated
+# snapshots; bentoo cuts its own between them, so a bump here is PV and
+# EGIT_COMMIT together.
 inherit dist-kernel-utils eapi9-ver linux-info mount-boot savedconfig git-r3
 
 # bentoo: pinned-commit snapshot ahead of Gentoo's tagged releases.
@@ -27,6 +31,7 @@ REQUIRED_USE="initramfs? ( redistributable )
 RESTRICT="binchecks strip test
 	!bindist? ( bindist )"
 
+# BENTOO-DIVERGENCE: BDEPEND - dev-vcs/git, required by the git-r3 fetch above.
 BDEPEND="initramfs? ( app-alternatives/cpio )
 	compress-xz? ( app-arch/xz-utils )
 	compress-zstd? ( app-arch/zstd )

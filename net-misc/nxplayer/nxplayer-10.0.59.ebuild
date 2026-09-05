@@ -3,6 +3,10 @@
 
 EAPI=8
 
+# BENTOO-DIVERGENCE: INHERIT - unpacker, because series 10 ships a .deb where
+# the 7.x in ::gentoo is a .tar.gz.
+# BENTOO-DIVERGENCE: DEFINED_PHASES - unpack is exported by the unpacker eclass
+# above; this ebuild defines no phase of its own.
 inherit unpacker
 
 # Build number: not derivable from PV, read it off the download page

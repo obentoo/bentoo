@@ -7,6 +7,9 @@ EAPI=8
 # (see https://gitweb.gentoo.org/proj/lua-patches.git).
 # Using upstream tarball; src_compile and src_install are custom
 # to handle shared library and slotted installation.
+# BENTOO-DIVERGENCE: INHERIT - toolchain-funcs where ::gentoo has libtool. No
+# Gentoo autotools-patched tarball exists for 5.5, so this drives upstream's
+# Makefile with tc-getCC and friends instead of running elibtoolize.
 inherit flag-o-matic toolchain-funcs optfeature
 
 DESCRIPTION="A powerful light-weight programming language designed for extending applications"
@@ -40,6 +43,8 @@ src_configure() {
 	use deprecated && append-cppflags -DLUA_COMPAT_5_4
 }
 
+# BENTOO-DIVERGENCE: DEFINED_PHASES - compile, the consequence of building
+# upstream's Makefile directly (see INHERIT above).
 src_compile() {
 	# Lua 5.5 removed 'linux-readline' target; 'linux' includes readline.
 	local mytarget="linux"
