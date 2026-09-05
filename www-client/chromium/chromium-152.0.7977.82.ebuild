@@ -543,6 +543,10 @@ src_prepare() {
 	python_setup
 
 	# We'll fill this in as we go. Patches go in chromium-patches.
+	# BENTOO-DIVERGENCE: PATCHES - three series-152 fixes with no counterpart:
+	# unbundle-minizip-undo-unicode, dawn-lifetime-safety-flags and
+	# cbor-crubit-optional. ::gentoo is on 142 and carries an old-fontconfig
+	# patch this series no longer needs.
 	local PATCHES=()
 
 	PATCHES+=(

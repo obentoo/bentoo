@@ -51,6 +51,9 @@ BDEPEND="nls? ( app-text/po4a )"
 
 DOCS=( AUTHORS BUGS DEBUG INSTALL.md README doc/README.saving )
 
+# BENTOO-DIVERGENCE: PATCHES - the musl fix rebased from ::gentoo's 1.32.2
+# onto 2.1.4; the content differs, not just the name. Its configure-id_t
+# companion is gone because 2.1.4 fixed that upstream.
 PATCHES=(
 	"${FILESDIR}/${PN}-2.1.4-musl.patch"
 )

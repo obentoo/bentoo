@@ -360,6 +360,11 @@ BDEPEND="
 	)
 "
 
+# BENTOO-DIVERGENCE: PATCHES - the 5.0.0 set. ::gentoo is on 4.12 and its
+# list diverges accordingly: use-system-flatbuffers moved 4.8.1 -> 4.13.0,
+# use-system-opencl 4.8.1 -> 5.0.0, and the dnn caffe-proto regeneration is
+# new to 5. The ones that carry over unchanged are byte-identical to
+# ::gentoo's.
 PATCHES=(
 	"${FILESDIR}/${PN}-3.4.1-cuda-add-relaxed-constexpr.patch"
 	"${FILESDIR}/${PN}-4.1.2-opencl-license.patch"

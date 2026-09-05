@@ -46,6 +46,9 @@ DEPEND="${RDEPEND}
 
 QA_SONAME="/usr/lib[^/]*/libVkLayer_khronos_validation.so"
 
+# BENTOO-DIVERGENCE: PATCHES - descriptor-hashing-32bit-align, ours alone.
+# ::gentoo's tests-no-static patches are pinned to 1.4.328/1.4.335 and have
+# no bearing on this snapshot.
 PATCHES=(
 	"${FILESDIR}"/${PN}-descriptor-hashing-32bit-align.patch
 )

@@ -11,6 +11,8 @@ LICENSE="MIT"
 SLOT="0"
 KEYWORDS="amd64 ~arm arm64 ~loong ppc64 ~riscv x86"
 
+# BENTOO-DIVERGENCE: PATCHES - overlay-only; ::gentoo ships no files/ here at
+# all. The patch makes the upstream Makefile install a shared library.
 PATCHES=(
 	"${FILESDIR}"/${PN}-2.5-makefile-install.patch
 )

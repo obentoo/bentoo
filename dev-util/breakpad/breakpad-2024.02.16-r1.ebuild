@@ -26,6 +26,8 @@ BDEPEND="test? ( dev-cpp/gtest )"
 RESTRICT="!test? ( test )"
 REQUIRED_USE="elibc_musl? ( !tools )"
 
+# BENTOO-DIVERGENCE: PATCHES - the two ::gentoo patches, byte-identical, plus
+# gcc16-vtable, which ::gentoo has no need for at its version.
 PATCHES=(
 	"${FILESDIR}"/${PN}-2023.06.01-gentoo.patch
 	"${FILESDIR}"/${PN}-2023.06.01-reinterpret.patch

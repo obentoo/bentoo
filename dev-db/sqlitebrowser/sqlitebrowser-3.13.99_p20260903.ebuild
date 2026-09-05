@@ -39,6 +39,11 @@ BDEPEND="dev-qt/qttools:6[linguist]"
 
 DOCS=( images/ {BUILDING,CHANGELOG,README}.md )
 
+# BENTOO-DIVERGENCE: PATCHES - the file is BYTE-IDENTICAL to ::gentoo's
+# sqlitebrowser-3.13.1_p20250502-no-git.patch; only the name differs, and
+# deliberately. This package is a snapshot that bumps often, and the
+# autoupdate applier never renames files/, so a PV in the filename would go
+# stale on the next bump. Version-agnostic is the maintainable spelling.
 PATCHES=(
 	"${FILESDIR}/${PN}-no-git.patch"
 )

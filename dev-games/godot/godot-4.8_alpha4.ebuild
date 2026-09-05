@@ -94,6 +94,15 @@ BDEPEND="
 	wayland? ( dev-util/wayland-scanner )
 "
 
+# BENTOO-DIVERGENCE: PATCHES - three 4.8 patches ::gentoo has no version to
+# carry them for (it stops at 4.7.2): system-pcre2 and two that disable
+# deprecated editor screens.
+#
+# The fourth, godot-4.5-scons.patch, shares ::gentoo's FILENAME but not its
+# CONTENT -- ours is the older cut, missing the hunk that respects AR
+# (Gentoo bug #977691) and the platform/linuxbsd/detect.py half. Same name,
+# different patch, is the worst of both: the sweep pairs them and sees a
+# difference forever. Either rebase ::gentoo's onto 4.8 or rename ours.
 PATCHES=(
 	"${FILESDIR}"/${PN}-4.5-scons.patch
 	"${FILESDIR}"/${PN}-4.8-system-pcre2.patch

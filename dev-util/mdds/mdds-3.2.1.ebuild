@@ -32,6 +32,9 @@ BDEPEND="
 	test? ( dev-util/dejagnu )
 "
 
+# BENTOO-DIVERGENCE: PATCHES - the 3.0.0 buildsystem patch is byte-identical
+# to ::gentoo's and kept; the 3.2.1 one is ours, because ::gentoo has no
+# 3.2.1 to patch.
 PATCHES=(
 	"${FILESDIR}/${PN}-3.2.1-buildsystem.patch"
 )
