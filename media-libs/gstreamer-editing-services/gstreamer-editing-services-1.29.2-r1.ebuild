@@ -21,6 +21,12 @@ REQUIRED_USE="${PYTHON_REQUIRED_USE}"
 # Some tests are failing
 RESTRICT="test"
 
+# BENTOO-DIVERGENCE: RDEPEND - dev-libs/libxml2 declared explicitly. GES
+# parses the XGES project format with it; ::gentoo gets it transitively
+# and never names it.
+# BENTOO-DIVERGENCE: DEPEND - same libxml2, and no test? ( gst-plugins-good ):
+# ::gentoo pulls that in for its test suite, which RESTRICT="test" here
+# never runs.
 RDEPEND="
 	${PYTHON_DEPS}
 	dev-python/pygobject[${PYTHON_USEDEP}]

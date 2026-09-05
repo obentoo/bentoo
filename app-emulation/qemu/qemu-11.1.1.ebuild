@@ -62,7 +62,7 @@ IUSE="accessibility +aio alsa bpf bzip2 capstone +curl debug ${QEMU_DOC_USEFLAG}
 # hexagon gained system emulation (hexagon-softmmu) in QEMU 11.1, so it moved
 # from the user-only list into the shared one.
 #
-# BENTOO-DIVERGENCE: IUSE: the emulation target lists track series 11, so they
+# BENTOO-DIVERGENCE: IUSE - the emulation target lists track series 11, so they
 # differ from ::gentoo's stable 10.2.x on two flags, both dictated by what the
 # 11.1.0 tarball actually ships in configs/targets/:
 #   qemu_softmmu_targets_hexagon     gained: hexagon-softmmu.mak is new in 11.1
@@ -179,7 +179,7 @@ ALL_DEPEND="
 # Dependencies required for qemu tools (qemu-nbd, qemu-img, qemu-io, ...)
 # softmmu targets (qemu-system-*).
 #
-# BENTOO-DIVERGENCE: nettle upper bound - ::gentoo carries no bound here, this
+# BENTOO-DIVERGENCE: DEPEND - nettle upper bound. ::gentoo carries no bound, this
 # overlay adds `<dev-libs/nettle-4.0`.  The ${PN}-11.1.0-nettle-4 patch below
 # restores the BUILD against nettle 4 (which deleted <nettle/sha.h>), and that
 # is all it restores.  crypto/hash-nettle.c and crypto/hmac-nettle.c cast every
@@ -363,6 +363,9 @@ DEPEND="
 	static-user? ( ${ALL_DEPEND} )
 	valgrind? ( dev-debug/valgrind )
 "
+# BENTOO-DIVERGENCE: RDEPEND - jemalloc where ::gentoo has glusterfs. Series
+# 11 dropped the GlusterFS block driver, so that flag has nothing left to
+# enable; jemalloc is offered instead through conf_malloc.
 RDEPEND="
 	${CDEPEND}
 	acct-group/kvm
@@ -388,6 +391,9 @@ RDEPEND="
 # fix only -- it restores the include after nettle 4.0 deleted <nettle/sha.h>.
 # QEMU is still runtime-broken against nettle 4, which is why the DEPEND bound
 # above exists; read the comment there before touching either.
+# BENTOO-DIVERGENCE: PATCHES - the optionrom fix is the same one ::gentoo
+# carries, rebased from 10.2.2 onto 11.0.0; the nettle-4 patch below has no
+# counterpart there because ::gentoo has no nettle bound to defend.
 PATCHES=(
 	"${FILESDIR}"/${PN}-10.1.2-fix_passt.patch
 	"${FILESDIR}"/${PN}-9.0.0-disable-keymap.patch
