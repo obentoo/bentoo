@@ -11,6 +11,9 @@ HOMEPAGE="https://gstreamer.freedesktop.org/"
 LICENSE="metapackage"
 SLOT="1.0"
 KEYWORDS="~alpha amd64 ~arm ~arm64 ~hppa ~loong ~mips ~ppc ppc64 ~riscv ~sparc x86"
+# BENTOO-DIVERGENCE: IUSE - libde265 and nvcodec, hardware-decode plugins this
+# overlay ships and ::gentoo does not expose here. Both exist at this PV.
+# BENTOO-DIVERGENCE: RDEPEND - the two plugins the flags above pull in.
 IUSE="aac a52 alsa cdda dts dv dvb dvd ffmpeg flac http jack lame libass libde265 libvisual mp3 modplug mpeg nvcodec ogg opus oss pulseaudio taglib theora v4l vaapi vcd vorbis vpx wavpack X x264"
 REQUIRED_USE="opus? ( ogg ) theora? ( ogg ) vorbis? ( ogg )"
 

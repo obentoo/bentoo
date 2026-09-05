@@ -5,6 +5,11 @@ EAPI=8
 
 GST_ORG_MODULE=gst-plugins-good
 PYTHON_COMPAT=( python3_{11..13} )
+# BENTOO-DIVERGENCE: INHERIT - plain meson, not gstreamer-meson. This package
+# carves one plugin out of the gst-plugins-good tarball (GST_ORG_MODULE above);
+# the eclass would configure and build the whole module.
+# BENTOO-DIVERGENCE: BDEPEND - xz-utils and perl-JSON-PP, which gstreamer-meson
+# would otherwise bring in, plus qtshadertools for the QML sink's shaders.
 inherit meson python-any-r1 xdg-utils
 
 DESCRIPTION="Qt6 QML video sink plugin for GStreamer"

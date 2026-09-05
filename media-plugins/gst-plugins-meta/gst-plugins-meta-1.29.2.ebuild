@@ -11,6 +11,11 @@ HOMEPAGE="https://gstreamer.freedesktop.org/"
 LICENSE="metapackage"
 SLOT="1.0"
 KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~mips ~ppc ~ppc64 ~riscv ~sparc ~x86"
+# BENTOO-DIVERGENCE: IUSE - adds libde265 and nvcodec, and drops mpeg. The drop
+# is forced, not a preference: this metapackage depends on its plugins at
+# -${PV}, and gst-plugins-mpeg2dec has no 1.29.2 release in either tree, so
+# keeping the flag would make it unsolvable.
+# BENTOO-DIVERGENCE: RDEPEND - follows the IUSE above, same reasons.
 IUSE="aac a52 alsa cdda dts dv dvb dvd ffmpeg flac http jack lame libass libde265 libvisual mp3 modplug nvcodec ogg opus oss pulseaudio taglib theora v4l vaapi vcd vorbis vpx wavpack X x264"
 REQUIRED_USE="opus? ( ogg ) theora? ( ogg ) vorbis? ( ogg )"
 

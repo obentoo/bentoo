@@ -11,8 +11,14 @@ KEYWORDS="~amd64 ~arm64 ~x86"
 RDEPEND=">=media-libs/opencv-4.1.2-r3:=[contrib,contribdnn,${MULTILIB_USEDEP}]"
 DEPEND="${RDEPEND}"
 
+# BENTOO-DIVERGENCE: PATCHES - ::gentoo solves the same problem in src_install,
+# copying gst-libs/gst/opencv out of a full gst-plugins-bad build by hand. This
+# patches the meson tree instead so only the opencv plugin and its helper are
+# built at all. Rebased per series: the subdir lists in gst-libs/gst/ and
+# meson.build move between 1.28 and 1.29, so one shared patch cannot apply to
+# both -- see the header of 1.28.6's copy.
 PATCHES=(
-	"${FILESDIR}"/gst-plugins-bad-1.24.10-use-system-libs-opencv.patch
+	"${FILESDIR}"/gst-plugins-bad-1.28.6-use-system-libs-opencv.patch
 )
 
 multilib_src_configure() {
