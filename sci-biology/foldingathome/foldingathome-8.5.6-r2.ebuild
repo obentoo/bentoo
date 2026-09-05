@@ -4,6 +4,21 @@
 EAPI=8
 PYTHON_COMPAT=( python3_{12..15} )
 
+# BENTOO-DIVERGENCE: INHERIT - desktop, python-single-r1, unpacker and xdg,
+# none of which ::gentoo pulls in.
+#
+# READ THIS FIRST, because it explains every other tag in this file: the two
+# ebuilds do not package the same software. ::gentoo ships foldingathome-7.6.21,
+# the old "fahclient" tarball. This is 8.5.6, a different client with a
+# different upstream, a different licence and a different install layout. The
+# parity sweep pairs them because the package names match, and almost every axis
+# it reports as divergent follows from that one fact rather than from a decision
+# taken here.
+#
+# The four eclasses map to what v8 actually is: unpacker because upstream ships
+# .deb archives and no source tarball, desktop and xdg because v8 has a GUI and
+# a .desktop entry where v7 was a daemon only, python-single-r1 because the
+# control panel is Python.
 inherit desktop python-single-r1 systemd unpacker xdg
 
 DESCRIPTION="Folding@Home distributed computing client for protein folding research"
@@ -16,8 +31,24 @@ SRC_URI="
 "
 S="${WORKDIR}"
 
+# BENTOO-DIVERGENCE: LICENSE - GPL-3, where ::gentoo declares
+# "FAH-EULA-2014 FAH-special-permission". This looks alarming and is correct:
+# Folding@home relicensed at v8. Verified against upstream on 2026-09-05 --
+# github.com/FoldingAtHome/fah-client-bastet reports spdx_id GPL-3.0. The EULA
+# pair belongs to the 7.6.x client ::gentoo still ships, not to this one.
+#
+# OPEN QUESTION, deliberately not resolved here because it is a licensing call
+# for the maintainer: RESTRICT="bindist" below sits oddly next to GPL-3, which
+# permits binary redistribution. It is defensible -- we ship a prebuilt .deb and
+# redistributing GPL binaries obliges you to offer the matching source, which a
+# binhost would not do on its own -- but it is currently unexplained. Either
+# write the reason down or drop the token.
 LICENSE="GPL-3"
 SLOT="0"
+# BENTOO-DIVERGENCE: KEYWORDS - "-*" plus the two arches upstream publishes a
+# .deb for. The "-*" is not narrowing for its own sake: there is no source to
+# build, so an arch with no .deb has nothing to install. SRC_URI names exactly
+# amd64 and arm64.
 KEYWORDS="-* ~amd64 ~arm64"
 # elogind is default-on so the package still merges out of the box on a plain
 # OpenRC profile. Neither flag is default there -- elogind comes from the
@@ -25,6 +56,14 @@ KEYWORDS="-* ~amd64 ~arm64"
 # REQUIRED_USE refuses the merge on every headless/server amd64 profile. On a
 # systemd profile elogind is USE-masked, so the default is overridden there and
 # the exactly-one-of constraint still resolves.
+# BENTOO-DIVERGENCE: IUSE - elogind/systemd (plus the python_single_target_*
+# set that python-single-r1 generates). ::gentoo's 7.6.21 has no IUSE at all: it
+# installs a systemd unit unconditionally. This overlay requires every daemon to
+# be startable without systemd, so the two init systems are a choice here.
+#
+# BENTOO-DIVERGENCE: BDEPEND - dev-util/patchelf, needed only by the elogind
+# path: the prebuilt .deb links libsystemd, so the elogind build rewrites that
+# NEEDED entry rather than shipping a binary that pulls systemd in anyway.
 IUSE="+elogind systemd"
 REQUIRED_USE="^^ ( elogind systemd ) ${PYTHON_REQUIRED_USE}"
 RESTRICT="bindist mirror strip"
@@ -77,6 +116,14 @@ RESTRICT="bindist mirror strip"
 #
 # virtual/zlib:= replaces sys-libs/zlib:= -- pkgcheck flags the direct atom
 # as deprecated.
+# BENTOO-DIVERGENCE: RDEPEND - almost no overlap with ::gentoo's, for the reason
+# in the header: v8 is a Python-fronted GUI client and v7 was a C++ daemon. Both
+# lists are right for the thing they install.
+#
+# BENTOO-DIVERGENCE: DEFINED_PHASES - src_unpack and pkg_preinst, where ::gentoo
+# defines pkg_config. src_unpack because a .deb is not something the default
+# phase handles; pkg_preinst for the install-time checks that
+# scripts/check-foldingathome-image.sh asserts against the built image.
 RDEPEND="
 	${PYTHON_DEPS}
 	$(python_gen_cond_dep '
