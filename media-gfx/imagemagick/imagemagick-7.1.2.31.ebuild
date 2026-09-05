@@ -17,31 +17,36 @@ if [[ ${PV} == 9999 ]] ; then
 else
 	MY_PV="$(ver_rs 3 '-')"
 	MY_P="ImageMagick-${MY_PV}"
-	# BENTOO-DIVERGENCE: SRC_URI - the GitHub release tag, where ::gentoo uses
-	# mirror://imagemagick and gets verify-sig with it. Losing the signature is
-	# a real cost, so here is why it is paid.
+	# BENTOO-DIVERGENCE: SRC_URI - the upstream release ASSET plus an R2 mirror,
+	# where ::gentoo uses mirror://imagemagick and gets verify-sig with it.
+	# Losing the signature is a real cost, so here is what was measured.
 	#
-	# Re-measured 2026-09-05, and the earlier note here was wrong in an
-	# interesting way. It said upstream publishes the signed tarball only for
-	# the LATEST release. It does not publish it for the latest either: 7.1.2-31
-	# IS the newest release, and both the tarball and its .asc are 404 on all
-	# three mirror://imagemagick hosts -- as are -30, -29, -28 and -25. That
-	# path carries no 7.1.2 at all.
+	# There is no signature to have, anywhere. Re-checked 2026-09-05 for
+	# 7.1.2-31, which IS the newest release: the .asc is 404 on all three
+	# mirror://imagemagick hosts, on imagemagick.org/download, on
+	# distfiles.gentoo.org, and it is absent from the GitHub release assets.
+	# ::gentoo's verify-sig works on 7.1.2.18 because Gentoo mirrored that
+	# distfile years ago, not because upstream still serves one.
 	#
-	# ::gentoo's copy works regardless because Gentoo mirrors distfiles on its
-	# own infrastructure, so mirror:// resolves to distfiles.gentoo.org long
-	# after upstream drops the file. This overlay has no such mirror, so
-	# adopting their SRC_URI would trade a working fetch for a signature.
+	# What upstream DOES publish is the real release tarball, as a GitHub
+	# release asset. That is what this now fetches, replacing the generated
+	# archive/refs/tags/ tarball used before: a generated archive is produced on
+	# demand and its hash is not guaranteed stable over time, while the asset is
+	# a static file the release uploaded once. Same bytes the mirror would have
+	# served.
 	#
-	# The GitHub archive tarball is generated, not the upstream release
-	# artifact, so no .asc exists for it and verify-sig cannot apply to what we
-	# actually download.
+	# The R2 fallback exists because upstream prunes: measured on the same day,
+	# 7.1.2-18, 7.1.2-10 and 7.1.1-47 have NO assets at all, only the current
+	# release does. Without a mirror this ebuild stops fetching the moment
+	# 7.1.2-32 ships. The R2 copy was uploaded from the upstream asset and
+	# verified byte-identical by SHA512.
 	#
-	# Revisit when either is true, and check rather than assume:
-	#   curl -sI https://imagemagick.org/archive/releases/${MY_P}.tar.xz.asc
-	# returning 200, or this overlay gaining a distfile mirror of its own (the
-	# R2 bucket already used by six packages -- see obentoo-distfiles).
-	SRC_URI="https://github.com/ImageMagick/ImageMagick/archive/refs/tags/${MY_PV}.tar.gz -> ${MY_P}.tar.gz"
+	# Revisit if upstream starts publishing .asc again -- check, do not assume:
+	#   curl -sIL https://github.com/ImageMagick/ImageMagick/releases/download/${MY_PV}/${MY_P}.tar.xz.asc
+	SRC_URI="
+		https://github.com/ImageMagick/ImageMagick/releases/download/${MY_PV}/${MY_P}.tar.xz
+		https://distfiles.obentoo.org/${MY_P}.tar.xz
+	"
 
 	KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~m68k ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86 ~arm64-macos ~x64-macos ~x64-solaris"
 fi
