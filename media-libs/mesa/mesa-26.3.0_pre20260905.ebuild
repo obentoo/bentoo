@@ -39,7 +39,7 @@ if [[ ${PV} == 9999 ]]; then
 else
 	GIT_COMMIT="86158b8c7467cadcd24f8a8cf02aa3bc748f7e3f"
 	SRC_URI="https://gitlab.freedesktop.org/${PN}/${PN}/-/archive/${GIT_COMMIT}/mesa-${GIT_COMMIT}.tar.gz -> ${MY_P}.tar.gz"
-	KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86 ~amd64-linux ~x86-linux ~x64-solaris"
+	KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86 ~x64-solaris"
 fi
 
 # This should be {CARGO_CRATE_URIS//.crate/.tar.gz} to correspond to the wrap files,
@@ -64,8 +64,8 @@ SRC_URI+="
 # and is what the drift check compares against, COMMIT is the sha that tag
 # resolved to.  SRC_URI must fetch the sha -- a tag can be moved upstream, and
 # a moved tag would change the distfile under a Manifest that still verifies.
-VENUS_PROTOCOL_REV="v1.1.1"
-VENUS_PROTOCOL_COMMIT="efc6903b07634d9df85ed067feea24d2dd77acb2"
+VENUS_PROTOCOL_REV="v1.1.2"
+VENUS_PROTOCOL_COMMIT="39f5e7c0b288458671aa5eeb46c44c93bf173291"
 VENUS_PROTOCOL_P="venus-protocol-${VENUS_PROTOCOL_COMMIT}"
 # Only the virtio Vulkan driver needs it (with_virtio_vk in meson.build).
 SRC_URI+="
