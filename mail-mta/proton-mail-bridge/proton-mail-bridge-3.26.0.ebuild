@@ -18,13 +18,32 @@ SLOT="0"
 KEYWORDS="~amd64"
 # `systemd` gates the user unit ONLY. The OpenRC user script is installed
 # unconditionally -- see src_install.
+# BENTOO-DIVERGENCE: IUSE - systemd gates the user unit. Per project policy
+# the OpenRC user service is installed unconditionally and only the unit is
+# gated, so a non-systemd system can still run the daemon.
 IUSE="gui systemd"
 
 # Tests require Internet access and we need network access for Go modules
 PROPERTIES="test_network"
+# KNOWN DEFECT, not a divergence to preserve. RESTRICT="network-sandbox"
+# exists because src_prepare runs `go mod download` against the live module
+# proxy, which trades verified dependencies for a build-time fetch: the
+# build is not reproducible and its inputs are not in the Manifest.
+#
+# ::gentoo solves this with a pre-vendored tarball in SRC_URI. The approved
+# fix here is the same shape, hosted on the overlay's R2 bucket, and it is
+# item 13 of the parity remediation -- not started, because uploading the
+# tarball is an external action awaiting the maintainer.
+#
+# The four tags below describe what this design forces. They document the
+# current state; they do not endorse it. When the vendor tarball lands, the
+# BDEPEND tag and this note should go with it.
 RESTRICT="network-sandbox test strip"
 
 # Add network dependencies for Go module fetching
+# BENTOO-DIVERGENCE: BDEPEND - wget, curl and git are here to serve the
+# go mod download in src_prepare. They go away with it; see the note above
+# RESTRICT.
 BDEPEND="
 	>=dev-lang/go-1.21
 	net-misc/wget
@@ -32,6 +51,10 @@ BDEPEND="
 	dev-vcs/git
 "
 
+# BENTOO-DIVERGENCE: RDEPEND - libcbor, libfido2 and openssl are named
+# explicitly here. ::gentoo does not name them because its vendored tree
+# resolves them at link time; ours cannot, for the reason above RESTRICT.
+# BENTOO-DIVERGENCE: DEPEND - same three, through RDEPEND.
 RDEPEND="
 	app-crypt/libsecret
 	dev-libs/libcbor
@@ -177,6 +200,8 @@ src_install() {
 	einstalldocs
 }
 
+# BENTOO-DIVERGENCE: DEFINED_PHASES - postinst and postrm, which install and
+# tear down the service integration described under IUSE above.
 pkg_postinst() {
 	xdg_desktop_database_update
 	xdg_icon_cache_update
