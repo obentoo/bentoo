@@ -16,7 +16,25 @@ BUNDLED_LIBFDT_SUBMODULE_SHA="cfff805481bdea27f900c32698171286542b8d3c"
 BUNDLED_LIBSPDM_SUBMODULE_SHA="f55cf6d48ec69b4ac60a63903e9c6a2cb0fd155d"
 BUNDLED_MBEDTLS_SUBMODULE_SHA="0bebf8b8c7f07abe3571ded48a11aa907a1ffb20"
 BUNDLED_MIPI_SYS_T_SUBMODULE_SHA="370b5944c046bab043dd8b133727b2135af7747a"
-BUNDLED_OPENSSL_SUBMODULE_P="openssl-3.5.7"
+# BENTOO-DIVERGENCE: SRC_URI - openssl 3.5.8, where edk2-stable202608's own
+# submodule pin (commit 8cf17aae) resolves to 3.5.7. We are deliberately NOT
+# faithful to upstream here, which is the unusual direction for this overlay and
+# needs its reason stated.
+#
+# OpenSSL is linked STATICALLY into the firmware image. There is no host update
+# path: a machine that flashes this carries whatever was compiled in until it is
+# reflashed, which for most users is never. That makes an unfixed CVE here
+# permanent in a way it is not anywhere else in the tree.
+#
+# 3.5.8 (2026-08-25) fixes ten, among them CVE-2026-63072 -- an 8-byte
+# out-of-bounds heap write in CMS AES-WRAP-PAD. Staying on the pin ships those
+# ten; leaving it diverges from a submodule SHA, which is reversible at any
+# bump. ::gentoo made the same call in its edk2-202608, so this is not a lone
+# divergence.
+#
+# Re-check on every bump: if upstream's pin catches up to 3.5.8 or later, drop
+# this tag and follow the pin again.
+BUNDLED_OPENSSL_SUBMODULE_P="openssl-3.5.8"
 
 SBO_VER="1.6.5" # https://github.com/microsoft/secureboot_objects/releases
 DBX_URI="https://github.com/microsoft/secureboot_objects/raw/refs/tags/v${SBO_VER}/PostSignedObjects/DBX/@ARCH@/DBXUpdate.bin -> @ARCH@_DBXUpdate_v${SBO_VER}.bin"

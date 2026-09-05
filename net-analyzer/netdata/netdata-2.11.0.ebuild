@@ -24,7 +24,7 @@ else
 		https://www.sqlite.org/${SQLITE_VER_YEAR}/sqlite-src-${SQLITE_VER_NUM}.zip
 		"
 	S="${WORKDIR}/${PN}-v${PV}"
-	KEYWORDS="~amd64"
+	KEYWORDS="~amd64 ~arm64 ~ppc64 ~riscv ~x86"
 fi
 
 DESCRIPTION="Linux real time system monitoring, done right!"

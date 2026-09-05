@@ -117,7 +117,7 @@ COMMON_DEPEND="${PYTHON_DEPS}
 	>=app-text/libebook-0.1
 	app-text/libepubgen
 	>=app-text/libetonyek-0.1
-	app-text/libexttextcat
+	app-text/libexttextcat:=
 	app-text/liblangtag
 	>=app-text/libmspub-0.1.0
 	>=app-text/libmwaw-0.3.21
@@ -172,7 +172,7 @@ COMMON_DEPEND="${PYTHON_DEPS}
 	media-libs/zxing-cpp:=
 	net-misc/curl
 	sci-mathematics/lpsolve:=
-	virtual/zlib
+	virtual/zlib:=
 	virtual/opengl
 	x11-libs/cairo
 	x11-libs/libXinerama
@@ -521,7 +521,6 @@ src_configure() {
 		--disable-epm
 		--disable-fetch-external
 		--disable-firebird-sdbc
-		--disable-gtk3
 		--disable-gtk3-kde5
 		# Covered by our own toolchain defaults
 		--disable-hardening-flags
@@ -582,7 +581,10 @@ src_configure() {
 		$(use_with java)
 		$(use_with odk doxygen)
 		$(use_with valgrind)
-		--enable-skia-vulkan-validation
+		# SK_ENABLE_VK_LAYERS=1. Debug instrumentation, so it is gated on
+		# USE=debug rather than passed unconditionally inside
+		# --enable-release-build, which is where it used to sit.
+		$(use_enable debug skia-vulkan-validation)
 	)
 
 	if use eds || use gtk3 || use gtk4 ; then

@@ -45,3 +45,13 @@ multilib_src_configure() {
 	)
 	cmake_src_configure
 }
+
+multilib_src_test() {
+	local CMAKE_SKIP_TESTS=(
+		# bug #977176 (https://github.com/KhronosGroup/glslang/issues/4180)
+		# We keyword ~arm, so we need the skip that makes ~arm testable --
+		# without it USE=test fails on the one arch it was added for.
+		$(usev arm 'glslang-testsuite')
+	)
+	cmake_src_test
+}

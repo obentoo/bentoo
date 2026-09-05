@@ -7,6 +7,20 @@ EAPI=8
 
 VIM_VERSION="9.2"
 
+# The distribution patchset ::gentoo applies and this overlay had been dropping
+# on every bump. Restored 2026-09-05 after measuring, not assuming: five of its
+# six patches apply clean to 9.2.1036 with portage's own patch flags, so they
+# were being lost for no reason beyond nobody re-reading ::gentoo at bump time.
+#
+# The set is pinned at 9.1.1432 because that is the newest snapshot upstream
+# publishes; it is a set of distribution integration fixes (xorg, automake,
+# grub-splash, ada, python3 shared lib), not version-tracking patches, which is
+# why an older pin still applies to a newer vim.
+#
+# Re-run the dry-run on every bump. They are 6-to-19 years old and each one dies
+# the day upstream touches the file it edits -- 002 already did, see below.
+VIM_PATCHES_VERSION="9.1.1432"
+
 LUA_COMPAT=( lua5-{1..4} luajit )
 PYTHON_COMPAT=( python3_{11..14} )
 PYTHON_REQ_USE="threads(+)"
@@ -19,9 +33,32 @@ if [[ ${PV} == 9999* ]] ; then
 	inherit git-r3
 	EGIT_REPO_URI="https://github.com/vim/vim.git"
 else
-	SRC_URI="https://github.com/vim/vim/archive/v${PV}.tar.gz -> ${P}.tar.gz"
+	SRC_URI="https://github.com/vim/vim/archive/v${PV}.tar.gz -> ${P}.tar.gz
+		https://gitweb.gentoo.org/proj/vim-patches.git/snapshot/vim-patches-vim-${VIM_PATCHES_VERSION}-patches.tar.bz2"
 	KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~m68k ~mips ppc ppc64 ~riscv ~s390 ~sparc x86 ~arm64-macos ~x64-macos ~x64-solaris"
 fi
+
+PATCHES=(
+	# Five of the six in the ::gentoo patchset. Each verified with
+	# `patch -p1 -f -g0 --dry-run` against the 9.2.1036 tarball.
+	"${WORKDIR}/vim-patches-vim-${VIM_PATCHES_VERSION}-patches/001_all_vim-6.3-xorg-75816.patch"
+	"${WORKDIR}/vim-patches-vim-${VIM_PATCHES_VERSION}-patches/003_all_vim-7.0-automake-substitutions-93378.patch"
+	"${WORKDIR}/vim-patches-vim-${VIM_PATCHES_VERSION}-patches/004_all_vim-7.0-grub-splash-96155.patch"
+	"${WORKDIR}/vim-patches-vim-${VIM_PATCHES_VERSION}-patches/005_all_vim-7.1-ada-default-compiler.patch"
+	"${WORKDIR}/vim-patches-vim-${VIM_PATCHES_VERSION}-patches/006_all_vim-8.2.0210-python3-shared-lib.patch"
+)
+
+# BENTOO-DIVERGENCE: PATCHES - 002_all_vim-7.3-apache-83565.patch is deliberately
+# NOT in the list above, where ::gentoo applies the whole directory.
+#
+# It adds one autocmd to runtime/filetype.vim so /etc/apache2/{modules,vhosts}.d/
+# *.conf highlight as apache (Gentoo bug #83565). It fails on 9.2.1036 -- 2 hunks
+# -- because upstream rewrote the surrounding block. ::gentoo has not hit this
+# yet: its newest vim is 9.1.1652, where the patch still applies.
+#
+# The cost is syntax highlighting for two Gentoo-specific config paths, which is
+# why this ships rather than blocking the bump. Rebase it, or drop this note,
+# once ::gentoo reaches a 9.2 and decides for itself.
 
 DESCRIPTION="Vim, an improved vi-style text editor"
 HOMEPAGE="https://www.vim.org https://github.com/vim/vim"

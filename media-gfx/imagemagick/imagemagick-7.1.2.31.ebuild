@@ -17,8 +17,30 @@ if [[ ${PV} == 9999 ]] ; then
 else
 	MY_PV="$(ver_rs 3 '-')"
 	MY_P="ImageMagick-${MY_PV}"
-	# Upstream only publishes the signed tarball for the latest release on
-	# download.imagemagick.org; use the (permanent) release tag from GitHub.
+	# BENTOO-DIVERGENCE: SRC_URI - the GitHub release tag, where ::gentoo uses
+	# mirror://imagemagick and gets verify-sig with it. Losing the signature is
+	# a real cost, so here is why it is paid.
+	#
+	# Re-measured 2026-09-05, and the earlier note here was wrong in an
+	# interesting way. It said upstream publishes the signed tarball only for
+	# the LATEST release. It does not publish it for the latest either: 7.1.2-31
+	# IS the newest release, and both the tarball and its .asc are 404 on all
+	# three mirror://imagemagick hosts -- as are -30, -29, -28 and -25. That
+	# path carries no 7.1.2 at all.
+	#
+	# ::gentoo's copy works regardless because Gentoo mirrors distfiles on its
+	# own infrastructure, so mirror:// resolves to distfiles.gentoo.org long
+	# after upstream drops the file. This overlay has no such mirror, so
+	# adopting their SRC_URI would trade a working fetch for a signature.
+	#
+	# The GitHub archive tarball is generated, not the upstream release
+	# artifact, so no .asc exists for it and verify-sig cannot apply to what we
+	# actually download.
+	#
+	# Revisit when either is true, and check rather than assume:
+	#   curl -sI https://imagemagick.org/archive/releases/${MY_P}.tar.xz.asc
+	# returning 200, or this overlay gaining a distfile mirror of its own (the
+	# R2 bucket already used by six packages -- see obentoo-distfiles).
 	SRC_URI="https://github.com/ImageMagick/ImageMagick/archive/refs/tags/${MY_PV}.tar.gz -> ${MY_P}.tar.gz"
 
 	KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~m68k ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86 ~arm64-macos ~x64-macos ~x64-solaris"

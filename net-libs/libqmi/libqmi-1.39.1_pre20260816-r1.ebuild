@@ -20,7 +20,17 @@ DESCRIPTION="Qualcomm MSM (Mobile Station Modem) Interface (QMI) modem protocol 
 HOMEPAGE="https://www.freedesktop.org/wiki/Software/libqmi/ https://gitlab.freedesktop.org/mobile-broadband/libqmi"
 
 LICENSE="LGPL-2"
-SLOT="0/5.11" # soname of libqmi-glib.so
+# The subslot is the soname of libqmi-glib.so, and it must be MEASURED, not
+# carried forward: the installed library is libqmi-glib.so.5.12.0 (verified in
+# VDB CONTENTS) while this line said 5.11 for an entire release. A subslot that
+# does not match the library it describes silently disables the rebuild it
+# exists to trigger -- net-misc/modemmanager records :0/5.11= and never rebuilds
+# when the ABI moves under it.
+#
+# The revision bump is not cosmetic. Correcting the subslot alone changes what
+# FUTURE consumers record; only a new revision makes portage re-emerge the ones
+# already installed against the wrong value.
+SLOT="0/5.12"
 IUSE="gtk-doc introspection +mbim +qrtr"
 
 RDEPEND="

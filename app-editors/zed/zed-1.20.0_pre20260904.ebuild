@@ -1629,6 +1629,11 @@ DEPEND="
 	media-libs/fontconfig
 	media-libs/freetype
 	media-libs/vulkan-loader[X?]
+	# ashpd is used from BOTH gpui backends (x11/client.rs and
+	# wayland/client.rs), so the portal is needed whichever of the two
+	# USE flags is on -- unconditional, as ::gentoo has it. Without it
+	# file dialogs and screen capture fail at runtime, not at build.
+	sys-apps/xdg-desktop-portal
 	virtual/zlib:=
 	pulseaudio? ( media-libs/libpulse )
 	screen-capture? (
