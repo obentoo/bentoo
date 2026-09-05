@@ -22,6 +22,8 @@ HOMEPAGE="https://github.com/KhronosGroup/Vulkan-Loader"
 
 LICENSE="Apache-2.0"
 SLOT="0"
+# BENTOO-DIVERGENCE: IUSE - layers, a convenience flag pulling the validation
+# layers in as PDEPEND. ::gentoo leaves installing them to the user.
 IUSE="layers wayland X"
 
 # BENTOO-DIVERGENCE: DEPEND - ::gentoo pins the SDK in lockstep (~pkg-${PV});

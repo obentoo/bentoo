@@ -9,6 +9,8 @@ DESCRIPTION="run github workflows locally"
 HOMEPAGE="https://nektosact.com"
 SRC_URI="https://github.com/nektos/act/archive/v${PV}.tar.gz -> ${P}.tar.gz"
 
+# BENTOO-DIVERGENCE: LICENSE - the LICENSE+= below names what the vendored Go
+# modules are under. ::gentoo declares only the MIT of act itself.
 LICENSE="MIT"
 # Dependent (bundled, statically linked) Go module licenses
 LICENSE+=" Apache-2.0 BSD BSD-2 ISC MPL-2.0"

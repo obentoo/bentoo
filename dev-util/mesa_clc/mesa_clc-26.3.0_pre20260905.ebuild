@@ -3,6 +3,9 @@
 
 EAPI=8
 
+# BENTOO-DIVERGENCE: IUSE - llvm_slot_23, kept in lockstep with media-libs/mesa.
+# The slot is opt-in downstream: above _LLVM_NEWEST_STABLE the eclass will not
+# make it a default.
 LLVM_COMPAT=( {18..23} )
 PYTHON_COMPAT=( python3_{12..14} )
 

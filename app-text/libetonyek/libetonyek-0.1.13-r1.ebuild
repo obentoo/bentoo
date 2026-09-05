@@ -39,6 +39,9 @@ BDEPEND="
 	doc? ( app-text/doxygen )
 "
 
+# BENTOO-DIVERGENCE: PATCHES - mdds-3.0 compatibility. This overlay carries
+# dev-util/mdds at 3.2.1 where ::gentoo is on 3.0.0, and libetonyek does not
+# build against the newer API unpatched.
 PATCHES=(
 	"${FILESDIR}/${P}-mdds-3.0.patch"
 )

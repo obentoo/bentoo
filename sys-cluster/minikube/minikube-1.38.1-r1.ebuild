@@ -2,6 +2,9 @@
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
+# BENTOO-DIVERGENCE: INHERIT - shell-completion, the successor eclass that
+# covers zsh and fish alongside bash; ::gentoo still inherits
+# bash-completion-r1. newbashcomp below comes from it either way.
 inherit go-module shell-completion toolchain-funcs
 GIT_COMMIT=c93a4cb9311efc66b90d33ea03f75f2c4120e9b0
 GIT_COMMIT_SHORT=${GIT_COMMIT:0:9}

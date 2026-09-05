@@ -59,6 +59,9 @@ done
 unset _rsng_dep _rsng_n _rsng_v
 
 # rapydscript-ng and terser are BSD-2, source-map is BSD-3, everything else MIT.
+# BENTOO-DIVERGENCE: LICENSE - BSD-2 and MIT come from the npm tarballs this
+# ebuild fetches individually through SRC_URI. ::gentoo ships one prebuilt
+# node_modules blob and declares only BSD.
 LICENSE="BSD-2 BSD MIT"
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
