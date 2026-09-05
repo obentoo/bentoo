@@ -3391,9 +3391,14 @@ self_test_assertions() {
 	# A01, A02, A03, A06, A07 and A20 all fall out of that single event, and
 	# A08 and A11 lost their subjects to it (kwin and kdeplasma-addons were
 	# both in the 82).
+	# RE-MEASURED 2026-09-05 (second pass). Every one of A01-A07 moved by exactly
+	# one, and it is the same one: sci-ml/ollama was removed as a stale duplicate
+	# of ::gentoo's copy at the same PV. It was a shared package (A01), holding a
+	# single ebuild (A02, A06, A07), and it sat at exact distance (A03, and so
+	# the denominator of A04 and A05). One removal, seven counters, all -1.
 	assert_eq A01 \
 		'shared packages: the overlay packages ::gentoo also carries' \
-		'165' "${#PARITY_SHARED_PACKAGES[@]}"
+		'164' "${#PARITY_SHARED_PACKAGES[@]}"
 
 	# RE-MEASURED TWICE during story 008, and left where it started - which is
 	# worth recording, because the second measurement is the one that says
@@ -3412,18 +3417,18 @@ self_test_assertions() {
 	# that it stops noticing.
 	assert_eq A02 \
 		'ebuilds in scope: every overlay ebuild inside a shared package' \
-		'252' "${#PARITY_SCOPE_EBUILDS[@]}"
+		'251' "${#PARITY_SCOPE_EBUILDS[@]}"
 
 	# Paired with its denominator: 0/0 and 321/321 must not read alike.
 	assert_eq A07 \
 		'md5-cache coverage: an entry exists on both sides for every ebuild in scope' \
-		'252/252' "${#PARITY_MD5_COVERED[@]}/${#PARITY_SCOPE_EBUILDS[@]}"
+		'251/251' "${#PARITY_MD5_COVERED[@]}/${#PARITY_SCOPE_EBUILDS[@]}"
 
 	# --- what each ebuild is compared against -------------------------
 
 	assert_eq A03 \
 		'exact-distance ebuilds: ::gentoo carries the same PV' \
-		'6' "$(baselines_at_distance exact)"
+		'5' "$(baselines_at_distance exact)"
 
 	# The live-ebuild trap, and the reason this one carries a denominator:
 	# including 9999 in the version sort made a first pass report 34 packages
@@ -3431,7 +3436,7 @@ self_test_assertions() {
 	# selected is the bug looking exactly like the fix.
 	assert_eq A06 \
 		'packages behind ::gentoo: none, once live ebuilds leave the version sort' \
-		'behind=0 baselines=252' \
+		'behind=0 baselines=251' \
 		"behind=${#PARITY_BEHIND[@]} baselines=${#PARITY_BASELINES[@]}"
 
 	# --- what the comparison concluded --------------------------------
@@ -3448,11 +3453,11 @@ self_test_assertions() {
 	# packages - which is what most of them were - left the tree.
 	assert_eq A04 \
 		'byte-identical ebuilds: cmp against the exact baseline agrees' \
-		'0/6' "${#PARITY_IDENTICAL[@]}/$(baselines_at_distance exact)"
+		'0/5' "${#PARITY_IDENTICAL[@]}/$(baselines_at_distance exact)"
 
 	assert_eq A05 \
 		'REDUNDANT verdicts: one per byte-identical ebuild, its axis rows suppressed' \
-		'0/6' "$(verdict_count REDUNDANT)/$(baselines_at_distance exact)"
+		'0/5' "$(verdict_count REDUNDANT)/$(baselines_at_distance exact)"
 
 	# PYTHON_COMPAT never reaches md5-cache under that name - python-any-r1
 	# expands it into the BDEPEND any-of block - so at kwin-6.7.4 the only
@@ -3712,9 +3717,16 @@ self_test_assertions() {
 	# session's remediation regenerated the md5-cache that was carrying the one
 	# signal. Detection of stale caches is guarded by A18, A19 and A21, and all
 	# three are red for exactly this reason - see the note on A18.
+	#
+	# RE-MEASURED AGAIN 2026-09-05, from 350, and this time the cause is the
+	# remediation itself rather than the tree moving underneath: sci-ml/ollama
+	# was removed as a stale duplicate of ::gentoo's, and three packages were
+	# revbumped (gstreamer-editing-services, sentry-native, freecad), which
+	# retires their old rows. The invariant is untouched - the two halves still
+	# move together, 338 against 338.
 	assert_eq A20 \
 		'the four verdicts still sum to the row total, with the stale cache outside both' \
-		'rows=350 verdict-sum=350 stale=0' \
+		'rows=338 verdict-sum=338 stale=0' \
 		"$(row_arithmetic)"
 
 	# --- story 008: what a stale cache does to the exit code ----------
