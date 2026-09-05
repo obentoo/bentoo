@@ -19,6 +19,15 @@ LICENSE="LGPL-2+ BSD"
 SLOT="4.1/0" # soname version of libwebkit2gtk-4.1
 KEYWORDS="~amd64 ~arm ~arm64 ~loong ~ppc ~ppc64 ~riscv ~sparc ~x86"
 
+# BENTOO-DIVERGENCE: IUSE - "webdriver", which ::gentoo does not expose at all:
+# it hardcodes -DENABLE_WEBDRIVER=OFF in BOTH slots, so the WebKitWebDriver
+# binary is simply unavailable there. It is the W3C automation endpoint, needed
+# by anything driving WebKit the way chromedriver drives Chrome.
+#
+# The reason ::gentoo turns it off rather than choosing a slot is that the
+# binary has one fixed path, so two slots shipping it would collide at merge.
+# This overlay makes it a flag and resolves the collision with the cross-slot
+# blocker below, which lets the user pick the slot instead of losing the feature.
 IUSE="aqua avif cpu_flags_x86_sse cpu_flags_x86_sse2 custom-cflags examples gamepad keyring +gstreamer +introspection pdf jpegxl +jumbo-build lcms seccomp spell systemd wayland webdriver X"
 REQUIRED_USE="|| ( aqua wayland X )"
 
@@ -96,6 +105,10 @@ RDEPEND="
 		dev-libs/wayland
 		dev-libs/wayland-protocols
 	)
+	# BENTOO-DIVERGENCE: DEPEND - the cross-slot blocker below.
+	# BENTOO-DIVERGENCE: RDEPEND - the same atom; both exist only because
+	# USE=webdriver above can be on in one slot at a time. Absent from
+	# ::gentoo because it never builds the binary in either slot.
 	webdriver? ( !net-libs/webkit-gtk:6[webdriver] )
 "
 DEPEND="${RDEPEND}"
@@ -122,9 +135,16 @@ PATCHES=(
 	"${FILESDIR}"/2.48.3-fix-ftbfs-riscv64.patch
 	"${FILESDIR}"/2.50.4-disable-native-simd-on-riscv.patch
 	"${FILESDIR}"/2.50.4-prefer-pthread.patch
+	# BENTOO-DIVERGENCE: PATCHES - a 2.52.5 refresh of ::gentoo's
+	# 2.50.5-EventTarget-gcc16.patch (bug 970412), which they dropped at
+	# 2.52.5 and we did not. The refresh drops the patch's second hunk:
+	# upstream added that include itself at 2.52.5, and eapply runs
+	# `patch -f`, which would force a duplicate rather than skip it. The
+	# first hunk still applies clean, so the redundant forward declaration
+	# gcc16 objects to is still there. Full reasoning in the patch header.
 	"${FILESDIR}"/2.52.5-EventTarget-gcc16.patch
 	"${FILESDIR}"/2.52.1-documentloader-eventloop-h.patch
-	"${FILESDIR}"/2.52.4-disable-nvidia-dmabuf.patch
+	"${FILESDIR}"/2.52.3-disable-nvidia-dmabuf.patch
 	# https://bugs.gentoo.org/730044 -- x86 without SSE2
 	"${FILESDIR}"/2.52.6-no-sse2.patch
 	# FTBFS with USE=-gstreamer
