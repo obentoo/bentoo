@@ -40,6 +40,12 @@ else
 	S="${WORKDIR}/node-v${PV}"
 fi
 
+# BENTOO-DIVERGENCE: IUSE - "pnpm", absent from ::gentoo. PDEPEND-only; it
+# pulls sys-apps/pnpm, which ships as its own package here.
+#
+# BENTOO-DIVERGENCE: IUSE_DEFAULTS - "+system-icu" where ::gentoo leaves it off.
+# Default-on unbundles ICU for everyone: a bundled ICU is a second copy of the
+# timezone and locale data that no dev-libs/icu update reaches.
 IUSE="cpu_flags_x86_sse2 debug doc +icu +inspector lto +npm pax-kernel pnpm +snapshot +ssl +system-icu +system-ssl test"
 REQUIRED_USE="inspector? ( icu ssl )
 	npm? ( ssl )
@@ -178,6 +184,12 @@ PDEPEND="pnpm? ( sys-apps/pnpm )"
 CHECKREQS_MEMORY="8G"
 CHECKREQS_DISK_BUILD="22G"
 
+# BENTOO-DIVERGENCE: PATCHES - a different set from ::gentoo's 26.8.1, which
+# is the baseline the parity sweep picks for this ebuild. Both halves are
+# reasoned out below: what is here, and what is deliberately absent.
+# (The reasoning predates this tag; the tag exists so gentoo-parity.sh can
+# see it.)
+#
 # The 26 ebuild has no global PATCHES at all; this one does, and that is
 # expected -- a patch exists because a particular major's source needs it, so
 # PATCHES is one of the three places (with SRC_URI and the dependency bounds
@@ -813,6 +825,14 @@ pkg_postinst() {
 # because the module is gone, and as the last command of this phase that would
 # fail the unmerge of an already-unmerged package. dev-lang/php's pkg_postrm
 # carries the same caveat as a comment, without the check.
+# BENTOO-DIVERGENCE: DEFINED_PHASES - pkg_postrm, which ::gentoo does not need.
+# This overlay slots nodejs by major version where ::gentoo ships one unslotted
+# package, so removing a slot leaves /usr/bin/node pointing into a directory
+# that is gone; `eselect nodejs cleanup` repoints it.
+#
+# BENTOO-DIVERGENCE: RDEPEND - app-eselect/eselect-nodejs and the
+# "!!net-libs/nodejs" blocker, both from that same slotting: the eselect module
+# owns the symlinks, the blocker stops an unslotted copy overwriting them.
 pkg_postrm() {
 	if ! eselect nodejs cleanup; then
 		ewarn "\`eselect nodejs cleanup\` failed."

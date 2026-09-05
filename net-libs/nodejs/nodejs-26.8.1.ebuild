@@ -40,6 +40,16 @@ else
 	S="${WORKDIR}/node-v${PV}"
 fi
 
+# BENTOO-DIVERGENCE: IUSE - "pnpm", which ::gentoo does not have. It only pulls
+# sys-apps/pnpm through PDEPEND; nothing in this ebuild's build depends on it.
+# The flag exists because pnpm ships as its own package here and a node user who
+# wants it should not have to know that.
+#
+# BENTOO-DIVERGENCE: IUSE_DEFAULTS - "+system-icu" where ::gentoo ships
+# "system-icu" off by default. Default-on unbundles ICU for everyone rather than
+# for whoever knew to ask: a bundled ICU is a second copy of the timezone and
+# locale data that no dev-libs/icu update ever reaches. USE=-system-icu still
+# builds, so the choice is a default and not a constraint.
 IUSE="cpu_flags_x86_sse2 debug doc +icu +inspector lto +npm pax-kernel pnpm +snapshot +ssl +system-icu +system-ssl test"
 REQUIRED_USE="inspector? ( icu ssl )
 	npm? ( ssl )
@@ -49,9 +59,32 @@ REQUIRED_USE="inspector? ( icu ssl )
 
 RESTRICT="!test? ( test )"
 
+# BENTOO-DIVERGENCE: DEPEND - see the measurement below.
+# BENTOO-DIVERGENCE: RDEPEND - same floors, same reason.
+#
+# The floors below are HIGHER than
+# ::gentoo's on the same 26.8.1 (brotli 1.2.0 vs 1.1.0, ada 3.4.4 vs 3.3.0,
+# c-ares 1.34.6 vs 1.34.5), and the rule behind them is: match what node
+# actually bundles, because that is the version upstream tests against.
+#
+# Measured against the 26.8.1 tarball on 2026-09-05:
+#   deps/brotli           BROTLI_VERSION 1.2
+#   deps/cares            ARES_VERSION_STR "1.34.8"
+#   deps/ada              ADA_VERSION "4.0.0"
+#   deps/v8/third_party/simdutf   Version: 7.7.0
+#
+# ::gentoo's floors sit one or more releases under each. Building --shared-*
+# against an older library than the one upstream vendored is how you get a
+# subtle ABI or behaviour difference that only shows up at runtime.
+#
+# Note for the next bump: ada bundles 4.0.0 and BOTH trees floor below it. Ours
+# is closer but still low. Re-derive every floor from deps/ on each bump rather
+# than carrying these forward -- carrying forward is what this whole tag set
+# exists to stop.
 COMMON_DEPEND=">=app-arch/brotli-1.2.0:=
 	dev-db/sqlite:3
 	>=dev-cpp/ada-3.4.4:=
+	>=dev-cpp/simdutf-7.7.0:=
 	>=dev-libs/libuv-1.52.1:=
 	>=dev-libs/simdjson-4.6.1:=
 	>=net-dns/c-ares-1.34.6:=
@@ -198,6 +231,13 @@ src_prepare() {
 		BUILDTYPE=Debug
 	fi
 
+	# BENTOO-DIVERGENCE: PATCHES - a different set from ::gentoo's, and built
+	# here in src_prepare rather than in a global array. The reasons are the two
+	# comments below: a bentoo-local rebase of gcc17, and a 26.5.1-specific
+	# paxmarking copy that applies with --fuzz=0 where the shared one drifts.
+	# (The reasoning predates this tag; the tag exists so gentoo-parity.sh can
+	# see it.)
+	#
 	# Build fixes carried from ::gentoo's 26.7.0 (it lists these as a global
 	# PATCHES array; this ebuild has none, so they go here). gcc17 is a
 	# bentoo-local rebase -- see the header of the 26.7.0 copy for why the
@@ -248,6 +288,7 @@ src_configure() {
 		--shared-nghttp3
 		--shared-ngtcp2
 		--shared-simdjson
+		--shared-simdutf
 		--shared-sqlite
 		--shared-zlib
 	)
@@ -692,6 +733,16 @@ pkg_postinst() {
 # because the module is gone, and as the last command of this phase that would
 # fail the unmerge of an already-unmerged package. dev-lang/php's pkg_postrm
 # carries the same caveat as a comment, without the check.
+# BENTOO-DIVERGENCE: DEFINED_PHASES - pkg_postrm, which ::gentoo has no need
+# for. It follows from this overlay slotting nodejs by major version (::gentoo
+# ships a single unslotted package): removing one slot leaves /usr/bin/node and
+# its siblings pointing into a directory that no longer exists, so they fail at
+# exec time instead of at lookup time. `eselect nodejs cleanup` repoints them.
+#
+# BENTOO-DIVERGENCE: RDEPEND - app-eselect/eselect-nodejs and the
+# "!!net-libs/nodejs" blocker, both from the same slotting decision: the eselect
+# module owns the symlinks, and the blocker keeps an unslotted ::gentoo copy
+# from installing over them.
 pkg_postrm() {
 	if ! eselect nodejs cleanup; then
 		ewarn "\`eselect nodejs cleanup\` failed."
