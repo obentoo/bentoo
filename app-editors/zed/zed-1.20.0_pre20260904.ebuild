@@ -1579,6 +1579,10 @@ RUST_MIN_VER="1.97.1"
 RUST_NEEDS_LLVM=1
 WEBRTC_COMMIT="0001d84-4"
 
+# BENTOO-DIVERGENCE: INHERIT - llvm-r1, because series 1.20 needs a pinned LLVM
+# slot to build; 1.14 in ::gentoo does not.
+# BENTOO-DIVERGENCE: PATCHES - overlay-only, all of them wiring the
+# claude-agent-acp integrations; ::gentoo carries none.
 inherit cargo check-reqs desktop flag-o-matic llvm-r1 toolchain-funcs xdg
 
 DESCRIPTION="The fast, collaborative code editor"
@@ -1596,6 +1600,9 @@ SRC_URI="
 	${CARGO_CRATE_URIS}"
 
 S="${WORKDIR}/${PN}-${EGIT_COMMIT}"
+# BENTOO-DIVERGENCE: LICENSE - the vendored crate set differs six series on, so
+# the LICENSE+= block below names licences 1.14 never pulled in, among them
+# CDLA-Permissive-2.0.
 LICENSE="GPL-3+"
 # license for fuchsia-cprng-0.1.1, which is not set correctly in crate
 LICENSE+=" BSD"
@@ -1612,6 +1619,9 @@ SLOT="0"
 # flags default. O suporte a arm64 no SRC_URI/src_configure foi mantido para
 # facilitar um re-keyword futuro.
 KEYWORDS="~amd64"
+# BENTOO-DIVERGENCE: IUSE - claude-agent-acp-plus, claude-agent-acp-tui and
+# claude-code-ide gate integrations with overlay-only packages; X is exposed
+# separately from wayland here.
 IUSE="+X +claude-agent-acp-plus +claude-agent-acp-tui +claude-code-ide collab extensions-cli +mimalloc neovim +pulseaudio screen-capture tracy +wayland"
 REQUIRED_USE="|| ( X wayland )"
 CHECKREQS_DISK_BUILD="18G"
@@ -1625,6 +1635,8 @@ CHECKREQS_MEMORY="8G"
 # The note is out here because a "#" inside DEPEND="..." is not a comment: it is
 # content, and portage parses it as a package atom. Putting it inside made the
 # whole depset unparseable while still passing bash -n.
+# BENTOO-DIVERGENCE: DEPEND - sys-apps/dbus, which series 1.20 links against
+# and 1.14 in ::gentoo does not.
 DEPEND="
 	dev-libs/glib:2
 	|| (
@@ -1656,6 +1668,8 @@ DEPEND="
 		x11-libs/libxkbcommon[X]
 	)
 "
+# BENTOO-DIVERGENCE: RDEPEND - dbus as above, plus dev-util/claude-agent-acp-plus
+# and -tui, which exist only in this overlay.
 RDEPEND="
 	${DEPEND}
 	claude-agent-acp-plus? ( dev-util/claude-agent-acp-plus )

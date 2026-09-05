@@ -19,6 +19,9 @@ SLOT="0"
 KEYWORDS="~amd64"
 IUSE="dbus enchant +fonts screencast wayland webkit +X"
 
+# BENTOO-DIVERGENCE: DEPEND - series 7.2 adds cmark-gfm and glibmm through
+# CDEPEND below; ::gentoo is on 7.1, whose dep set predates both.
+# BENTOO-DIVERGENCE: RDEPEND - same CDEPEND, same reason.
 CDEPEND="
 	!net-im/telegram-desktop-bin
 	app-arch/lz4:=
@@ -64,6 +67,7 @@ DEPEND="${CDEPEND}
 	>=dev-cpp/ms-gsl-4.1.0
 	dev-cpp/range-v3
 "
+# BENTOO-DIVERGENCE: BDEPEND - gobject-introspection floor required by 7.2.
 BDEPEND="
 	${PYTHON_DEPS}
 	>=dev-build/cmake-3.16
