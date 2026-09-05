@@ -14,7 +14,7 @@ SRC_URI+=" verify-sig? ( https://${PN}.freedesktop.org/src/${PN}/${P}.tar.xz.asc
 
 LICENSE="LGPL-2+"
 SLOT="1.0"
-KEYWORDS="~alpha amd64 ~arm ~arm64 ~hppa ~loong ~mips ~ppc ppc64 ~riscv ~sparc x86 ~amd64-linux ~x86-linux ~ppc-macos ~x64-macos ~x64-solaris"
+KEYWORDS="~alpha amd64 ~arm ~arm64 ~hppa ~loong ~mips ~ppc ppc64 ~riscv ~sparc x86 ~x64-macos ~x64-solaris"
 IUSE="+caps +introspection ptp unwind"
 
 # gstreamer-1.22.x requires 2.62, but 2.64 is strongly recommended
@@ -38,17 +38,18 @@ BDEPEND="
 
 DOCS=( README.md )
 
+# BENTOO-DIVERGENCE: PATCHES - disable-test-with-no-tools, absent from
+# ::gentoo. gstregistry looks for gst-plugin-scanner, which is not built when
+# tools are disabled -- and this overlay disables them on the non-native ABI via
+# meson_native_enabled, so the testsuite breaks there and not on ::gentoo, which
+# builds tools on every ABI. The patch header records the wider bug this papers
+# over (Gentoo 870361, still open); the audit re-checked it and found it
+# unchanged.
 PATCHES=(
 	"${FILESDIR}"/gstreamer-1.24.10-disable-test-with-no-tools.patch
 )
 
 VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/tpm.asc
-
-src_prepare() {
-	default
-	# GStreamer 1.28+ uses meson.options but the eclass expects meson_options.txt
-	ln -s meson.options meson_options.txt || die
-}
 
 # Rust
 QA_FLAGS_IGNORED="usr/libexec/gstreamer-1.0/gst-ptp-helper"
