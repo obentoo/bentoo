@@ -10,7 +10,8 @@ MY_P="${MY_PN}-${PV}"
 
 DESCRIPTION="Serves Proton Mail to IMAP/SMTP clients"
 HOMEPAGE="https://proton.me/mail/bridge https://github.com/ProtonMail/proton-bridge/"
-SRC_URI="https://github.com/ProtonMail/${MY_PN}/archive/refs/tags/v${PV}.tar.gz -> ${P}.tar.gz"
+SRC_URI="https://github.com/ProtonMail/${MY_PN}/archive/refs/tags/v${PV}.tar.gz -> ${P}.tar.gz
+	https://distfiles.obentoo.org/${P}-vendor.tar.xz"
 S="${WORKDIR}"/${MY_P}
 
 LICENSE="GPL-3+ Apache-2.0 BSD BSD-2 ISC LGPL-3+ MIT MPL-2.0 Unlicense"
@@ -23,37 +24,23 @@ KEYWORDS="~amd64"
 # gated, so a non-systemd system can still run the daemon.
 IUSE="gui systemd"
 
-# Tests require Internet access and we need network access for Go modules
+# Tests still require Internet access; the build no longer does.
 PROPERTIES="test_network"
-# KNOWN DEFECT, not a divergence to preserve. RESTRICT="network-sandbox"
-# exists because src_prepare runs `go mod download` against the live module
-# proxy, which trades verified dependencies for a build-time fetch: the
-# build is not reproducible and its inputs are not in the Manifest.
-#
-# ::gentoo solves this with a pre-vendored tarball in SRC_URI. The approved
-# fix here is the same shape, hosted on the overlay's R2 bucket, and it is
-# item 13 of the parity remediation -- not started, because uploading the
-# tarball is an external action awaiting the maintainer.
-#
-# The four tags below describe what this design forces. They document the
-# current state; they do not endorse it. When the vendor tarball lands, the
-# BDEPEND tag and this note should go with it.
-RESTRICT="network-sandbox test strip"
+# The vendored dependencies come from SRC_URI, not from the network. Until
+# 2026-09-05 src_prepare ran `go mod download` against the live module proxy,
+# which is why RESTRICT carried network-sandbox: the build was not
+# reproducible and its inputs were not in the Manifest. The vendor tarball
+# above replaces that, the same way ::gentoo does it.
+RESTRICT="test strip"
 
-# Add network dependencies for Go module fetching
-# BENTOO-DIVERGENCE: BDEPEND - wget, curl and git are here to serve the
-# go mod download in src_prepare. They go away with it; see the note above
-# RESTRICT.
 BDEPEND="
 	>=dev-lang/go-1.21
-	net-misc/wget
-	net-misc/curl
-	dev-vcs/git
 "
 
 # BENTOO-DIVERGENCE: RDEPEND - libcbor, libfido2 and openssl are named
 # explicitly here. ::gentoo does not name them because its vendored tree
-# resolves them at link time; ours cannot, for the reason above RESTRICT.
+# resolves them at link time; ours names them because they are cgo
+# libraries, which Go vendoring does not supply.
 # BENTOO-DIVERGENCE: DEPEND - same three, through RDEPEND.
 RDEPEND="
 	app-crypt/libsecret
@@ -82,28 +69,19 @@ DOCS=( "${S}"/{README,Changelog}.md )
 
 src_unpack() {
 	default
+
+	# The vendor tarball unpacks to ${WORKDIR}/vendor; the build wants it inside
+	# the source tree. Same shape ::gentoo uses.
+	if [[ -d "${WORKDIR}"/vendor ]]; then
+		mv "${WORKDIR}"/vendor "${S}"/vendor || die
+	fi
+
 	go-env_set_compile_environment
 }
 
 src_prepare() {
 	xdg_environment_reset
 	default
-	
-	# Initialize Go modules and download dependencies
-	einfo "Initializing Go modules and downloading dependencies..."
-	
-	# Set Go environment variables for proper module handling
-	export GO111MODULE=on
-	export GOPROXY="https://proxy.golang.org,direct"
-	export GOSUMDB="sum.golang.org"
-	export GOFLAGS="-buildvcs=false"
-	
-	# Download and verify Go modules
-	go mod download -x || die "Failed to download Go modules"
-	go mod verify || die "Failed to verify Go modules"
-	
-	# Vendor the dependencies locally for build reproducibility
-	go mod vendor || die "Failed to vendor Go modules"
 	
 	if use gui; then
 		# prepare desktop file
