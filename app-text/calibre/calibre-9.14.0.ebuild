@@ -7,6 +7,9 @@ EAPI=8
 # aborts on anything older, so this cannot be widened. python3_15 is left out
 # on purpose: dev-lang/python:3.15 is still at _rc in ::gentoo and upstream
 # does not test against it.
+# BENTOO-DIVERGENCE: IUSE_DEFAULTS - python_single_target_python3_14 is the
+# only possible default: calibre 9.x sets requires-python = ">=3.14", so the
+# compat list below cannot be widened and the single target follows it.
 PYTHON_COMPAT=( python3_14 )
 PYTHON_REQ_USE="sqlite,ssl"
 
@@ -113,8 +116,11 @@ COMMON_DEPEND="${PYTHON_DEPS}
 	udisks? ( virtual/libudev )
 	unrar? ( dev-python/unrardll )
 "
+# BENTOO-DIVERGENCE: RDEPEND - same two, through COMMON_DEPEND above.
 RDEPEND="${COMMON_DEPEND}
 	udisks? ( sys-fs/udisks:2 )"
+# BENTOO-DIVERGENCE: DEPEND - pystache and tzlocal, new imports in the 9.x
+# series; ::gentoo is on 8.x and needs neither.
 DEPEND="${COMMON_DEPEND}
 	test? ( $(python_gen_cond_dep '>=dev-python/chardet-3.0.3[${PYTHON_USEDEP}]') )
 "
@@ -132,6 +138,9 @@ DEPEND="${COMMON_DEPEND}
 # 0.7.22, so USE=system-mathjax cannot build there at all; this overlay carries
 # 0.8.6 for it. An unversioned atom here would turn a dependency error into
 # that sandbox failure, so do not drop the >=.
+# BENTOO-DIVERGENCE: BDEPEND - dev-build/cmake, made explicit here. setup.py
+# build_headless() shells out to cmake to build libheadless.so; ::gentoo
+# leaves it implicit, which works only when cmake happens to be present.
 BDEPEND="$(python_gen_cond_dep '
 		>=dev-python/pyqt-builder-1.10.3[${PYTHON_USEDEP}]
 		>=dev-python/sip-5[${PYTHON_USEDEP}]
@@ -142,6 +151,8 @@ BDEPEND="$(python_gen_cond_dep '
 	verify-sig? ( sec-keys/openpgp-keys-kovidgoyal )
 "
 
+# BENTOO-DIVERGENCE: PATCHES - same two fixes as ::gentoo (jxr-test, piper),
+# rebased onto 9.x; the names carry the series they were rebased for.
 PATCHES=(
 	# Skip calling a binary (JxrDecApp) from libjxr which is used for tests
 	# We don't (yet?) package libjxr and it seems to be dead upstream

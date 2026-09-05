@@ -3,6 +3,9 @@
 
 EAPI=8
 
+# BENTOO-DIVERGENCE: IUSE - llvm_slot_23. The slot is opt-in downstream:
+# above _LLVM_NEWEST_STABLE the eclass will not make it a default, so
+# exposing it costs nothing and gives the newer slot a way in.
 LLVM_COMPAT=( {18..23} )
 LLVM_OPTIONAL=1
 CARGO_OPTIONAL=1
@@ -176,6 +179,9 @@ CLC_DEPSTRING="
 	~dev-util/mesa_clc-${PV}[video_cards_asahi?,video_cards_panfrost?]
 	llvm-runtimes/libclc[spirv(-)]
 "
+# BENTOO-DIVERGENCE: BDEPEND - app-alternatives/lex where ::gentoo names
+# sys-devel/flex directly. The virtual is the current spelling and lets a
+# system provide another lex; ::gentoo has it too, it just has not migrated.
 BDEPEND="
 	${PYTHON_DEPS}
 	opencl? (
@@ -336,6 +342,9 @@ pkg_setup() {
 	fi
 }
 
+# BENTOO-DIVERGENCE: PATCHES - astc-spirv1.2, a build fix for glslang
+# enforcing SPIR-V 1.2 on the ASTC decoder shader. Drop when upstream
+# carries it.
 PATCHES=(
 	# Build fix: the ASTC decoder shader needs SPIR-V 1.2, which glslang
 	# started enforcing in 2026-08.  Drop when upstream carries it.
