@@ -1,0 +1,59 @@
+# Copyright 1999-2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+
+EAPI=8
+
+# Plasma 6.8 beta 2, masked in profiles/package.mask. Copied from the Gentoo
+# KDE team's overlay (github.com/gentoo/kde) with no change but these tags;
+# each axis differs only because ::gentoo is still on the 6.7.x series.
+# Drop this ebuild, tags included, once ::gentoo ships 6.8.0.
+# BENTOO-DIVERGENCE: DEPEND - upstream 6.8 beta, not in ::gentoo yet.
+# BENTOO-DIVERGENCE: IUSE - upstream 6.8 beta, not in ::gentoo yet.
+# BENTOO-DIVERGENCE: RDEPEND - upstream 6.8 beta, not in ::gentoo yet.
+
+ECM_QTHELP="true"
+ECM_TEST="true"
+KFMIN=6.30.0
+QTMIN=6.11.2
+inherit ecm plasma.kde.org
+
+DESCRIPTION="Support components for porting from KF5/Qt5 to KF6/Qt6"
+
+LICENSE="GPL-2+ LGPL-2+"
+SLOT="6"
+KEYWORDS="~amd64 ~arm64 ~ppc64 ~riscv ~x86"
+IUSE="activities geolocation ksysguard"
+
+RESTRICT="test" # bug 926347
+
+DEPEND="
+	>=dev-qt/qtbase-${QTMIN}:6[dbus,gui,sql,widgets]
+	>=dev-qt/qtdeclarative-${QTMIN}:6
+	>=kde-frameworks/kconfig-${KFMIN}:6
+	>=kde-frameworks/kcoreaddons-${KFMIN}:6
+	>=kde-frameworks/kguiaddons-${KFMIN}:6
+	>=kde-frameworks/kholidays-${KFMIN}:6
+	>=kde-frameworks/ki18n-${KFMIN}:6
+	>=kde-frameworks/kidletime-${KFMIN}:6
+	>=kde-frameworks/kio-${KFMIN}:6
+	>=kde-frameworks/knotifications-${KFMIN}:6
+	>=kde-frameworks/kservice-${KFMIN}:6
+	>=kde-frameworks/kunitconversion-${KFMIN}:6
+	>=kde-frameworks/solid-${KFMIN}:6
+	activities? ( >=kde-plasma/plasma-activities-${KDE_CATV}:6= )
+	geolocation? ( >=kde-frameworks/networkmanager-qt-${KFMIN}:6 )
+	ksysguard? ( >=kde-plasma/libksysguard-${KDE_CATV}:6 )
+"
+RDEPEND="${DEPEND}
+	!kde-plasma/plasma-workspace:5
+	!<kde-plasma/plasma-workspace-6.5.90:6
+"
+
+src_configure() {
+	local mycmakeargs=(
+		$(cmake_use_find_package activities PlasmaActivities)
+		$(cmake_use_find_package geolocation KF6NetworkManagerQt)
+		$(cmake_use_find_package ksysguard KSysGuard)
+	)
+	ecm_src_configure
+}
