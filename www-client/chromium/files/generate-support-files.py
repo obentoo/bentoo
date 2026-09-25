@@ -65,6 +65,14 @@ def main():
         # which is also what the browser reports as WM_CLASS res_name: it takes
         # the basename of its .desktop file, and ours is PACKAGE.desktop.
         "STARTUP_WM_CLASS": f"chromium-browser{channel_suffix}",
+        # New in M154: desktop.template and appdata.xml.template no longer
+        # inline these. Values mirror installer.py's non-flatpak path:
+        # desktop_exec = /usr/bin/<usr_bin_symlink_name>, desktop_icon = PACKAGE
+        # (matches the icon name src_install passes to newicon), and the
+        # screenshot is the InstallerConfig default.
+        "DESKTOP_EXEC": f"/usr/bin/chromium-browser{channel_suffix}",
+        "DESKTOP_ICON": f"chromium-browser{channel_suffix}",
+        "APPSTREAM_SCREENSHOT_URL": "https://www.gstatic.com/chrome/appstream/chrome-2.png",
         # Use a distinct scheme handler for slotted installs to avoid conflicts
         "URI_SCHEME": f"x-scheme-handler/chromium{channel_suffix}",
         "USR_BIN_SYMLINK_NAME": f"chromium-browser{channel_suffix}",
