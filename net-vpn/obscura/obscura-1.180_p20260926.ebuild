@@ -597,7 +597,7 @@ inherit cargo desktop linux-info python-any-r1 rust-toolchain systemd xdg
 # PolyForm Noncommercial 1.0.0.  The GPL-3 relicense landed four days later
 # in 3e55fb3f, and this is the first main HEAD carrying it.  tag.json still
 # says 1.180, hence 1.180_p<date>: it sorts before the next tagged release.
-EGIT_COMMIT="be2cdaf648fa0176c17d040c66e37b3e3b2c707f"
+EGIT_COMMIT="2bc0738c21ae310b73e442f982d9d82671d9dd4d"
 
 # The GUI renders a React/Vite web UI inside WebKitGTK.  Vite runs at build
 # time and upstream gets its dependency tree from `npm ci`, which needs the
