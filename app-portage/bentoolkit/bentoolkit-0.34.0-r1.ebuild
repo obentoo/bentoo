@@ -7,13 +7,18 @@ inherit go-module
 
 DESCRIPTION="CLI tools for Bentoo Linux distribution maintainers and developers"
 HOMEPAGE="https://github.com/obentoo/bentoolkit"
-SRC_URI="https://github.com/obentoo/${PN}/archive/refs/tags/v${PV}.tar.gz -> ${P}.tar.gz"
+# The vendor tarball is the tag's `go mod vendor`, published with each
+# release (signed; see "Release assets" in upstream's docs/development.md), so
+# the build needs no network access.
+SRC_URI="
+	https://github.com/obentoo/${PN}/archive/refs/tags/v${PV}.tar.gz -> ${P}.tar.gz
+	https://github.com/obentoo/${PN}/releases/download/v${PV}/${P}-vendor.tar.xz
+"
 
 LICENSE="MIT"
 SLOT="0"
 KEYWORDS="~amd64 ~x86"
 IUSE="+secure kde +browser +system-snapshot systemd"
-RESTRICT="network-sandbox"
 # go.mod declares go 1.27.0 with toolchain go1.27.2, but the Go that builds
 # this package decides the standard library it links: 1.27.1 carries 13
 # stdlib advisories (GO-2026-6599..6617), all fixed in 1.27.2.
@@ -47,12 +52,6 @@ RDEPEND+="
 	)
 	systemd? ( sys-apps/systemd )
 "
-
-src_unpack() {
-	default
-	cd "${S}" || die
-	ego mod download
-}
 
 src_compile() {
 	local version_pkg="github.com/obentoo/bentoolkit/internal/common/version"

@@ -13,6 +13,9 @@ HOMEPAGE="https://github.com/obentoo/bentoolkit"
 # app-portage/bentoolkit's distfile rather than fetching the same tag twice.
 BENTOOLKIT_PV="0.34.0"
 SRC_URI="https://github.com/obentoo/bentoolkit/archive/refs/tags/v${BENTOOLKIT_PV}.tar.gz -> bentoolkit-${BENTOOLKIT_PV}.tar.gz"
+# The release's vendor tarball (the tag's `go mod vendor`) unpacks into the
+# same ${S}, so the build needs no network access.
+SRC_URI+=" https://github.com/obentoo/bentoolkit/releases/download/v${BENTOOLKIT_PV}/bentoolkit-${BENTOOLKIT_PV}-vendor.tar.xz"
 S="${WORKDIR}/bentoolkit-${BENTOOLKIT_PV}"
 
 LICENSE="MIT"
@@ -21,9 +24,6 @@ SLOT="0"
 # arm64 binary of it, so ~arm64 is upstream-supported.
 KEYWORDS="~amd64 ~arm64 ~x86"
 IUSE="systemd"
-# Same module fetch as app-portage/bentoolkit: `ego mod download` needs the
-# network in src_unpack.
-RESTRICT="network-sandbox"
 
 # Everything else it talks to is a D-Bus service of the desktop session (the
 # notification server, the StatusNotifierHost, the OpenURI portal, and
@@ -36,12 +36,6 @@ RDEPEND="x11-misc/xdg-utils"
 # this package decides the standard library it links: 1.27.1 carries 13
 # stdlib advisories (GO-2026-6599..6617), all fixed in 1.27.2.
 BDEPEND=">=dev-lang/go-1.27.2"
-
-src_unpack() {
-	default
-	cd "${S}" || die
-	ego mod download
-}
 
 src_prepare() {
 	default
