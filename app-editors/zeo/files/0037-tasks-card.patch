@@ -112,6 +112,10 @@ handler: three entries pushed in one thread update are all synced into the view,
 and the next push lands on a caught-up view. Fails when the handler syncs only the
 last index again.
 
+Tests added (0.2.3_p20261009): a held conversation with no metadata row comes forward
+instead of a second, empty one; a session with no row falls back to open_thread
+(0024's fallback, tested here because it needs this patch's held-view check).
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -287,7 +291,7 @@ index 0000000..54bdc62
 +    }
 +}
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index bc97d2d..b7eb18d 100644
+index bc97d2d..eba6113 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -39,6 +39,7 @@ use crate::ExpandMessageEditor;
@@ -761,7 +765,69 @@ index bc97d2d..b7eb18d 100644
      }
  
      /// Opens an external thread using an arbitrary AgentServer.
-@@ -14538,8 +14805,8 @@ mod tests {
+@@ -9179,6 +9446,61 @@ mod tests {
+         assert_eq!(folders, Some(vec![PathBuf::from("/project")]));
+     }
+ 
++    // 0037: a conversation this panel already holds comes forward as it is, even with no
++    // metadata row yet -- without the held-view check it would be reopened through the
++    // native agent as a second, empty conversation.
++    #[gpui::test]
++    async fn test_open_thread_by_session_reactivates_a_held_thread_without_metadata(
++        cx: &mut TestAppContext,
++    ) {
++        let (panel, mut cx) = setup_panel(cx).await;
++        let connection = StubAgentConnection::new()
++            .with_supports_load_session(true)
++            .with_agent_id("loadable-stub".into())
++            .with_telemetry_id("loadable-stub".into());
++        let (session_id, thread_id) =
++            open_generating_thread_with_loadable_connection(&panel, &connection, &mut cx);
++        cx.update(|_, cx| {
++            ThreadMetadataStore::global(cx).update(cx, |store, cx| store.delete(thread_id, cx));
++        });
++        cx.run_until_parked();
++        let held = panel.read_with(&cx, |panel, _| panel.conversation_views().len());
++
++        panel.update_in(&mut cx, |panel, window, cx| {
++            panel.open_thread_by_session(session_id.clone(), window, cx);
++        });
++        cx.run_until_parked();
++
++        panel.read_with(&cx, |panel, cx| {
++            assert_eq!(panel.active_thread_id(cx), Some(thread_id));
++            assert_eq!(
++                panel.conversation_views().len(),
++                held,
++                "no second conversation is opened for a thread already held"
++            );
++        });
++    }
++
++    // 0024: a session this machine has no row for -- a link shared from elsewhere -- falls
++    // back to opening it as before, through the native agent, rather than doing nothing.
++    #[gpui::test]
++    async fn test_open_thread_by_session_without_a_row_falls_back_to_open_thread(
++        cx: &mut TestAppContext,
++    ) {
++        let (panel, mut cx) = setup_panel(cx).await;
++        panel.update_in(&mut cx, |panel, window, cx| {
++            panel.open_thread_by_session(acp_v2::SessionId::new("never-seen-here"), window, cx);
++        });
++        cx.run_until_parked();
++
++        panel.read_with(&cx, |panel, cx| {
++            let view = panel
++                .active_conversation_view()
++                .expect("the fallback opens a conversation");
++            assert_eq!(view.read(cx).agent_key(), &Agent::NativeAgent);
++        });
++    }
++
+     #[gpui::test]
+     async fn test_new_draft_survives_reload_when_real_thread_is_active(cx: &mut TestAppContext) {
+         init_test(cx);
+@@ -14538,8 +14860,8 @@ mod tests {
          // directly remove from retained_threads and drop the handle
          // so on_release → close_all_sessions fires only on A.
          drop(retained_conversation_a);
@@ -796,7 +862,7 @@ index 224b6d3..23981dc 100644
              max_idle_retained_threads: 5,
              threads_sidebar: agent_settings::ThreadsSidebarSettings {
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 939a008..9512010 100644
+index d5fec54..cb26464 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -1862,21 +1862,30 @@ impl ConversationView {

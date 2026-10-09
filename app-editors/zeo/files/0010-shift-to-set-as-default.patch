@@ -41,6 +41,10 @@ Window to read the modifier from, its implementors are all upstream, and
 every caller is updated here. It also gains default_model_id so the picker
 can mark the default without the UI knowing how an agent stores it.
 
+(0.2.3_p20261009): the saved default's id is built by `selection_model_id`, tested against
+`LanguageModels::model_id` for the same model -- if the two drift, the picker's
+default marker silently disappears.
+
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 ---
 
@@ -92,7 +96,7 @@ index ddd2ad0..d6add1a 100644
              Task::ready(Ok(()))
          }
 diff --git a/crates/agent/src/agent.rs b/crates/agent/src/agent.rs
-index ccc5585..2614100 100644
+index ccc5585..79ff075 100644
 --- a/crates/agent/src/agent.rs
 +++ b/crates/agent/src/agent.rs
 @@ -2592,7 +2592,12 @@ impl acp_thread::AgentModelSelector for NativeAgentModelSelector {
@@ -109,7 +113,7 @@ index ccc5585..2614100 100644
          log::debug!(
              "Setting model for session {}: {}",
              self.session_id,
-@@ -2638,30 +2643,45 @@ impl acp_thread::AgentModelSelector for NativeAgentModelSelector {
+@@ -2638,30 +2643,41 @@ impl acp_thread::AgentModelSelector for NativeAgentModelSelector {
              }
          });
  
@@ -165,17 +169,49 @@ index ccc5585..2614100 100644
 +        let default = agent_settings::AgentSettings::get_global(cx)
 +            .default_model
 +            .as_ref()?;
-+
-+        Some(AgentModelId::new(format!(
-+            "{}/{}",
-+            default.provider.0, default.model
-+        )))
++        Some(selection_model_id(default))
 +    }
 +
      fn selected_model(&self, cx: &mut App) -> Task<Result<acp_thread::AgentModelInfo>> {
          let Some(thread) = self
              .connection
-@@ -6648,6 +6668,86 @@ mod internal_tests {
+@@ -2729,6 +2745,13 @@ fn subagent_model_id_to_selection(model_id: &AgentModelId, cx: &App) -> Language
+     model_id_to_selection(model_id, cx)
+ }
+ 
++/// The id a saved model selection names: the same `provider/model` that
++/// `LanguageModels::model_id` builds for a live model, so the picker's default marker
++/// lands on that model's row. If the two drift, the marker silently disappears.
++fn selection_model_id(selection: &LanguageModelSelection) -> AgentModelId {
++    AgentModelId::new(format!("{}/{}", selection.provider.0, selection.model))
++}
++
+ fn model_id_to_selection(model_id: &AgentModelId, cx: &App) -> LanguageModelSelection {
+     let id = model_id.as_ref();
+     let (provider, model) = id.split_once('/').unwrap_or(("", id));
+@@ -4264,6 +4287,21 @@ mod internal_tests {
+         });
+     }
+ 
++    /// 0010: the saved default and the live model it names must produce one id, or the
++    /// picker cannot mark the default.
++    #[test]
++    fn test_selection_model_id_matches_the_live_models_id() {
++        let fake = FakeLanguageModelProvider::default();
++        let model = fake.model("claude-x");
++        let selection: LanguageModelSelection =
++            serde_json::from_value(serde_json::json!({ "provider": "fake", "model": "claude-x" }))
++                .expect("a selection");
++        assert_eq!(
++            selection_model_id(&selection),
++            LanguageModels::model_id(&model)
++        );
++    }
++
+     #[gpui::test]
+     async fn test_compact_prompt_routes_to_manual_compaction(cx: &mut TestAppContext) {
+         use feature_flags::{
+@@ -6648,6 +6686,86 @@ mod internal_tests {
          );
      }
  
@@ -262,7 +298,7 @@ index ccc5585..2614100 100644
      #[gpui::test]
      async fn test_model_selection_persists_to_settings(cx: &mut TestAppContext) {
          init_test(cx);
-@@ -6695,7 +6795,7 @@ mod internal_tests {
+@@ -6695,7 +6813,7 @@ mod internal_tests {
          // Select a model
          let selector = connection.model_selector(&session_id).unwrap();
          let model_id = AgentModelId::new("fake/fake");
@@ -271,7 +307,7 @@ index ccc5585..2614100 100644
              .await
              .unwrap();
  
-@@ -6740,9 +6840,11 @@ mod internal_tests {
+@@ -6740,9 +6858,11 @@ mod internal_tests {
          agent.update(cx, |agent, cx| agent.models.refresh_list(cx));
  
          let selector = connection.model_selector(&session_id).unwrap();
@@ -286,7 +322,7 @@ index ccc5585..2614100 100644
          cx.run_until_parked();
  
          // Verify enable_thinking was written to settings as true.
-@@ -6809,9 +6911,11 @@ mod internal_tests {
+@@ -6809,9 +6929,11 @@ mod internal_tests {
  
          // Select the thinking model via select_model.
          let selector = connection.model_selector(&session_id).unwrap();
@@ -301,7 +337,7 @@ index ccc5585..2614100 100644
  
          // select_model should have enabled thinking based on the model's supports_thinking().
          agent.read_with(cx, |agent, _| {
-@@ -6826,7 +6930,7 @@ mod internal_tests {
+@@ -6826,7 +6948,7 @@ mod internal_tests {
  
          // Switch back to the non-thinking model.
          let selector = connection.model_selector(&session_id).unwrap();
@@ -310,7 +346,7 @@ index ccc5585..2614100 100644
              .await
              .unwrap();
  
-@@ -6938,9 +7042,11 @@ mod internal_tests {
+@@ -6938,9 +7060,11 @@ mod internal_tests {
          let session_id = acp_thread.read_with(cx, |thread, _| thread.session_id().clone());
  
          let selector = connection.model_selector(&session_id).unwrap();
@@ -325,7 +361,7 @@ index ccc5585..2614100 100644
  
          // Verify thinking is enabled after selecting the thinking model.
          let thread = agent.read_with(cx, |agent, _| {
-@@ -7033,9 +7139,11 @@ mod internal_tests {
+@@ -7033,9 +7157,11 @@ mod internal_tests {
          let session_id = acp_thread.read_with(cx, |thread, _| thread.session_id().clone());
  
          let selector = connection.model_selector(&session_id).unwrap();
@@ -340,7 +376,7 @@ index ccc5585..2614100 100644
  
          let thread = agent.read_with(cx, |agent, _| {
              agent.sessions.get(&session_id).unwrap().thread.clone()
-@@ -7135,9 +7243,11 @@ mod internal_tests {
+@@ -7135,9 +7261,11 @@ mod internal_tests {
          let session_id = acp_thread.read_with(cx, |thread, _| thread.session_id().clone());
  
          let selector = connection.model_selector(&session_id).unwrap();
@@ -355,7 +391,7 @@ index ccc5585..2614100 100644
  
          let send = acp_thread.update(cx, |thread, cx| thread.send(vec!["Hello".into()], cx));
          let send = cx.foreground_executor().spawn(send);
-@@ -7256,9 +7366,11 @@ mod internal_tests {
+@@ -7256,9 +7384,11 @@ mod internal_tests {
          cx.run_until_parked();
  
          let selector = connection.model_selector(&session_id).unwrap();

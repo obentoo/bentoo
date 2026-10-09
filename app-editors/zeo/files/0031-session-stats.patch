@@ -44,10 +44,14 @@ controls; the items are joined by the row's existing separator dot.
 
 Pure Zed and generic ACP -- nothing needs the adapter -- so it rides the
 claude-agent-acp-plus flag BY CHOICE, like 0010, 0012, 0014 and 0026.
+
+(0.2.3_p20261009): the grouping is `ToolUsage::from_calls`, tested for unnamed calls, MCP
+servers and programs read only from Execute calls; odd commands never panic; a
+turn's time is added to the session once even if stop_turn runs twice.
 ---
 
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index d81cba1..430b35c 100644
+index eab7e90..19d82c7 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -104,13 +104,13 @@ use crate::{
@@ -67,10 +71,10 @@ index d81cba1..430b35c 100644
  pub use message_queue::*;
 diff --git a/crates/agent_ui/src/conversation_view/session_stats.rs b/crates/agent_ui/src/conversation_view/session_stats.rs
 new file mode 100644
-index 0000000..9bd3ea6
+index 0000000..dc93cc2
 --- /dev/null
 +++ b/crates/agent_ui/src/conversation_view/session_stats.rs
-@@ -0,0 +1,255 @@
+@@ -0,0 +1,297 @@
 +use std::collections::BTreeMap;
 +
 +use acp_thread::AgentThreadEntry;
@@ -100,28 +104,36 @@ index 0000000..9bd3ea6
 +
 +impl ToolUsage {
 +    pub fn from_entries(entries: &[AgentThreadEntry]) -> Self {
-+        let mut usage = Self::default();
-+        for entry in entries {
++        Self::from_calls(entries.iter().filter_map(|entry| {
 +            let AgentThreadEntry::ToolCall(call) = entry else {
-+                continue;
++                return None;
 +            };
++            let command = call
++                .raw_input
++                .as_ref()
++                .and_then(|input| input.get("command"))
++                .and_then(|command| command.as_str());
++            Some((call.tool_name.clone(), call.kind().clone(), command))
++        }))
++    }
++
++    /// The grouping itself, over each call's name, kind and command -- split from
++    /// `from_entries` so it can be tested without building tool-call entries.
++    fn from_calls<'a>(
++        calls: impl IntoIterator<Item = (Option<SharedString>, acp_v2::ToolKind, Option<&'a str>)>,
++    ) -> Self {
++        let mut usage = Self::default();
++        for (tool_name, kind, command) in calls {
 +            usage.total += 1;
 +
-+            let name = call
-+                .tool_name
-+                .clone()
-+                .unwrap_or_else(|| format!("{:?}", call.kind()).into());
++            let name = tool_name.unwrap_or_else(|| format!("{kind:?}").into());
 +            match mcp_server_name(&name) {
 +                Some(server) => *usage.mcp_servers.entry(server.into()).or_default() += 1,
 +                None => *usage.tools.entry(name).or_default() += 1,
 +            }
 +
-+            if *call.kind() == acp_v2::ToolKind::Execute
-+                && let Some(command) = call
-+                    .raw_input
-+                    .as_ref()
-+                    .and_then(|input| input.get("command"))
-+                    .and_then(|command| command.as_str())
++            if kind == acp_v2::ToolKind::Execute
++                && let Some(command) = command
 +            {
 +                for program in command_programs(command) {
 +                    *usage
@@ -319,6 +331,40 @@ index 0000000..9bd3ea6
 +        assert_eq!(command_programs("cat <<EOF"), ["cat"]);
 +    }
 +
++    /// Unnamed calls fall back to their kind, `mcp__<server>__<tool>` goes to the server
++    /// list, and programs are read only from Execute calls -- a `command` on any other
++    /// kind is not a program run.
++    #[test]
++    fn tool_usage_groups_by_name_kind_mcp_server_and_program() {
++        use acp_v2::ToolKind::{Edit, Execute, Read};
++        let usage = ToolUsage::from_calls([
++            (Some("Read".into()), Read, None),
++            (Some("Read".into()), Read, None),
++            (None, Edit, None),
++            (Some("mcp__github__create_issue".into()), acp_v2::ToolKind::Other, None),
++            (Some("mcp__github__list".into()), acp_v2::ToolKind::Other, None),
++            (Some("Bash".into()), Execute, Some("cargo fmt && cargo test")),
++            (Some("Note".into()), Read, Some("rm -rf /")),
++        ]);
++        assert_eq!(usage.total, 7);
++        assert_eq!(usage.tools.get("Read"), Some(&2));
++        assert_eq!(usage.tools.get("Edit"), Some(&1), "an unnamed call counts as its kind");
++        assert_eq!(usage.mcp_servers.get("github"), Some(&2));
++        assert!(!usage.tools.contains_key("mcp__github__create_issue"));
++        assert_eq!(usage.programs.get("cargo"), Some(&2));
++        assert!(!usage.programs.contains_key("rm"), "only Execute calls run programs");
++    }
++
++    /// Odd input never panics and always ends: multibyte text, a trailing backslash, a
++    /// heredoc marker at the very end, unbalanced quotes.
++    #[test]
++    fn command_programs_survives_odd_input() {
++        for command in ["é ü && ñ", "echo \\", "cat <<", "cat <<'", "echo 'open", "\"", "", "&&", "a ||"] {
++            let _ = command_programs(command);
++        }
++        assert_eq!(command_programs("ñandu --x && ü"), ["ñandu", "ü"]);
++    }
++
 +    #[test]
 +    fn recognises_mcp_servers() {
 +        assert_eq!(mcp_server_name("mcp__github__create_issue"), Some("github"));
@@ -327,7 +373,7 @@ index 0000000..9bd3ea6
 +    }
 +}
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 2404668..1f5de74 100644
+index f0d18d4..f2fa9ab 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -677,6 +677,9 @@ pub struct TurnFields {
@@ -469,7 +515,7 @@ index 2404668..1f5de74 100644
                      )
                  },
              )
-@@ -8400,14 +8454,22 @@ impl ThreadView {
+@@ -8411,14 +8465,22 @@ impl ThreadView {
  
      fn render_generating(&self, confirmation: bool, cx: &App) -> impl IntoElement {
          let show_stats = AgentSettings::get_global(cx).show_turn_stats;
@@ -497,7 +543,7 @@ index 2404668..1f5de74 100644
  
          let is_blocked_on_terminal_command =
              !confirmation && self.is_blocked_on_terminal_command(cx);
-@@ -8468,6 +8530,13 @@ impl ThreadView {
+@@ -8479,6 +8541,13 @@ impl ThreadView {
                          .color(Color::Muted),
                  )
              })

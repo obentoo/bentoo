@@ -54,6 +54,9 @@ builds share links against the configured server - REBRAND.md section 3 keeps th
 whole backend as Zed's, and a share link is a zed.dev address, not a brand.
 
 Decision D10 in zeo/docs/REBRAND.md, widened by measurement.
+
+(0.2.3_p20261009): a `zeo://channel/<slug>-<id>` link joins the channel, as the zed://
+one does.
 ---
 
 diff --git a/crates/cli/src/main.rs b/crates/cli/src/main.rs
@@ -158,7 +161,7 @@ index 5c8cae3..70c5df3 100644
                  cx,
                  |_, _, _| None,
 diff --git a/crates/zed/src/zed/open_listener.rs b/crates/zed/src/zed/open_listener.rs
-index a51e36d..1a04b12 100644
+index a51e36d..28ec633 100644
 --- a/crates/zed/src/zed/open_listener.rs
 +++ b/crates/zed/src/zed/open_listener.rs
 @@ -175,6 +175,15 @@ impl OpenRequest {
@@ -177,7 +180,7 @@ index a51e36d..1a04b12 100644
              if let Some(server_name) = url.strip_prefix("zed-cli://") {
                  this.kind = Some(OpenRequestKind::CliConnection(connect_to_cli(server_name)?));
              } else if let Some(action_index) = url.strip_prefix("zed-dock-action://") {
-@@ -1545,6 +1554,41 @@ mod tests {
+@@ -1545,6 +1554,59 @@ mod tests {
          }
      }
  
@@ -214,6 +217,24 @@ index a51e36d..1a04b12 100644
 +            parse("zeo://", cx),
 +            Some(OpenRequestKind::FocusApp)
 +        ));
++
++        // A channel link with the zeo scheme joins the channel, as a zed:// one does:
++        // it reaches parse_zed_link, whose ZEO_URL_SCHEME arm 0022 adds.
++        let join_channel = |url: &str, cx: &mut TestAppContext| {
++            cx.update(|cx| {
++                OpenRequest::parse(
++                    RawOpenRequest {
++                        urls: vec![url.into()],
++                        ..Default::default()
++                    },
++                    cx,
++                )
++                .unwrap()
++                .join_channel
++            })
++        };
++        assert_eq!(join_channel("zeo://channel/rust-meetup-42", cx), Some(42));
++        assert_eq!(join_channel("zed://channel/rust-meetup-42", cx), Some(42));
 +    }
 +
      #[gpui::test]

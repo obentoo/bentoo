@@ -45,10 +45,15 @@ is not a confirmation, and folding it into that text would make it wrong.
 Pure Zed: elicitations are generic ACP, so any agent that asks a form-mode
 question gets the status. Rides the claude-agent-acp-plus flag BY CHOICE, like
 0010/0012/0014/0026/0027, next to 0029, whose status list it extends.
+
+(0.2.3_p20261009): the sidebar row's status is `thread_row_status`, a pure function with a
+truth table -- a permission prompt outranks a question, both outrank an error,
+background work marks only an idle thread. A subagent's open question keeps the
+conversation waiting, and answering it clears that.
 ---
 
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index ad2fd04..d81cba1 100644
+index ad2fd04..eab7e90 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -299,6 +299,22 @@ impl Conversation {
@@ -143,8 +148,85 @@ index ad2fd04..d81cba1 100644
      #[gpui::test]
      async fn test_resume_without_history_adds_notice(cx: &mut TestAppContext) {
          init_test(cx);
+@@ -16058,6 +16122,76 @@ pub(crate) mod tests {
+         });
+     }
+ 
++    // 0030: a question a subagent asks keeps the whole conversation waiting -- the parent
++    // row in the sidebar reads "Waiting for Your Answer" -- and answering it clears that.
++    #[gpui::test]
++    async fn test_conversation_subagent_question_marks_the_conversation_pending(
++        cx: &mut TestAppContext,
++    ) {
++        init_test(cx);
++
++        let fs = FakeFs::new(cx.executor());
++        let project = Project::test(fs, [], cx).await;
++        let connection: Rc<dyn AgentConnection> = Rc::new(StubAgentConnection::new());
++        let (subagent_thread, conversation) = cx.update(|cx| {
++            let parent_thread =
++                create_test_acp_thread(None, "parent", connection.clone(), project.clone(), cx);
++            let subagent_thread = create_test_acp_thread(
++                Some(acp_v2::SessionId::new("parent")),
++                "subagent",
++                connection.clone(),
++                project.clone(),
++                cx,
++            );
++            let conversation = cx.new(|cx| {
++                let mut conversation = Conversation::default();
++                conversation.register_thread(parent_thread.clone(), cx);
++                conversation.register_thread(subagent_thread.clone(), cx);
++                conversation
++            });
++            (subagent_thread, conversation)
++        });
++        cx.read(|cx| assert!(!conversation.read(cx).has_pending_elicitation()));
++
++        let _response = subagent_thread.update(cx, |thread, cx| {
++            thread
++                .request_elicitation(
++                    acp_v2::CreateElicitationRequest::new(
++                        acp_v2::ElicitationFormMode::new(
++                            acp_v2::ElicitationSessionScope::new(acp_v2::SessionId::new(
++                                "subagent",
++                            )),
++                            acp_v2::ElicitationSchema::new().string("name", true),
++                        ),
++                        "Provide a name",
++                    ),
++                    cx,
++                )
++                .expect("the subagent's question should be accepted")
++        });
++        cx.run_until_parked();
++        cx.read(|cx| {
++            assert!(
++                conversation.read(cx).has_pending_elicitation(),
++                "a subagent's open question keeps the conversation waiting"
++            )
++        });
++
++        let question = subagent_thread.read_with(cx, |thread, _| {
++            thread
++                .entries()
++                .iter()
++                .find_map(|entry| match entry {
++                    AgentThreadEntry::Elicitation(id) => Some(id.clone()),
++                    _ => None,
++                })
++                .expect("the question is an entry")
++        });
++        subagent_thread.update(cx, |thread, cx| thread.cancel_elicitation(&question, cx));
++        cx.run_until_parked();
++        cx.read(|cx| assert!(!conversation.read(cx).has_pending_elicitation()));
++    }
++
+     #[gpui::test]
+     async fn test_conversation_subagent_scoped_pending_tool_call(cx: &mut TestAppContext) {
+         init_test(cx);
 diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
-index fbc5a91..20dc171 100644
+index fbc5a91..6b046d9 100644
 --- a/crates/sidebar/src/sidebar.rs
 +++ b/crates/sidebar/src/sidebar.rs
 @@ -5837,7 +5837,9 @@ impl Sidebar {
@@ -179,17 +261,64 @@ index fbc5a91..20dc171 100644
              let conversation_thread_id = conversation_view.read(cx).parent_id();
              let thread_view = conversation_view.read(cx).root_thread_view()?;
              let thread_view_ref = thread_view.read(cx);
-@@ -8197,6 +8204,8 @@ fn all_thread_infos_for_workspace(
+@@ -8195,19 +8202,13 @@ fn all_thread_infos_for_workspace(
+             let session_id = thread.session_id().clone();
+             let is_background = agent_panel.is_retained_thread(&conversation_thread_id);
  
-             let status = if has_pending_tool_call {
-                 AgentThreadStatus::WaitingForConfirmation
-+            } else if has_pending_elicitation {
-+                AgentThreadStatus::WaitingForAnswer
-             } else if thread.had_error() {
-                 AgentThreadStatus::Error
-             } else {
+-            let status = if has_pending_tool_call {
+-                AgentThreadStatus::WaitingForConfirmation
+-            } else if thread.had_error() {
+-                AgentThreadStatus::Error
+-            } else {
+-                match thread.status() {
+-                    ThreadStatus::Generating => AgentThreadStatus::Running,
+-                    ThreadStatus::Idle if thread.background_task_count() > 0 => {
+-                        AgentThreadStatus::Background
+-                    }
+-                    ThreadStatus::Idle => AgentThreadStatus::Completed,
+-                }
+-            };
++            let status = thread_row_status(
++                has_pending_tool_call,
++                has_pending_elicitation,
++                thread.had_error(),
++                thread.status(),
++                thread.background_task_count(),
++            );
+ 
+             let diff_stats = thread.action_log().read(cx).diff_stats(cx);
+ 
+@@ -8470,3 +8471,28 @@ fn dump_single_workspace(workspace: &Workspace, output: &mut String, cx: &gpui::
+ 
+     writeln!(output).ok();
+ }
++
++/// The status a thread's sidebar row shows. The order is the point: a permission prompt
++/// outranks a question (0030), both outrank an error, and background work (0029) marks
++/// only a thread that is otherwise idle -- it never hides a prompt, a question or an error.
++fn thread_row_status(
++    pending_tool_call: bool,
++    pending_elicitation: bool,
++    had_error: bool,
++    status: ThreadStatus,
++    background_task_count: usize,
++) -> AgentThreadStatus {
++    if pending_tool_call {
++        AgentThreadStatus::WaitingForConfirmation
++    } else if pending_elicitation {
++        AgentThreadStatus::WaitingForAnswer
++    } else if had_error {
++        AgentThreadStatus::Error
++    } else {
++        match status {
++            ThreadStatus::Generating => AgentThreadStatus::Running,
++            ThreadStatus::Idle if background_task_count > 0 => AgentThreadStatus::Background,
++            ThreadStatus::Idle => AgentThreadStatus::Completed,
++        }
++    }
++}
 diff --git a/crates/sidebar/src/sidebar_tests.rs b/crates/sidebar/src/sidebar_tests.rs
-index 83dade4..33e74bb 100644
+index 83dade4..afa3591 100644
 --- a/crates/sidebar/src/sidebar_tests.rs
 +++ b/crates/sidebar/src/sidebar_tests.rs
 @@ -684,6 +684,7 @@ fn visible_entries_as_strings(
@@ -266,6 +395,41 @@ index 83dade4..33e74bb 100644
  fn type_in_search(sidebar: &Entity<Sidebar>, query: &str, cx: &mut gpui::VisualTestContext) {
      sidebar.update_in(cx, |sidebar, window, cx| {
          window.focus(&sidebar.filter_editor.focus_handle(cx), cx);
+@@ -16072,3 +16132,34 @@ async fn test_dropped_folders_open_as_projects(cx: &mut TestAppContext) {
+         ]
+     );
+ }
++
++// 0029/0030: the row's status, as a truth table over what can be pending at once. A
++// permission prompt outranks a question, both outrank an error, and background work only
++// ever marks an otherwise idle thread.
++#[test]
++fn test_thread_row_status_precedence() {
++    use acp_thread::ThreadStatus::{Generating, Idle};
++    use super::thread_row_status as status;
++
++    // (tool call, question, error, thread status, background tasks) -> row
++    let cases = [
++        ((true, true, true, Idle, 3), AgentThreadStatus::WaitingForConfirmation),
++        ((true, false, false, Generating, 0), AgentThreadStatus::WaitingForConfirmation),
++        ((false, true, true, Idle, 3), AgentThreadStatus::WaitingForAnswer),
++        ((false, true, false, Generating, 0), AgentThreadStatus::WaitingForAnswer),
++        ((false, false, true, Idle, 3), AgentThreadStatus::Error),
++        ((false, false, false, Generating, 3), AgentThreadStatus::Running),
++        ((false, false, false, Idle, 1), AgentThreadStatus::Background),
++        ((false, false, false, Idle, 0), AgentThreadStatus::Completed),
++    ];
++    for ((tool_call, question, error, thread, background), expected) in cases {
++        let case = format!(
++            "tool call {tool_call}, question {question}, error {error}, {thread:?}, {background} background"
++        );
++        assert_eq!(
++            status(tool_call, question, error, thread, background),
++            expected,
++            "{case}"
++        );
++    }
++}
 diff --git a/crates/ui/src/components/ai/thread_item.rs b/crates/ui/src/components/ai/thread_item.rs
 index ba13b04..e3f1333 100644
 --- a/crates/ui/src/components/ai/thread_item.rs

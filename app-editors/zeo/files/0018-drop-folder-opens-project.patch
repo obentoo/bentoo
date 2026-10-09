@@ -59,6 +59,9 @@ table upstream rewrites constantly -- it moved in the thirteen commits between
 the last two packaged snapshots alone. Cheap to add later if the setting earns
 a place in the UI; expensive to carry through every rebase before then.
 
+Test added (0.2.3_p20261009): the drop handler itself, not only the mapping -- by default a
+dropped folder joins the project; with open_project it does not.
+
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 ---
 
@@ -148,7 +151,7 @@ index dbcb6fc..b9e403d 100644
      Copy,
      Clone,
 diff --git a/crates/workspace/src/pane.rs b/crates/workspace/src/pane.rs
-index 25771a8..64eea99 100644
+index 25771a8..9c03f26 100644
 --- a/crates/workspace/src/pane.rs
 +++ b/crates/workspace/src/pane.rs
 @@ -1,5 +1,5 @@
@@ -239,10 +242,70 @@ index 25771a8..64eea99 100644
  #[cfg(test)]
  mod tests {
      use std::{cell::Cell, iter::zip, num::NonZero, rc::Rc};
-@@ -9664,4 +9722,42 @@ mod tests {
+@@ -9664,4 +9722,102 @@ mod tests {
              }
          }
      }
++    /// The drop handler itself, which the mapping test above does not reach: with the
++    /// default, a dropped folder joins the current project as a worktree; with
++    /// `open_project`, it is NOT added -- it is opened as its own project instead, which
++    /// is what keeps its saved session (0018).
++    #[gpui::test]
++    async fn test_dropping_a_folder_adds_it_or_opens_it_per_the_setting(cx: &mut TestAppContext) {
++        use gpui::ExternalPaths;
++        use serde_json::json;
++        use std::path::PathBuf;
++        use util::path;
++
++        init_test(cx);
++        let fs = FakeFs::new(cx.executor());
++        fs.insert_tree(path!("/a"), json!({ "a.txt": "" })).await;
++        fs.insert_tree(path!("/b"), json!({ "b.txt": "" })).await;
++        fs.insert_tree(path!("/c"), json!({ "c.txt": "" })).await;
++        let project = Project::test(fs, [path!("/a").as_ref()], cx).await;
++        let window = cx.add_window(|window, cx| Workspace::test_new(project.clone(), window, cx));
++        let workspace = window.root(cx).unwrap();
++        let mut cx = VisualTestContext::from_window(*window, cx);
++        let pane = workspace.read_with(&cx, |workspace, _| workspace.active_pane().clone());
++        let roots = |cx: &mut VisualTestContext| {
++            project.read_with(cx, |project, cx| {
++                let mut roots = project
++                    .worktrees(cx)
++                    .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
++                    .collect::<Vec<_>>();
++                roots.sort();
++                roots
++            })
++        };
++        let drop = |folder: &str, cx: &mut VisualTestContext| {
++            let paths = ExternalPaths(vec![PathBuf::from(folder)].into());
++            pane.update_in(cx, |pane, window, cx| {
++                pane.handle_external_paths_drop(&paths, window, cx)
++            });
++            cx.run_until_parked();
++        };
++
++        drop(path!("/b"), &mut cx);
++        assert_eq!(
++            roots(&mut cx),
++            vec![PathBuf::from(path!("/a")), PathBuf::from(path!("/b"))],
++            "by default a dropped folder joins the current project"
++        );
++
++        cx.update(|_, cx| {
++            cx.update_global(|store: &mut SettingsStore, cx| {
++                store.update_user_settings(cx, |settings| {
++                    settings.workspace.drop_folder_behavior = Some(DropFolderBehavior::OpenProject);
++                });
++            });
++        });
++        drop(path!("/c"), &mut cx);
++        assert!(
++            !roots(&mut cx).contains(&PathBuf::from(path!("/c"))),
++            "with open_project the folder is not added to the current project"
++        );
++    }
++
 +    #[test]
 +    fn test_drop_folder_open_mode() {
 +        // The default must not open a project: dropping a folder has added it to

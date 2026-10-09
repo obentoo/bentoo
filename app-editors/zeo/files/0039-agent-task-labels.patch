@@ -65,6 +65,10 @@ label_contract, rename_vanish, dock_default). GPUI test windows build no accessi
 crate records the aria labels it renders in a #[cfg(test)] thread-local.
 Live proof on a built Zeo p20261004: a 10 s heredoc listed on one line under
 its description, a 79-character rename stored as 60, kept across a restart.
+
+(0.2.3_p20261009): a duplicate test of the dock fallback is removed from persistence_tests
+-- dock_default_tests already covers it. (Here because this patch is the last to
+touch that file.)
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
@@ -2618,7 +2622,7 @@ index f5cbc99..6ccd8e8 100644
                  && dock.visible_panel().map(|panel| panel.panel_id()) == Some(tasks_panel_id)
          })
 diff --git a/crates/agent_tasks_panel/src/panel/persistence_tests.rs b/crates/agent_tasks_panel/src/panel/persistence_tests.rs
-index 9e2149a..764fb21 100644
+index 9e2149a..fe7eeaf 100644
 --- a/crates/agent_tasks_panel/src/panel/persistence_tests.rs
 +++ b/crates/agent_tasks_panel/src/panel/persistence_tests.rs
 @@ -35,7 +35,7 @@ async fn panel_dock_position_moves_the_panel_and_survives_a_reload(cx: &mut gpui
@@ -2630,22 +2634,28 @@ index 9e2149a..764fb21 100644
      );
  
      move_to(&mut panels, DockPosition::Right);
-@@ -64,7 +64,7 @@ async fn panel_dock_position_moves_the_panel_and_survives_a_reload(cx: &mut gpui
- }
- 
- #[gpui::test]
--async fn panel_dock_position_falls_back_to_left_on_an_unknown_saved_value(
-+async fn panel_dock_position_falls_back_to_the_bottom_on_an_unknown_saved_value(
-     cx: &mut gpui::TestAppContext,
- ) {
-     init_base(cx);
-@@ -78,5 +78,5 @@ async fn panel_dock_position_falls_back_to_left_on_an_unknown_saved_value(
-     .unwrap();
- 
+@@ -62,21 +62,3 @@ async fn panel_dock_position_moves_the_panel_and_survives_a_reload(cx: &mut gpui
      let reloaded = reload(&mut panels).await;
--    assert_eq!(position_of(&reloaded, &mut panels.cx), DockPosition::Left);
-+    assert_eq!(position_of(&reloaded, &mut panels.cx), DockPosition::Bottom);
+     assert_eq!(position_of(&reloaded, &mut panels.cx), DockPosition::Bottom);
  }
+-
+-#[gpui::test]
+-async fn panel_dock_position_falls_back_to_left_on_an_unknown_saved_value(
+-    cx: &mut gpui::TestAppContext,
+-) {
+-    init_base(cx);
+-    let mut panels = open_panels(cx).await;
+-    let kvp = panels.cx.update(|_, cx| db::kvp::KeyValueStore::global(cx));
+-    kvp.write_kvp(
+-        <AgentTasksPanel as Panel>::panel_key().to_string(),
+-        "upside-down".to_string(),
+-    )
+-    .await
+-    .unwrap();
+-
+-    let reloaded = reload(&mut panels).await;
+-    assert_eq!(position_of(&reloaded, &mut panels.cx), DockPosition::Left);
+-}
 diff --git a/crates/agent_tasks_panel/src/panel/rename_vanish_tests.rs b/crates/agent_tasks_panel/src/panel/rename_vanish_tests.rs
 new file mode 100644
 index 0000000..649e96a

@@ -25,27 +25,48 @@ build, or any channel but Zeo -- the window is exactly upstream's.
 A separate patch rather than part of 0021 or 0025: neither is about versions,
 and this one reads an environment variable only the ebuild sets, which is worth
 being able to find by its own name.
+
+(0.2.3_p20261009): the version choice is `package_version_for` and `short_version`, out of
+the About window's body so they can be tested.
 ---
 
 diff --git a/crates/zed/src/zed.rs b/crates/zed/src/zed.rs
-index 50959aa..367ca55 100644
+index 50959aa..5895d64 100644
 --- a/crates/zed/src/zed.rs
 +++ b/crates/zed/src/zed.rs
-@@ -1526,6 +1526,13 @@ fn initialize_pane(
+@@ -1525,7 +1525,31 @@ fn initialize_pane(
+     });
  }
  
++/// Zeo's own version, as the package passes it in RELEASE_VERSION (`0.2.1_p20261008`);
++/// `None` when it is unset or empty -- a development build -- or on another channel.
++fn package_version_for(
++    release_version: Option<&'static str>,
++    release_channel: ReleaseChannel,
++) -> Option<&'static str> {
++    release_version
++        .filter(|version| !version.is_empty() && release_channel == ReleaseChannel::Zeo)
++}
++
++/// The `X.Y.Z` the About window's title line shows for a package version: the part
++/// before the snapshot suffix (`0.2.1_p20261008` -> `0.2.1`).
++fn short_version(package_version: &str) -> &str {
++    package_version
++        .split('_')
++        .next()
++        .unwrap_or(package_version)
++}
++
  fn open_about_window(cx: &mut App) {
-+    /// Zeo's own version, which the package passes in as RELEASE_VERSION
-+    /// (`0.2.1_p20261008`); `None` on a development build or another channel.
++    /// Zeo's own version, which the package passes in as RELEASE_VERSION.
 +    fn zeo_package_version(release_channel: ReleaseChannel) -> Option<&'static str> {
-+        option_env!("RELEASE_VERSION")
-+            .filter(|version| !version.is_empty() && release_channel == ReleaseChannel::Zeo)
++        package_version_for(option_env!("RELEASE_VERSION"), release_channel)
 +    }
 +
      fn about_window_icon(release_channel: ReleaseChannel) -> Arc<Image> {
          let bytes = match release_channel {
              ReleaseChannel::Dev => include_bytes!("../resources/app-icon-dev.png").as_slice(),
-@@ -1550,14 +1557,28 @@ fn open_about_window(cx: &mut App) {
+@@ -1550,14 +1574,26 @@ fn open_about_window(cx: &mut App) {
          message: SharedString,
          commit: Option<SharedString>,
          full_version: SharedString,
@@ -64,9 +85,7 @@ index 50959aa..367ca55 100644
 +            // compatibility against.
 +            let package_version = zeo_package_version(release_channel);
 +            let version = match package_version {
-+                Some(package_version) => {
-+                    package_version.split('_').next().unwrap_or(package_version)
-+                }
++                Some(package_version) => short_version(package_version),
 +                None => env!("CARGO_PKG_VERSION"),
 +            };
 +            let (full_version, upstream_version) = match package_version {
@@ -76,7 +95,7 @@ index 50959aa..367ca55 100644
  
              let debug = if cfg!(debug_assertions) {
                  "(debug)"
-@@ -1578,11 +1599,12 @@ fn open_about_window(cx: &mut App) {
+@@ -1578,11 +1614,12 @@ fn open_about_window(cx: &mut App) {
                  message,
                  commit,
                  full_version,
@@ -90,7 +109,7 @@ index 50959aa..367ca55 100644
                  Some(commit) => {
                      format!(
                          "{}\nCommit: {}\nVersion: {}",
-@@ -1591,6 +1613,9 @@ fn open_about_window(cx: &mut App) {
+@@ -1591,6 +1628,9 @@ fn open_about_window(cx: &mut App) {
                  }
                  None => format!("{}\nVersion: {}", self.message, self.full_version),
              };
@@ -100,7 +119,7 @@ index 50959aa..367ca55 100644
              cx.write_to_clipboard(ClipboardItem::new_string(content));
              window.remove_window();
          }
-@@ -1637,7 +1662,15 @@ fn open_about_window(cx: &mut App) {
+@@ -1637,7 +1677,15 @@ fn open_about_window(cx: &mut App) {
                                      .color(Color::Muted)
                                      .size(LabelSize::XSmall),
                              )
@@ -117,7 +136,7 @@ index 50959aa..367ca55 100644
                      )
                      .child(
                          h_flex()
-@@ -1710,9 +1743,16 @@ fn open_about_window(cx: &mut App) {
+@@ -1710,9 +1758,16 @@ fn open_about_window(cx: &mut App) {
          return;
      }
  
@@ -135,3 +154,31 @@ index 50959aa..367ca55 100644
      };
  
      cx.open_window(
+@@ -5862,6 +5917,27 @@ mod tests {
+ 
+     /// Checks that action namespaces are the expected set. The purpose of this is to prevent typos
+     /// and let you know when introducing a new namespace.
++    /// 0047: the About window shows Zeo's package version only on the Zeo channel and
++    /// only when the package set one, and titles it by the part before the snapshot.
++    #[test]
++    fn test_about_window_package_version() {
++        use super::{package_version_for, short_version};
++        assert_eq!(
++            package_version_for(Some("0.2.1_p20261008"), ReleaseChannel::Zeo),
++            Some("0.2.1_p20261008")
++        );
++        assert_eq!(package_version_for(Some(""), ReleaseChannel::Zeo), None);
++        assert_eq!(package_version_for(None, ReleaseChannel::Zeo), None);
++        assert_eq!(
++            package_version_for(Some("0.2.1_p20261008"), ReleaseChannel::Stable),
++            None,
++            "another channel keeps Zed's version"
++        );
++        assert_eq!(short_version("0.2.1_p20261008"), "0.2.1");
++        assert_eq!(short_version("0.2.1_p20261008-r1"), "0.2.1");
++        assert_eq!(short_version("0.2.1"), "0.2.1");
++    }
++
+     #[gpui::test]
+     async fn test_action_namespaces(cx: &mut gpui::TestAppContext) {
+         use itertools::Itertools;

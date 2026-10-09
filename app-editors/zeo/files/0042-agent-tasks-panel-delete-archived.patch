@@ -45,6 +45,11 @@ yields the row or why it is unreadable; `load_all` skips the unreadable ones wit
 warning naming session/task and status, and the row stays for the build that
 understands it. Tests at both levels (`load_all`, and the store staying Available
 and still writing), each failing without the fix.
+
+Tests added (0.2.3_p20261009): delete-all removes exactly the counted batch still archived
+-- not a row unarchived while the prompt was open, not one archived after the
+count -- checked in the store's memory as well as the database; and a delete
+batch is atomic when a row fails mid-way.
 ---
 
 diff --git a/crates/agent_tasks_panel/src/history_db.rs b/crates/agent_tasks_panel/src/history_db.rs
@@ -172,10 +177,10 @@ index 61a3643..bca3410 100644
          ))
      }
 diff --git a/crates/agent_tasks_panel/src/history_db/statement_tests.rs b/crates/agent_tasks_panel/src/history_db/statement_tests.rs
-index db7724e..d7b255e 100644
+index db7724e..78490ea 100644
 --- a/crates/agent_tasks_panel/src/history_db/statement_tests.rs
 +++ b/crates/agent_tasks_panel/src/history_db/statement_tests.rs
-@@ -417,3 +417,38 @@ async fn history_db_load_all_returns_newest_first(_cx: &mut TestAppContext) {
+@@ -417,3 +417,69 @@ async fn history_db_load_all_returns_newest_first(_cx: &mut TestAppContext) {
          .collect();
      assert_eq!(order, vec!["newest", "mid", "old"]);
  }
@@ -213,6 +218,37 @@ index db7724e..d7b255e 100644
 +            .any(|line| line.contains("s-new/t-new") && line.contains("paused")),
 +        "the skipped row is named at warn level: {warnings:?}"
 +    );
++}
++
++// Q13 for delete: the delete batch runs in its own savepoint, so a row that fails part-way
++// leaves every row of the batch in place.
++#[gpui::test]
++async fn history_db_delete_is_atomic_when_a_row_fails_mid_batch(_cx: &mut TestAppContext) {
++    let db = AgentTaskHistoryDb::open_test_db("history_db_delete_atomic").await;
++    for task in ["a", "boom", "c"] {
++        db.insert_started(&record("s1", task, AgentTaskStatus::Running, 1_000))
++            .await
++            .unwrap();
++    }
++    // Only archived rows are ever deleted.
++    db.set_archived(&[key("s1", "a"), key("s1", "boom"), key("s1", "c")], true)
++        .await
++        .unwrap();
++    run_sql(
++        &db,
++        "CREATE TRIGGER fail_delete_mid_batch BEFORE DELETE ON agent_task_history \
++         WHEN OLD.task_id = 'boom' \
++         BEGIN SELECT RAISE(ABORT, 'forced mid-batch failure'); END;",
++    )
++    .await;
++
++    let batch = [key("s1", "a"), key("s1", "boom"), key("s1", "c")];
++    assert!(db.delete(&batch).await.is_err(), "the forced failure surfaces");
++    assert_eq!(load(&db).await.len(), 3, "no row of the failed batch is gone");
++
++    run_sql(&db, "DROP TRIGGER fail_delete_mid_batch").await;
++    db.delete(&batch).await.unwrap();
++    assert!(load(&db).await.is_empty());
 +}
 diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
 index c8d53e8..dcb229b 100644
@@ -425,10 +461,10 @@ index c8d53e8..dcb229b 100644
 +mod delete_action;
 diff --git a/crates/agent_tasks_panel/src/panel/delete_action_tests.rs b/crates/agent_tasks_panel/src/panel/delete_action_tests.rs
 new file mode 100644
-index 0000000..d8a35a9
+index 0000000..408c8d7
 --- /dev/null
 +++ b/crates/agent_tasks_panel/src/panel/delete_action_tests.rs
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,293 @@
 +// Story 025, task 1.3 — Delete on an archived row and Delete All Archived, both confirmed.
 +// Module path: `panel::delete_action`. Every test name starts with `delete_action_`, the
 +// story's validation filter.
@@ -633,6 +669,53 @@ index 0000000..d8a35a9
 +        !panels.cx.has_pending_prompt(),
 +        "nothing archived is left to confirm"
 +    );
++}
++
++// Hostile (race): the archive state changes while the confirmation is open. "Delete" removes
++// exactly the counted batch that is still archived -- not a row unarchived meanwhile, and
++// not one archived after the count was shown.
++#[gpui::test]
++async fn delete_action_all_archived_deletes_only_the_counted_rows_still_archived(
++    cx: &mut TestAppContext,
++) {
++    let db = init_base(cx);
++    seed(&db, "s1", "kept-archived", AgentTaskStatus::Completed, 1_000, true).await;
++    seed(&db, "s1", "unarchived-meanwhile", AgentTaskStatus::Failed, 1_100, true).await;
++    seed(&db, "s2", "archived-meanwhile", AgentTaskStatus::Completed, 1_200, false).await;
++    let mut panels = open_panels(cx).await;
++    only(&mut panels, &[TaskFilter::Archived]);
++
++    request_delete_all(&mut panels);
++    let (message, _) = panels.cx.pending_prompt().unwrap();
++    assert_eq!(message, "Delete 2 task records?");
++
++    let unarchive = key("s1", "unarchived-meanwhile");
++    let archive = key("s2", "archived-meanwhile");
++    panels.tasks_panel.update(&mut panels.cx, |panel, cx| {
++        panel.unarchive(&unarchive, cx);
++        panel.archive(&archive, cx);
++    });
++    panels.cx.run_until_parked();
++    answer(&mut panels, "Delete");
++
++    // What the panel shows comes from the store's memory, not the database -- whose
++    // DELETE also filters on `archived` -- so the memory is checked too.
++    let in_memory = panels.tasks_panel.read_with(&panels.cx, |panel, cx| {
++        panel.store.read(cx).records().to_vec()
++    });
++    assert!(find(&in_memory, "s1", "kept-archived").is_none());
++    assert!(
++        find(&in_memory, "s1", "unarchived-meanwhile").is_some(),
++        "a row unarchived while asking stays on screen"
++    );
++    assert!(find(&in_memory, "s2", "archived-meanwhile").is_some());
++
++    let rows = load(&db).await;
++    assert!(find(&rows, "s1", "kept-archived").is_none(), "the counted row still archived goes");
++    let unarchived = find(&rows, "s1", "unarchived-meanwhile").expect("not deleted");
++    assert!(!unarchived.archived, "a row unarchived while asking is kept, unarchived");
++    let archived = find(&rows, "s2", "archived-meanwhile").expect("not deleted");
++    assert!(archived.archived, "a row archived after the count is not in the batch");
 +}
 +
 +// The thread a deleted record belonged to is untouched: its metadata row stays.

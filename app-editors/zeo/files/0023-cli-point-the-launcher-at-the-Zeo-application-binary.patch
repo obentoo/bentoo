@@ -50,27 +50,53 @@ Why this is a separate patch rather than a fix folded into 0020: the failure is
 not in the binary's name, it is in everything that had been told the old one.
 Keeping it apart records that the cost of renaming a binary is paid by its
 consumers, and that the only thing that found them was running the program.
+
+(0.2.3_p20261009): the locations are one const, `APP_LOCATIONS`, and a test fails if any
+names Zed's binary -- that would launch an installed Zed instead of this Zeo.
 ---
 
 diff --git a/crates/cli/src/main.rs b/crates/cli/src/main.rs
-index be97811..55e1b06 100644
+index be97811..bcbdd3f 100644
 --- a/crates/cli/src/main.rs
 +++ b/crates/cli/src/main.rs
-@@ -913,10 +913,10 @@ mod linux {
+@@ -905,6 +905,24 @@ mod linux {
+ 
+     struct App(PathBuf);
+ 
++    /// Where the CLI looks for the editor, relative to itself: libexec is the standard,
++    /// lib/zeo is for Arch (and other non-libexec distros), ./zeo is for the target
++    /// directory in development builds.
++    const APP_LOCATIONS: [&str; 3] = ["../libexec/zeo-editor", "../lib/zeo/zeo-editor", "./zeo"];
++
++    /// 0023: a location naming Zed's binary would quietly launch an installed Zed --
++    /// not this Zeo -- whenever it is found first.
++    #[cfg(test)]
++    #[test]
++    fn app_locations_never_name_zed() {
++        for location in APP_LOCATIONS {
++            assert!(
++                !location.contains("zed"),
++                "{location} would find Zed's editor instead of Zeo's"
++            );
++        }
++    }
++
+     impl Detect {
+         pub fn detect(path: Option<&Path>) -> anyhow::Result<impl InstalledApp> {
+             let path = if let Some(path) = path {
+@@ -913,10 +931,7 @@ mod linux {
                  let cli = env::current_exe()?;
                  let dir = cli.parent().context("no parent path for cli")?;
  
 -                // libexec is the standard, lib/zed is for Arch (and other non-libexec distros),
 -                // ./zed is for the target directory in development builds.
-+                // libexec is the standard, lib/zeo is for Arch (and other non-libexec distros),
-+                // ./zeo is for the target directory in development builds.
-                 let possible_locations =
+-                let possible_locations =
 -                    ["../libexec/zed-editor", "../lib/zed/zed-editor", "./zed"];
-+                    ["../libexec/zeo-editor", "../lib/zeo/zeo-editor", "./zeo"];
++                let possible_locations = APP_LOCATIONS;
                  possible_locations
                      .iter()
                      .find_map(|p| dir.join(p).canonicalize().ok().filter(|path| path != &cli))
-@@ -932,7 +932,7 @@ mod linux {
+@@ -932,7 +947,7 @@ mod linux {
      impl InstalledApp for App {
          fn zed_version_string(&self) -> String {
              format!(
@@ -79,7 +105,7 @@ index be97811..55e1b06 100644
                  if *release_channel::RELEASE_CHANNEL_NAME == "stable" {
                      "".to_string()
                  } else {
-@@ -1209,7 +1209,7 @@ mod windows {
+@@ -1209,7 +1224,7 @@ mod windows {
      impl InstalledApp for App {
          fn zed_version_string(&self) -> String {
              format!(
@@ -88,7 +114,7 @@ index be97811..55e1b06 100644
                  if *release_channel::RELEASE_CHANNEL_NAME == "stable" {
                      "".to_string()
                  } else {
-@@ -1283,7 +1283,7 @@ mod windows {
+@@ -1283,7 +1298,7 @@ mod windows {
  
                  // ../Zed.exe is the standard, lib/zed is for MSYS2, ./zed.exe is for the target
                  // directory in development builds.
@@ -97,7 +123,7 @@ index be97811..55e1b06 100644
                  possible_locations
                      .iter()
                      .find_map(|p| dir.join(p).canonicalize().ok().filter(|path| path != &cli))
-@@ -1382,7 +1382,7 @@ mod mac_os {
+@@ -1382,7 +1397,7 @@ mod mac_os {
  
      impl InstalledApp for Bundle {
          fn zed_version_string(&self) -> String {

@@ -65,6 +65,13 @@ from changing unnoticed. And 0005's multi-line field: Enter in the card is
 menu::Confirm, so Shift-Enter is the only newline -- it must insert one and leave
 the question pending, and Enter still answers. Here rather than in 0005 because it
 uses this patch's composer setup.
+
+(0.2.3_p20261009): a swallowed Enter is no longer silent. The composer shows "The agent is
+waiting on your answer -- answer the question, or click Send to send anyway." while
+the question is pending, and drops it when the question ends; the rule above is
+unchanged. Tests: the hint, every default keymap's question_pending block (macOS
+and Windows are never loaded by Linux tests), and 0031's stop_turn-once test,
+here because it sits beside this patch's tests.
 ---
 
 diff --git a/assets/keymaps/default-linux.json b/assets/keymaps/default-linux.json
@@ -178,10 +185,20 @@ index 53b8079..a208e21 100644
              filter.show_action_types(skill_creator_actions.iter());
          } else {
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 32a0c86..607af91 100644
+index 728df47..4104326 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
-@@ -5862,6 +5862,291 @@ pub(crate) mod tests {
+@@ -5830,9 +5830,6 @@ pub(crate) mod tests {
+     #[gpui::test]
+     async fn test_preloaded_question_counts_as_pending(cx: &mut TestAppContext) {
+         init_test(cx);
+-        cx.update(|cx| {
+-            cx.update_flags(true, vec![AcpBetaFeatureFlag::NAME.to_string()]);
+-        });
+ 
+         // The question is asked before the conversation registers the thread, so it never
+         // sees `ElicitationRequested` -- the case `register_thread` seeds for.
+@@ -5862,6 +5859,334 @@ pub(crate) mod tests {
          });
      }
  
@@ -264,6 +281,38 @@ index 32a0c86..607af91 100644
 +
 +    // Story 017: Enter in the composer must not send a message over a question the agent
 +    // is still waiting on -- and must not insert a newline either.
++    // Story 017 on every platform: Linux tests load only default-linux.json, so the
++    // macOS and Windows blocks are read here -- each must swallow Enter and its send
++    // chord while a question is pending.
++    #[test]
++    fn test_question_pending_block_in_every_default_keymap() {
++        for (file, chord) in [
++            ("keymaps/default-linux.json", "ctrl-enter"),
++            ("keymaps/default-macos.json", "cmd-enter"),
++            ("keymaps/default-windows.json", "ctrl-enter"),
++        ] {
++            let content = util::asset_str::<settings::SettingsAssets>(file);
++            let keymap = settings::KeymapFile::parse(&content)
++                .unwrap_or_else(|error| panic!("{file} parses: {error}"));
++            let section = keymap
++                .sections()
++                .find(|section| section.context == "AcpThread > Editor && question_pending")
++                .unwrap_or_else(|| panic!("{file} has the question_pending block"));
++            for key in ["enter", chord] {
++                let action = section
++                    .bindings()
++                    .find(|(keystroke, _)| keystroke.as_str() == key)
++                    .and_then(|(_, action)| settings::KeymapFile::parse_action(action).ok().flatten())
++                    .map(|(name, _)| name.clone());
++                assert_eq!(
++                    action.as_deref(),
++                    Some("agent::IgnoreSendWhileQuestionPending"),
++                    "{file}: {key}"
++                );
++            }
++        }
++    }
++
 +    #[gpui::test]
 +    async fn test_question_pending_enter_sends_nothing(cx: &mut TestAppContext) {
 +        let (thread_view, elicitation_id, cx) =
@@ -280,12 +329,23 @@ index 32a0c86..607af91 100644
 +        assert_eq!(user_message_count(&thread_view, cx), 0);
 +        assert_eq!(composer_text(&thread_view, cx), "hello");
 +
++        // The swallowed Enter is explained, not silent (2026-10-09).
++        assert!(thread_view.read_with(cx, |view, cx| {
++            view.message_editor.read(cx).shows_swallowed_send_hint()
++        }));
++
 +        // Once the question is answered, Enter sends again.
 +        let thread = thread_view.read_with(cx, |view, _| view.thread.clone());
 +        thread.update(cx, |thread, cx| {
 +            thread.cancel_elicitation(&elicitation_id, cx)
 +        });
 +        cx.run_until_parked();
++        assert!(
++            !thread_view.read_with(cx, |view, cx| {
++                view.message_editor.read(cx).shows_swallowed_send_hint()
++            }),
++            "the hint ends with the question"
++        );
 +        cx.simulate_keystrokes("enter");
 +        cx.run_until_parked();
 +        assert_eq!(user_message_count(&thread_view, cx), 1);
@@ -473,6 +533,34 @@ index 32a0c86..607af91 100644
      #[gpui::test]
      async fn test_resume_without_history_adds_notice(cx: &mut TestAppContext) {
          init_test(cx);
+@@ -12776,6 +13101,27 @@ pub(crate) mod tests {
+         }
+     }
+ 
++    // 0031: a turn's time is added to the session once. stop_turn can be reached twice for
++    // one turn (a stop and an error both end it); the second must add nothing.
++    #[gpui::test]
++    async fn test_stop_turn_adds_a_turn_to_the_session_time_once(cx: &mut TestAppContext) {
++        init_test(cx);
++        let (conversation_view, cx) =
++            setup_conversation_view(StubAgentServer::default_response(), cx).await;
++        add_to_workspace(conversation_view.clone(), cx);
++        let thread_view = active_thread(&conversation_view, cx);
++
++        thread_view.update(cx, |view, cx| {
++            let generation = view.start_turn(cx);
++            std::thread::sleep(std::time::Duration::from_millis(5));
++            view.stop_turn(generation, cx);
++            let once = view.turn_fields.session_duration;
++            assert!(once > std::time::Duration::ZERO, "the turn's time was added");
++            view.stop_turn(generation, cx);
++            assert_eq!(view.turn_fields.session_duration, once, "not added twice");
++        });
++    }
++
+     // 0037: entries pushed within ONE thread update reach the view as one NewEntry event
+     // each, all flushed after the last push. Upstream's handler synced only the last index
+     // per event, so the view fell behind the thread and the next sync panicked on an index
 diff --git a/crates/agent_ui/src/conversation_view/elicitation.rs b/crates/agent_ui/src/conversation_view/elicitation.rs
 index 225e741..28598b3 100644
 --- a/crates/agent_ui/src/conversation_view/elicitation.rs
@@ -493,7 +581,7 @@ index 225e741..28598b3 100644
          let required = schema.required.as_deref().unwrap_or_default();
          let mut fields = HashMap::default();
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 1f5de74..e9d3deb 100644
+index f2fa9ab..b4e14cf 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -3099,6 +3099,17 @@ impl ThreadView {
@@ -514,7 +602,7 @@ index 1f5de74..e9d3deb 100644
      fn submit_elicitation(
          &mut self,
          elicitation_id: ElicitationEntryId,
-@@ -8046,6 +8057,19 @@ impl ThreadView {
+@@ -8057,6 +8068,19 @@ impl ThreadView {
          self.message_editor.read(cx).set_local_commands(commands);
      }
  
@@ -534,7 +622,7 @@ index 1f5de74..e9d3deb 100644
      /// Whether this elicitation is drawn by the pinned card above the message
      /// editor rather than inline, in the conversation.
      ///
-@@ -13534,6 +13558,7 @@ impl Render for ThreadView {
+@@ -13545,6 +13569,7 @@ impl Render for ThreadView {
          // current availability of feedback/sharing, which can change between
          // renders (settings, connection state, feature flags).
          self.sync_local_commands(cx);
@@ -543,7 +631,7 @@ index 1f5de74..e9d3deb 100644
          let has_messages = self.list_state.item_count() > 0;
          let list_state = self.list_state.clone();
 diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message_editor.rs
-index 7870598..b5db770 100644
+index 459ae88..186d746 100644
 --- a/crates/agent_ui/src/message_editor.rs
 +++ b/crates/agent_ui/src/message_editor.rs
 @@ -1,7 +1,7 @@
@@ -564,17 +652,20 @@ index 7870598..b5db770 100644
  use text::LineEnding;
  use theme_settings::ThemeSettings;
  use ui::{ContextMenu, Tooltip, WithScrollbar, prelude::*};
-@@ -221,6 +221,9 @@ pub struct MessageEditor {
+@@ -221,6 +221,12 @@ pub struct MessageEditor {
      workspace: WeakEntity<Workspace>,
      session_capabilities: SharedSessionCapabilities,
      local_commands: SharedLocalCommands,
 +    /// Shared with the editor's [`MessageEditorAddon`], which reads it into the
 +    /// key context as `question_pending`.
 +    question_pending: Rc<Cell<bool>>,
++    /// Set when Enter (or a send chord) was swallowed because a question is
++    /// pending; the composer then says why until the question ends.
++    swallowed_send: bool,
      agent_id: AgentId,
      thread_store: Option<Entity<ThreadStore>>,
      /// The rendered draft, while the preview is showing; `None` while editing.
-@@ -486,6 +489,7 @@ impl MessageEditor {
+@@ -486,6 +492,7 @@ impl MessageEditor {
              .upgrade()
              .map(|project| project.read(cx).languages().clone());
  
@@ -582,7 +673,7 @@ index 7870598..b5db770 100644
          let editor = cx.new(|cx| {
              let buffer = cx.new(|cx| {
                  let buffer = Buffer::local("", cx);
-@@ -509,7 +513,7 @@ impl MessageEditor {
+@@ -509,7 +516,7 @@ impl MessageEditor {
                  max_entries_visible: 12,
                  placement: None,
              });
@@ -591,15 +682,16 @@ index 7870598..b5db770 100644
  
              editor.set_custom_context_menu(|editor, _point, window, cx| {
                  let has_selection = editor.has_non_empty_selection(&editor.display_snapshot(cx));
-@@ -632,6 +636,7 @@ impl MessageEditor {
+@@ -632,6 +639,8 @@ impl MessageEditor {
              workspace,
              session_capabilities,
              local_commands,
 +            question_pending,
++            swallowed_send: false,
              agent_id,
              thread_store,
              preview: None,
-@@ -645,6 +650,14 @@ impl MessageEditor {
+@@ -645,6 +654,35 @@ impl MessageEditor {
          *self.local_commands.write() = commands;
      }
  
@@ -611,18 +703,52 @@ index 7870598..b5db770 100644
 +        self.question_pending.set(question_pending);
 +    }
 +
++    /// Whether the composer is explaining a swallowed Enter: one was pressed
++    /// while a question was pending, and the question is still pending.
++    pub fn shows_swallowed_send_hint(&self) -> bool {
++        self.swallowed_send && self.question_pending.get()
++    }
++
++    fn render_swallowed_send_hint(&mut self) -> Option<impl IntoElement + use<>> {
++        if !self.question_pending.get() {
++            // The question ended -- answered, declined, cancelled -- so the next
++            // swallowed Enter, under a new question, starts the hint afresh.
++            self.swallowed_send = false;
++        }
++        self.shows_swallowed_send_hint().then(|| {
++            Label::new(
++                "The agent is waiting on your answer \u{2014} answer the question, or click Send to send anyway.",
++            )
++            .size(LabelSize::Small)
++            .color(Color::Muted)
++        })
++    }
++
      pub fn set_session_capabilities(
          &mut self,
          session_capabilities: SharedSessionCapabilities,
-@@ -2200,6 +2213,7 @@ impl Render for MessageEditor {
+@@ -2200,6 +2238,12 @@ impl Render for MessageEditor {
              .on_action(cx.listener(Self::chat))
              .on_action(cx.listener(Self::send_immediately))
              .on_action(cx.listener(Self::chat_with_follow))
-+            .on_action(|_: &IgnoreSendWhileQuestionPending, _, _| {})
++            .on_action(cx.listener(|this, _: &IgnoreSendWhileQuestionPending, _, cx| {
++                // Still a no-op as far as sending goes (0043); it only makes the
++                // composer say why nothing happened.
++                this.swallowed_send = true;
++                cx.notify();
++            }))
              .on_action(cx.listener(Self::cancel))
              .capture_action(cx.listener(Self::copy))
              .capture_action(cx.listener(Self::cut))
-@@ -2239,11 +2253,13 @@ impl Render for MessageEditor {
+@@ -2209,6 +2253,7 @@ impl Render for MessageEditor {
+                 this.toggle_preview(window, cx)
+             }))
+             .flex_1()
++            .children(self.render_swallowed_send_hint())
+             .children(self.render_preview(window, cx))
+             .child(div().flex_1().child({
+                 let settings = ThemeSettings::get_global(cx);
+@@ -2239,11 +2284,13 @@ impl Render for MessageEditor {
      }
  }
  
@@ -639,7 +765,7 @@ index 7870598..b5db770 100644
      }
  }
  
-@@ -2261,6 +2277,9 @@ impl Addon for MessageEditorAddon {
+@@ -2261,6 +2308,9 @@ impl Addon for MessageEditorAddon {
          if settings.use_modifier_to_send {
              key_context.add("use_modifier_to_send");
          }

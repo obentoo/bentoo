@@ -33,10 +33,15 @@ does not render at all.
 
 Covered by seven unit tests in `acp_thread`, including the accumulate-not-replace
 regression and the percent normalisation.
+
+Tests added (0.2.3_p20261009): the payload's path on a real UsageUpdate -- it lands in
+`account_usage()` and fires AccountUsageUpdated once, not again for the same
+payload -- and the scale: claude-agent-acp-plus sends a fraction, so 1 is a full
+window and values above 1 are read as percentages.
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index bda14ee..9d0f2ee 100644
+index bda14ee..3efc80b 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
 @@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
@@ -322,7 +327,7 @@ index bda14ee..9d0f2ee 100644
              }
              _ => {}
          }
-@@ -7493,6 +7717,124 @@ fn update_markdown_in_place(markdown: &Entity<Markdown>, text: &str, cx: &mut Ap
+@@ -7493,6 +7717,198 @@ fn update_markdown_in_place(markdown: &Entity<Markdown>, text: &str, cx: &mut Ap
  
  #[cfg(test)]
  mod tests {
@@ -336,6 +341,80 @@ index bda14ee..9d0f2ee 100644
 +            "utilization": utilization,
 +            "resetsAt": 1_800_000_000i64,
 +        })
++    }
++
++    /// The wire has carried 0..1 and 0..100. claude-agent-acp-plus sends a fraction
++    /// (its account-usage.ts: "the wire carries a fraction"), so an exact 1 is a full
++    /// window, not one percent; above 1 is read as a percentage.
++    #[test]
++    fn account_usage_reads_one_as_full_since_the_adapter_sends_fractions() {
++        let utilization = |value: f64| {
++            let mut usage = AccountUsage::default();
++            usage.ingest(&rate_limit("five_hour", "allowed", value));
++            usage.windows().next().unwrap().utilization
++        };
++        assert_eq!(utilization(1.0), Some(1.0));
++        assert_eq!(utilization(0.5), Some(0.5));
++        assert_eq!(utilization(50.0), Some(0.5));
++        assert_eq!(utilization(150.0), Some(1.0), "clamped to the track");
++    }
++
++    /// 0011 end to end on the thread: the payload rides `_meta["_claude/rateLimit"]` of a
++    /// UsageUpdate, lands in `account_usage()`, and fires AccountUsageUpdated once -- and
++    /// not again for the same payload.
++    #[gpui::test]
++    async fn account_usage_arrives_on_a_usage_update(cx: &mut TestAppContext) {
++        init_test(cx);
++        let fs = FakeFs::new(cx.executor());
++        let project = Project::test(fs, [], cx).await;
++        let connection = Rc::new(FakeAgentConnection::new());
++        let thread = cx
++            .update(|cx| {
++                connection.new_session(project, PathList::new(&[Path::new(path!("/test"))]), cx)
++            })
++            .await
++            .unwrap();
++        let events = Rc::new(RefCell::new(0usize));
++        let counter = events.clone();
++        thread.update(cx, |_, cx| {
++            cx.subscribe(&thread, move |_, _, event: &AcpThreadEvent, _| {
++                if matches!(event, AcpThreadEvent::AccountUsageUpdated) {
++                    *counter.borrow_mut() += 1;
++                }
++            })
++            .detach();
++        });
++        let send = |cx: &mut TestAppContext| {
++            let mut meta = serde_json::Map::new();
++            meta.insert(
++                CLAUDE_RATE_LIMIT_META_KEY.to_string(),
++                rate_limit("five_hour", "allowed_warning", 0.85),
++            );
++            thread
++                .update(cx, |thread, cx| {
++                    thread.handle_session_update(
++                        acp_v1::SessionUpdate::UsageUpdate(
++                            acp_v1::UsageUpdate::new(1000, 10000).meta(meta),
++                        ),
++                        cx,
++                    )
++                })
++                .unwrap();
++        };
++
++        send(cx);
++        thread.read_with(cx, |thread, _| {
++            let window = thread
++                .account_usage()
++                .and_then(|usage| usage.windows().next().cloned())
++                .expect("the window reached the thread");
++            assert_eq!(window.kind, AccountUsageWindowKind::FiveHour);
++            assert_eq!(window.utilization, Some(0.85));
++        });
++        assert_eq!(*events.borrow(), 1);
++
++        send(cx);
++        assert_eq!(*events.borrow(), 1, "the same payload again is not news");
 +    }
 +
 +    #[test]

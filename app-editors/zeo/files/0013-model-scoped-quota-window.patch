@@ -44,14 +44,17 @@ one repeated string. Every disambiguation that closes it distorts the label of a
 honestly-named window, so if the panel ever needs to tell them apart, the place
 for it is the renderer, not the key.
 
-Tests: eight cases in `acp_thread`'s test module, including the two hostile
+Tests: seven cases in `acp_thread`'s test module, including the two hostile
 halves — two model-scoped windows must not collapse into one, and one window
 moving must not split into two — plus the guards that the unknown kind and the
 unnamed model-scoped window are still dropped.
+
+(0.2.3_p20261009): whitespace-only display names ("   ", tab, newline) are pinned as no
+name, beside the empty one.
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 9d0f2ee..2e5c45f 100644
+index 3efc80b..e5c12a0 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
 @@ -3354,7 +3354,15 @@ pub struct SessionCost {
@@ -180,7 +183,7 @@ index 9d0f2ee..2e5c45f 100644
              changed = true;
          }
          changed
-@@ -7738,7 +7790,7 @@ mod tests {
+@@ -7812,7 +7864,7 @@ mod tests {
          assert!(usage.ingest(&rate_limit("five_hour", "allowed", 0.25)));
          assert!(usage.ingest(&rate_limit("seven_day", "allowed_warning", 0.9)));
  
@@ -189,7 +192,7 @@ index 9d0f2ee..2e5c45f 100644
          assert_eq!(
              kinds,
              vec![
-@@ -7835,6 +7887,181 @@ mod tests {
+@@ -7909,6 +7961,183 @@ mod tests {
              "a rejected window outranks a merely-full one"
          );
      }
@@ -330,12 +333,14 @@ index 9d0f2ee..2e5c45f 100644
 +            "displayName": 7,
 +            "utilization": 0.40,
 +        })));
-+        assert!(!usage.ingest(&serde_json::json!({
-+            "status": "allowed",
-+            "rateLimitType": "model_scoped",
-+            "displayName": "",
-+            "utilization": 0.40,
-+        })));
++        for blank in ["", "   ", "\t\n"] {
++            assert!(!usage.ingest(&serde_json::json!({
++                "status": "allowed",
++                "rateLimitType": "model_scoped",
++                "displayName": blank,
++                "utilization": 0.40,
++            })), "display name {blank:?} is no name");
++        }
 +        assert!(
 +            usage.is_empty(),
 +            "an unnamed model-scoped window has no label and must be dropped, not guessed at"

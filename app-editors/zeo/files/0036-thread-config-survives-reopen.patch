@@ -63,6 +63,10 @@ Plus thread on Plan and Sonnet 5.5, restarted and reopened, came back on
 Auto and the default model without this patch and on Plan and Sonnet 5.5
 with it.
 
+Tests added (0.2.3_p20261009): the recorded mode is restored through session/resume as
+through session/load (the test agent now offers resume), and two rapid accepted
+picks record the last one.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -1177,10 +1181,10 @@ index 0000000..2415630
 +}
 diff --git a/crates/agent_servers/src/acp/recorder_mode_tests.rs b/crates/agent_servers/src/acp/recorder_mode_tests.rs
 new file mode 100644
-index 0000000..53170e8
+index 0000000..f4d548b
 --- /dev/null
 +++ b/crates/agent_servers/src/acp/recorder_mode_tests.rs
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,197 @@
 +//! Task 3.2 — mode changes reach the recorder (story 015, patch `0036`).
 +//!
 +//! Materialize with `#[cfg(test)] mod recorder_mode_tests;` in `acp.rs`.
@@ -1347,6 +1351,35 @@ index 0000000..53170e8
 +            .mode
 +            .as_deref(),
 +        Some("acceptEdits")
++    );
++}
++
++/// Two picks made back to back, both accepted: the record ends on the LAST one. Each
++/// write waits for the one before it, so the older snapshot can never land over the
++/// newer -- the order 0036's header promises.
++#[gpui::test]
++async fn recorder_mode_two_rapid_accepted_picks_record_the_last(cx: &mut gpui::TestAppContext) {
++    let project = init(cx).await;
++    let script = AgentScript {
++        rejected_modes: Vec::new(),
++        ..mode_script()
++    };
++    let agent = ConfigAgent::connect(script, project, cx).await;
++    let _thread = agent.load("rm-rapid", cx).await;
++
++    let picks = agent.start_mode_picks("rm-rapid", &["acceptEdits", "plan"], cx);
++    for pick in picks {
++        pick.await.expect("both picks are accepted");
++    }
++    cx.run_until_parked();
++
++    assert_eq!(
++        recorded(AGENT, "rm-rapid", cx)
++            .expect("the picks are recorded")
++            .mode
++            .as_deref(),
++        Some("plan"),
++        "the later pick wins"
 +    );
 +}
 diff --git a/crates/agent_servers/src/acp/recorder_tests.rs b/crates/agent_servers/src/acp/recorder_tests.rs
@@ -1548,10 +1581,10 @@ index 0000000..dc02398
 +}
 diff --git a/crates/agent_servers/src/acp/restore_mode_tests.rs b/crates/agent_servers/src/acp/restore_mode_tests.rs
 new file mode 100644
-index 0000000..a65df31
+index 0000000..8bce60f
 --- /dev/null
 +++ b/crates/agent_servers/src/acp/restore_mode_tests.rs
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,194 @@
 +//! Task 2.3 — restoring the recorded session mode on load (story 015, patch `0036`).
 +//!
 +//! Materialize with `#[cfg(test)] mod restore_mode_tests;` in `acp.rs`.
@@ -1661,6 +1694,26 @@ index 0000000..a65df31
 +    .await;
 +
 +    let _thread = agent.load("m-plan", cx).await;
++
++    assert_eq!(agent.mode_requests(), vec!["plan".to_string()]);
++    assert_eq!(agent.current_mode("m-plan").as_deref(), Some("plan"));
++}
++
++/// The recorded mode is restored however the thread comes back: `session/resume` goes
++/// through the same open path as `session/load`, and must not skip the restore.
++#[gpui::test]
++async fn restore_mode_sends_the_recorded_mode_on_resume(cx: &mut gpui::TestAppContext) {
++    let project = init(cx).await;
++    let agent = ConfigAgent::connect(mode_script(), project, cx).await;
++    record(
++        AGENT,
++        "m-plan",
++        recorded_config(Some("plan"), Vec::new()),
++        cx,
++    )
++    .await;
++
++    let _thread = agent.resume("m-plan", cx).await;
 +
 +    assert_eq!(agent.mode_requests(), vec!["plan".to_string()]);
 +    assert_eq!(agent.current_mode("m-plan").as_deref(), Some("plan"));
@@ -2269,10 +2322,10 @@ index 0000000..df1cda0
 +}
 diff --git a/crates/agent_servers/src/acp/thread_config_test_support.rs b/crates/agent_servers/src/acp/thread_config_test_support.rs
 new file mode 100644
-index 0000000..0c4afee
+index 0000000..3ec6f96
 --- /dev/null
 +++ b/crates/agent_servers/src/acp/thread_config_test_support.rs
-@@ -0,0 +1,619 @@
+@@ -0,0 +1,658 @@
 +//! Shared harness for the thread-config tests of patch `0036` (story 015):
 +//! a scripted ACP agent over the real wire and the production client handler
 +//! set, so picks, agent updates and loads travel exactly as in Zeo.
@@ -2361,7 +2414,8 @@ index 0000000..0c4afee
 +                                .load_session(true)
 +                                .session_capabilities(
 +                                    acp::SessionCapabilities::default()
-+                                        .close(acp::SessionCloseCapabilities::new()),
++                                        .close(acp::SessionCloseCapabilities::new())
++                                        .resume(acp::SessionResumeCapabilities::new()),
 +                                ),
 +                        ),
 +                    )
@@ -2396,6 +2450,22 @@ index 0000000..0c4afee
 +                        let current_modes = modes.lock().expect("agent modes").clone();
 +                        responder.respond(
 +                            acp::LoadSessionResponse::new()
++                                .config_options(current_options)
++                                .modes(current_modes),
++                        )
++                    }
++                },
++                agent_client_protocol::on_receive_request!(),
++            )
++            .on_receive_request(
++                {
++                    let options = options.clone();
++                    let modes = modes.clone();
++                    async move |_req: acp::ResumeSessionRequest, responder, _cx| {
++                        let current_options = options.lock().expect("agent options").clone();
++                        let current_modes = modes.lock().expect("agent modes").clone();
++                        responder.respond(
++                            acp::ResumeSessionResponse::new()
 +                                .config_options(current_options)
 +                                .modes(current_modes),
 +                        )
@@ -2615,6 +2685,28 @@ index 0000000..0c4afee
 +            })
 +            .await
 +            .expect("session should load");
++        cx.run_until_parked();
++        thread
++    }
++
++    /// Opens `session_id` through `session/resume` -- the other way back into a thread.
++    pub(super) async fn resume(
++        &self,
++        session_id: &str,
++        cx: &mut gpui::TestAppContext,
++    ) -> Entity<AcpThread> {
++        let thread = cx
++            .update(|cx| {
++                self.connection.clone().resume_session(
++                    acp_v2::SessionId::new(session_id.to_string()),
++                    self.project.clone(),
++                    PathList::new(&[std::path::Path::new(WORK_DIR)]),
++                    None,
++                    cx,
++                )
++            })
++            .await
++            .expect("session should resume");
 +        cx.run_until_parked();
 +        thread
 +    }

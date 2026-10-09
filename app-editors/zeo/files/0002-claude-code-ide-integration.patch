@@ -69,6 +69,12 @@ rejects a wrong token, a token with a suffix, a prefix of it, a case-folded copy
 and an empty one (401), and still upgrades the exact token: a relaxed comparison
 would have passed the old missing-header test. `lock_path` went unused and was
 removed.
+
+More tests (0.2.3_p20261009): the folderless-window withdrawal (`advertise`, split from
+`publish` so it needs no Project), the frame loop past the 101 (a text request gets
+its response, a ping its pong), JSON-RPC other than 2.0 and a tools/call with no
+name are invalid. The terminal environment is one helper,
+`insert_claude_code_ide_env`, called by all three terminal paths and tested.
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
@@ -253,10 +259,10 @@ index 0000000..8481e58
 +
 diff --git a/crates/claude_code_ide/src/claude_code_ide.rs b/crates/claude_code_ide/src/claude_code_ide.rs
 new file mode 100644
-index 0000000..492b935
+index 0000000..df60afe
 --- /dev/null
 +++ b/crates/claude_code_ide/src/claude_code_ide.rs
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,294 @@
 +//! IDE-side implementation of the Claude Code editor integration protocol.
 +//!
 +//! This lets the Claude Code CLI connect to Zed the same way it connects to the
@@ -410,7 +416,7 @@ index 0000000..492b935
 +        };
 +        let folders = workspace_folders_of(workspace.read(cx), cx);
 +        let project = workspace.read(cx).project().clone();
-+        publish(port, &auth_token, &folders, &project, cx);
++        publish(port, &auth_token, &folders, &project, &lockfile::lock_dir(), cx);
 +    }
 +
 +    async fn run(
@@ -430,7 +436,7 @@ index 0000000..492b935
 +            .update(cx, |workspace, cx| {
 +                let folders = workspace_folders_of(workspace, cx);
 +                let project = workspace.project().clone();
-+                publish(port, &auth_token, &folders, &project, cx);
++                publish(port, &auth_token, &folders, &project, &lockfile::lock_dir(), cx);
 +            })
 +            .context("publishing the IDE lock file")?;
 +
@@ -478,22 +484,35 @@ index 0000000..492b935
 +    auth_token: &str,
 +    folders: &[PathBuf],
 +    project: &Entity<Project>,
++    lock_dir: &std::path::Path,
 +    cx: &mut App,
 +) {
-+    let advertised = if folders.is_empty() {
-+        lockfile::remove(port).log_err();
-+        None
-+    } else {
-+        let ide_name = ReleaseChannel::try_global(cx)
-+            .unwrap_or(ReleaseChannel::Stable)
-+            .display_name();
-+        lockfile::create(port, ide_name, auth_token, folders)
-+            .log_err()
-+            .map(|_| port)
-+    };
++    let ide_name = ReleaseChannel::try_global(cx)
++        .unwrap_or(ReleaseChannel::Stable)
++        .display_name();
++    let advertised = advertise(port, auth_token, folders, ide_name, lock_dir);
 +    project.update(cx, |project, _| {
 +        project.set_claude_code_ide_port(advertised)
 +    });
++}
++
++/// `publish`'s decision: writes the lock file and returns the port to advertise when
++/// there are folders, removes it and returns `None` when there are none.
++fn advertise(
++    port: u16,
++    auth_token: &str,
++    folders: &[PathBuf],
++    ide_name: &str,
++    lock_dir: &std::path::Path,
++) -> Option<u16> {
++    if folders.is_empty() {
++        lockfile::remove_in(lock_dir, port).log_err();
++        None
++    } else {
++        lockfile::create_in(lock_dir, port, ide_name, auth_token, folders)
++            .log_err()
++            .map(|_| port)
++    }
 +}
 +
 +/// The absolute paths of a workspace's visible folders, as the lock file and the
@@ -506,9 +525,41 @@ index 0000000..492b935
 +        .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
 +        .collect()
 +}
++
++#[cfg(test)]
++mod publish_tests {
++    use super::*;
++
++    /// 2026-10-01's fix: a window with folders writes the lock file and advertises the
++    /// port its terminals hand the CLI; once it has none, both are withdrawn -- a lock
++    /// file listing no folders matches nothing, and a port without one makes a CLI
++    /// started in that terminal fail the handshake instead of running without an IDE.
++    #[test]
++    fn advertise_withdraws_the_lock_file_and_port_without_folders() {
++        let dir = std::env::temp_dir().join(format!(
++            "zeo-ide-publish-{}-{}",
++            std::process::id(),
++            lockfile::generate_auth_token()
++        ));
++        std::fs::create_dir_all(&dir).unwrap();
++        let lock = dir.join("4245.lock");
++
++        let folders = [PathBuf::from("/work/app")];
++        assert_eq!(advertise(4245, "token", &folders, "Zeo", &dir), Some(4245));
++        assert!(lock.exists(), "a window with folders writes the lock file");
++
++        assert_eq!(
++            advertise(4245, "token", &[], "Zeo", &dir),
++            None,
++            "a window without folders advertises no port"
++        );
++        assert!(!lock.exists(), "and withdraws the lock file");
++        std::fs::remove_dir_all(&dir).ok();
++    }
++}
 diff --git a/crates/claude_code_ide/src/lockfile.rs b/crates/claude_code_ide/src/lockfile.rs
 new file mode 100644
-index 0000000..7126466
+index 0000000..3977ebc
 --- /dev/null
 +++ b/crates/claude_code_ide/src/lockfile.rs
 @@ -0,0 +1,247 @@
@@ -596,7 +647,7 @@ index 0000000..7126466
 +}
 +
 +/// `create`, in `dir` rather than the resolved lock directory.
-+fn create_in(
++pub(crate) fn create_in(
 +    dir: &std::path::Path,
 +    port: u16,
 +    ide_name: &str,
@@ -642,7 +693,7 @@ index 0000000..7126466
 +}
 +
 +/// `remove`, in `dir` rather than the resolved lock directory.
-+fn remove_in(dir: &std::path::Path, port: u16) -> Result<()> {
++pub(crate) fn remove_in(dir: &std::path::Path, port: u16) -> Result<()> {
 +    let path = dir.join(format!("{port}.lock"));
 +    match fs::remove_file(&path) {
 +        Ok(()) => Ok(()),
@@ -986,10 +1037,10 @@ index 0000000..14a3c79
 +}
 diff --git a/crates/claude_code_ide/src/server.rs b/crates/claude_code_ide/src/server.rs
 new file mode 100644
-index 0000000..3e80497
+index 0000000..36ee71a
 --- /dev/null
 +++ b/crates/claude_code_ide/src/server.rs
-@@ -0,0 +1,547 @@
+@@ -0,0 +1,631 @@
 +//! WebSocket transport and JSON-RPC/MCP message routing for the Claude Code IDE
 +//! integration.
 +//!
@@ -1519,6 +1570,90 @@ index 0000000..3e80497
 +    fn unknown_method_is_a_method_not_found_error() {
 +        let value = response(r#"{"jsonrpc":"2.0","id":5,"method":"frobnicate"}"#);
 +        assert_eq!(value["error"]["code"], error_codes::METHOD_NOT_FOUND);
++    }
++
++    /// Only JSON-RPC 2.0 is served: any other version is an invalid request, not a
++    /// call to answer.
++    #[test]
++    fn a_request_that_is_not_json_rpc_2_is_invalid() {
++        for raw in [
++            r#"{"jsonrpc":"1.0","id":6,"method":"initialize"}"#,
++            r#"{"id":7,"method":"initialize"}"#,
++        ] {
++            let value = response(raw);
++            assert_eq!(value["error"]["code"], error_codes::INVALID_REQUEST, "{raw}");
++        }
++    }
++
++    /// A tools/call that names no tool is an invalid request, never a call to some
++    /// default tool.
++    #[test]
++    fn tools_call_without_a_name_is_invalid() {
++        let value = response(r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"arguments":{}}}"#);
++        assert_eq!(value["error"]["code"], error_codes::INVALID_REQUEST);
++    }
++
++    /// Past the 101: a text frame carrying a request gets its response frame, and a
++    /// ping gets a pong -- the frame loop, which the handshake tests stop short of.
++    #[test]
++    fn the_frame_loop_answers_requests_and_pings() {
++        use async_tungstenite::tungstenite::{Message, client::IntoClientRequest as _};
++        use futures::{SinkExt as _, StreamExt as _};
++
++        block_on(async {
++            let (listener, port) = bind().await.expect("binding the test listener");
++            let server = smol::spawn(async move {
++                let (stream, _) = listener.accept().await.expect("accepting the test client");
++                serve_connection(stream, "the-token".to_owned(), MockDispatcher).await
++            });
++
++            let stream = smol::net::TcpStream::connect(("127.0.0.1", port))
++                .await
++                .expect("connecting to the test listener");
++            let mut request = format!("ws://127.0.0.1:{port}/")
++                .into_client_request()
++                .expect("a valid request");
++            request
++                .headers_mut()
++                .insert(AUTH_HEADER, "the-token".parse().unwrap());
++            request
++                .headers_mut()
++                .insert("Sec-WebSocket-Protocol", "mcp".parse().unwrap());
++            let (mut socket, _) = async_tungstenite::client_async(request, stream)
++                .await
++                .expect("the upgrade succeeds");
++
++            socket
++                .send(Message::text(
++                    r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
++                ))
++                .await
++                .expect("sending a request frame");
++            let reply = loop {
++                match socket.next().await.expect("a frame").expect("a valid frame") {
++                    Message::Text(text) => break text.to_string(),
++                    _ => continue,
++                }
++            };
++            let value: Value = serde_json::from_str(&reply).expect("a JSON response");
++            assert_eq!(value["id"], 1);
++            assert_eq!(value["result"]["protocolVersion"], MCP_PROTOCOL_VERSION);
++
++            socket
++                .send(Message::Ping(b"zeo".to_vec().into()))
++                .await
++                .expect("sending a ping");
++            let pong = loop {
++                match socket.next().await.expect("a frame").expect("a valid frame") {
++                    Message::Pong(payload) => break payload,
++                    _ => continue,
++                }
++            };
++            assert_eq!(&pong[..], b"zeo");
++
++            drop(socket);
++            server.cancel().await;
++        });
 +    }
 +
 +    #[test]
@@ -2193,54 +2328,82 @@ index 9e8fc89..75daeaf 100644
              project.set_role(role, cx);
              for worktree in worktrees {
 diff --git a/crates/project/src/terminals.rs b/crates/project/src/terminals.rs
-index c940607..3ece6e1 100644
+index c940607..e9aae69 100644
 --- a/crates/project/src/terminals.rs
 +++ b/crates/project/src/terminals.rs
-@@ -135,6 +135,14 @@ impl Project {
+@@ -135,6 +135,13 @@ impl Project {
          cx.spawn(async move |project, cx| {
              let mut env = env_task.await.unwrap_or_default();
              env.extend(settings.env);
-+            if let Some(port) = project
-+                .read_with(cx, |project, _| project.claude_code_ide_port())
-+                .ok()
-+                .flatten()
-+            {
-+                env.insert("CLAUDE_CODE_SSE_PORT".to_owned(), port.to_string());
-+                env.insert("ENABLE_IDE_INTEGRATION".to_owned(), "true".to_owned());
-+            }
++            insert_claude_code_ide_env(
++                &mut env,
++                project
++                    .read_with(cx, |project, _| project.claude_code_ide_port())
++                    .ok()
++                    .flatten(),
++            );
  
              let activation_script = maybe!(async {
                  for toolchain in toolchains {
-@@ -404,6 +412,14 @@ impl Project {
+@@ -404,6 +411,13 @@ impl Project {
              let shell_kind = ShellKind::new(&shell_program, path_style.is_windows());
              let mut env = env_task.await.unwrap_or_default();
              env.extend(settings.env);
-+            if let Some(port) = project
-+                .read_with(cx, |project, _| project.claude_code_ide_port())
-+                .ok()
-+                .flatten()
-+            {
-+                env.insert("CLAUDE_CODE_SSE_PORT".to_owned(), port.to_string());
-+                env.insert("ENABLE_IDE_INTEGRATION".to_owned(), "true".to_owned());
-+            }
++            insert_claude_code_ide_env(
++                &mut env,
++                project
++                    .read_with(cx, |project, _| project.claude_code_ide_port())
++                    .ok()
++                    .flatten(),
++            );
  
              let activation_script = maybe!(async {
                  for toolchain in toolchains {
-@@ -577,6 +593,14 @@ impl Project {
+@@ -577,6 +591,13 @@ impl Project {
          cx.spawn(async move |project, cx| {
              let mut env = env_task.await.unwrap_or_default();
              env.extend(settings.env);
-+            if let Some(port) = project
-+                .read_with(cx, |project, _| project.claude_code_ide_port())
-+                .ok()
-+                .flatten()
-+            {
-+                env.insert("CLAUDE_CODE_SSE_PORT".to_owned(), port.to_string());
-+                env.insert("ENABLE_IDE_INTEGRATION".to_owned(), "true".to_owned());
-+            }
++            insert_claude_code_ide_env(
++                &mut env,
++                project
++                    .read_with(cx, |project, _| project.claude_code_ide_port())
++                    .ok()
++                    .flatten(),
++            );
  
              project.update(cx, move |_, cx| {
                  match remote_client {
+@@ -827,3 +848,30 @@ mod tests {
+         );
+     }
+ }
++
++/// The Claude Code IDE integration's terminal environment (patch 0002): with the port
++/// of this workspace's IDE server, a `claude` started in the terminal finds it; without
++/// one, nothing is set, so a CLI there runs without an IDE instead of failing a
++/// handshake. Every terminal path calls this, so they cannot drift apart.
++fn insert_claude_code_ide_env(env: &mut HashMap<String, String>, port: Option<u16>) {
++    if let Some(port) = port {
++        env.insert("CLAUDE_CODE_SSE_PORT".to_owned(), port.to_string());
++        env.insert("ENABLE_IDE_INTEGRATION".to_owned(), "true".to_owned());
++    }
++}
++
++#[cfg(test)]
++mod claude_code_ide_env_tests {
++    use super::*;
++
++    #[test]
++    fn insert_claude_code_ide_env_sets_both_variables_only_with_a_port() {
++        let mut env = HashMap::default();
++        insert_claude_code_ide_env(&mut env, None);
++        assert!(env.is_empty(), "no port, no IDE variables");
++
++        insert_claude_code_ide_env(&mut env, Some(41234));
++        assert_eq!(env.get("CLAUDE_CODE_SSE_PORT").map(String::as_str), Some("41234"));
++        assert_eq!(env.get("ENABLE_IDE_INTEGRATION").map(String::as_str), Some("true"));
++    }
++}
 diff --git a/crates/zed/Cargo.toml b/crates/zed/Cargo.toml
 index 0cea2f3..1f29160 100644
 --- a/crates/zed/Cargo.toml
@@ -2254,10 +2417,10 @@ index 0cea2f3..1f29160 100644
  cli.workspace = true
  client.workspace = true
 diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
-index 5c8247f..e0030d4 100644
+index 63a1ed8..9db8556 100644
 --- a/crates/zed/src/main.rs
 +++ b/crates/zed/src/main.rs
-@@ -699,6 +699,7 @@ fn main() {
+@@ -702,6 +702,7 @@ fn main() {
          acp_tools::init(cx);
          zed::telemetry_log::init(cx);
          zed::remote_debug::init(cx);

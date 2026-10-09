@@ -54,10 +54,12 @@ What it deliberately does not do:
 
 No other agent sends the key, so for them nothing changes. Rides the
 claude-agent-acp-plus flag BY DEPENDENCY, like 0011 and 0013.
+
+Test added (0.2.3_p20261009): a malformed count (-1, "2", 1.5, null) leaves the last one.
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 6fba92e..cd7a436 100644
+index 22f4e22..cd3fce4 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
 @@ -3624,6 +3624,15 @@ impl AccountUsage {
@@ -144,10 +146,67 @@ index 6fba92e..cd7a436 100644
                  self.update_session_info(session_info_update_from_v1(info_update), cx);
              }
              acp_v1::SessionUpdate::AvailableCommandsUpdate(acp_v1::AvailableCommandsUpdate {
-@@ -19714,6 +19749,79 @@ mod tests {
+@@ -19790,6 +19825,136 @@ mod tests {
          );
      }
  
++    // 0029: the adapter's count is a non-negative integer. Anything else -- negative, a
++    // string, a fraction -- is not a count and leaves the last one in place.
++    #[gpui::test]
++    async fn test_session_info_update_ignores_a_malformed_background_count(
++        cx: &mut TestAppContext,
++    ) {
++        init_test(cx);
++
++        let fs = FakeFs::new(cx.executor());
++        let project = Project::test(fs, [], cx).await;
++        let connection = Rc::new(FakeAgentConnection::new());
++        let thread = cx
++            .update(|cx| {
++                connection.clone().new_session(
++                    project,
++                    PathList::new(&[Path::new(path!("/test"))]),
++                    cx,
++                )
++            })
++            .await
++            .unwrap();
++        let send_count = |count: serde_json::Value, cx: &mut TestAppContext| {
++            let mut meta = serde_json::Map::new();
++            meta.insert(
++                CLAUDE_BACKGROUND_TASKS_META_KEY.to_string(),
++                serde_json::json!({ "count": count, "tasks": [] }),
++            );
++            thread
++                .update(cx, |thread, cx| {
++                    thread.handle_session_update(
++                        acp_v1::SessionUpdate::SessionInfoUpdate(
++                            acp_v1::SessionInfoUpdate::new().meta(meta),
++                        ),
++                        cx,
++                    )
++                })
++                .expect("session info update should succeed");
++        };
++
++        send_count(serde_json::json!(2), cx);
++        for malformed in [
++            serde_json::json!(-1),
++            serde_json::json!("2"),
++            serde_json::json!(1.5),
++            serde_json::Value::Null,
++        ] {
++            send_count(malformed.clone(), cx);
++            thread.read_with(cx, |thread, _| {
++                assert_eq!(
++                    thread.background_task_count(),
++                    2,
++                    "count {malformed} must leave the last count"
++                )
++            });
++        }
++    }
++
 +    #[gpui::test]
 +    async fn test_session_info_update_tracks_background_task_count(cx: &mut TestAppContext) {
 +        init_test(cx);

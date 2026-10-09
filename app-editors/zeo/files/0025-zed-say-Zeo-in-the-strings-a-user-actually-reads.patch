@@ -74,6 +74,12 @@ nothing and drags in no sibling. The catch is f10: default-linux.json binds
 open by comparing that name with ==. Editing the keymap would conflict on every
 bump and still break any user keymap naming "Zed", so open_menu treats "Zed" as
 the application menu's old name instead.
+
+(0.2.3_p20261009): two more strings that name the application. "zed is already running" --
+printed when another instance holds the socket, which is what an AppImage run
+next to a running Zeo hit -- now reads the channel's display name; onboarding's
+"unlock all Zed's features" says Zeo. A test pins that f10's legacy "Zed" menu
+name still opens the "Zeo" menu.
 ---
 
 diff --git a/crates/auto_update/src/auto_update.rs b/crates/auto_update/src/auto_update.rs
@@ -90,7 +96,7 @@ index 4e4a8e7..6ace1cc 100644
              &["OK"],
              cx,
 diff --git a/crates/cli/src/main.rs b/crates/cli/src/main.rs
-index 55e1b06..a5d314f 100644
+index bcbdd3f..a4c49f7 100644
 --- a/crates/cli/src/main.rs
 +++ b/crates/cli/src/main.rs
 @@ -858,7 +858,7 @@ fn prompt_open_behavior() -> Option<cli::CliBehaviorSetting> {
@@ -144,6 +150,19 @@ index 44ea229..7ba6608 100644
                                  true,
                              ),
                          )
+diff --git a/crates/onboarding/src/basics_page.rs b/crates/onboarding/src/basics_page.rs
+index 840d930..270f1ac 100644
+--- a/crates/onboarding/src/basics_page.rs
++++ b/crates/onboarding/src/basics_page.rs
+@@ -444,7 +444,7 @@ fn render_worktree_auto_trust_switch(tab_index: &mut isize, cx: &mut App) -> imp
+     SwitchField::new(
+         "onboarding-auto-trust-worktrees",
+         Some("Trust All Projects By Default"),
+-        Some("Automatically mark all new projects as trusted to unlock all Zed's features".into()),
++        Some("Automatically mark all new projects as trusted to unlock all Zeo's features".into()),
+         toggle_state,
+         {
+             let fs = <dyn Fs>::global(cx);
 diff --git a/crates/onboarding/src/onboarding.rs b/crates/onboarding/src/onboarding.rs
 index 220c2b0..294f71e 100644
 --- a/crates/onboarding/src/onboarding.rs
@@ -184,7 +203,7 @@ index 857a0ce..627c367 100644
                      traffic_light_position: Some(point(px(12.0), px(12.0))),
                  }),
 diff --git a/crates/title_bar/src/application_menu.rs b/crates/title_bar/src/application_menu.rs
-index ced552d..f4b53a7 100644
+index ced552d..9dbeabc 100644
 --- a/crates/title_bar/src/application_menu.rs
 +++ b/crates/title_bar/src/application_menu.rs
 @@ -256,7 +256,14 @@ impl ApplicationMenu {
@@ -203,6 +222,41 @@ index ced552d..f4b53a7 100644
      }
  
      #[cfg(not(target_os = "macos"))]
+@@ -568,4 +575,34 @@ mod tests {
+             menu_entry(&app_menu.entries, "View").handle.is_deployed()
+         }));
+     }
++
++    /// 0025: the application menu is named after the channel ("Zeo"), but keymaps --
++    /// the default f10 binding among them -- still name it "Zed". That name must keep
++    /// opening it, or f10 silently stops working on Linux. Other names pass through.
++    #[cfg(not(target_os = "macos"))]
++    #[gpui::test]
++    fn test_open_menu_accepts_the_legacy_zed_name(cx: &mut TestAppContext) {
++        init_test(cx);
++        cx.update(|cx| {
++            cx.set_menus(vec![
++                Menu::new("Zeo").items([MenuItem::action(
++                    "Settings",
++                    OpenApplicationMenu(String::new()),
++                )]),
++                view_menu(true),
++            ]);
++        });
++        let (app_menu, cx) = cx.add_window_view(|window, cx| ApplicationMenu::new(window, cx));
++
++        for (asked, opened) in [("Zed", "Zeo"), ("View", "View")] {
++            app_menu.update_in(cx, |app_menu, window, cx| {
++                app_menu.open_menu(&OpenApplicationMenu(asked.into()), window, cx);
++                assert_eq!(
++                    app_menu.pending_menu_open.as_deref(),
++                    Some(opened),
++                    "OpenApplicationMenu({asked:?})"
++                );
++            });
++        }
++    }
+ }
 diff --git a/crates/title_bar/src/title_bar.rs b/crates/title_bar/src/title_bar.rs
 index 3ffc153..1cd5853 100644
 --- a/crates/title_bar/src/title_bar.rs
@@ -298,7 +352,7 @@ index 837418e..990abed 100644
  
          h_flex()
 diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
-index 2ae5f82..dd9198b 100644
+index 2ae5f82..3718383 100644
 --- a/crates/zed/src/main.rs
 +++ b/crates/zed/src/main.rs
 @@ -94,7 +94,7 @@ fn build_application() -> Application {
@@ -319,6 +373,18 @@ index 2ae5f82..dd9198b 100644
                          .body(Some(
                              format!(
                                  "{e:?}. See https://zed.dev/docs/linux for troubleshooting steps."
+@@ -379,7 +379,10 @@ fn main() {
+         }
+     };
+     if failed_single_instance_check {
+-        println!("zed is already running");
++        println!(
++            "{} is already running",
++            release_channel::RELEASE_CHANNEL.display_name()
++        );
+         return;
+     }
+ 
 diff --git a/crates/zed/src/zed.rs b/crates/zed/src/zed.rs
 index 70c5df3..50959aa 100644
 --- a/crates/zed/src/zed.rs

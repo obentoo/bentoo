@@ -58,10 +58,13 @@ Verified: `cargo check -p agent_ui`, `cargo clippy -p agent_ui --all-targets` an
 `show_archive` path against a live workspace, so the scoped read is reached by
 construction rather than only by unit test. Not eyeball-verified in a running
 editor; that is what the live session is for.
+
+Test added (0.2.3_p20261009): a remote project whose folders spell the same paths as a
+local one is another project -- neither sees the other's threads.
 ---
 
 diff --git a/crates/agent_ui/src/threads_archive_view.rs b/crates/agent_ui/src/threads_archive_view.rs
-index 6b7b4a4..9a340b4 100644
+index 6b7b4a4..0cd9a3f 100644
 --- a/crates/agent_ui/src/threads_archive_view.rs
 +++ b/crates/agent_ui/src/threads_archive_view.rs
 @@ -30,6 +30,7 @@ use picker::{
@@ -211,7 +214,7 @@ index 6b7b4a4..9a340b4 100644
          };
  
          let count_label = if entry_count == 1 {
-@@ -1700,4 +1764,188 @@ mod tests {
+@@ -1700,4 +1764,224 @@ mod tests {
              );
          }
      }
@@ -397,6 +400,42 @@ index 6b7b4a4..9a340b4 100644
 +
 +            assert_eq!(filter, ThreadFilter::ArchivedOnly);
 +            assert_eq!(session_ids(&sessions), vec!["a-archived"]);
++        });
++    }
++
++    #[gpui::test]
++    async fn archive_view_keeps_a_remote_project_apart_from_a_local_one_with_the_same_paths(
++        cx: &mut gpui::TestAppContext,
++    ) {
++        // Every other test here is local. A remote project whose folders spell the same
++        // paths as a local one is still another project: the local thread is not its
++        // history, nor the remote's the local's.
++        let remote = RemoteConnectionOptions::Ssh(remote::SshConnectionOptions {
++            host: "build-box".into(),
++            ..Default::default()
++        });
++        let mut remote_thread = archive_thread_fixture("remote-a", false, &project_a(), 20);
++        remote_thread.remote_connection = Some(remote.clone());
++        let store = store_with(
++            vec![
++                archive_thread_fixture("local-a", false, &project_a(), 10),
++                remote_thread,
++            ],
++            cx,
++        )
++        .await;
++
++        cx.update(|cx| {
++            let (_, local) =
++                scoped_archive_sessions(store.read(cx), ThreadFilter::All, &project_a(), None);
++            assert_eq!(session_ids(&local), vec!["local-a"]);
++            let (_, remote) = scoped_archive_sessions(
++                store.read(cx),
++                ThreadFilter::All,
++                &project_a(),
++                Some(&remote),
++            );
++            assert_eq!(session_ids(&remote), vec!["remote-a"]);
 +        });
 +    }
  }
