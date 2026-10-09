@@ -81,8 +81,95 @@ Only the prose above was rewritten, in place, on 2026-07-31 (story 008,
 sub-task 7.2). The hunks below are byte-identical to the original export, so the
 `From` line still names the commit this patch was first exported from.
 
+
+UPSTREAM TESTS THIS PATCH MAKES UNSATISFIABLE (adapted 2026-10-09)
+
+`enabled_for_all` wins over a settings override (crates/feature_flags/src/
+store.rs, `try_flag_value`: "`enabled_for_all` always wins, including over user
+overrides"), so with this patch acp-beta cannot be switched off at all. Two
+upstream tests set it "off" and assert it is off before exercising code that
+does not read the flag:
+
+  agent  internal_tests::test_compact_prompt_routes_to_manual_compaction
+  agent_servers  acp::tests::connection_routes_terminal_auth_without_acp_beta
+
+Both now drop the override and assert the flag is ON -- the state Zeo ships --
+and keep everything they check after that. Their names are left as upstream
+has them, so a future upstream edit to either still lands in the same place.
+This is the first change to the hunks themselves, so the "byte-identical"
+sentence above holds for the flags.rs hunk only.
 ---
 
+diff --git a/crates/agent/src/agent.rs b/crates/agent/src/agent.rs
+index 2deba3a..9379829 100644
+--- a/crates/agent/src/agent.rs
++++ b/crates/agent/src/agent.rs
+@@ -4266,9 +4266,7 @@ mod internal_tests {
+ 
+     #[gpui::test]
+     async fn test_compact_prompt_routes_to_manual_compaction(cx: &mut TestAppContext) {
+-        use feature_flags::{
+-            AcpBetaFeatureFlag, FeatureFlag as _, FeatureFlagAppExt as _, FeatureFlagsSettings,
+-        };
++        use feature_flags::{AcpBetaFeatureFlag, FeatureFlagAppExt as _};
+ 
+         let fake = init_test(cx);
+         let (connection, agent, project, acp_thread) = setup_native_agent_session(cx).await;
+@@ -4279,15 +4277,6 @@ mod internal_tests {
+ 
+         cx.update(|cx| {
+             cx.update_flags(true, Vec::new());
+-            FeatureFlagsSettings::override_global(
+-                FeatureFlagsSettings {
+-                    overrides: HashMap::from_iter([(
+-                        AcpBetaFeatureFlag::NAME.into(),
+-                        "off".into(),
+-                    )]),
+-                },
+-                cx,
+-            );
+             let path_style = project.read(cx).path_style(cx);
+             thread.update(cx, |thread, cx| {
+                 thread.set_model(model.clone(), cx);
+@@ -4303,7 +4292,11 @@ mod internal_tests {
+ 
+         let compact_message_id = ClientUserMessageId::new();
+         let prompt_task = cx.update(|cx| {
+-            assert!(!cx.has_flag::<AcpBetaFeatureFlag>());
++            // Zeo: 0001 makes acp-beta `enabled_for_all`, which wins over the
++            // "off" override upstream sets here, so the flag-off state this test
++            // was written for cannot exist. /compact does not read the flag;
++            // assert the state Zeo actually ships instead.
++            assert!(cx.has_flag::<AcpBetaFeatureFlag>());
+             acp_thread::AgentSessionClientUserMessageIds::prompt(
+                 connection.as_ref(),
+                 compact_message_id,
+diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
+index 0e36a60..e80d89a 100644
+--- a/crates/agent_servers/src/acp.rs
++++ b/crates/agent_servers/src/acp.rs
+@@ -3793,16 +3793,11 @@ mod tests {
+         let terminal_task = cx
+             .update(|cx| {
+                 cx.update_flags(true, Vec::new());
+-                feature_flags::FeatureFlagsSettings::override_global(
+-                    feature_flags::FeatureFlagsSettings {
+-                        overrides: HashMap::from_iter([(
+-                            AcpBetaFeatureFlag::NAME.into(),
+-                            "off".into(),
+-                        )]),
+-                    },
+-                    cx,
+-                );
+-                assert!(!cx.has_flag::<AcpBetaFeatureFlag>());
++                // Zeo: 0001 makes acp-beta `enabled_for_all`, which wins over the
++                // "off" override upstream sets here, so the flag-off state this
++                // test was written for cannot exist. terminal_auth_task does not
++                // read the flag; assert the state Zeo actually ships instead.
++                assert!(cx.has_flag::<AcpBetaFeatureFlag>());
+                 harness.connection.terminal_auth_task(&method_id, cx)
+             })
+             .expect("first-class terminal auth should be routed without ACP beta");
 diff --git a/crates/feature_flags/src/flags.rs b/crates/feature_flags/src/flags.rs
 index 6a10534..3375676 100644
 --- a/crates/feature_flags/src/flags.rs

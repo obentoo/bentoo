@@ -39,6 +39,17 @@ its CLI and needs nothing.
 Tests: the two entries exist with no registry, a registry entry with the same
 id is kept instead of duplicated, `@latest` reaches npm intact, and
 SettingsStore::test reports both enabled as registry agents.
+
+Never-empty list (fixed 2026-10-09): `AgentRegistryStore::init_global` fetched
+the registry only `if store.agents.is_empty()`, which `with_zeo_agents` made
+permanently false -- the store's own first fetch never ran. In a running Zeo
+nothing showed it, because default.json's two registry agents make
+agent_server_store call `refresh_if_stale` at startup anyway; the three
+`registry_refresh_*` integration tests, which drive `init_global` alone, did.
+The guard is now "nothing but Zeo's built-ins" (`is_zeo_agent`). The tests that
+count agents expect the two built-ins after the registry's:
+`registry_refresh_does_not_block_sequentially_on_hung_icon_downloads` (3 + 2)
+and remote_server's `test_remote_external_agent_server` ("foo" plus both ids).
 ---
 
 diff --git a/assets/settings/default.json b/assets/settings/default.json
@@ -63,10 +74,21 @@ index 30f3347..8c46ba8 100644
      "stepping_granularity": "line",
      "save_breakpoints": true,
 diff --git a/crates/project/src/agent_registry_store.rs b/crates/project/src/agent_registry_store.rs
-index 7ab885d..8237574 100644
+index 7ab885d..4d51184 100644
 --- a/crates/project/src/agent_registry_store.rs
 +++ b/crates/project/src/agent_registry_store.rs
-@@ -248,7 +248,7 @@ impl AgentRegistryStore {
+@@ -148,7 +148,9 @@ impl AgentRegistryStore {
+         cx.set_global(GlobalAgentRegistryStore(store.clone()));
+ 
+         store.update(cx, |store, cx| {
+-            if store.agents.is_empty() {
++            // Zeo: `with_zeo_agents` means the list is never empty, so "nothing
++            // from the registry yet" is "nothing but Zeo's built-ins".
++            if store.agents.iter().all(is_zeo_agent) {
+                 store.refresh(cx);
+             }
+         });
+@@ -248,7 +250,7 @@ impl AgentRegistryStore {
                  this.is_fetching = false;
                  match result {
                      Ok(agents) => {
@@ -75,7 +97,7 @@ index 7ab885d..8237574 100644
                          this.fetch_error = None;
                      }
                      Err(error) => {
-@@ -281,7 +281,7 @@ impl AgentRegistryStore {
+@@ -281,7 +283,7 @@ impl AgentRegistryStore {
          let mut store = Self {
              fs: fs.clone(),
              http_client,
@@ -84,7 +106,7 @@ index 7ab885d..8237574 100644
              is_fetching: false,
              fetch_error: None,
              pending_refresh: None,
-@@ -321,7 +321,7 @@ impl AgentRegistryStore {
+@@ -321,7 +323,7 @@ impl AgentRegistryStore {
                  build_registry_agents(fs, http_client, index, bytes, false, &executor).await?;
  
              this.update(cx, |this, cx| {
@@ -93,7 +115,7 @@ index 7ab885d..8237574 100644
                  cx.notify();
              })?;
  
-@@ -331,6 +331,64 @@ impl AgentRegistryStore {
+@@ -331,6 +333,70 @@ impl AgentRegistryStore {
      }
  }
  
@@ -144,6 +166,12 @@ index 7ab885d..8237574 100644
 +    ]
 +}
 +
++/// Whether `agent` carries one of the ids `zeo_agents()` ships.
++fn is_zeo_agent(agent: &RegistryAgent) -> bool {
++    let id = agent.id().0.as_ref();
++    id == ZEO_PLUS_AGENT_ID || id == ZEO_TUI_AGENT_ID
++}
++
 +/// `agents` plus Zeo's own, unless the registry already lists an agent with the
 +/// same id -- the registry's entry then wins.
 +fn with_zeo_agents(mut agents: Vec<RegistryAgent>) -> Vec<RegistryAgent> {
@@ -158,7 +186,7 @@ index 7ab885d..8237574 100644
  struct RegistryFetchResult {
      index: RegistryIndex,
      raw_body: Vec<u8>,
-@@ -683,3 +741,57 @@ struct RegistryNpxDistribution {
+@@ -683,3 +749,57 @@ struct RegistryNpxDistribution {
      #[serde(default)]
      env: HashMap<String, String>,
  }
@@ -265,3 +293,39 @@ index 8b10f8b..efe255c 100644
      #[test]
      fn builds_bounded_npm_package_specs() {
          assert_eq!(
+diff --git a/crates/project/tests/integration/agent_registry_store.rs b/crates/project/tests/integration/agent_registry_store.rs
+index ab8d738..818848b 100644
+--- a/crates/project/tests/integration/agent_registry_store.rs
++++ b/crates/project/tests/integration/agent_registry_store.rs
+@@ -106,7 +106,8 @@ async fn registry_refresh_does_not_block_sequentially_on_hung_icon_downloads(
+ 
+     registry_store.update(cx, |store, _| {
+         assert!(!store.is_fetching());
+-        assert_eq!(store.agents().len(), 3);
++        // Zeo: 0033 appends its two built-in agents after the registry's.
++        assert_eq!(store.agents().len(), 3 + 2);
+         assert_eq!(store.agents()[0].id().as_ref(), "slow-icon-a");
+         assert_eq!(store.agents()[1].id().as_ref(), "slow-icon-b");
+         assert_eq!(store.agents()[2].id().as_ref(), "slow-icon-c");
+diff --git a/crates/remote_server/src/remote_editing_tests.rs b/crates/remote_server/src/remote_editing_tests.rs
+index 7b34f7a..b6f54cc 100644
+--- a/crates/remote_server/src/remote_editing_tests.rs
++++ b/crates/remote_server/src/remote_editing_tests.rs
+@@ -4991,7 +4991,16 @@ async fn test_remote_external_agent_server(
+             .map(|name| name.to_string())
+             .collect::<Vec<_>>()
+     });
+-    pretty_assertions::assert_eq!(names, ["foo"]);
++    // Zeo: 0033 ships its two adapters as default registry agents, so they are
++    // listed after the one this test configures.
++    pretty_assertions::assert_eq!(
++        names,
++        [
++            "foo",
++            project::agent_registry_store::ZEO_PLUS_AGENT_ID,
++            project::agent_registry_store::ZEO_TUI_AGENT_ID,
++        ]
++    );
+     let command = project
+         .update(cx, |project, cx| {
+             project.agent_server_store().update(cx, |store, cx| {
