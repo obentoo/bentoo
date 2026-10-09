@@ -1,0 +1,101 @@
+# Copyright 1999-2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+
+EAPI=8
+
+MY_PN=Vulkan-Tools
+PYTHON_COMPAT=( python3_{11..14} )
+inherit cmake-multilib python-any-r1
+
+if [[ ${PV} == *9999* ]]; then
+	EGIT_REPO_URI="https://github.com/KhronosGroup/${MY_PN}.git"
+	EGIT_SUBMODULES=()
+	inherit git-r3
+else
+	EGIT_COMMIT="253565dc0d93503d0cdd0e061eababc9bb43b71f"
+	SRC_URI="https://github.com/KhronosGroup/${MY_PN}/archive/${EGIT_COMMIT}.tar.gz -> ${PF}.tar.gz"
+	KEYWORDS="~amd64 ~arm ~arm64 ~loong ~ppc ~ppc64 ~riscv"
+	S="${WORKDIR}"/${MY_PN}-${EGIT_COMMIT}
+fi
+
+# BENTOO-DIVERGENCE: PATCHES - none, where ::gentoo carries
+# vulkan-tools-1.4.357.0-libcxx-23.patch. That patch backports upstream commit
+# 462d9819 "vulkaninfo: add missing <ctime> include" onto their 1.4.357.0.
+# EGIT_COMMIT below IS 462d9819, so the fix is in the source rather than applied
+# on top: verified 2026-09-07 by extracting the fetched tarball and finding
+# #include <ctime> at vulkaninfo/vulkaninfo.cpp:31.
+DESCRIPTION="Official Vulkan Tools and Utilities for Windows, Linux, Android, and MacOS"
+HOMEPAGE="https://github.com/KhronosGroup/Vulkan-Tools"
+
+LICENSE="Apache-2.0"
+SLOT="0"
+IUSE="cube wayland test X"
+RESTRICT="!test? ( test )"
+
+# BENTOO-DIVERGENCE: DEPEND - ::gentoo pins the SDK in lockstep (~pkg-${PV});
+# bentoo ships snapshots that bump on independent dates, so an exact pin can
+# never be satisfied. Floors on the companion snapshots keep the coupling the
+# pins exist to enforce. Raise them on every glslang/vulkan-headers/loader bump.
+#
+# The gtest atom below is ::gentoo's, RESTORED 2026-09-06. It was deleted as a
+# side effect of the pin rewrite above, not as a decision: the tests that need
+# it are gated behind USE=test, so its absence is invisible until someone
+# enables that flag and the build fails looking for gtest.
+BDEPEND="${PYTHON_DEPS}
+	cube? ( >=dev-util/glslang-1.4.357.0_p20260813:=[${MULTILIB_USEDEP}] )
+	test? ( dev-cpp/gtest )
+"
+RDEPEND="
+	wayland? ( dev-libs/wayland[${MULTILIB_USEDEP}] )
+	X? (
+		x11-libs/libX11[${MULTILIB_USEDEP}]
+		x11-libs/libxcb:=[${MULTILIB_USEDEP}]
+	)
+"
+DEPEND="${RDEPEND}
+	>=dev-util/vulkan-headers-1.4.360_p20260814
+	X? ( x11-libs/libXrandr[${MULTILIB_USEDEP}] )
+	test? ( >=media-libs/vulkan-loader-1.4.360_p20260814[${MULTILIB_USEDEP},wayland?,X?] )
+"
+
+pkg_setup() {
+	MULTILIB_CHOST_TOOLS=(
+		/usr/bin/vulkaninfo
+	)
+
+	use cube && MULTILIB_CHOST_TOOLS+=(
+		/usr/bin/vkcube
+		/usr/bin/vkcubepp
+	)
+
+	python-any-r1_pkg_setup
+}
+
+multilib_src_configure() {
+	local mycmakeargs=(
+		-DCMAKE_C_FLAGS="${CFLAGS} -DNDEBUG"
+		-DCMAKE_CXX_FLAGS="${CXXFLAGS} -DNDEBUG -DGIT_BRANCH_NAME=\\\"gentoo\\\" -DGIT_TAG_INFO=\\\"${PV//./_}\\\""
+		-DCMAKE_DISABLE_FIND_PACKAGE_Git=ON
+		-DCMAKE_SKIP_RPATH=ON
+		-DBUILD_VULKANINFO=ON
+		-DBUILD_CUBE=$(usex cube)
+		-DBUILD_TESTS=$(usex test)
+		-DBUILD_WERROR=OFF
+		-DBUILD_WSI_WAYLAND_SUPPORT=$(usex wayland)
+		-DBUILD_WSI_XCB_SUPPORT=$(usex X)
+		-DBUILD_WSI_XLIB_SUPPORT=$(usex X)
+		-DVULKAN_HEADERS_INSTALL_DIR="${ESYSROOT}/usr"
+	)
+
+	cmake_src_configure
+}
+
+pkg_postinst() {
+	if use cube; then
+		einfo "As of version 1.4.304.0, the window system for 'vkcube' and 'vkcubepp'"
+		einfo "can be selected at runtime using the '--wsi' runtime argument."
+		einfo "For example, Wayland can be selected using '--wsi wayland'."
+		einfo "As such, 'vkcube-wayland' has been removed and the runtime argument"
+		einfo "must be used instead. See 'vkcube --help' for more information."
+	fi
+}
