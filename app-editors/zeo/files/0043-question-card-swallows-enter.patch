@@ -56,6 +56,15 @@ button's path -- still sends;
 Tab then Enter from the card's field answers the question.
 
 Story 017. Reads 0027 (the pinned card) and 0030 (the pending state).
+
+Tests added 2026-10-09 (0.2.2_p20261009). A URL elicitation -- open a link, finish in the
+browser -- blocks Enter like a form question, pinned on purpose: the reason above
+holds for it too, even though it has no card and is drawn inline. Whether a URL
+question should block at all is the operator's call; this keeps today's behaviour
+from changing unnoticed. And 0005's multi-line field: Enter in the card is
+menu::Confirm, so Shift-Enter is the only newline -- it must insert one and leave
+the question pending, and Enter still answers. Here rather than in 0005 because it
+uses this patch's composer setup.
 ---
 
 diff --git a/assets/keymaps/default-linux.json b/assets/keymaps/default-linux.json
@@ -169,10 +178,10 @@ index 53b8079..a208e21 100644
              filter.show_action_types(skill_creator_actions.iter());
          } else {
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 51d6674..bb1d603 100644
+index 32a0c86..607af91 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
-@@ -5862,6 +5862,196 @@ pub(crate) mod tests {
+@@ -5862,6 +5862,291 @@ pub(crate) mod tests {
          });
      }
  
@@ -283,6 +292,58 @@ index 51d6674..bb1d603 100644
 +        assert_eq!(composer_text(&thread_view, cx), "");
 +    }
 +
++    // Pinned on purpose, not by accident: a URL elicitation (open a link, finish in the
++    // browser) blocks Enter like a form question. 0043's reason holds for both -- a message
++    // sent over an open question is one the agent must reconcile with an answer it never
++    // got -- even though a URL question has no card to type into, and is drawn inline.
++    #[gpui::test]
++    async fn test_question_pending_url_elicitation_blocks_enter_too(cx: &mut TestAppContext) {
++        let (thread_view, form_id, cx) = setup_question_pending_composer(false, false, cx).await;
++        let thread = thread_view.read_with(cx, |view, _| view.thread.clone());
++        thread.update(cx, |thread, cx| thread.cancel_elicitation(&form_id, cx));
++        cx.run_until_parked();
++
++        let session_id = thread.read_with(cx, |thread, _| thread.session_id().clone());
++        let _response = thread.update(cx, |thread, cx| {
++            thread
++                .request_elicitation(
++                    acp_v2::CreateElicitationRequest::new(
++                        acp_v2::ElicitationUrlMode::new(
++                            acp_v2::ElicitationSessionScope::new(session_id),
++                            acp_v2::ElicitationId::new("url-1"),
++                            "https://example.com/complete",
++                        ),
++                        "Complete this in the browser",
++                    ),
++                    cx,
++                )
++                .expect("a URL elicitation should be accepted")
++        });
++        cx.run_until_parked();
++        let url_id = thread.read_with(cx, |thread, _| {
++            thread
++                .entries()
++                .iter()
++                .rev()
++                .find_map(|entry| match entry {
++                    AgentThreadEntry::Elicitation(id) => Some(id.clone()),
++                    _ => None,
++                })
++                .expect("the URL elicitation is an entry")
++        });
++
++        cx.simulate_keystrokes("enter");
++        cx.run_until_parked();
++        assert_eq!(user_message_count(&thread_view, cx), 0);
++        assert_eq!(composer_text(&thread_view, cx), "hello");
++
++        thread.update(cx, |thread, cx| thread.cancel_elicitation(&url_id, cx));
++        cx.run_until_parked();
++        cx.simulate_keystrokes("enter");
++        cx.run_until_parked();
++        assert_eq!(user_message_count(&thread_view, cx), 1);
++    }
++
 +    #[gpui::test]
 +    async fn test_question_pending_swallows_the_modifier_send(cx: &mut TestAppContext) {
 +        let (thread_view, _, cx) = setup_question_pending_composer(true, false, cx).await;
@@ -366,6 +427,49 @@ index 51d6674..bb1d603 100644
 +        assert_eq!(user_message_count(&thread_view, cx), 0);
 +    }
 +
++    // 0005: a text answer can span lines. Enter in the card's field is `menu::Confirm`, so
++    // Shift-Enter -- the auto-height editor's newline -- is the only way to type a line
++    // break, and it must neither answer nor drop the question.
++    #[gpui::test]
++    async fn test_elicitation_text_field_shift_enter_inserts_a_newline(cx: &mut TestAppContext) {
++        let (thread_view, elicitation_id, cx) =
++            setup_question_pending_composer(false, false, cx).await;
++
++        let field = thread_view.read_with(cx, |view, _| {
++            view.elicitation_text_field(&elicitation_id, "name")
++                .expect("the card should have a text field named `name`")
++        });
++        cx.update(|window, cx| {
++            field.update(cx, |editor, cx| editor.set_text("first", window, cx));
++            field.update(cx, |editor, cx| {
++                editor.move_to_end(&editor::actions::MoveToEnd, window, cx)
++            });
++            window.focus(&field.focus_handle(cx), cx);
++        });
++        cx.run_until_parked();
++        cx.simulate_keystrokes("shift-enter");
++        cx.simulate_input("second");
++        cx.run_until_parked();
++
++        let text = cx.update(|_, cx| field.read(cx).text(cx));
++        assert_eq!(text, "first\nsecond");
++        let pending = |thread_view: &Entity<ThreadView>, cx: &VisualTestContext| {
++            thread_view.read_with(cx, |view, cx| {
++                view.thread
++                    .read(cx)
++                    .elicitation(&elicitation_id)
++                    .is_some_and(|(_, elicitation)| {
++                        matches!(elicitation.status, ElicitationStatus::Pending { .. })
++                    })
++            })
++        };
++        assert!(pending(&thread_view, cx), "Shift-Enter must not answer the question");
++
++        cx.simulate_keystrokes("enter");
++        cx.run_until_parked();
++        assert!(!pending(&thread_view, cx), "Enter still answers it");
++    }
++
      #[gpui::test]
      async fn test_resume_without_history_adds_notice(cx: &mut TestAppContext) {
          init_test(cx);
@@ -389,7 +493,7 @@ index 225e741..28598b3 100644
          let required = schema.required.as_deref().unwrap_or_default();
          let mut fields = HashMap::default();
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index cd4564c..8c61306 100644
+index 1f5de74..e9d3deb 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -3099,6 +3099,17 @@ impl ThreadView {

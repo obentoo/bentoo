@@ -1,0 +1,426 @@
+From 39d8da9eba2a4229678111aabb64354c189ac19a Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 9 Oct 2026 14:52:27 -0300
+Subject: [PATCH] agent: make the e2e suites run, and run them against Claude
+ Agent (Plus)
+
+Ten tests in `agent` and `agent_servers` sit behind `--features e2e`, which
+nobody built, so they had rotted -- run on 2026-10-09 with a real key, all ten
+failed before reaching the model. None of the causes came from this series.
+And none of them exercised the agent Zeo actually ships: upstream instantiates
+the shared suite only for Zed's native agent.
+
+New: zeo_plus_e2e_tests.rs runs the same six `common_e2e_tests!` scenarios --
+prompt and reply, a path mention, a tool call, a tool call behind a permission
+prompt, cancel, dropping the thread -- through the external ACP adapter, the
+path every Claude Agent (Plus) thread takes. `ZEO_E2E_PLUS_COMMAND` names the
+binary (default /usr/bin/claude-agent-acp-plus). The adapter runs with an
+empty CLAUDE_CONFIG_DIR of its own: with the operator's Claude Code settings,
+a `"Bash"` allow rule meant the permission prompt never came, so the outcome
+depended on who ran it. Isolated, it has no login either, so it authenticates
+with ANTHROPIC_API_KEY -- and bills that key, not a subscription.
+
+What had rotted upstream, each fixed in place and marked `Zeo:`:
+
+  e2e_tests.rs   the agent ran in macOS's "/private/tmp", absent on Linux;
+                 now a fresh tempdir per test, mirrored into the fake fs
+                 where the agent is spawned from the project root.
+                 test_tool_call read a file outside the agent's working dir,
+                 which asks permission that scenario never answers; the file's
+                 own dir is the working dir now.
+                 run_until_first_tool_call unwrapped a second try_send into
+                 its one-slot channel -- Full, a panic -- when the thread
+                 notified twice; the first index is the answer.
+  native_agent_server.rs   the shared setup registers no model provider, so
+                 the Anthropic one was never there; register them on the
+                 global fs. "claude-sonnet-4-latest" is not an id the API
+                 lists: claude-sonnet-4-6, and wait for the provider's model
+                 list, which arrives only after authentication. The native
+                 terminal tool sandboxes commands (SandboxingFeatureFlag is
+                 enabled_for_all) and its launcher re-executes the current
+                 binary with --zed-linux-sandbox-launcher, which a real zeo
+                 handles and a test binary rejects: allow_unsandboxed here.
+  tests/mod.rs   the same model id, looked up before authenticating -- now
+                 after, waiting for the list. test_cancellation used
+                 InfiniteTool, which ignores cancellation; the turn now waits
+                 for every tool result after a cancel (tools must honour
+                 cancelled_by_user, as test_cancellation_aware_tool_responds_
+                 to_cancellation pins), so it hung forever. It uses
+                 CancellationAwareTool, and asserts the stream closes with a
+                 Stop(Cancelled) and the tool saw the cancel.
+
+Measured: all 16 green -- 6 Plus, 6 native, 4 native thread -- with
+`--features agent/e2e,agent_servers/e2e` and a key from the session keyring.
+Without the feature they stay ignored, so the default suite is unchanged.
+
+Tests only; nothing here is compiled into the editor.
+---
+
+diff --git a/crates/agent/src/native_agent_server.rs b/crates/agent/src/native_agent_server.rs
+index 5711c45..d67b682 100644
+--- a/crates/agent/src/native_agent_server.rs
++++ b/crates/agent/src/native_agent_server.rs
+@@ -62,12 +62,33 @@ impl AgentServer for NativeAgentServer {
+ mod tests {
+     use super::*;
+ 
+-    use gpui::AppContext;
++    use gpui::{AppContext, BorrowAppContext as _};
+ 
+     agent_servers::e2e_tests::common_e2e_tests!(
+         async |fs, cx| {
+             let auth = cx.update(|cx| {
+                 prompt_store::init(cx);
++                // Zeo: the shared e2e setup registers no model provider, so the
++                // Anthropic one this looks up below was never there. Register them,
++                // on the global fs they read their settings through.
++                <dyn fs::Fs>::set_global(fs.clone(), cx);
++                // Zeo: the native terminal tool sandboxes commands (SandboxingFeatureFlag
++                // is enabled_for_all), and the sandbox launcher re-executes the current
++                // binary with --zed-linux-sandbox-launcher -- which a real zeo handles and
++                // a test binary rejects. Run unsandboxed here, as a user who allowed it.
++                cx.update_global::<settings::SettingsStore, _>(|store, cx| {
++                    store.update_user_settings(cx, |settings| {
++                        settings
++                            .agent
++                            .get_or_insert_default()
++                            .sandbox_permissions
++                            .get_or_insert_default()
++                            .allow_unsandboxed = Some(true);
++                    });
++                });
++                let client = client::Client::production(cx);
++                let user_store = cx.new(|cx| client::UserStore::new(client.clone(), cx));
++                language_models::init(user_store, client, cx);
+                 let registry = language_model::LanguageModelRegistry::read_global(cx);
+                 let auth = registry
+                     .provider(&language_model::ANTHROPIC_PROVIDER_ID)
+@@ -78,6 +99,22 @@ mod tests {
+             });
+ 
+             auth.await.unwrap();
++            // Zeo: the provider lists its models from the API only once authenticated,
++            // in the background; selecting one before it arrives selects nothing.
++            let model_id = language_model::LanguageModelId("claude-sonnet-4-6".into());
++            for _ in 0..200 {
++                let listed = cx.update(|cx| {
++                    language_model::LanguageModelRegistry::read_global(cx)
++                        .available_models(cx)
++                        .any(|model| model.id() == model_id)
++                });
++                if listed {
++                    break;
++                }
++                cx.background_executor
++                    .timer(std::time::Duration::from_millis(100))
++                    .await;
++            }
+ 
+             cx.update(|cx| {
+                 let registry = language_model::LanguageModelRegistry::global(cx);
+@@ -86,7 +123,10 @@ mod tests {
+                     registry.select_default_model(
+                         Some(&language_model::SelectedModel {
+                             provider: language_model::ANTHROPIC_PROVIDER_ID,
+-                            model: language_model::LanguageModelId("claude-sonnet-4-latest".into()),
++                            model: language_model::LanguageModelId(
++                                // Zeo: "claude-sonnet-4-latest" is not an id the API lists.
++                                "claude-sonnet-4-6".into(),
++                            ),
+                         }),
+                         cx,
+                     );
+diff --git a/crates/agent/src/tests/mod.rs b/crates/agent/src/tests/mod.rs
+index c23b8ed..f9ac831 100644
+--- a/crates/agent/src/tests/mod.rs
++++ b/crates/agent/src/tests/mod.rs
+@@ -2550,20 +2550,26 @@ async fn test_mcp_tool_truncation(cx: &mut TestAppContext) {
+ async fn test_cancellation(cx: &mut TestAppContext) {
+     let ThreadTest { thread, .. } = setup(cx, TestModel::Sonnet4).await;
+ 
++    // Zeo: upstream used `InfiniteTool`, which ignores cancellation. The turn now waits
++    // for every tool result after a cancel -- a tool must honour `cancelled_by_user`, as
++    // test_cancellation_aware_tool_responds_to_cancellation pins -- so that tool held the
++    // turn, and this test, forever. The tool that never finishes on its own but does stop
++    // when cancelled keeps the scenario: cancel mid-tool, and the stream still closes.
++    let (never_ending_tool, was_cancelled) = CancellationAwareTool::new();
+     let mut events = thread
+         .update(cx, |thread, cx| {
+-            thread.add_tool(InfiniteTool);
++            thread.add_tool(never_ending_tool);
+             thread.add_tool(EchoTool);
+             thread.send(
+                 ClientUserMessageId::new(),
+-                ["Call the echo tool, then call the infinite tool, then explain their output"],
++                ["Call the echo tool, then call the cancellation_aware tool, then explain their output"],
+                 cx,
+             )
+         })
+         .unwrap();
+ 
+     // Wait until both tools are called.
+-    let mut expected_tools = vec!["Echo", "Infinite Tool"];
++    let mut expected_tools = vec!["Echo", "Cancellation Aware Tool"];
+     let mut echo_id = None;
+     let mut echo_completed = false;
+     while let Some(event) = events.next().await {
+@@ -2599,13 +2605,18 @@ async fn test_cancellation(cx: &mut TestAppContext) {
+     // if one of the tools is still running.
+     thread.update(cx, |thread, cx| thread.cancel(cx)).await;
+     let events = events.collect::<Vec<_>>().await;
+-    let last_event = events.last();
++    // Zeo: a tool that honours cancellation reports its own failed update, and it can
++    // land after the Stop -- so the stream must close and carry the Stop, wherever.
+     assert!(
+-        matches!(
+-            last_event,
+-            Some(Ok(ThreadEvent::Stop(acp::StopReason::Cancelled)))
+-        ),
+-        "unexpected event {last_event:?}"
++        events.iter().any(|event| matches!(
++            event,
++            Ok(ThreadEvent::Stop(acp::StopReason::Cancelled))
++        )),
++        "no Stop(Cancelled) among {events:?}"
++    );
++    assert!(
++        was_cancelled.load(std::sync::atomic::Ordering::SeqCst),
++        "the running tool saw the cancellation"
+     );
+ 
+     // Ensure we can still send a new message after cancellation.
+@@ -5142,7 +5153,8 @@ enum TestModel {
+ impl TestModel {
+     fn id(&self) -> LanguageModelId {
+         match self {
+-            TestModel::Sonnet4 => LanguageModelId("claude-sonnet-4-latest".into()),
++            // Zeo: "claude-sonnet-4-latest" is not an id the API lists.
++            TestModel::Sonnet4 => LanguageModelId("claude-sonnet-4-6".into()),
+             TestModel::Fake => unreachable!(),
+         }
+     }
+@@ -5218,19 +5230,31 @@ async fn setup(cx: &mut TestAppContext, model: TestModel) -> ThreadTest {
+             if let TestModel::Fake = model {
+                 Task::ready(fake.model("fake"))
+             } else {
++                // Zeo: upstream looked the model up before authenticating, but the
++                // provider lists its models from the API only once authenticated, in
++                // the background. Authenticate, then wait for the model to be listed.
+                 let model_id = model.id();
+-                let models = LanguageModelRegistry::read_global(cx);
+-                let model = models
+-                    .available_models(cx)
+-                    .find(|model| model.id() == model_id)
+-                    .unwrap();
+-
+-                let provider = models.provider(&model.provider_id()).unwrap();
+-                let authenticated = provider.authenticate(cx);
++                let authenticated = LanguageModelRegistry::read_global(cx)
++                    .provider(&language_model::ANTHROPIC_PROVIDER_ID)
++                    .expect("the Anthropic provider is registered")
++                    .authenticate(cx);
+ 
+-                cx.spawn(async move |_cx| {
++                cx.spawn(async move |cx| {
+                     authenticated.await.unwrap();
+-                    model
++                    for _ in 0..200 {
++                        let model = cx.update(|cx| {
++                            LanguageModelRegistry::read_global(cx)
++                                .available_models(cx)
++                                .find(|model| model.id() == model_id)
++                        });
++                        if let Some(model) = model {
++                            return model;
++                        }
++                        cx.background_executor()
++                            .timer(std::time::Duration::from_millis(100))
++                            .await;
++                    }
++                    panic!("the API never listed {model_id:?}")
+                 })
+             }
+         })
+diff --git a/crates/agent_servers/src/agent_servers.rs b/crates/agent_servers/src/agent_servers.rs
+index 6de17a2..be3970e 100644
+--- a/crates/agent_servers/src/agent_servers.rs
++++ b/crates/agent_servers/src/agent_servers.rs
+@@ -6,6 +6,8 @@ pub mod thread_config_store;
+ 
+ #[cfg(any(test, feature = "test-support"))]
+ pub mod e2e_tests;
++#[cfg(test)]
++mod zeo_plus_e2e_tests;
+ 
+ use client::ProxySettings;
+ use collections::{HashMap, HashSet};
+diff --git a/crates/agent_servers/src/e2e_tests.rs b/crates/agent_servers/src/e2e_tests.rs
+index 95fbe3c..d667d75 100644
+--- a/crates/agent_servers/src/e2e_tests.rs
++++ b/crates/agent_servers/src/e2e_tests.rs
+@@ -14,7 +14,6 @@ use std::{
+     sync::Arc,
+     time::Duration,
+ };
+-use util::path;
+ use util::path_list::PathList;
+ 
+ pub async fn test_basic<T, F>(server: F, cx: &mut TestAppContext)
+@@ -24,7 +23,10 @@ where
+ {
+     let fs = init_test(cx).await as Arc<dyn fs::Fs>;
+     let project = Project::test(fs.clone(), [], cx).await;
+-    let thread = new_test_thread(server(&fs, cx).await, project.clone(), "/private/tmp", cx).await;
++    // Zeo: upstream runs the agent in macOS's "/private/tmp", which does not exist on
++    // Linux; a fresh directory per test also keeps the agent's writes out of /tmp.
++    let workdir = tempfile::tempdir().unwrap();
++    let thread = new_test_thread(server(&fs, cx).await, project.clone(), workdir.path(), cx).await;
+ 
+     thread
+         .update(cx, |thread, cx| thread.send_raw("Hello from Zed!", cx))
+@@ -120,7 +122,10 @@ where
+     std::fs::write(&foo_path, "Lorem ipsum dolor").expect("failed to write file");
+ 
+     let project = Project::example([tempdir.path()], &mut cx.to_async()).await;
+-    let thread = new_test_thread(server(&fs, cx).await, project.clone(), "/private/tmp", cx).await;
++    // Zeo: upstream runs the agent in macOS's "/private/tmp". The file to read lives in
++    // `tempdir`, so the agent works there: reading outside its working directory asks
++    // for permission, which this scenario -- unlike the next one -- never answers.
++    let thread = new_test_thread(server(&fs, cx).await, project.clone(), tempdir.path(), cx).await;
+ 
+     thread
+         .update(cx, |thread, cx| {
+@@ -160,8 +165,14 @@ pub async fn test_tool_call_with_permission<T, F>(
+     F: AsyncFn(&Arc<dyn fs::Fs>, &mut TestAppContext) -> T,
+ {
+     let fs = init_test(cx).await as Arc<dyn fs::Fs>;
+-    let project = Project::test(fs.clone(), [path!("/private/tmp").as_ref()], cx).await;
+-    let thread = new_test_thread(server(&fs, cx).await, project.clone(), "/private/tmp", cx).await;
++    // Zeo: upstream runs the agent in macOS's "/private/tmp", which does not exist on
++    // Linux, and the agent is spawned from the project's root -- so the project is a
++    // fresh real directory, mirrored into the fake fs, which also keeps the agent's
++    // writes out of /tmp.
++    let workdir = tempfile::tempdir().unwrap();
++    fs.as_fake().insert_tree(workdir.path(), serde_json::json!({})).await;
++    let project = Project::test(fs.clone(), [workdir.path()], cx).await;
++    let thread = new_test_thread(server(&fs, cx).await, project.clone(), workdir.path(), cx).await;
+     let full_turn = thread.update(cx, |thread, cx| {
+         thread.send_raw(
+             r#"Run exactly `touch hello.txt && echo "Hello, world!" | tee hello.txt` in the terminal."#,
+@@ -249,8 +260,14 @@ where
+ {
+     let fs = init_test(cx).await as Arc<dyn fs::Fs>;
+ 
+-    let project = Project::test(fs.clone(), [path!("/private/tmp").as_ref()], cx).await;
+-    let thread = new_test_thread(server(&fs, cx).await, project.clone(), "/private/tmp", cx).await;
++    // Zeo: upstream runs the agent in macOS's "/private/tmp", which does not exist on
++    // Linux, and the agent is spawned from the project's root -- so the project is a
++    // fresh real directory, mirrored into the fake fs, which also keeps the agent's
++    // writes out of /tmp.
++    let workdir = tempfile::tempdir().unwrap();
++    fs.as_fake().insert_tree(workdir.path(), serde_json::json!({})).await;
++    let project = Project::test(fs.clone(), [workdir.path()], cx).await;
++    let thread = new_test_thread(server(&fs, cx).await, project.clone(), workdir.path(), cx).await;
+     let _ = thread.update(cx, |thread, cx| {
+         thread.send_raw(
+             r#"Run exactly `touch hello.txt && echo "Hello, world!" | tee hello.txt` in the terminal."#,
+@@ -311,7 +328,10 @@ where
+ {
+     let fs = init_test(cx).await as Arc<dyn fs::Fs>;
+     let project = Project::test(fs.clone(), [], cx).await;
+-    let thread = new_test_thread(server(&fs, cx).await, project.clone(), "/private/tmp", cx).await;
++    // Zeo: upstream runs the agent in macOS's "/private/tmp", which does not exist on
++    // Linux; a fresh directory per test also keeps the agent's writes out of /tmp.
++    let workdir = tempfile::tempdir().unwrap();
++    let thread = new_test_thread(server(&fs, cx).await, project.clone(), workdir.path(), cx).await;
+ 
+     thread
+         .update(cx, |thread, cx| thread.send_raw("Hello from test!", cx))
+@@ -440,7 +460,11 @@ pub async fn run_until_first_tool_call(
+         cx.subscribe(thread, move |thread, _, cx| {
+             for (ix, entry) in thread.read(cx).entries().iter().enumerate() {
+                 if wait_until(entry) {
+-                    return tx.try_send(ix).unwrap();
++                    // Zeo: the thread notifies again before the receiver runs, and a
++                    // second send into the one-slot channel is Full -- which upstream
++                    // unwrapped into a panic. The first index is the answer; drop the rest.
++                    tx.try_send(ix).ok();
++                    return;
+                 }
+             }
+         })
+diff --git a/crates/agent_servers/src/zeo_plus_e2e_tests.rs b/crates/agent_servers/src/zeo_plus_e2e_tests.rs
+new file mode 100644
+index 0000000..bdd674d
+--- /dev/null
++++ b/crates/agent_servers/src/zeo_plus_e2e_tests.rs
+@@ -0,0 +1,69 @@
++//! Zeo: upstream's shared e2e suite, run against the Claude Agent (Plus) adapter.
++//!
++//! Upstream runs `common_e2e_tests!` only against Zed's native agent, which is not
++//! the agent Zeo ships. This runs the same six scenarios -- a prompt and a reply, a
++//! path mention, a tool call, a tool call behind a permission prompt, cancel, and
++//! dropping the thread -- through the external ACP adapter, the path every Zeo
++//! thread with Claude Agent (Plus) takes.
++//!
++//! Ignored unless built with `--features e2e`. They spawn the real adapter, which
++//! talks to the real model: `ZEO_E2E_PLUS_COMMAND` names the binary (default: the
++//! Portage-installed `/usr/bin/claude-agent-acp-plus`).
++//!
++//! The adapter runs with an empty `CLAUDE_CONFIG_DIR` of its own. Without it, the
++//! operator's own Claude Code settings decide the outcome: a `"Bash"` allow rule
++//! means the permission prompt two scenarios wait for never comes. Isolated, it
++//! also has no login, so it authenticates with `ANTHROPIC_API_KEY`, which must be
++//! set in the environment -- and the runs bill that key, not a subscription.
++
++use crate::CustomAgentServer;
++use collections::HashMap;
++use project::agent_server_store::{
++    AgentId, AgentServerCommand, AllAgentServersSettings, CustomAgentServerSettings,
++};
++use settings::Settings as _;
++use std::path::PathBuf;
++
++const AGENT_ID: &str = "claude-agent-acp-plus-e2e";
++
++/// An empty Claude Code config directory, one per test process.
++fn isolated_claude_config_dir() -> PathBuf {
++    let dir = std::env::temp_dir().join(format!("zeo-plus-e2e-{}", std::process::id()));
++    std::fs::create_dir_all(&dir).expect("creating the isolated Claude config dir");
++    dir
++}
++
++fn plus_command() -> PathBuf {
++    std::env::var_os("ZEO_E2E_PLUS_COMMAND")
++        .filter(|command| !command.is_empty())
++        .map(PathBuf::from)
++        .unwrap_or_else(|| PathBuf::from("/usr/bin/claude-agent-acp-plus"))
++}
++
++crate::common_e2e_tests!(
++    async |_fs, cx| {
++        cx.update(|cx| {
++            AllAgentServersSettings::override_global(
++                AllAgentServersSettings(HashMap::from_iter([(
++                    AGENT_ID.to_string(),
++                    CustomAgentServerSettings::Custom {
++                        command: AgentServerCommand {
++                            path: plus_command(),
++                            args: Vec::new(),
++                            env: Some(HashMap::from_iter([(
++                                "CLAUDE_CONFIG_DIR".to_string(),
++                                isolated_claude_config_dir().to_string_lossy().into_owned(),
++                            )])),
++                        },
++                        default_mode: None,
++                        default_config_options: HashMap::default(),
++                        favorite_config_option_values: HashMap::default(),
++                    },
++                )])),
++                cx,
++            );
++        });
++        CustomAgentServer::new(AgentId::new(AGENT_ID))
++    },
++    allow_option_id = "allow-once"
++);

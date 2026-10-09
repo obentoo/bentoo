@@ -100,6 +100,11 @@ The two `AgentSettings` struct literals in test modules (`agent_ui`,
 `agent::tool_permissions`) gain the new field; they construct the struct
 exhaustively rather than from defaults.
 
+Test added 2026-10-09 (0.2.2_p20261009): `renders_elicitation_as_card` is the one predicate
+both renderers read, so a truth table pins it -- a pending form with `card` is a
+card; a URL elicitation, a resolved one, or `inline` placement is not -- and that
+default.json ships `card`. Drift there draws a question twice or never.
+
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 ---
 
@@ -123,7 +128,7 @@ index 55be678..173a801 100644
      // that offers to resolve conflicts using the agent.
      //
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 8a31089..f4708f2 100644
+index a8aedbb..6fba92e 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
 @@ -6441,6 +6441,17 @@ impl AcpThread {
@@ -1001,7 +1006,7 @@ index 999b91a..225e741 100644
                              on_submit(submit_id.clone(), window, cx);
                          }
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index b734a38..ee72833 100644
+index b734a38..2404668 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -43,7 +43,7 @@ use language_model::{
@@ -1156,6 +1161,76 @@ index b734a38..ee72833 100644
              .children(self.render_request_elicitations(cx))
              .child(self.render_message_editor(window, cx))
      }
+@@ -15399,6 +15485,69 @@ mod tests {
+ 
+         fn flush(&self) {}
+     }
++
++    /// The one predicate both renderers read: the pinned card draws an elicitation when it
++    /// is true, the conversation draws it inline when it is false. Drift here draws a
++    /// question twice or not at all. Also pins that default.json ships `card`.
++    #[gpui::test]
++    fn test_renders_elicitation_as_card_truth_table(cx: &mut gpui::TestAppContext) {
++        crate::conversation_view::tests::init_test(cx);
++        let elicitation = |url: bool, pending: bool| {
++            let scope = acp_v2::ElicitationSessionScope::new(acp_v2::SessionId::new("s"));
++            let request = if url {
++                acp_v2::CreateElicitationRequest::new(
++                    acp_v2::ElicitationUrlMode::new(
++                        scope,
++                        acp_v2::ElicitationId::new("u"),
++                        "https://example.com",
++                    ),
++                    "Open the link",
++                )
++            } else {
++                acp_v2::CreateElicitationRequest::new(
++                    acp_v2::ElicitationFormMode::new(
++                        scope,
++                        acp_v2::ElicitationSchema::new().string("name", true),
++                    ),
++                    "Provide a name",
++                )
++            };
++            let status = if pending {
++                ElicitationStatus::Pending {
++                    respond_tx: futures::channel::oneshot::channel().0,
++                }
++            } else {
++                ElicitationStatus::Accepted
++            };
++            Elicitation {
++                id: ElicitationEntryId("e".into()),
++                request,
++                status,
++            }
++        };
++
++        cx.update(|cx| {
++            assert_eq!(
++                AgentSettings::get_global(cx).elicitation_placement,
++                ElicitationPlacement::Card,
++                "default.json ships the pinned card"
++            );
++            assert!(ThreadView::renders_elicitation_as_card(&elicitation(false, true), cx));
++            assert!(!ThreadView::renders_elicitation_as_card(&elicitation(true, true), cx));
++            assert!(!ThreadView::renders_elicitation_as_card(&elicitation(false, false), cx));
++
++            SettingsStore::update_global(cx, |store, cx| {
++                store.update_user_settings(cx, |settings| {
++                    settings.agent.get_or_insert_default().elicitation_placement =
++                        Some(ElicitationPlacement::Inline);
++                });
++            });
++            assert!(
++                !ThreadView::renders_elicitation_as_card(&elicitation(false, true), cx),
++                "inline placement draws even a pending form in the conversation"
++            );
++        });
++    }
+ }
+ 
+ const FAST_MODE_WARNING_NAMESPACE: &str = "fast-mode-warning-dismissed";
 diff --git a/crates/settings_content/src/agent.rs b/crates/settings_content/src/agent.rs
 index b066bda..502f321 100644
 --- a/crates/settings_content/src/agent.rs

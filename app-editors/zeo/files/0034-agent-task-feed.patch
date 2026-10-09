@@ -69,10 +69,15 @@ The wire shape is pinned by a fixture shared byte for byte with the adapter
 `test_tasks_contract_fixture_parses`). No other agent sends the key or the
 capability, so for them nothing changes. Rides the claude-agent-acp-plus flag
 BY DEPENDENCY, like 0011, 0013 and 0029.
+
+Test added 2026-10-09 (0.2.2_p20261009): with no retained-thread budget, a thread whose
+background task still runs stays loaded after its turn ends, and the snapshot
+that ends the task releases it. Fails with either half removed -- the running-task
+clause in `is_idle_for_retention`, or TasksUpdated in agent_panel's match arm.
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 9ce1954..6377231 100644
+index cd7a436..f4ea49f 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
 @@ -49,7 +49,7 @@ use std::fmt::{Formatter, Write};
@@ -393,7 +398,7 @@ index 9ce1954..6377231 100644
          cx.emit(AcpThreadEvent::LoadError(error));
      }
  
-@@ -23719,4 +23965,7 @@ mod tests {
+@@ -23825,4 +24071,7 @@ mod tests {
          request.await.expect("turn should complete");
          assert_eq!(cx.active_idle_sleep_preventions(), 0);
      }
@@ -1339,7 +1344,7 @@ index 0000000..3b4d6ad
 +  ]
 +}
 diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
-index 8742347..aec43b1 100644
+index 64695df..527dc94 100644
 --- a/crates/agent_servers/src/acp.rs
 +++ b/crates/agent_servers/src/acp.rs
 @@ -60,6 +60,9 @@ use crate::{CURSOR_ID, GEMINI_ID};
@@ -1589,7 +1594,7 @@ index 8742347..aec43b1 100644
          fn request_elicitations(&self) -> Option<Entity<ElicitationStore>> {
              self.inner.request_elicitations()
          }
-@@ -7578,6 +7762,8 @@ exit 7
+@@ -7588,6 +7772,8 @@ exit 7
          cx.update(|_| ());
          cx.run_until_parked();
      }
@@ -2068,7 +2073,7 @@ index 9727fae..03e22b1 100644
              | AcpThreadEvent::SubagentSpawned(_)
              | AcpThreadEvent::EntriesRemoved(_)
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index e707d1f..715a483 100644
+index e707d1f..bc97d2d 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -4309,6 +4309,9 @@ impl AgentPanel {
@@ -2081,6 +2086,79 @@ index e707d1f..715a483 100644
                  ) && acp_thread.read(cx).is_idle_for_retention()
                  {
                      this.cleanup_retained_threads(cx);
+@@ -12115,6 +12118,72 @@ mod tests {
+         });
+     }
+ 
++    // 0034: a turn that leaves background work running reads Idle, yet unloading the
++    // thread would drop the only view of that work. With no retained-thread budget, the
++    // thread stays loaded while a task runs, and is released by the snapshot that ends it.
++    #[gpui::test]
++    async fn test_retained_thread_with_a_running_task_survives_cleanup_until_it_ends(
++        cx: &mut TestAppContext,
++    ) {
++        let (panel, mut cx) = setup_panel(cx).await;
++        let connection = StubAgentConnection::new()
++            .with_supports_load_session(true)
++            .with_agent_id("loadable-stub".into())
++            .with_telemetry_id("loadable-stub".into());
++        let (session_id, thread_id) =
++            open_generating_thread_with_loadable_connection(&panel, &connection, &mut cx);
++        open_generating_thread_with_loadable_connection(&panel, &connection, &mut cx);
++        cx.update(|_window, cx| {
++            SettingsStore::update_global(cx, |store, cx| {
++                store
++                    .set_user_settings(r#"{ "agent": { "max_idle_retained_threads": 0 } }"#, cx)
++                    .expect("user settings should load");
++            });
++        });
++
++        let tasks = |status: &str| {
++            let mut meta = serde_json::Map::new();
++            meta.insert(
++                "_claude/tasks".to_string(),
++                serde_json::json!({ "tasks": [{
++                    "id": "bg-1",
++                    "toolCallId": "toolu_bg-1",
++                    "type": "shell",
++                    "description": "Background build",
++                    "background": true,
++                    "depth": 0,
++                    "status": status,
++                    "startedAt": 1_000,
++                    "endedAt": if status == "running" { None } else { Some(2_000) },
++                    "usage": null,
++                    "lastTool": null,
++                    "summary": null,
++                }]}),
++            );
++            acp::SessionUpdate::SessionInfoUpdate(acp::SessionInfoUpdate::new().meta(meta))
++        };
++        cx.update(|_, cx| connection.send_update(session_id.clone(), tasks("running"), cx));
++        cx.run_until_parked();
++
++        connection.end_turn(session_id.clone(), acp::StopReason::EndTurn);
++        cx.run_until_parked();
++        panel.read_with(&cx, |panel, _cx| {
++            assert!(
++                panel.retained_threads.contains_key(&thread_id),
++                "a thread whose background task still runs must stay loaded"
++            );
++        });
++
++        cx.update(|_, cx| connection.send_update(session_id.clone(), tasks("completed"), cx));
++        cx.run_until_parked();
++        panel.read_with(&cx, |panel, _cx| {
++            assert!(
++                !panel.retained_threads.contains_key(&thread_id),
++                "the snapshot that ends the last task releases the thread"
++            );
++        });
++    }
++
+     #[gpui::test]
+     async fn test_cleanup_retained_threads_preserves_idle_non_loadable_threads(
+         cx: &mut TestAppContext,
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
 index 430b35c..939a008 100644
 --- a/crates/agent_ui/src/conversation_view.rs

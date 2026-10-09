@@ -1636,10 +1636,12 @@ IUSE="+X ai-jail +claude-agent-acp-plus +claude-agent-acp-tui +claude-code-ide
 # BENTOO-DIVERGENCE: REQUIRED_USE - the || ( X wayland ) clause, which follows
 # from the X and wayland flags this overlay adds (see the IUSE tag). ::gentoo
 # exposes neither, so it has nothing to constrain. ai-jail? requires the agent
-# it wraps.
+# it wraps. test? requires the adapter flags the test-only patches (0050, 0051)
+# are generated on top of.
 REQUIRED_USE="
 	|| ( X wayland )
 	ai-jail? ( claude-agent-acp-plus )
+	test? ( claude-agent-acp-plus claude-code-ide )
 "
 RESTRICT="!test? ( test )"
 CHECKREQS_DISK_BUILD="18G"
@@ -1990,6 +1992,16 @@ src_prepare() {
 	# terminal-ide story 001: Claude Code IDE integration (upstream PR #58300 + API-drift fixes).
 	if use claude-code-ide; then
 		PATCHES+=( "${FILESDIR}/0002-claude-code-ide-integration.patch" )
+	fi
+
+	# 0050 and 0051 change tests only -- nothing in them reaches the binary -- so
+	# they apply only when the suite is built. They are generated on top of every
+	# group above, which is what the test? clause in REQUIRED_USE enforces.
+	if use test; then
+		PATCHES+=(
+			"${FILESDIR}/0050-project-revive-three-upstream-git-tests.patch"
+			"${FILESDIR}/0051-agent-e2e-suites-run-against-Claude-Agent-Plus.patch"
+		)
 	fi
 
 	# The Zeo mark cannot ride in the series: GNU patch refuses a git binary

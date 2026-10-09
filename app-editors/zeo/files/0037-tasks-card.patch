@@ -107,6 +107,11 @@ never the snapshot -- measured live: two background sleeps ran and no card
 appeared -- so until 0.24.0 is published and the ebuild requires it, this card
 and 0034's feed beneath it are inert. Nothing breaks; nothing shows.
 
+Test added 2026-10-09 (0.2.2_p20261009) for this patch's fix inside upstream's NewEntry
+handler: three entries pushed in one thread update are all synced into the view,
+and the next push lands on a caught-up view. Fails when the handler syncs only the
+last index again.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -282,7 +287,7 @@ index 0000000..54bdc62
 +    }
 +}
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index 715a483..c14e0b2 100644
+index bc97d2d..b7eb18d 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -39,6 +39,7 @@ use crate::ExpandMessageEditor;
@@ -756,7 +761,7 @@ index 715a483..c14e0b2 100644
      }
  
      /// Opens an external thread using an arbitrary AgentServer.
-@@ -14472,8 +14739,8 @@ mod tests {
+@@ -14538,8 +14805,8 @@ mod tests {
          // directly remove from retained_threads and drop the handle
          // so on_release → close_all_sessions fires only on A.
          drop(retained_conversation_a);
@@ -791,7 +796,7 @@ index 224b6d3..23981dc 100644
              max_idle_retained_threads: 5,
              threads_sidebar: agent_settings::ThreadsSidebarSettings {
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 939a008..67a3676 100644
+index 939a008..9512010 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -1862,21 +1862,30 @@ impl ConversationView {
@@ -834,6 +839,54 @@ index 939a008..67a3676 100644
                          active.sync_editor_mode(cx);
                          active.sync_generating_indicator(cx);
                      });
+@@ -12683,6 +12692,47 @@ pub(crate) mod tests {
+         }
+     }
+ 
++    // 0037: entries pushed within ONE thread update reach the view as one NewEntry event
++    // each, all flushed after the last push. Upstream's handler synced only the last index
++    // per event, so the view fell behind the thread and the next sync panicked on an index
++    // it had never seen. Every entry must be synced, and nothing may panic.
++    #[gpui::test]
++    async fn test_entries_pushed_in_one_update_all_sync(cx: &mut TestAppContext) {
++        use agent_client_protocol::schema::v2 as acp_v2;
++
++        init_test(cx);
++        let (conversation_view, cx) =
++            setup_conversation_view(StubAgentServer::default_response(), cx).await;
++        add_to_workspace(conversation_view.clone(), cx);
++
++        let thread_view = active_thread(&conversation_view, cx);
++        let thread = thread_view.read_with(cx, |view, _| view.thread.clone());
++        let text = |text: &str| acp_v2::ContentBlock::Text(acp_v2::TextContent::new(text));
++        thread.update(cx, |thread, cx| {
++            thread.push_user_content_block(Some(ClientUserMessageId::new()), text("one"), cx);
++            thread.push_assistant_content_block(text("two"), false, cx);
++            thread.push_user_content_block(Some(ClientUserMessageId::new()), text("three"), cx);
++        });
++        cx.run_until_parked();
++
++        let entries = thread.read_with(cx, |thread, _| thread.entries().len());
++        assert_eq!(entries, 3, "three pushes in one update are three entries");
++        let synced = thread_view.read_with(cx, |view, cx| {
++            view.entry_view_state.read(cx).synced_entry_count()
++        });
++        assert_eq!(synced, entries, "the view must sync every entry of the batch");
++
++        // The next ordinary push lands on a view that is caught up, not one behind.
++        thread.update(cx, |thread, cx| {
++            thread.push_assistant_content_block(text("four"), false, cx);
++        });
++        cx.run_until_parked();
++        let synced = thread_view.read_with(cx, |view, cx| {
++            view.entry_view_state.read(cx).synced_entry_count()
++        });
++        assert_eq!(synced, 4);
++    }
++
+     async fn assert_unsupported_source_message_cannot_regenerate(
+         unsupported: agent_client_protocol::schema::v2::ContentBlock,
+         cx: &mut TestAppContext,
 diff --git a/crates/agent_ui/src/entry_view_state.rs b/crates/agent_ui/src/entry_view_state.rs
 index 92158c9..3cd98fc 100644
 --- a/crates/agent_ui/src/entry_view_state.rs

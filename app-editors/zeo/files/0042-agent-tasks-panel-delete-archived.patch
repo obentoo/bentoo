@@ -36,10 +36,19 @@ again, as a new, unarchived row.
 No migration, no setting, no new dependency. Rides claude-agent-acp-plus
 BY DEPENDENCY after 0041, like 0035 itself: the history is fed only by
 0037's card.
+
+Fixed 2026-10-09 (0.2.2_p20261009), in this patch because it is the last to touch the history
+row decoder: one row whose status this build cannot read -- a newer Zeo wrote it,
+an older one opened the database -- failed `load_all`, so the whole history went
+Unavailable and `queue_write` dropped every write for the session. The decoder now
+yields the row or why it is unreadable; `load_all` skips the unreadable ones with a
+warning naming session/task and status, and the row stays for the build that
+understands it. Tests at both levels (`load_all`, and the store staying Available
+and still writing), each failing without the fix.
 ---
 
 diff --git a/crates/agent_tasks_panel/src/history_db.rs b/crates/agent_tasks_panel/src/history_db.rs
-index 61a3643..7588afc 100644
+index 61a3643..bca3410 100644
 --- a/crates/agent_tasks_panel/src/history_db.rs
 +++ b/crates/agent_tasks_panel/src/history_db.rs
 @@ -92,8 +92,8 @@ pub struct HistoryEntry {
@@ -84,6 +93,127 @@ index 61a3643..7588afc 100644
      /// Sets or clears (`None`) the user's label of one task. Only that `(session_id, task_id)`
      /// row is written; its description, status and archive flag are left as they are.
      pub async fn set_label(&self, key: &TaskKey, label: Option<&str>) -> Result<()> {
+@@ -262,18 +286,37 @@ impl AgentTaskHistoryDb {
+     }
+ 
+     /// Every record, archived or not, newest first.
++    ///
++    /// A row this build cannot read -- a status a newer Zeo wrote, then opened by an older
++    /// one -- is skipped with a warning naming it, not turned into an error: one unreadable
++    /// row must not make the whole history unavailable, which also drops every write for
++    /// the session. The row stays in the table for the build that understands it.
+     pub async fn load_all(&self) -> Result<Vec<HistoryEntry>> {
+-        self.select::<HistoryEntry>(sql!(
+-            SELECT session_id, task_id, thread_title, project, kind, description, background,
+-                status, started_at, ended_at, tokens, tool_uses, archived, label, tool_call_id
+-            FROM agent_task_history
+-            ORDER BY started_at DESC, session_id, task_id
+-        ))?()
+-        .context("loading the agent task history")
++        let rows = self
++            .select::<HistoryRow>(sql!(
++                SELECT session_id, task_id, thread_title, project, kind, description, background,
++                    status, started_at, ended_at, tokens, tool_uses, archived, label, tool_call_id
++                FROM agent_task_history
++                ORDER BY started_at DESC, session_id, task_id
++            ))?()
++            .context("loading the agent task history")?;
++        Ok(rows
++            .into_iter()
++            .filter_map(|row| match row.0 {
++                Ok(entry) => Some(entry),
++                Err(unreadable) => {
++                    log::warn!("agent task history: skipping a record this build cannot read: {unreadable}");
++                    None
++                }
++            })
++            .collect())
+     }
+ }
+ 
+-impl Column for HistoryEntry {
++/// One `agent_task_history` row: the entry, or why this build cannot read it.
++struct HistoryRow(std::result::Result<HistoryEntry, String>);
++
++impl Column for HistoryRow {
+     fn column(statement: &mut Statement, start_index: i32) -> Result<(Self, i32)> {
+         let (session_id, next): (String, i32) = Column::column(statement, start_index)?;
+         let (task_id, next): (String, i32) = Column::column(statement, next)?;
+@@ -291,8 +334,15 @@ impl Column for HistoryEntry {
+         let (label, next): (Option<String>, i32) = Column::column(statement, next)?;
+         let (tool_call_id, next): (Option<String>, i32) = Column::column(statement, next)?;
+ 
+-        let status = parse_status(&status)
+-            .with_context(|| format!("reading the record of {session_id}/{task_id}"))?;
++        let status = match parse_status(&status) {
++            Ok(status) => status,
++            Err(error) => {
++                return Ok((
++                    HistoryRow(Err(format!("{session_id}/{task_id}: {error:#}"))),
++                    next,
++                ));
++            }
++        };
+         let record = TaskRecord {
+             session_id: acp_v2::SessionId::new(session_id),
+             task_id: AgentTaskId::from(task_id),
+@@ -309,11 +359,11 @@ impl Column for HistoryEntry {
+             tool_call_id: tool_call_id.map(Into::into),
+         };
+         Ok((
+-            HistoryEntry {
++            HistoryRow(Ok(HistoryEntry {
+                 record,
+                 archived,
+                 label: label.map(Into::into),
+-            },
++            })),
+             next,
+         ))
+     }
+diff --git a/crates/agent_tasks_panel/src/history_db/statement_tests.rs b/crates/agent_tasks_panel/src/history_db/statement_tests.rs
+index db7724e..d7b255e 100644
+--- a/crates/agent_tasks_panel/src/history_db/statement_tests.rs
++++ b/crates/agent_tasks_panel/src/history_db/statement_tests.rs
+@@ -417,3 +417,38 @@ async fn history_db_load_all_returns_newest_first(_cx: &mut TestAppContext) {
+         .collect();
+     assert_eq!(order, vec!["newest", "mid", "old"]);
+ }
++
++// ── load_all: a row this build cannot read ─────────────────────────────────
++
++// Hostile (downgrade): a status written by a newer Zeo is skipped, with a warning naming
++// the row, and every readable row still loads -- one row must not fail the whole load.
++#[gpui::test]
++async fn history_db_load_all_skips_an_unreadable_row_and_keeps_the_rest(_cx: &mut TestAppContext) {
++    let db = AgentTaskHistoryDb::open_test_db("history_db_unreadable_row").await;
++    db.insert_started(&record("s1", "readable", AgentTaskStatus::Running, 1_000))
++        .await
++        .unwrap();
++    run_sql(
++        &db,
++        "INSERT INTO agent_task_history \
++         (session_id, task_id, project, kind, description, background, status, started_at) \
++         VALUES ('s-new', 't-new', 'project', 'shell', 'Task', 0, 'paused', 2000)",
++    )
++    .await;
++    capture_logs();
++
++    let rows = db
++        .load_all()
++        .await
++        .expect("an unreadable row must not fail the load");
++
++    assert_eq!(rows.len(), 1, "only the readable row is returned");
++    assert!(find(&rows, "s1", "readable").is_some());
++    let warnings = warn_lines();
++    assert!(
++        warnings
++            .iter()
++            .any(|line| line.contains("s-new/t-new") && line.contains("paused")),
++        "the skipped row is named at warn level: {warnings:?}"
++    );
++}
 diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
 index c8d53e8..dcb229b 100644
 --- a/crates/agent_tasks_panel/src/panel.rs
@@ -931,4 +1061,49 @@ index 0000000..4fdafd3
 +    let view = entries(&reloaded, &rig.cx);
 +    assert_eq!(keys_of(&view), pairs(&[("s1", "t2")]), "after a reload");
 +    assert!(!view[0].archived);
++}
+diff --git a/crates/agent_tasks_panel/src/store/lifecycle_tests.rs b/crates/agent_tasks_panel/src/store/lifecycle_tests.rs
+index 3521644..594eef2 100644
+--- a/crates/agent_tasks_panel/src/store/lifecycle_tests.rs
++++ b/crates/agent_tasks_panel/src/store/lifecycle_tests.rs
+@@ -389,3 +389,40 @@ async fn store_unavailable_domain_reports_the_cause_and_still_keeps_live_tasks(
+         "with history unavailable, this session's tasks are still held in memory"
+     );
+ }
++
++// Hostile (downgrade): a row with a status this build does not know -- a newer Zeo wrote it --
++// leaves the history Available, so this session's tasks are still loaded and still written.
++#[gpui::test]
++async fn store_one_unreadable_row_does_not_disable_the_history(cx: &mut gpui::TestAppContext) {
++    let mut rig = card_rig(cx).await;
++    let db = AgentTaskHistoryDb::open_test_db("store_unreadable_row").await;
++    db.insert_started(&record("s-old", "kept", AgentTaskStatus::Completed, 1_000))
++        .await
++        .unwrap();
++    run_sql(
++        &db,
++        "INSERT INTO agent_task_history \
++         (session_id, task_id, project, kind, description, background, status, started_at) \
++         VALUES ('s-new', 't-new', 'project', 'shell', 'Task', 0, 'paused', 2000)",
++    )
++    .await;
++
++    let store = registered_store(&db, &mut rig);
++
++    assert!(
++        is_available(&store, &rig.cx),
++        "one unreadable row must not make the history unavailable"
++    );
++    assert!(find(&entries(&store, &rig.cx), "s-old", "kept").is_some());
++
++    let card = rig.card.clone();
++    emit(
++        &card,
++        started(&record("s-live", "t-live", AgentTaskStatus::Running, 3_000)),
++        &mut rig.cx,
++    );
++    assert!(
++        find(&load(&db).await, "s-live", "t-live").is_some(),
++        "this session's tasks are still written"
++    );
 +}

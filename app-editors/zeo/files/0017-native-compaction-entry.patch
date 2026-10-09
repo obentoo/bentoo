@@ -83,10 +83,15 @@ is not a compaction.
 Verified: `cargo test -p acp_thread` 149 passed, `cargo check -p agent_ui` clean,
 `cargo clippy -p acp_thread --all-targets` and `--all-features -- --deny warnings`
 both zero.
+
+Tests added 2026-10-09 (0.2.2_p20261009) for the branch nothing reached: a status-less frame
+after the terminal one keeps the entry Completed and adds no tool row, and the
+same frame with no lifecycle before it records nothing at all. Both fail when a
+status-less frame is read as in progress.
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 2e5c45f..8a31089 100644
+index 2e5c45f..a8aedbb 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
 @@ -933,6 +933,30 @@ pub struct ContextCompactionUpdate {
@@ -222,7 +227,7 @@ index 2e5c45f..8a31089 100644
      pub fn can_set_title(&mut self, cx: &mut Context<Self>) -> bool {
          self.connection.set_title(self.session_id(), cx).is_some()
      }
-@@ -20055,6 +20161,476 @@ mod tests {
+@@ -20055,6 +20161,582 @@ mod tests {
              assert_eq!(usage.max_tokens, 10000);
          });
      }
@@ -328,6 +333,112 @@ index 2e5c45f..8a31089 100644
 +                .pop()
 +                .expect("the terminal update must land on the native entry");
 +            assert_eq!(compaction.status, ContextCompactionStatus::Completed);
++        });
++    }
++
++    // The adapter sends one more frame after the terminal one: the same toolCallId, the
++    // facts (token counts, duration) and NO status. It must enrich the entry, not reopen
++    // it -- read as "in progress" it would leave a finished compaction spinning.
++    #[gpui::test]
++    async fn statusless_compaction_frame_keeps_the_recorded_phase(cx: &mut TestAppContext) {
++        init_test(cx);
++
++        let fs = FakeFs::new(cx.executor());
++        let project = Project::test(fs, [], cx).await;
++        let connection = Rc::new(FakeAgentConnection::new());
++        let thread = cx
++            .update(|cx| {
++                connection.new_session(project, PathList::new(&[Path::new(path!("/test"))]), cx)
++            })
++            .await
++            .unwrap();
++
++        thread.update(cx, |thread, cx| {
++            thread
++                .handle_session_update(
++                    acp_v1::SessionUpdate::ToolCall(compaction_tool_call(
++                        "compaction-1",
++                        acp_v1::ToolCallStatus::InProgress,
++                        serde_json::json!({ "version": 1 }),
++                    )),
++                    cx,
++                )
++                .unwrap();
++            thread
++                .handle_session_update(
++                    acp_v1::SessionUpdate::ToolCallUpdate(compaction_tool_call_update(
++                        "compaction-1",
++                        Some(acp_v1::ToolCallStatus::Completed),
++                        serde_json::json!({ "version": 1 }),
++                    )),
++                    cx,
++                )
++                .unwrap();
++            thread
++                .handle_session_update(
++                    acp_v1::SessionUpdate::ToolCallUpdate(compaction_tool_call_update(
++                        "compaction-1",
++                        None,
++                        serde_json::json!({
++                            "version": 1,
++                            "preTokens": 120_000,
++                            "postTokens": 20_000,
++                        }),
++                    )),
++                    cx,
++                )
++                .unwrap();
++        });
++
++        thread.read_with(cx, |thread, _| {
++            assert_eq!(thread.entries().len(), 1, "entries were {:?}", thread.entries());
++            let compaction = compaction_entries(thread)
++                .pop()
++                .expect("the compaction entry survives the enrichment frame");
++            assert_eq!(compaction.status, ContextCompactionStatus::Completed);
++            assert!(tool_call_entries(thread).is_empty());
++        });
++    }
++
++    // The same status-less frame with no lifecycle before it -- the opening frames were
++    // missed, or belong to a session replayed without them -- has nothing to enrich. It is
++    // consumed anyway: passed through, it would reach `update_tool_call`, find no tool row
++    // and fabricate a "Tool call not found" failed row.
++    #[gpui::test]
++    async fn statusless_compaction_frame_without_a_lifecycle_records_nothing(
++        cx: &mut TestAppContext,
++    ) {
++        init_test(cx);
++
++        let fs = FakeFs::new(cx.executor());
++        let project = Project::test(fs, [], cx).await;
++        let connection = Rc::new(FakeAgentConnection::new());
++        let thread = cx
++            .update(|cx| {
++                connection.new_session(project, PathList::new(&[Path::new(path!("/test"))]), cx)
++            })
++            .await
++            .unwrap();
++
++        thread.update(cx, |thread, cx| {
++            thread
++                .handle_session_update(
++                    acp_v1::SessionUpdate::ToolCallUpdate(compaction_tool_call_update(
++                        "compaction-orphan",
++                        None,
++                        serde_json::json!({ "version": 1, "preTokens": 1_000 }),
++                    )),
++                    cx,
++                )
++                .unwrap();
++        });
++
++        thread.read_with(cx, |thread, _| {
++            assert!(
++                thread.entries().is_empty(),
++                "an orphan enrichment frame records nothing: entries were {:?}",
++                thread.entries()
++            );
 +        });
 +    }
 +

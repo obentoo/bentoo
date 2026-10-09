@@ -61,6 +61,13 @@ different inputs - the file drives this enum, the variable drives build.rs, and
 the ebuild has to set both.
 
 Decisions D2 and D3 in zeo/docs/REBRAND.md.
+
+Tests added 2026-10-09 (0.2.2_p20261009): `test_zeo_channel_identity` pins "zeo" parsing,
+the display and dev names, `dev.zeo.Zeo`, no release query parameter, the stable
+docs URL and, above all, `poll_for_updates() == false` -- what keeps Zeo from
+replacing itself with an official Zed. `zeo_accepts_the_stable_wasm_api_range`
+pins wit.rs's arm: Zeo installs from Zed's stable registry, so it must accept
+exactly Stable's range. Each fails with its arm reverted.
 ---
 
 diff --git a/crates/auto_update/src/auto_update.rs b/crates/auto_update/src/auto_update.rs
@@ -89,7 +96,7 @@ index d9cd625..7f7cdaf 100644
          }
          ReleaseChannel::Preview => {
 diff --git a/crates/extension_host/src/wasm_host/wit.rs b/crates/extension_host/src/wasm_host/wit.rs
-index 34d75c8..616b476 100644
+index 34d75c8..a99c6b4 100644
 --- a/crates/extension_host/src/wasm_host/wit.rs
 +++ b/crates/extension_host/src/wasm_host/wit.rs
 @@ -63,7 +63,9 @@ pub fn wasm_api_version_range(release_channel: ReleaseChannel) -> RangeInclusive
@@ -112,8 +119,29 @@ index 34d75c8..616b476 100644
              // We always allow the latest in tests so that the extension tests pass on release branches.
              cfg!(any(test, feature = "test-support"))
          }
+@@ -1306,3 +1308,20 @@ impl<T> ToWasmtimeResult<T> for Result<T> {
+         Ok(self.map_err(|error| format!("{error:?}")))
+     }
+ }
++
++#[cfg(test)]
++mod zeo_channel_tests {
++    use super::*;
++
++    /// Zeo installs extensions from Zed's stable registry, so it must accept
++    /// exactly the Wasm API range a stable Zed does: a wider range would let an
++    /// extension built for an unreleased API load, a narrower one would refuse
++    /// extensions stable users run.
++    #[test]
++    fn zeo_accepts_the_stable_wasm_api_range() {
++        assert_eq!(
++            wasm_api_version_range(ReleaseChannel::Zeo),
++            wasm_api_version_range(ReleaseChannel::Stable)
++        );
++    }
++}
 diff --git a/crates/release_channel/src/lib.rs b/crates/release_channel/src/lib.rs
-index c79ca14..f84a970 100644
+index c79ca14..5ec621e 100644
 --- a/crates/release_channel/src/lib.rs
 +++ b/crates/release_channel/src/lib.rs
 @@ -48,6 +48,7 @@ pub fn app_identifier() -> &'static str {
@@ -211,6 +239,30 @@ index c79ca14..f84a970 100644
              _ => return Err(InvalidReleaseChannel),
          })
      }
+@@ -303,4 +318,23 @@ mod tests {
+             "https://zed.dev/docs/settings"
+         );
+     }
++
++    /// Zeo's identity as a channel. `poll_for_updates` is what keeps Zeo from
++    /// replacing itself with an official Zed binary; `app_id` is what keeps its
++    /// windows, desktop entry and Wayland id apart from an installed Zed's.
++    #[test]
++    fn test_zeo_channel_identity() {
++        let zeo: ReleaseChannel = "zeo".parse().expect("\"zeo\" names the Zeo channel");
++        assert_eq!(zeo, ReleaseChannel::Zeo);
++        assert_eq!(zeo.dev_name(), "zeo");
++        assert_eq!(zeo.display_name(), "Zeo");
++        assert_eq!(zeo.app_id(), "dev.zeo.Zeo");
++        assert!(!zeo.poll_for_updates(), "Zeo must never poll Zed's update server");
++        assert_eq!(zeo.release_query_param(), None);
++        assert_eq!(
++            zeo.docs_url("settings"),
++            ReleaseChannel::Stable.docs_url("settings"),
++            "Zeo links to the stable docs"
++        );
++    }
+ }
 diff --git a/crates/remote_server/src/server.rs b/crates/remote_server/src/server.rs
 index bcd3a2a..6c702e8 100644
 --- a/crates/remote_server/src/server.rs

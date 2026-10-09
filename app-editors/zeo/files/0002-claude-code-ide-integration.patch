@@ -57,6 +57,18 @@ the release channel's display_name(), read when the lock file is written, not a
 still prints "Zed", or "Zed Nightly". The CLI only displays the field, so the
 value is free to follow the window title. serverInfo.name stays "zed": that one
 is a protocol identity, not a label.
+
+Tests added 2026-10-09 (0.2.2_p20261009), each verified to fail with the guarded line reverted:
+the lock-file module takes its directory as a parameter (`create_in`, `remove_in`,
+`lock_dir_from`), so a test can check the real file -- the directory ends 0700
+even when it existed wider, the file 0600, no temp file left, `remove` twice is
+fine, and CLAUDE_CONFIG_DIR's set/empty/unset rule. The wire-format test now reads
+the file `create` wrote instead of a struct it built, and the tautological
+`lock_dir_honors_claude_config_dir` asserts the rule for real. The handshake
+rejects a wrong token, a token with a suffix, a prefix of it, a case-folded copy
+and an empty one (401), and still upgrades the exact token: a relaxed comparison
+would have passed the old missing-header test. `lock_path` went unused and was
+removed.
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
@@ -496,10 +508,10 @@ index 0000000..492b935
 +}
 diff --git a/crates/claude_code_ide/src/lockfile.rs b/crates/claude_code_ide/src/lockfile.rs
 new file mode 100644
-index 0000000..cab3586
+index 0000000..7126466
 --- /dev/null
 +++ b/crates/claude_code_ide/src/lockfile.rs
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,247 @@
 +//! Discovery lock files for the Claude Code IDE integration.
 +//!
 +//! The Claude Code CLI finds a running IDE WebSocket server by scanning
@@ -554,14 +566,15 @@ index 0000000..cab3586
 +/// `$CLAUDE_CONFIG_DIR/ide` when that variable is set and non-empty, otherwise
 +/// `~/.claude/ide` — the same resolution the CLI itself performs.
 +pub fn lock_dir() -> PathBuf {
-+    match std::env::var_os("CLAUDE_CONFIG_DIR") {
++    lock_dir_from(std::env::var_os("CLAUDE_CONFIG_DIR"))
++}
++
++/// `lock_dir`'s rule, with `CLAUDE_CONFIG_DIR`'s value passed in.
++fn lock_dir_from(claude_config_dir: Option<std::ffi::OsString>) -> PathBuf {
++    match claude_config_dir {
 +        Some(dir) if !dir.is_empty() => PathBuf::from(dir).join("ide"),
 +        _ => paths::home_dir().join(".claude").join("ide"),
 +    }
-+}
-+
-+pub fn lock_path(port: u16) -> PathBuf {
-+    lock_dir().join(format!("{port}.lock"))
 +}
 +
 +/// A fresh v4 UUID, matching the auth-token format the official extensions use.
@@ -579,7 +592,18 @@ index 0000000..cab3586
 +    auth_token: &str,
 +    workspace_folders: &[PathBuf],
 +) -> Result<PathBuf> {
-+    let dir = lock_dir();
++    create_in(&lock_dir(), port, ide_name, auth_token, workspace_folders)
++}
++
++/// `create`, in `dir` rather than the resolved lock directory.
++fn create_in(
++    dir: &std::path::Path,
++    port: u16,
++    ide_name: &str,
++    auth_token: &str,
++    workspace_folders: &[PathBuf],
++) -> Result<PathBuf> {
++    let dir = dir.to_path_buf();
 +    fs::create_dir_all(&dir).with_context(|| format!("creating lock dir {dir:?}"))?;
 +    // The token is a secret, so restrict the directory to the current user
 +    // (0700), matching what the official extensions do.
@@ -614,7 +638,12 @@ index 0000000..cab3586
 +
 +/// Removes the lock file for `port`. Succeeds if it is already gone.
 +pub fn remove(port: u16) -> Result<()> {
-+    let path = lock_path(port);
++    remove_in(&lock_dir(), port)
++}
++
++/// `remove`, in `dir` rather than the resolved lock directory.
++fn remove_in(dir: &std::path::Path, port: u16) -> Result<()> {
++    let path = dir.join(format!("{port}.lock"));
 +    match fs::remove_file(&path) {
 +        Ok(()) => Ok(()),
 +        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -633,45 +662,101 @@ index 0000000..cab3586
 +        assert!(uuid::Uuid::parse_str(&token).is_ok());
 +    }
 +
-+    /// Asserts against what `create` publishes, not against a struct the test
-+    /// builds itself: the earlier version of this test hard-coded its own field
-+    /// values, so it stayed green while the file we actually wrote was missing
-+    /// the one field the CLI branches on.
++    /// A unique, empty directory under the system temp dir, removed on drop.
++    struct TempDir(PathBuf);
++
++    impl TempDir {
++        fn new(name: &str) -> Self {
++            let path = std::env::temp_dir().join(format!(
++                "zeo-ide-lock-{name}-{}-{}",
++                std::process::id(),
++                generate_auth_token()
++            ));
++            fs::create_dir_all(&path).unwrap();
++            Self(path)
++        }
++    }
++
++    impl Drop for TempDir {
++        fn drop(&mut self) {
++            fs::remove_dir_all(&self.0).ok();
++        }
++    }
++
++    /// Asserts against the file `create` publishes, not against a struct the
++    /// test builds itself: an earlier version hard-coded its own field values,
++    /// so it stayed green while the file we actually wrote was missing the one
++    /// field the CLI branches on.
 +    #[test]
 +    fn lock_file_matches_expected_wire_format() {
-+        let contents = LockFileContents::new(
++        let temp = TempDir::new("wire");
++        let path = create_in(
++            &temp.0,
++            4242,
 +            "Zed Nightly",
 +            "the-token",
 +            &[PathBuf::from("/home/user/project")],
-+        );
++        )
++        .unwrap();
 +        let value: serde_json::Value =
-+            serde_json::from_str(&serde_json::to_string(&contents).unwrap()).unwrap();
++            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
 +
++        assert_eq!(path, temp.0.join("4242.lock"));
 +        assert_eq!(value["pid"], std::process::id());
 +        assert_eq!(value["workspaceFolders"][0], "/home/user/project");
 +        assert_eq!(value["ideName"], "Zed Nightly");
 +        assert_eq!(value["authToken"], "the-token");
 +        assert_eq!(value["transport"], "ws");
-+    }
-+
-+    /// Without `useWebSocket: true` the CLI builds `http://host:port/sse` and
-+    /// never reaches the WebSocket server this crate runs, so `/ide` reports no
-+    /// IDE at all. Pinned separately because it is the whole integration.
-+    #[test]
-+    fn lock_file_selects_the_websocket_transport() {
-+        let contents = LockFileContents::new("Zed", "the-token", &[]);
-+        let value: serde_json::Value =
-+            serde_json::from_str(&serde_json::to_string(&contents).unwrap()).unwrap();
-+
 +        assert_eq!(value["useWebSocket"], true);
 +    }
 +
++    /// The token is a secret: the directory must end up 0700 even when it
++    /// already existed wider, the file 0600, and no temp file may be left
++    /// behind. The 0700 directory is the real guard -- the temp file is written
++    /// under the umask before its own chmod.
++    #[cfg(unix)]
++    #[test]
++    fn create_writes_an_owner_only_file_in_an_owner_only_dir() {
++        use std::os::unix::fs::PermissionsExt as _;
++
++        let temp = TempDir::new("perms");
++        let dir = temp.0.join("ide");
++        fs::create_dir_all(&dir).unwrap();
++        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
++
++        let path = create_in(&dir, 4243, "Zeo", "the-token", &[]).unwrap();
++
++        let mode = |path: &std::path::Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
++        assert_eq!(mode(&dir), 0o700, "the lock directory must be owner-only");
++        assert_eq!(mode(&path), 0o600, "the lock file must be owner-only");
++        assert!(
++            !dir.join("4243.lock.tmp").exists(),
++            "the temp file must be renamed away"
++        );
++    }
++
++    /// `remove` deletes the file, and removing it again is not an error.
++    #[test]
++    fn remove_deletes_the_lock_file_and_tolerates_a_second_call() {
++        let temp = TempDir::new("remove");
++        let path = create_in(&temp.0, 4244, "Zeo", "the-token", &[]).unwrap();
++
++        remove_in(&temp.0, 4244).unwrap();
++        assert!(!path.exists());
++        remove_in(&temp.0, 4244).expect("an already-removed lock file is fine");
++    }
++
++    /// `CLAUDE_CONFIG_DIR` wins when set and non-empty; empty or unset falls
++    /// back to `~/.claude/ide` -- the CLI's own rule.
 +    #[test]
 +    fn lock_dir_honors_claude_config_dir() {
-+        // Documents the resolution rule; we avoid mutating process env here to
-+        // keep the test free of global state.
 +        let default_dir = paths::home_dir().join(".claude").join("ide");
-+        assert!(default_dir.ends_with(".claude/ide"));
++        assert_eq!(
++            lock_dir_from(Some("/custom/claude".into())),
++            PathBuf::from("/custom/claude/ide")
++        );
++        assert_eq!(lock_dir_from(Some("".into())), default_dir);
++        assert_eq!(lock_dir_from(None), default_dir);
 +    }
 +}
 diff --git a/crates/claude_code_ide/src/open_diff.rs b/crates/claude_code_ide/src/open_diff.rs
@@ -901,10 +986,10 @@ index 0000000..14a3c79
 +}
 diff --git a/crates/claude_code_ide/src/server.rs b/crates/claude_code_ide/src/server.rs
 new file mode 100644
-index 0000000..31c4bfa
+index 0000000..3e80497
 --- /dev/null
 +++ b/crates/claude_code_ide/src/server.rs
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,547 @@
 +//! WebSocket transport and JSON-RPC/MCP message routing for the Claude Code IDE
 +//! integration.
 +//!
@@ -1266,6 +1351,69 @@ index 0000000..31c4bfa
 +            drop(client);
 +            server.cancel().await;
 +        });
++    }
++
++    /// Sends an upgrade request to a fresh server whose token is `the-token`,
++    /// presenting `presented` in the auth header (or no header for `None`), and
++    /// returns the start of the response, lowercased.
++    fn upgrade_response(presented: Option<&str>) -> String {
++        use futures::{AsyncReadExt as _, AsyncWriteExt as _};
++
++        block_on(async {
++            let (listener, port) = bind().await.expect("binding the test listener");
++            let server = smol::spawn(async move {
++                let (stream, _) = listener.accept().await.expect("accepting the test client");
++                serve_connection(stream, "the-token".to_owned(), MockDispatcher).await
++            });
++
++            let mut client = smol::net::TcpStream::connect(("127.0.0.1", port))
++                .await
++                .expect("connecting to the test listener");
++            let auth = presented
++                .map(|token| format!("{AUTH_HEADER}: {token}\r\n"))
++                .unwrap_or_default();
++            let request = format!(
++                "GET / HTTP/1.1\r\n\
++                 Host: 127.0.0.1:{port}\r\n\
++                 Upgrade: websocket\r\n\
++                 Connection: Upgrade\r\n\
++                 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
++                 Sec-WebSocket-Version: 13\r\n\
++                 Sec-WebSocket-Protocol: mcp\r\n\
++                 {auth}\r\n"
++            );
++            client
++                .write_all(request.as_bytes())
++                .await
++                .expect("sending the upgrade request");
++
++            let mut buffer = [0u8; 512];
++            let read = client.read(&mut buffer).await.expect("reading the response");
++            let response = String::from_utf8_lossy(&buffer[..read]).to_lowercase();
++            drop(client);
++            server.cancel().await;
++            response
++        })
++    }
++
++    /// Only the exact token opens the socket. Today's check is a byte-for-byte
++    /// comparison; a relaxed one (prefix, contains, case-folded) would still let
++    /// the missing-header test pass, so each near miss is pinned here. No Origin
++    /// check exists: a browser cannot set this custom header, so this token test
++    /// is also the guard against a web page reaching the server.
++    #[test]
++    fn handshake_with_a_wrong_token_is_rejected() {
++        for presented in ["wrong", "the-token-extra", "the-toke", "THE-TOKEN", ""] {
++            let response = upgrade_response(Some(presented));
++            assert!(
++                response.starts_with("http/1.1 401"),
++                "token {presented:?} must be rejected, got:\n{response}"
++            );
++        }
++        assert!(
++            upgrade_response(Some("the-token")).starts_with("http/1.1 101"),
++            "the exact token still upgrades"
++        );
 +    }
 +
 +    /// The same socket, without the token: the upgrade must be refused outright

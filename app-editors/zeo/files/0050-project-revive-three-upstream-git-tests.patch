@@ -1,0 +1,117 @@
+From 00a6a7a4c28fb9a307a9445ce6fa967545f812b3 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 9 Oct 2026 14:27:04 -0300
+Subject: [PATCH] project: revive three upstream git tests that were ignored
+ and had rotted
+
+Three integration tests in crates/project/tests/integration/project_tests.rs
+were `#[ignore]`d upstream and, run with --run-ignored on 2026-10-09, failed:
+nobody runs an ignored test, so upstream's changes to git_store kept moving
+under them. None of the failures came from this series -- no patch touches
+worktree, git or fs code -- but an ignored test covers nothing, and two of
+these pin a real property: changes inside a gitignored directory (a cargo
+flycheck writing into target/) must not emit RepositoryUpdated events.
+
+  test_git_status_postprocessing -- upstream now computes `diff_stat` for a
+  combined `DA` status too. HEAD and the working copy are both empty, so the
+  expected stat is Some(0/0), not None.
+
+  test_ignored_dirs_events, test_odd_events_for_ignored_dirs -- both pinned
+  the exact list of events the initial scan emits ([StatusesChanged], and
+  [HeadChanged, StatusesChanged, StatusesChanged]); today's scan emits
+  [HeadChanged, BranchListChanged] and [HeadChanged]. That list is what made
+  them flaky in the first place (upstream's own todo: "susceptible to
+  different timings/ordering of events"), and it is not what they test. The
+  initial check now asserts the scan reported the repository (HeadChanged is
+  present); every assertion after the ignored-directory changes stays exact.
+
+All three are un-ignored. Measured: 20/20 iterations under
+`cargo nextest run --stress-count 20`, and green in the full 30-crate suite.
+
+Tests only; nothing here is compiled into the editor. Unconditional, like
+every test the series carries.
+---
+
+diff --git a/crates/project/tests/integration/project_tests.rs b/crates/project/tests/integration/project_tests.rs
+index f4642a3..7b84b06 100644
+--- a/crates/project/tests/integration/project_tests.rs
++++ b/crates/project/tests/integration/project_tests.rs
+@@ -17712,7 +17712,6 @@ async fn test_git_events_after_project_excludes_dot_git(cx: &mut gpui::TestAppCo
+ }
+ 
+ #[gpui::test]
+-#[ignore]
+ async fn test_git_status_postprocessing(cx: &mut gpui::TestAppContext) {
+     init_test(cx);
+     cx.executor().allow_parking();
+@@ -17765,7 +17764,12 @@ async fn test_git_status_postprocessing(cx: &mut gpui::TestAppContext) {
+                     worktree_status: StatusCode::Added
+                 }
+                 .into(),
+-                diff_stat: None,
++                // Zeo: upstream now computes the combined stat for `DA` too; HEAD and the
++                // working copy are both empty, so it is zero, not absent.
++                diff_stat: Some(DiffStat {
++                    added: 0,
++                    deleted: 0,
++                }),
+                 staged_diff_stat: Some(DiffStat {
+                     added: 0,
+                     deleted: 0,
+@@ -19108,7 +19112,6 @@ async fn test_bare_dot_git_changed_event_refreshes_git_state(cx: &mut gpui::Test
+ }
+ 
+ #[gpui::test]
+-#[ignore]
+ async fn test_ignored_dirs_events(cx: &mut gpui::TestAppContext) {
+     init_test(cx);
+     cx.executor().allow_parking();
+@@ -19188,10 +19191,13 @@ async fn test_ignored_dirs_events(cx: &mut gpui::TestAppContext) {
+         );
+     });
+ 
+-    assert_eq!(
+-        repository_updates.lock().drain(..).collect::<Vec<_>>(),
+-        vec![RepositoryEvent::StatusesChanged,],
+-        "Initial worktree scan should produce a repo update event"
++    // Zeo: which events the initial scan emits, and how many, moved upstream and is
++    // timing-dependent; that it reports the repository at all is what this checks. The
++    // assertions after the ignored-dir changes below stay exact -- they are the test.
++    let initial_updates = repository_updates.lock().drain(..).collect::<Vec<_>>();
++    assert!(
++        initial_updates.contains(&RepositoryEvent::HeadChanged),
++        "Initial worktree scan should produce a repo update event, got {initial_updates:?}"
+     );
+     assert_eq!(
+         project_events.lock().drain(..).collect::<Vec<_>>(),
+@@ -19265,9 +19271,6 @@ async fn test_ignored_dirs_events(cx: &mut gpui::TestAppContext) {
+     );
+ }
+ 
+-// todo(jk): turning this test off until we rework it in such a way so that it is not so susceptible
+-// to different timings/ordering of events.
+-#[ignore]
+ #[gpui::test]
+ async fn test_odd_events_for_ignored_dirs(
+     executor: BackgroundExecutor,
+@@ -19354,14 +19357,12 @@ async fn test_odd_events_for_ignored_dirs(
+         );
+     });
+ 
+-    assert_eq!(
+-        repository_updates.lock().drain(..).collect::<Vec<_>>(),
+-        vec![
+-            RepositoryEvent::HeadChanged,
+-            RepositoryEvent::StatusesChanged,
+-            RepositoryEvent::StatusesChanged,
+-        ],
+-        "Initial worktree scan should produce a repo update event"
++    // Zeo: see test_ignored_dirs_events -- the initial events' count and order are not
++    // the point; the flycheck emulation below, which must produce none, is.
++    let initial_updates = repository_updates.lock().drain(..).collect::<Vec<_>>();
++    assert!(
++        initial_updates.contains(&RepositoryEvent::HeadChanged),
++        "Initial worktree scan should produce a repo update event, got {initial_updates:?}"
+     );
+     assert_eq!(
+         project_events.lock().drain(..).collect::<Vec<_>>(),
