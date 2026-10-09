@@ -11,7 +11,7 @@ HOMEPAGE="https://github.com/obentoo/bentoolkit"
 # version of its own (internal/tray/version/VERSION); BENTOOLKIT_PV is the
 # bentoolkit release that ships this tray version. It shares
 # app-portage/bentoolkit's distfile rather than fetching the same tag twice.
-BENTOOLKIT_PV="0.33.3"
+BENTOOLKIT_PV="0.34.0"
 SRC_URI="https://github.com/obentoo/bentoolkit/archive/refs/tags/v${BENTOOLKIT_PV}.tar.gz -> bentoolkit-${BENTOOLKIT_PV}.tar.gz"
 S="${WORKDIR}/bentoolkit-${BENTOOLKIT_PV}"
 
@@ -32,9 +32,9 @@ RESTRICT="network-sandbox"
 # (/var/lib/gentoo/news) come from Portage itself. xdg-open is the fallback
 # when the portal is missing or fails (internal/desktop/portal/portal.go).
 RDEPEND="x11-misc/xdg-utils"
-# go.mod declares go 1.26.0, but the Go that builds this package decides
-# the standard library it links: 1.27.1 carries 13 stdlib advisories
-# (GO-2026-6599..6617), all fixed in 1.27.2.
+# go.mod declares go 1.27.0 with toolchain go1.27.2, but the Go that builds
+# this package decides the standard library it links: 1.27.1 carries 13
+# stdlib advisories (GO-2026-6599..6617), all fixed in 1.27.2.
 BDEPEND=">=dev-lang/go-1.27.2"
 
 src_unpack() {
