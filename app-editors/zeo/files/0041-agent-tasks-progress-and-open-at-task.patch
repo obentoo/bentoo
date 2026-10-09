@@ -70,7 +70,7 @@ agent_session_router 14.
 ---
 
 diff --git a/crates/agent_tasks_panel/src/history_db.rs b/crates/agent_tasks_panel/src/history_db.rs
-index 8d0abd3..3f2605f 100644
+index f9114a0..61a3643 100644
 --- a/crates/agent_tasks_panel/src/history_db.rs
 +++ b/crates/agent_tasks_panel/src/history_db.rs
 @@ -44,7 +44,7 @@ pub struct AgentTaskHistoryDb(ThreadSafeConnection);
@@ -118,7 +118,7 @@ index 8d0abd3..3f2605f 100644
 +    /// task does not move.
 +    pub async fn fill_tool_call_id(
 +        &self,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        task_id: &AgentTaskId,
 +        tool_call_id: &str,
 +    ) -> Result<()> {
@@ -513,7 +513,7 @@ index 0000000..5c7fc30
 +    );
 +}
 diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
-index 7226dc5..8f65c16 100644
+index 7b1aacb..c8d53e8 100644
 --- a/crates/agent_tasks_panel/src/panel.rs
 +++ b/crates/agent_tasks_panel/src/panel.rs
 @@ -36,6 +36,10 @@ use workspace::{
@@ -541,7 +541,7 @@ index 7226dc5..8f65c16 100644
 +                entry.record.session_id == *session_id && entry.record.task_id == *task_id
 +            })
 +            .and_then(|entry| entry.record.tool_call_id.clone())
-+            .map(|id| acp::ToolCallId::new(id.to_string()));
++            .map(|id| acp_v2::ToolCallId::new(id.to_string()));
          let key = key.clone();
          let workspace = self.workspace.clone();
          let fallback_window = window.window_handle();
@@ -645,7 +645,7 @@ index a3cbfe2..056fd0f 100644
      assert_eq!(
 diff --git a/crates/agent_tasks_panel/src/panel/open_at_task_tests.rs b/crates/agent_tasks_panel/src/panel/open_at_task_tests.rs
 new file mode 100644
-index 0000000..162a406
+index 0000000..fde4ef3
 --- /dev/null
 +++ b/crates/agent_tasks_panel/src/panel/open_at_task_tests.rs
 @@ -0,0 +1,300 @@
@@ -878,7 +878,7 @@ index 0000000..162a406
 +/// The tool call id the panel's row holds for `task`.
 +fn find_record(
 +    panel: &gpui::Entity<crate::AgentTasksPanel>,
-+    session: &agent_client_protocol::schema::v1::SessionId,
++    session: &agent_client_protocol::schema::v2::SessionId,
 +    task: &str,
 +    cx: &mut gpui::VisualTestContext,
 +) -> Option<String> {
@@ -1164,7 +1164,7 @@ index 0000000..6f9548f
 +    );
 +}
 diff --git a/crates/agent_tasks_panel/src/store.rs b/crates/agent_tasks_panel/src/store.rs
-index fc31082..0a84837 100644
+index 75b7cec..f6c9bf4 100644
 --- a/crates/agent_tasks_panel/src/store.rs
 +++ b/crates/agent_tasks_panel/src/store.rs
 @@ -87,6 +87,11 @@ enum HistoryWrite {
@@ -1528,10 +1528,10 @@ index 0000000..42632a6
 +    );
 +}
 diff --git a/crates/agent_tasks_panel/src/test_helpers.rs b/crates/agent_tasks_panel/src/test_helpers.rs
-index 559eb6a..2b944c3 100644
+index 80da5b8..5ff18a2 100644
 --- a/crates/agent_tasks_panel/src/test_helpers.rs
 +++ b/crates/agent_tasks_panel/src/test_helpers.rs
-@@ -131,6 +131,8 @@ pub(crate) fn record(
+@@ -132,6 +132,8 @@ pub(crate) fn record(
          status,
          tokens: ended.then_some(100),
          tool_uses: ended.then_some(3),
@@ -1540,7 +1540,7 @@ index 559eb6a..2b944c3 100644
      }
  }
  
-@@ -283,7 +285,9 @@ impl AgentConnection for StopConnection {
+@@ -284,7 +286,9 @@ impl AgentConnection for StopConnection {
                  project,
                  action_log,
                  session_id,
@@ -1551,7 +1551,7 @@ index 559eb6a..2b944c3 100644
                  cx,
              )
          });
-@@ -743,3 +747,130 @@ pub(crate) fn notice_of(
+@@ -744,3 +748,130 @@ pub(crate) fn notice_of(
          .expect("the task is listed")
          .notice
  }
@@ -1683,7 +1683,7 @@ index 559eb6a..2b944c3 100644
 +    thread
 +}
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index ed0b003..9573118 100644
+index 8f37710..1f9255a 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -1861,35 +1861,25 @@ impl AgentPanel {
@@ -1741,7 +1741,7 @@ index ed0b003..9573118 100644
 +/// The id is matched whole, so `toolu_t1` never lands on `toolu_t10`.
 +pub(crate) fn scroll_to_root_tool_call(
 +    conversation: &Entity<ConversationView>,
-+    tool_call_id: &acp::ToolCallId,
++    tool_call_id: &acp_v2::ToolCallId,
 +    cx: &mut App,
 +) -> Option<usize> {
 +    let thread_view = conversation.read(cx).root_thread_view()?;
@@ -1771,18 +1771,10 @@ index ed0b003..9573118 100644
  mod tests {
      use super::*;
 diff --git a/crates/agent_ui/src/agent_session_router.rs b/crates/agent_ui/src/agent_session_router.rs
-index 2aabbfd..496023f 100644
+index 9887094..5fa6989 100644
 --- a/crates/agent_ui/src/agent_session_router.rs
 +++ b/crates/agent_ui/src/agent_session_router.rs
-@@ -15,6 +15,7 @@ use std::pin::pin;
- use std::sync::Arc;
- use std::time::Duration;
- 
-+use acp_thread::AgentTaskId;
- use agent_client_protocol::schema::v1 as acp;
- use anyhow::{Context as _, Result, anyhow};
- use fs::Fs;
-@@ -27,6 +28,7 @@ use util::ResultExt as _;
+@@ -28,6 +28,7 @@ use util::ResultExt as _;
  use workspace::{AppState, MultiWorkspace, OpenMode, OpenOptions, Workspace, WorkspaceMatching};
  
  use crate::AgentPanel;
@@ -1790,21 +1782,7 @@ index 2aabbfd..496023f 100644
  use crate::conversation_view::ConversationView;
  use crate::thread_metadata_store::ThreadMetadataStore;
  
-@@ -48,8 +50,12 @@ pub struct OpenAgentSessionOptions {
-     /// The window used when the thread has no local folders: a remote thread, or
-     /// a session with neither a row nor a `cwd`. `None` uses the active window.
-     pub fallback_window: Option<AnyWindowHandle>,
--    /// Reserved for scrolling to a tool call (story 023); ignored here.
-+    /// The tool call to scroll the opened thread to, once it has loaded. Only an
-+    /// entry of the root thread is scrolled to; any other id opens the thread
-+    /// without scrolling.
-     pub tool_call_id: Option<acp::ToolCallId>,
-+    /// The task the open is for, named in the log line a scroll writes.
-+    pub task_id: Option<AgentTaskId>,
- }
- 
- /// Where the session was opened.
-@@ -57,11 +63,15 @@ pub struct OpenAgentSessionOptions {
+@@ -62,11 +63,15 @@ pub struct OpenAgentSessionOptions {
  pub struct OpenedAgentSession {
      pub window: AnyWindowHandle,
      pub workspace: Entity<Workspace>,
@@ -1821,7 +1799,7 @@ index 2aabbfd..496023f 100644
  ///
  /// Every failure is an `Err` naming the session and the step that failed; the
  /// thread is never opened in another window as a silent fallback.
-@@ -75,7 +85,8 @@ pub fn open_agent_session(
+@@ -80,7 +85,8 @@ pub fn open_agent_session(
          let OpenAgentSessionOptions {
              cwd,
              fallback_window,
@@ -1831,7 +1809,7 @@ index 2aabbfd..496023f 100644
          } = options;
  
          // No window has an agent panel while AI is disabled, so refuse before
-@@ -136,18 +147,33 @@ pub fn open_agent_session(
+@@ -141,18 +147,33 @@ pub fn open_agent_session(
              .with_context(|| format!("open agent session {session_id}: the window is gone"))??;
  
          let deadline = cx.background_executor().timer(THREAD_LOAD_TIMEOUT);
@@ -1872,7 +1850,7 @@ index 2aabbfd..496023f 100644
          })
      })
  }
-@@ -463,6 +489,47 @@ async fn wait_until_loaded(
+@@ -468,6 +489,47 @@ async fn wait_until_loaded(
      }
  }
  
@@ -1881,9 +1859,9 @@ index 2aabbfd..496023f 100644
 +/// an id the thread never had — is not an error: the thread is open, with nothing
 +/// to jump to.
 +fn scroll_to_tool_call(
-+    session_id: &acp::SessionId,
++    session_id: &acp_v2::SessionId,
 +    task_id: Option<&AgentTaskId>,
-+    tool_call_id: &acp::ToolCallId,
++    tool_call_id: &acp_v2::ToolCallId,
 +    conversation: &WeakEntity<ConversationView>,
 +    cx: &mut AsyncApp,
 +) -> Result<bool> {
@@ -1920,7 +1898,7 @@ index 2aabbfd..496023f 100644
  #[cfg(test)]
  #[path = "agent_session_router/routing_tests.rs"]
  mod routing;
-@@ -470,3 +537,7 @@ mod routing;
+@@ -475,3 +537,7 @@ mod routing;
  #[cfg(test)]
  #[path = "agent_session_router/review_tests.rs"]
  mod review;
@@ -1929,7 +1907,7 @@ index 2aabbfd..496023f 100644
 +#[path = "agent_session_router/scroll_tests.rs"]
 +mod scroll;
 diff --git a/crates/agent_ui/src/agent_session_router/review_tests.rs b/crates/agent_ui/src/agent_session_router/review_tests.rs
-index db7fb9f..42166d4 100644
+index 228ae97..b8c8c00 100644
 --- a/crates/agent_ui/src/agent_session_router/review_tests.rs
 +++ b/crates/agent_ui/src/agent_session_router/review_tests.rs
 @@ -140,6 +140,7 @@ fn route(
@@ -1941,7 +1919,7 @@ index db7fb9f..42166d4 100644
              app_state,
              cx,
 diff --git a/crates/agent_ui/src/agent_session_router/routing_tests.rs b/crates/agent_ui/src/agent_session_router/routing_tests.rs
-index 65b86f6..d103654 100644
+index 8857542..5a4b9e9 100644
 --- a/crates/agent_ui/src/agent_session_router/routing_tests.rs
 +++ b/crates/agent_ui/src/agent_session_router/routing_tests.rs
 @@ -197,6 +197,7 @@ fn route(
@@ -1954,10 +1932,10 @@ index 65b86f6..d103654 100644
              cx,
 diff --git a/crates/agent_ui/src/agent_session_router/scroll_tests.rs b/crates/agent_ui/src/agent_session_router/scroll_tests.rs
 new file mode 100644
-index 0000000..55dfbde
+index 0000000..2a991c1
 --- /dev/null
 +++ b/crates/agent_ui/src/agent_session_router/scroll_tests.rs
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,289 @@
 +// Story 023, task 4.1 — `open_agent_session` with a tool call id scrolls the opened ROOT
 +// thread to that tool call once the thread is held, and reports whether it did (R3.2, R3.3).
 +// Wired in `src/agent_session_router.rs` (story 024's module) as
@@ -1969,7 +1947,7 @@ index 0000000..55dfbde
 +// Validation filter: `agent_session_router_scroll_`.
 +//
 +// Contract: story 024's `crate::{open_agent_session, OpenAgentSessionOptions,
-+// OpenedAgentSession}` with `OpenAgentSessionOptions::tool_call_id: Option<acp::ToolCallId>`,
++// OpenedAgentSession}` with `OpenAgentSessionOptions::tool_call_id: Option<acp_v2::ToolCallId>`,
 +// plus this story's `OpenedAgentSession::scrolled_to_tool_call: bool`. The window rig is a
 +// trimmed copy of story 024's `routing_tests.rs` fixtures (private to that module).
 +//
@@ -1985,6 +1963,7 @@ index 0000000..55dfbde
 +
 +use acp_thread::{AcpThread, AgentThreadEntry, StubAgentConnection};
 +use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use fs::FakeFs;
 +use gpui::{
 +    AnyWindowHandle, AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle,
@@ -2052,7 +2031,7 @@ index 0000000..55dfbde
 +
 +/// A live, persisted thread in `win` whose root entries are twenty message pairs, then each
 +/// of `calls` followed by twenty more pairs. Returns the thread and its session.
-+fn thread_with_calls(win: &mut Win, calls: &[&str]) -> (Entity<AcpThread>, acp::SessionId) {
++fn thread_with_calls(win: &mut Win, calls: &[&str]) -> (Entity<AcpThread>, acp_v2::SessionId) {
 +    crate::test_support::open_thread_with_connection(
 +        &win.panel,
 +        StubAgentConnection::new(),
@@ -2123,7 +2102,7 @@ index 0000000..55dfbde
 +    view.read_with(cx, |view, _| view.list_state.logical_scroll_top().item_ix)
 +}
 +
-+fn shown_session(panel: &Entity<AgentPanel>, cx: &VisualTestContext) -> Option<acp::SessionId> {
++fn shown_session(panel: &Entity<AgentPanel>, cx: &VisualTestContext) -> Option<acp_v2::SessionId> {
 +    panel.read_with(cx, |panel, cx| {
 +        panel
 +            .active_agent_thread(cx)
@@ -2137,7 +2116,7 @@ index 0000000..55dfbde
 +}
 +
 +async fn route(
-+    session: &acp::SessionId,
++    session: &acp_v2::SessionId,
 +    tool_call_id: Option<&str>,
 +    caller: &Win,
 +    cx: &mut TestAppContext,
@@ -2147,7 +2126,7 @@ index 0000000..55dfbde
 +        .read_with(cx, |workspace, _| workspace.app_state().clone());
 +    let fallback_window = caller.any();
 +    let session = session.clone();
-+    let tool_call_id = tool_call_id.map(|id| acp::ToolCallId::new(id.to_string()));
++    let tool_call_id = tool_call_id.map(|id| acp_v2::ToolCallId::new(id.to_string()));
 +    let routing = cx.update(|cx| {
 +        open_agent_session(
 +            session,
@@ -2247,7 +2226,7 @@ index 0000000..55dfbde
 +    assert_eq!(scroll_top(&a.panel, &mut a.cx), start);
 +}
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index f215e14..846f047 100644
+index 2ce0ef4..51d6674 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -940,6 +940,23 @@ impl ConversationView {
@@ -2300,7 +2279,7 @@ index f215e14..846f047 100644
 +                cx,
 +            );
 +        });
-+        let child_session_id = acp_v1::SessionId::new("child-session");
++        let child_session_id = acp_v2::SessionId::new("child-session");
 +        conversation_view.update_in(cx, |view, window, cx| {
 +            view.load_subagent_session(
 +                child_session_id.clone(),
@@ -2321,7 +2300,7 @@ index f215e14..846f047 100644
 +        let item_ix = cx.update(|_, cx| {
 +            crate::agent_panel::scroll_to_root_tool_call(
 +                &conversation_view,
-+                &acp_v1::ToolCallId::new("toolu_root"),
++                &acp_v2::ToolCallId::new("toolu_root"),
 +                cx,
 +            )
 +        });
@@ -2341,7 +2320,7 @@ index f215e14..846f047 100644
      async fn test_session_notices_stay_with_background_session_without_metadata_updates(
          cx: &mut TestAppContext,
 diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
-index f3a3b11..687c9f3 100644
+index 2d76e50..5c7cd60 100644
 --- a/crates/agent_ui/src/tasks_card.rs
 +++ b/crates/agent_ui/src/tasks_card.rs
 @@ -93,6 +93,14 @@ mod title;
@@ -2744,7 +2723,7 @@ index 0000000..e809712
 +}
 diff --git a/crates/agent_ui/src/tasks_card/progress_tests.rs b/crates/agent_ui/src/tasks_card/progress_tests.rs
 new file mode 100644
-index 0000000..6cd5f7b
+index 0000000..3708f30
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/progress_tests.rs
 @@ -0,0 +1,234 @@
@@ -2797,7 +2776,7 @@ index 0000000..6cd5f7b
 +
 +fn task_of(
 +    panel: &gpui::Entity<crate::AgentPanel>,
-+    session: &agent_client_protocol::schema::v1::SessionId,
++    session: &agent_client_protocol::schema::v2::SessionId,
 +    id: &str,
 +    cx: &mut VisualTestContext,
 +) -> AgentTask {

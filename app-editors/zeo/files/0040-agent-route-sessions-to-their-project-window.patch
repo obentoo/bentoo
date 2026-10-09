@@ -72,12 +72,12 @@ real click in a shared left dock does not panic) and route_agreement
 ---
 
 diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
-index cd8d4dd..7226dc5 100644
+index 8b09fa1..7b1aacb 100644
 --- a/crates/agent_tasks_panel/src/panel.rs
 +++ b/crates/agent_tasks_panel/src/panel.rs
 @@ -14,7 +14,8 @@ use std::{cmp::Reverse, ops::Range, sync::Arc};
  use acp_thread::{AgentTask, AgentTaskId, AgentTaskStatus};
- use agent_client_protocol::schema::v1 as acp;
+ use agent_client_protocol::schema::v2 as acp_v2;
  use agent_ui::{
 -    AgentPanel, DEFAULT_THREAD_TITLE, TaskRecord, TasksCard, collapse_label, display_label,
 +    AgentPanel, DEFAULT_THREAD_TITLE, OpenAgentSessionOptions, OpenedAgentSession, TaskRecord,
@@ -842,10 +842,10 @@ index 0000000..83ba40c
 +    assert_eq!(notice_of(&tasks_panel_b, &session, "t", &mut b.cx), None);
 +}
 diff --git a/crates/agent_tasks_panel/src/test_helpers.rs b/crates/agent_tasks_panel/src/test_helpers.rs
-index 2c43abf..559eb6a 100644
+index 173ab4b..80da5b8 100644
 --- a/crates/agent_tasks_panel/src/test_helpers.rs
 +++ b/crates/agent_tasks_panel/src/test_helpers.rs
-@@ -543,3 +543,203 @@ pub(crate) fn visible_keys(panels: &mut Panels) -> Vec<(String, String)> {
+@@ -544,3 +544,203 @@ pub(crate) fn visible_keys(panels: &mut Panels) -> Vec<(String, String)> {
          .map(|row| key_of(&row.entry))
          .collect()
  }
@@ -958,7 +958,7 @@ index 2c43abf..559eb6a 100644
 +    window: &mut ProjectWindow,
 +    title: &str,
 +    task: &str,
-+) -> acp::SessionId {
++) -> acp_v2::SessionId {
 +    let agent_panel = window.agent_panel().clone();
 +    let thread = open_thread_on(&agent_panel, StopConnection::new(), title, &mut window.cx);
 +    send_tasks(
@@ -971,7 +971,7 @@ index 2c43abf..559eb6a 100644
 +
 +/// The folders the session's metadata row records.
 +pub(crate) fn row_folders(
-+    session: &acp::SessionId,
++    session: &acp_v2::SessionId,
 +    cx: &mut VisualTestContext,
 +) -> Option<Vec<std::path::PathBuf>> {
 +    cx.update(|_, cx| {
@@ -983,7 +983,7 @@ index 2c43abf..559eb6a 100644
 +}
 +
 +pub(crate) fn row_thread_id(
-+    session: &acp::SessionId,
++    session: &acp_v2::SessionId,
 +    cx: &mut VisualTestContext,
 +) -> agent_ui::thread_metadata_store::ThreadId {
 +    cx.update(|_, cx| {
@@ -999,7 +999,7 @@ index 2c43abf..559eb6a 100644
 +pub(crate) fn shown_session(
 +    agent_panel: &Entity<AgentPanel>,
 +    cx: &VisualTestContext,
-+) -> Option<acp::SessionId> {
++) -> Option<acp_v2::SessionId> {
 +    agent_panel.read_with(cx, |panel, cx| {
 +        panel
 +            .active_agent_thread(cx)
@@ -1035,7 +1035,7 @@ index 2c43abf..559eb6a 100644
 +
 +pub(crate) fn notice_of(
 +    panel: &Entity<AgentTasksPanel>,
-+    session: &acp::SessionId,
++    session: &acp_v2::SessionId,
 +    task: &str,
 +    cx: &mut VisualTestContext,
 +) -> Option<SharedString> {
@@ -1051,10 +1051,10 @@ index 2c43abf..559eb6a 100644
 +}
 diff --git a/crates/agent_ui/src/agent_session_router.rs b/crates/agent_ui/src/agent_session_router.rs
 new file mode 100644
-index 0000000..2aabbfd
+index 0000000..9887094
 --- /dev/null
 +++ b/crates/agent_ui/src/agent_session_router.rs
-@@ -0,0 +1,472 @@
+@@ -0,0 +1,477 @@
 +//! Opens an agent session in the window that holds its thread's project.
 +//!
 +//! One routine for every entry point that names a session — the tray link
@@ -1072,7 +1072,8 @@ index 0000000..2aabbfd
 +use std::sync::Arc;
 +use std::time::Duration;
 +
-+use agent_client_protocol::schema::v1 as acp;
++use acp_thread::AgentTaskId;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use anyhow::{Context as _, Result, anyhow};
 +use fs::Fs;
 +use futures::StreamExt as _;
@@ -1105,8 +1106,12 @@ index 0000000..2aabbfd
 +    /// The window used when the thread has no local folders: a remote thread, or
 +    /// a session with neither a row nor a `cwd`. `None` uses the active window.
 +    pub fallback_window: Option<AnyWindowHandle>,
-+    /// Reserved for scrolling to a tool call (story 023); ignored here.
-+    pub tool_call_id: Option<acp::ToolCallId>,
++    /// The tool call to scroll the opened thread to, once it has loaded. Only an
++    /// entry of the root thread is scrolled to; any other id opens the thread
++    /// without scrolling.
++    pub tool_call_id: Option<acp_v2::ToolCallId>,
++    /// The task the open is for, named in the log line a scroll writes.
++    pub task_id: Option<AgentTaskId>,
 +}
 +
 +/// Where the session was opened.
@@ -1123,7 +1128,7 @@ index 0000000..2aabbfd
 +/// Every failure is an `Err` naming the session and the step that failed; the
 +/// thread is never opened in another window as a silent fallback.
 +pub fn open_agent_session(
-+    session_id: acp::SessionId,
++    session_id: acp_v2::SessionId,
 +    options: OpenAgentSessionOptions,
 +    app_state: Arc<AppState>,
 +    cx: &mut App,
@@ -1211,7 +1216,7 @@ index 0000000..2aabbfd
 +
 +/// The window and workspace the session is opened in.
 +async fn resolve_window(
-+    session_id: &acp::SessionId,
++    session_id: &acp_v2::SessionId,
 +    cwd: Option<PathBuf>,
 +    fallback_window: Option<AnyWindowHandle>,
 +    app_state: Arc<AppState>,
@@ -1313,7 +1318,7 @@ index 0000000..2aabbfd
 +/// window, which is also what a thread on a remote host gets: its folders name
 +/// paths on that host, not on this one.
 +async fn agent_session_folders(
-+    session_id: &acp::SessionId,
++    session_id: &acp_v2::SessionId,
 +    cwd: Option<PathBuf>,
 +    cx: &mut AsyncApp,
 +) -> Option<Vec<PathBuf>> {
@@ -1343,7 +1348,7 @@ index 0000000..2aabbfd
 +/// thread whose folders only partly survive is refused too, because opening the
 +/// survivors would give it a different project from the one it was started in.
 +async fn ensure_folders_exist(
-+    session_id: &acp::SessionId,
++    session_id: &acp_v2::SessionId,
 +    folders: &[PathBuf],
 +    fs: &dyn Fs,
 +) -> Result<()> {
@@ -1389,7 +1394,7 @@ index 0000000..2aabbfd
 +/// failed panel load is logged, as the workspace itself does, and does not abort
 +/// the open when the agent panel loaded anyway.
 +async fn wait_for_agent_panel(
-+    session_id: &acp::SessionId,
++    session_id: &acp_v2::SessionId,
 +    window: WindowHandle<MultiWorkspace>,
 +    workspace: &Entity<Workspace>,
 +    cx: &mut AsyncApp,
@@ -1464,7 +1469,7 @@ index 0000000..2aabbfd
 +/// active one. Anything else showing means the panel did not open the thread.
 +fn shown_conversation(
 +    panel: &AgentPanel,
-+    session_id: &acp::SessionId,
++    session_id: &acp_v2::SessionId,
 +    cx: &App,
 +) -> Option<Entity<ConversationView>> {
 +    panel
@@ -1481,7 +1486,7 @@ index 0000000..2aabbfd
 +/// loading — its window closed, or the panel moved on — is released, which
 +/// drops the observer and ends the wait.
 +async fn wait_until_loaded(
-+    session_id: &acp::SessionId,
++    session_id: &acp_v2::SessionId,
 +    conversation: WeakEntity<ConversationView>,
 +    cx: &mut AsyncApp,
 +) -> Result<()> {
@@ -1529,7 +1534,7 @@ index 0000000..2aabbfd
 +mod review;
 diff --git a/crates/agent_ui/src/agent_session_router/review_tests.rs b/crates/agent_ui/src/agent_session_router/review_tests.rs
 new file mode 100644
-index 0000000..db7fb9f
+index 0000000..228ae97
 --- /dev/null
 +++ b/crates/agent_ui/src/agent_session_router/review_tests.rs
 @@ -0,0 +1,447 @@
@@ -1541,7 +1546,7 @@ index 0000000..db7fb9f
 +use std::path::{Path, PathBuf};
 +use std::sync::Arc;
 +
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use fs::FakeFs;
 +use gpui::{
 +    AnyWindowHandle, AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle,
@@ -1612,7 +1617,7 @@ index 0000000..db7fb9f
 +    panel
 +}
 +
-+fn save_row(session: &acp::SessionId, folders: &[&str], cx: &mut TestAppContext) -> ThreadId {
++fn save_row(session: &acp_v2::SessionId, folders: &[&str], cx: &mut TestAppContext) -> ThreadId {
 +    let thread_id = ThreadId::new();
 +    let folders: Vec<&Path> = folders.iter().map(|folder| Path::new(*folder)).collect();
 +    cx.update(|cx| {
@@ -1659,7 +1664,7 @@ index 0000000..db7fb9f
 +}
 +
 +fn route(
-+    session: &acp::SessionId,
++    session: &acp_v2::SessionId,
 +    fallback: &Win,
 +    cx: &mut TestAppContext,
 +) -> gpui::Task<anyhow::Result<OpenedAgentSession>> {
@@ -1716,7 +1721,7 @@ index 0000000..db7fb9f
 +    let fs = shared_fs(cx, &["/multi/alpha", "/multi/beta"]).await;
 +    let mut one = window(&fs, &["/multi/alpha"], cx).await;
 +    let one_panel = add_agent_panel(&one.workspace, &mut one.cx);
-+    let session = acp::SessionId::new("two-folder-session");
++    let session = acp_v2::SessionId::new("two-folder-session");
 +    let thread_id = save_row(&session, &["/multi/alpha", "/multi/beta"], cx);
 +    activate(&mut one);
 +    let one_roots = visible_roots(&one.workspace, cx);
@@ -1774,7 +1779,7 @@ index 0000000..db7fb9f
 +    let fs = shared_fs(cx, &["/work/zed-patches"]).await;
 +    let mut fallback = window(&fs, &["/work/zed-patches"], cx).await;
 +    let fallback_panel = add_agent_panel(&fallback.workspace, &mut fallback.cx);
-+    let session = acp::SessionId::new("session-of-a-deleted-folder");
++    let session = acp_v2::SessionId::new("session-of-a-deleted-folder");
 +    let thread_id = save_row(&session, &["/work/deleted"], cx);
 +    activate(&mut fallback);
 +    let windows = cx.update(|cx| cx.windows().len());
@@ -1823,7 +1828,7 @@ index 0000000..db7fb9f
 +    let mut target = window(&fs, &["/work/zed"], cx).await;
 +    let mut fallback = window(&fs, &["/work/zed-patches"], cx).await;
 +    let fallback_panel = add_agent_panel(&fallback.workspace, &mut fallback.cx);
-+    let session = acp::SessionId::new("session-of-a-window-still-loading");
++    let session = acp_v2::SessionId::new("session-of-a-window-still-loading");
 +    let thread_id = save_row(&session, &["/work/zed"], cx);
 +    activate(&mut fallback);
 +
@@ -1872,7 +1877,7 @@ index 0000000..db7fb9f
 +    let target = window(&fs, &["/work/zed"], cx).await;
 +    let mut fallback = window(&fs, &["/work/zed-patches"], cx).await;
 +    let fallback_panel = add_agent_panel(&fallback.workspace, &mut fallback.cx);
-+    let session = acp::SessionId::new("session-of-a-window-loaded-without-agent-panel");
++    let session = acp_v2::SessionId::new("session-of-a-window-loaded-without-agent-panel");
 +    let thread_id = save_row(&session, &["/work/zed"], cx);
 +    target.workspace.update(cx, |workspace, _| {
 +        workspace.set_panels_task(gpui::Task::ready(Ok(())))
@@ -1907,7 +1912,7 @@ index 0000000..db7fb9f
 +    let fs = shared_fs(cx, &["/work/zed", "/work/zed-patches"]).await;
 +    let mut fallback = window(&fs, &["/work/zed-patches"], cx).await;
 +    let fallback_panel = add_agent_panel(&fallback.workspace, &mut fallback.cx);
-+    let session = acp::SessionId::new("session-while-ai-is-disabled");
++    let session = acp_v2::SessionId::new("session-while-ai-is-disabled");
 +    let thread_id = save_row(&session, &["/work/zed"], cx);
 +    activate(&mut fallback);
 +    cx.update(|cx| {
@@ -1952,7 +1957,7 @@ index 0000000..db7fb9f
 +    let target = window(&fs, &["/work/zed"], cx).await;
 +    let mut fallback = window(&fs, &["/work/zed-patches"], cx).await;
 +    let fallback_panel = add_agent_panel(&fallback.workspace, &mut fallback.cx);
-+    let session = acp::SessionId::new("session-of-a-window-closed-mid-wait");
++    let session = acp_v2::SessionId::new("session-of-a-window-closed-mid-wait");
 +    let thread_id = save_row(&session, &["/work/zed"], cx);
 +    activate(&mut fallback);
 +
@@ -1982,7 +1987,7 @@ index 0000000..db7fb9f
 +}
 diff --git a/crates/agent_ui/src/agent_session_router/routing_tests.rs b/crates/agent_ui/src/agent_session_router/routing_tests.rs
 new file mode 100644
-index 0000000..65b86f6
+index 0000000..8857542
 --- /dev/null
 +++ b/crates/agent_ui/src/agent_session_router/routing_tests.rs
 @@ -0,0 +1,402 @@
@@ -2010,7 +2015,7 @@ index 0000000..65b86f6
 +use std::sync::Arc;
 +
 +use acp_thread::StubAgentConnection;
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use fs::FakeFs;
 +use gpui::{
 +    AnyWindowHandle, AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle,
@@ -2089,7 +2094,7 @@ index 0000000..65b86f6
 +}
 +
 +/// A live, persisted thread in `win`'s agent panel; returns its session and thread id.
-+fn live_thread(win: &mut Win) -> (acp::SessionId, ThreadId) {
++fn live_thread(win: &mut Win) -> (acp_v2::SessionId, ThreadId) {
 +    let panel = win.panel();
 +    crate::test_support::open_thread_with_connection(
 +        &panel,
@@ -2105,7 +2110,7 @@ index 0000000..65b86f6
 +}
 +
 +fn save_row(
-+    session: &acp::SessionId,
++    session: &acp_v2::SessionId,
 +    folders: &[&str],
 +    remote: bool,
 +    cx: &mut TestAppContext,
@@ -2149,7 +2154,7 @@ index 0000000..65b86f6
 +    })
 +}
 +
-+fn shown_session(panel: &Entity<AgentPanel>, cx: &VisualTestContext) -> Option<acp::SessionId> {
++fn shown_session(panel: &Entity<AgentPanel>, cx: &VisualTestContext) -> Option<acp_v2::SessionId> {
 +    panel.read_with(cx, |panel, cx| {
 +        panel
 +            .active_agent_thread(cx)
@@ -2157,7 +2162,7 @@ index 0000000..65b86f6
 +    })
 +}
 +
-+fn folders_of(session: &acp::SessionId, cx: &mut TestAppContext) -> Option<Vec<PathBuf>> {
++fn folders_of(session: &acp_v2::SessionId, cx: &mut TestAppContext) -> Option<Vec<PathBuf>> {
 +    cx.update(|cx| {
 +        ThreadMetadataStore::global(cx)
 +            .read(cx)
@@ -2167,7 +2172,7 @@ index 0000000..65b86f6
 +}
 +
 +fn route(
-+    session: &acp::SessionId,
++    session: &acp_v2::SessionId,
 +    cwd: Option<&str>,
 +    fallback: &Win,
 +    cx: &mut TestAppContext,
@@ -2295,7 +2300,7 @@ index 0000000..65b86f6
 +    let fs = shared_fs(cx, &["/work/zed", "/work/zed-patches"]).await;
 +    let a = window(&fs, &["/work/zed"], true, cx).await;
 +    let mut b = window(&fs, &["/work/zed-patches"], true, cx).await;
-+    let session = acp::SessionId::new("remote-session");
++    let session = acp_v2::SessionId::new("remote-session");
 +    let thread_id = save_row(&session, &["/work/zed"], true, cx);
 +    activate(&mut b);
 +    let windows = cx.update(|cx| cx.windows().len());
@@ -2336,7 +2341,7 @@ index 0000000..65b86f6
 +    let mut b = window(&fs, &["/work/zed-patches"], true, cx).await;
 +    activate(&mut b);
 +    let windows = cx.update(|cx| cx.windows().len());
-+    let session = acp::SessionId::new("session-without-a-row");
++    let session = acp_v2::SessionId::new("session-without-a-row");
 +
 +    let routing = route(&session, Some("/work/zed"), &b, cx);
 +    cx.run_until_parked();
@@ -2368,7 +2373,7 @@ index 0000000..65b86f6
 +    let fs = shared_fs(cx, &["/work/zed", "/work/zed-patches"]).await;
 +    let _a = window(&fs, &["/work/zed"], false, cx).await;
 +    let mut b = window(&fs, &["/work/zed-patches"], true, cx).await;
-+    let session = acp::SessionId::new("session-of-a-window-without-agent-panel");
++    let session = acp_v2::SessionId::new("session-of-a-window-without-agent-panel");
 +    let thread_id = save_row(&session, &["/work/zed"], false, cx);
 +    activate(&mut b);
 +
@@ -2389,7 +2394,7 @@ index 0000000..65b86f6
 +    );
 +}
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index 4239763..916644c 100644
+index 875fcca..53b8079 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
 @@ -4,6 +4,7 @@ mod agent_diff;
@@ -2411,7 +2416,7 @@ index 4239763..916644c 100644
  pub use crate::message_editor::MessageEditorEvent;
  pub use crate::task_label::{
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 2f0dbc5..f215e14 100644
+index 67a3676..2ce0ef4 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -1822,6 +1822,14 @@ impl ConversationView {
@@ -2578,10 +2583,10 @@ index b77de80..7397d97 100644
      if stdout_is_a_pty() {
          if client::IMPERSONATE_LOGIN.is_some() {
 diff --git a/crates/zed/src/zed.rs b/crates/zed/src/zed.rs
-index 1f0510b..c518bf8 100644
+index 7580866..a85ccbd 100644
 --- a/crates/zed/src/zed.rs
 +++ b/crates/zed/src/zed.rs
-@@ -2874,6 +2874,10 @@ pub(crate) fn eager_load_active_theme_and_icon_theme(fs: Arc<dyn Fs>, cx: &mut A
+@@ -2914,6 +2914,10 @@ pub(crate) fn eager_load_active_theme_and_icon_theme(fs: Arc<dyn Fs>, cx: &mut A
      }
  }
  
@@ -2594,7 +2599,7 @@ index 1f0510b..c518bf8 100644
      use super::*;
 diff --git a/crates/zed/src/zed/agent_session_route_tests.rs b/crates/zed/src/zed/agent_session_route_tests.rs
 new file mode 100644
-index 0000000..fd9e530
+index 0000000..ba3e09d
 --- /dev/null
 +++ b/crates/zed/src/zed/agent_session_route_tests.rs
 @@ -0,0 +1,168 @@
@@ -2614,7 +2619,7 @@ index 0000000..fd9e530
 +
 +use std::path::PathBuf;
 +
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp;
 +use agent_ui::AgentPanel;
 +use agent_ui::thread_metadata_store::{ThreadId, ThreadMetadata, ThreadMetadataStore};
 +use gpui::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};

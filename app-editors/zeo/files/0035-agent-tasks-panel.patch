@@ -118,7 +118,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
-index 294c2e4..01a9da2 100644
+index b72d093..71ab82d 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -451,6 +451,33 @@ dependencies = [
@@ -155,7 +155,7 @@ index 294c2e4..01a9da2 100644
  [[package]]
  name = "agent_ui"
  version = "0.1.0"
-@@ -22395,6 +22422,7 @@ dependencies = [
+@@ -22387,6 +22414,7 @@ dependencies = [
   "agent_servers",
   "agent_settings",
   "agent_skills",
@@ -164,7 +164,7 @@ index 294c2e4..01a9da2 100644
   "anyhow",
   "ashpd",
 diff --git a/Cargo.toml b/Cargo.toml
-index 062c473..7ebd586 100644
+index 387be9f..c595d12 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -9,6 +9,7 @@ members = [
@@ -298,7 +298,7 @@ index 0000000..21945b6
 +mod test_helpers;
 diff --git a/crates/agent_tasks_panel/src/history_db.rs b/crates/agent_tasks_panel/src/history_db.rs
 new file mode 100644
-index 0000000..cb876de
+index 0000000..d1666c8
 --- /dev/null
 +++ b/crates/agent_tasks_panel/src/history_db.rs
 @@ -0,0 +1,297 @@
@@ -331,7 +331,7 @@ index 0000000..cb876de
 +use std::time::{SystemTime, UNIX_EPOCH};
 +
 +use acp_thread::{AgentTaskId, AgentTaskStatus};
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use agent_ui::TaskRecord;
 +use anyhow::{Context as _, Result, anyhow};
 +use db::{
@@ -449,7 +449,7 @@ index 0000000..cb876de
 +    /// titled from these rows once the thread is no longer open.
 +    pub async fn update_thread_title(
 +        &self,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        title: &str,
 +    ) -> Result<()> {
 +        let session = session_id.to_string();
@@ -485,7 +485,7 @@ index 0000000..cb876de
 +    /// every row of the batch is left as it was.
 +    pub async fn set_archived(
 +        &self,
-+        keys: &[(acp::SessionId, AgentTaskId)],
++        keys: &[(acp_v2::SessionId, AgentTaskId)],
 +        archived: bool,
 +    ) -> Result<()> {
 +        let keys: Vec<(String, String)> = keys
@@ -540,7 +540,7 @@ index 0000000..cb876de
 +        let status = parse_status(&status)
 +            .with_context(|| format!("reading the record of {session_id}/{task_id}"))?;
 +        let record = TaskRecord {
-+            session_id: acp::SessionId::new(session_id),
++            session_id: acp_v2::SessionId::new(session_id),
 +            task_id: AgentTaskId::from(task_id),
 +            thread_title: thread_title.map(Into::into),
 +            project: project.into(),
@@ -557,7 +557,7 @@ index 0000000..cb876de
 +    }
 +}
 +
-+fn ids_of(session_id: &acp::SessionId, task_id: &AgentTaskId) -> String {
++fn ids_of(session_id: &acp_v2::SessionId, task_id: &AgentTaskId) -> String {
 +    format!("{session_id}/{task_id}")
 +}
 +
@@ -795,7 +795,7 @@ index 0000000..442fcdf
 +}
 diff --git a/crates/agent_tasks_panel/src/history_db/statement_tests.rs b/crates/agent_tasks_panel/src/history_db/statement_tests.rs
 new file mode 100644
-index 0000000..69d5339
+index 0000000..db7724e
 --- /dev/null
 +++ b/crates/agent_tasks_panel/src/history_db/statement_tests.rs
 @@ -0,0 +1,419 @@
@@ -1192,7 +1192,7 @@ index 0000000..69d5339
 +    );
 +    assert!(find(&rows, "s1", "b").unwrap().archived);
 +
-+    let empty: [(agent_client_protocol::schema::v1::SessionId, AgentTaskId); 0] = [];
++    let empty: [(agent_client_protocol::schema::v2::SessionId, AgentTaskId); 0] = [];
 +    db.set_archived(&empty, true).await.unwrap();
 +}
 +
@@ -1220,7 +1220,7 @@ index 0000000..69d5339
 +}
 diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
 new file mode 100644
-index 0000000..256b143
+index 0000000..329d379
 --- /dev/null
 +++ b/crates/agent_tasks_panel/src/panel.rs
 @@ -0,0 +1,1069 @@
@@ -1238,7 +1238,7 @@ index 0000000..256b143
 +use std::{cmp::Reverse, ops::Range, sync::Arc};
 +
 +use acp_thread::{AgentTask, AgentTaskId, AgentTaskStatus};
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use agent_ui::{
 +    AgentPanel, DEFAULT_THREAD_TITLE, TaskRecord, TasksCard,
 +    thread_metadata_store::ThreadMetadataStore,
@@ -1388,7 +1388,7 @@ index 0000000..256b143
 +/// One thread's visible rows.
 +#[derive(Clone, Debug)]
 +pub struct PanelGroup {
-+    pub session_id: acp::SessionId,
++    pub session_id: acp_v2::SessionId,
 +    pub title: SharedString,
 +    pub rows: Vec<PanelRow>,
 +}
@@ -1412,7 +1412,7 @@ index 0000000..256b143
 +/// because `uniform_list` measures the first item and lays every other out at its height.
 +enum ListEntry {
 +    Header {
-+        session_id: acp::SessionId,
++        session_id: acp_v2::SessionId,
 +        title: SharedString,
 +        task_count: usize,
 +        /// A listed row of the group has ended unarchived, so archiving the group does
@@ -1447,8 +1447,8 @@ index 0000000..256b143
 +/// row's error.
 +#[derive(Default)]
 +struct CardSnapshot {
-+    titles: HashMap<acp::SessionId, SharedString>,
-+    errors: HashMap<(acp::SessionId, AgentTaskId), SharedString>,
++    titles: HashMap<acp_v2::SessionId, SharedString>,
++    errors: HashMap<(acp_v2::SessionId, AgentTaskId), SharedString>,
 +}
 +
 +impl CardSnapshot {
@@ -1481,7 +1481,7 @@ index 0000000..256b143
 +    /// Per listed row and per listed group; entries of rows and groups no longer listed are
 +    /// dropped on render.
 +    row_focus_handles: HashMap<TaskKey, RowFocus>,
-+    group_focus_handles: HashMap<acp::SessionId, FocusHandle>,
++    group_focus_handles: HashMap<acp_v2::SessionId, FocusHandle>,
 +    /// A row's message after a click that opened nothing, until a later click opens it.
 +    notices: HashMap<TaskKey, SharedString>,
 +    scroll_handle: UniformListScrollHandle,
@@ -1701,7 +1701,7 @@ index 0000000..256b143
 +    }
 +
 +    /// Archives every finished task of `session_id`'s thread; its running tasks stay (R3.2).
-+    pub fn archive_group(&mut self, session_id: &acp::SessionId, cx: &mut Context<Self>) {
++    pub fn archive_group(&mut self, session_id: &acp_v2::SessionId, cx: &mut Context<Self>) {
 +        self.store
 +            .update(cx, |store, cx| store.archive_group(session_id, cx));
 +    }
@@ -1816,7 +1816,7 @@ index 0000000..256b143
 +/// A thread's header: its title, its task count, and — while one of its listed tasks has
 +/// ended unarchived — the control that archives the group's finished tasks (R3.2).
 +fn render_header(
-+    session_id: &acp::SessionId,
++    session_id: &acp_v2::SessionId,
 +    title: &SharedString,
 +    task_count: usize,
 +    can_archive: bool,
@@ -1993,7 +1993,7 @@ index 0000000..256b143
 +/// A row's element id, keyed by its task rather than its place in the list, so a row's hover
 +/// and click state stay with it when rows above it come and go. Nested children keep the pair
 +/// unambiguous where a joined string would not be (`a-b` + `c` against `a` + `b-c`).
-+fn row_element_id(session_id: &acp::SessionId, task_id: &AgentTaskId) -> ElementId {
++fn row_element_id(session_id: &acp_v2::SessionId, task_id: &AgentTaskId) -> ElementId {
 +    let session = ElementId::NamedChild(
 +        Arc::new(ElementId::Name("agent-tasks-row".into())),
 +        session_id.to_string().into(),
@@ -2115,10 +2115,10 @@ index 0000000..256b143
 +/// recorded), else by its newest record that carries a title.
 +fn group_rows(
 +    rows: Vec<PanelRow>,
-+    live_titles: &HashMap<acp::SessionId, SharedString>,
++    live_titles: &HashMap<acp_v2::SessionId, SharedString>,
 +) -> Vec<PanelGroup> {
 +    let mut groups: Vec<PanelGroup> = Vec::new();
-+    let mut index_of: HashMap<acp::SessionId, usize> = HashMap::default();
++    let mut index_of: HashMap<acp_v2::SessionId, usize> = HashMap::default();
 +    for row in rows {
 +        let session_id = row.entry.record.session_id.clone();
 +        let index = *index_of.entry(session_id.clone()).or_insert_with(|| {
@@ -3297,7 +3297,7 @@ index 0000000..9e2149a
 +}
 diff --git a/crates/agent_tasks_panel/src/store.rs b/crates/agent_tasks_panel/src/store.rs
 new file mode 100644
-index 0000000..6719acf
+index 0000000..bf29be0
 --- /dev/null
 +++ b/crates/agent_tasks_panel/src/store.rs
 @@ -0,0 +1,470 @@
@@ -3317,7 +3317,7 @@ index 0000000..6719acf
 +use std::{cmp, sync::atomic::Ordering};
 +
 +use acp_thread::{AgentTask, AgentTaskId};
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use agent_ui::{TaskActivity, TaskRecord, TasksCard, ThreadTitleChanged};
 +use anyhow::Result;
 +use collections::HashMap;
@@ -3371,7 +3371,7 @@ index 0000000..6719acf
 +}
 +
 +/// A task's key in the history: the pair, since a task id is unique only within its session.
-+pub type TaskKey = (acp::SessionId, AgentTaskId);
++pub type TaskKey = (acp_v2::SessionId, AgentTaskId);
 +
 +/// A database write, queued so that writes reach the domain in the order activity arrived:
 +/// an `update_ended` that overtook its `insert_started` would update nothing, and an archive
@@ -3552,7 +3552,7 @@ index 0000000..6719acf
 +    /// card — the one a Stop must go through. `None` when no registered card holds it live.
 +    pub fn live_task(
 +        &self,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        task_id: &AgentTaskId,
 +        cx: &App,
 +    ) -> Option<(Entity<TasksCard>, AgentTask)> {
@@ -3583,7 +3583,7 @@ index 0000000..6719acf
 +
 +    /// Archives every finished task of `session_id`, leaving its running ones unarchived
 +    /// (R3.2): a running task is never archived (R3.4).
-+    pub fn archive_group(&mut self, session_id: &acp::SessionId, cx: &mut Context<Self>) {
++    pub fn archive_group(&mut self, session_id: &acp_v2::SessionId, cx: &mut Context<Self>) {
 +        let keys = self
 +            .records
 +            .iter()
@@ -3709,7 +3709,7 @@ index 0000000..6719acf
 +        cx.notify();
 +    }
 +
-+    fn position(&self, session_id: &acp::SessionId, task_id: &AgentTaskId) -> Option<usize> {
++    fn position(&self, session_id: &acp_v2::SessionId, task_id: &AgentTaskId) -> Option<usize> {
 +        self.records.iter().position(|entry| {
 +            entry.record.session_id == *session_id && entry.record.task_id == *task_id
 +        })
@@ -4856,10 +4856,10 @@ index 0000000..e589a50
 +}
 diff --git a/crates/agent_tasks_panel/src/test_helpers.rs b/crates/agent_tasks_panel/src/test_helpers.rs
 new file mode 100644
-index 0000000..2c43abf
+index 0000000..173ab4b
 --- /dev/null
 +++ b/crates/agent_tasks_panel/src/test_helpers.rs
-@@ -0,0 +1,545 @@
+@@ -0,0 +1,546 @@
 +// Story 014 — shared fixtures for the agent_tasks_panel tests (patch 0035).
 +//
 +// Declared in the crate's lib (`src/agent_tasks_panel.rs`) as
@@ -4908,14 +4908,14 @@ index 0000000..2c43abf
 +// HERE (and in `record()`), not in each test:
 +//   - `TaskRecord` derives `Clone` + `Debug`; `HistoryEntry` derives `Clone` + `Debug`.
 +//   - `acp_thread::AgentTaskId` (012, `= SharedString`); archive keys are
-+//     `(acp::SessionId, AgentTaskId)`.
++//     `(acp_v2::SessionId, AgentTaskId)`.
 +//   - The crate root re-exports `AgentTaskHistoryDb`, `HistoryEntry`, `TaskHistoryStore`,
 +//     `Availability`, `AgentTasksPanel`, `TaskFilter` (Copy + PartialEq), `PanelGroup`,
 +//     `PanelRow`, and the `ToggleFocus` action.
 +//   - `TaskHistoryStore::new(db, cx)` (entity constructor; runs the startup sweep and load),
 +//     `TaskHistoryStore::global(cx) -> Entity<Self>`, `register_card(&Entity<TasksCard>, cx)`,
 +//     `records() -> &[HistoryEntry]`, `availability() -> &Availability`,
-+//     `archive(&[key], cx)`, `unarchive(&[key], cx)`, `archive_group(&acp::SessionId, cx)`.
++//     `archive(&[key], cx)`, `unarchive(&[key], cx)`, `archive_group(&acp_v2::SessionId, cx)`.
 +//     The store is fed ONLY through `register_card`: tests emit `TaskActivity` on the real
 +//     card of an `AgentPanel` (the `EventEmitter` impl is public).
 +//   - `Availability::{Available, Unavailable(SharedString)}`.
@@ -4929,7 +4929,7 @@ index 0000000..2c43abf
 +//     `set_filter(TaskFilter, bool, cx)`; `status_message(cx) -> Option<SharedString>`;
 +//     `open_task(&key, window, cx)`, `request_stop(&key, window, cx)` (delegates to
 +//     `TasksCard::request_stop`), `archive(&key, cx)`, `unarchive(&key, cx)`,
-+//     `archive_group(&acp::SessionId, cx)`.
++//     `archive_group(&acp_v2::SessionId, cx)`.
 +
 +#![allow(dead_code)]
 +
@@ -4943,6 +4943,7 @@ index 0000000..2c43abf
 +
 +use acp_thread::{AcpThread, AgentConnection, AgentTaskId, AgentTaskStatus, StubAgentConnection};
 +use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use agent_ui::{AgentPanel, TaskActivity, TaskRecord, TasksCard};
 +use anyhow::{Result, anyhow};
 +use fs::FakeFs;
@@ -4953,12 +4954,12 @@ index 0000000..2c43abf
 +
 +use crate::{AgentTaskHistoryDb, AgentTasksPanel, HistoryEntry, PanelGroup, PanelRow};
 +
-+pub(crate) type Key = (acp::SessionId, AgentTaskId);
++pub(crate) type Key = (acp_v2::SessionId, AgentTaskId);
 +
 +pub(crate) const TASKS_KEY: &str = "_claude/tasks";
 +
-+pub(crate) fn sid(session: &str) -> acp::SessionId {
-+    acp::SessionId::new(session.to_string())
++pub(crate) fn sid(session: &str) -> acp_v2::SessionId {
++    acp_v2::SessionId::new(session.to_string())
 +}
 +
 +pub(crate) fn key(session: &str, task: &str) -> Key {
@@ -5133,7 +5134,7 @@ index 0000000..2c43abf
 +        let session_id = {
 +            let mut next = self.next_session.lock().unwrap();
 +            *next += 1;
-+            acp::SessionId::new(format!("tasks-panel-session-{}", *next))
++            acp_v2::SessionId::new(format!("tasks-panel-session-{}", *next))
 +        };
 +        let action_log = cx.new(|_| action_log::ActionLog::new(project.clone()));
 +        let thread = cx.new(|cx| {
@@ -5168,11 +5169,11 @@ index 0000000..2c43abf
 +        Task::ready(Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)))
 +    }
 +
-+    fn cancel(&self, _session_id: &acp::SessionId, _cx: &mut App) {}
++    fn cancel(&self, _session_id: &acp_v2::SessionId, _cx: &mut App) {}
 +
 +    fn stop_task(
 +        self: Rc<Self>,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        task_id: &str,
 +        _cx: &mut App,
 +    ) -> Task<Result<()>> {
@@ -5318,11 +5319,11 @@ index 0000000..2c43abf
 +    )
 +}
 +
-+pub(crate) fn session_of(thread: &Entity<AcpThread>, cx: &VisualTestContext) -> acp::SessionId {
++pub(crate) fn session_of(thread: &Entity<AcpThread>, cx: &VisualTestContext) -> acp_v2::SessionId {
 +    thread.read_with(cx, |thread, _| thread.session_id().clone())
 +}
 +
-+pub(crate) fn active_session(panels: &Panels) -> Option<acp::SessionId> {
++pub(crate) fn active_session(panels: &Panels) -> Option<acp_v2::SessionId> {
 +    panels.agent_panel.read_with(&panels.cx, |panel, cx| {
 +        panel
 +            .active_agent_thread(cx)
@@ -5406,7 +5407,7 @@ index 0000000..2c43abf
 +        .collect()
 +}
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index 7a0ed9f..ed0b003 100644
+index e9f6e20..8f37710 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -4553,8 +4553,8 @@ impl AgentPanel {
@@ -5421,7 +5422,7 @@ index 7a0ed9f..ed0b003 100644
      }
  
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index 4eef1dc..75dabf6 100644
+index 23981dc..beae776 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
 @@ -83,6 +83,7 @@ pub use crate::agent_panel::{
@@ -5433,7 +5434,7 @@ index 4eef1dc..75dabf6 100644
  pub use agent_diff::{AgentDiffPane, AgentDiffToolbar};
  pub use conversation_view::open_markdown_in_workspace;
 diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
-index 50f1002..2f699cd 100644
+index 4e41c41..ab8fd99 100644
 --- a/crates/agent_ui/src/tasks_card.rs
 +++ b/crates/agent_ui/src/tasks_card.rs
 @@ -8,11 +8,12 @@
@@ -5493,7 +5494,7 @@ index 50f1002..2f699cd 100644
 +/// session. Apart from `TaskActivity`, which tells the life of a task.
 +#[derive(Clone, Debug, PartialEq)]
 +pub struct ThreadTitleChanged {
-+    pub session_id: acp::SessionId,
++    pub session_id: acp_v2::SessionId,
 +    pub title: SharedString,
 +}
 +
@@ -5502,7 +5503,7 @@ index 50f1002..2f699cd 100644
 +/// A task as the history records it: what it was, and how it ended.
 +#[derive(Clone, Debug, PartialEq)]
 +pub struct TaskRecord {
-+    pub session_id: acp::SessionId,
++    pub session_id: acp_v2::SessionId,
 +    pub task_id: AgentTaskId,
 +    pub thread_title: Option<SharedString>,
 +    /// The last component of the thread's first work directory, or empty.
@@ -5557,7 +5558,7 @@ index 50f1002..2f699cd 100644
 +    activity_ended: HashSet<TaskKey>,
 +    /// The last title announced as `ThreadTitleChanged` for each held session, so
 +    /// a title is announced once however many views or events repeat it.
-+    announced_titles: HashMap<acp::SessionId, SharedString>,
++    announced_titles: HashMap<acp_v2::SessionId, SharedString>,
      /// Asked before telling the tray about an ending (R5.3); `None` for a card no
      /// panel hosts, which tells the tray nothing.
      in_view: Option<InViewQuery>,
@@ -5587,7 +5588,7 @@ index 50f1002..2f699cd 100644
 +    /// once it has ended, or when no held thread of `session_id` lists it.
 +    pub fn live_task(
 +        &self,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        task_id: &AgentTaskId,
 +        cx: &App,
 +    ) -> Option<AgentTask> {
@@ -5810,10 +5811,10 @@ index 50f1002..2f699cd 100644
  fn project_name(thread: &AcpThread) -> SharedString {
 diff --git a/crates/agent_ui/src/tasks_card/activity_tests.rs b/crates/agent_ui/src/tasks_card/activity_tests.rs
 new file mode 100644
-index 0000000..01a93f0
+index 0000000..d47fe6a
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/activity_tests.rs
-@@ -0,0 +1,845 @@
+@@ -0,0 +1,846 @@
 +// Story 014, task 1.1 — TasksCard emits TaskActivity, and AgentPanel exposes the card
 +// (R1.1, R1.2, R1.3, R1.4). Declared in `src/tasks_card.rs` next to story 013's modules:
 +//
@@ -5826,13 +5827,13 @@ index 0000000..01a93f0
 +//
 +// Contract assumed beyond design.md: `TaskActivity` has exactly the two variants
 +// `Started(TaskRecord)` and `Ended(TaskRecord)`; `TaskRecord` (design.md's fields) derives
-+// `Clone` + `Debug`; `TasksCard::live_task(&self, &acp::SessionId, &AgentTaskId, &App)
++// `Clone` + `Debug`; `TasksCard::live_task(&self, &acp_v2::SessionId, &AgentTaskId, &App)
 +// -> Option<AgentTask>`; closing a thread is `sync_threads` without its view (story 013).
 +
 +use std::{cell::RefCell, rc::Rc};
 +
 +use acp_thread::{AgentTaskId, AgentTaskStatus};
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use agent_settings::{AgentSettings, TasksCardSettings};
 +use gpui::{Entity, Subscription, TestAppContext, VisualTestContext};
 +use serde_json::json;
@@ -6303,7 +6304,7 @@ index 0000000..01a93f0
 +    let sb = session_of(&b, &cx);
 +    let card = card(&panel, &cx);
 +
-+    let live = |session: &acp::SessionId, task: &str, cx: &mut VisualTestContext| {
++    let live = |session: &acp_v2::SessionId, task: &str, cx: &mut VisualTestContext| {
 +        let id = AgentTaskId::from(task.to_string());
 +        card.read_with(cx, |card, cx| card.live_task(session, &id, cx))
 +    };
@@ -6321,7 +6322,7 @@ index 0000000..01a93f0
 +    );
 +    assert!(
 +        live(
-+            &acp::SessionId::new("unknown-session".to_string()),
++            &acp_v2::SessionId::new("unknown-session".to_string()),
 +            "t1",
 +            &mut cx
 +        )
@@ -6348,6 +6349,7 @@ index 0000000..01a93f0
 +
 +    use acp_thread::{AcpThread, AgentConnection, AgentTaskStatus};
 +    use agent_client_protocol::schema::v1 as acp;
++    use agent_client_protocol::schema::v2 as acp_v2;
 +    use anyhow::{Result, anyhow};
 +    use gpui::{
 +        App, AppContext as _, Entity, SharedString, Task, TestAppContext, VisualTestContext,
@@ -6368,7 +6370,7 @@ index 0000000..01a93f0
 +    #[derive(Clone)]
 +    struct SharedSessionConnection {
 +        inner: TaskActionsConnection,
-+        threads: Arc<Mutex<HashMap<acp::SessionId, WeakEntity<AcpThread>>>>,
++        threads: Arc<Mutex<HashMap<acp_v2::SessionId, WeakEntity<AcpThread>>>>,
 +    }
 +
 +    impl SharedSessionConnection {
@@ -6414,7 +6416,7 @@ index 0000000..01a93f0
 +
 +        fn load_session(
 +            self: Rc<Self>,
-+            session_id: acp::SessionId,
++            session_id: acp_v2::SessionId,
 +            _project: Entity<Project>,
 +            _work_dirs: PathList,
 +            _title: Option<SharedString>,
@@ -6444,7 +6446,7 @@ index 0000000..01a93f0
 +            self.inner.prompt(params, cx)
 +        }
 +
-+        fn cancel(&self, session_id: &acp::SessionId, cx: &mut App) {
++        fn cancel(&self, session_id: &acp_v2::SessionId, cx: &mut App) {
 +            self.inner.cancel(session_id, cx)
 +        }
 +
@@ -6468,7 +6470,7 @@ index 0000000..01a93f0
 +
 +    /// A second conversation view, outside the panel, that loads the open `session_id`.
 +    fn second_view_of(
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        connection: &SharedSessionConnection,
 +        workspace: &Entity<Workspace>,
 +        cx: &mut VisualTestContext,
@@ -6888,7 +6890,7 @@ index dd9198b..b77de80 100644
  
          repl::init(app_state.fs.clone(), cx);
 diff --git a/crates/zed/src/zed.rs b/crates/zed/src/zed.rs
-index 50959aa..1f0510b 100644
+index 367ca55..7580866 100644
 --- a/crates/zed/src/zed.rs
 +++ b/crates/zed/src/zed.rs
 @@ -782,6 +782,8 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a

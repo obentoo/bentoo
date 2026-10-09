@@ -68,7 +68,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index d115e2f..7a0ed9f 100644
+index c14e0b2..e9f6e20 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -1549,7 +1549,10 @@ impl AgentPanel {
@@ -95,7 +95,7 @@ index d115e2f..7a0ed9f 100644
 +    fn tasks_card_in_view_query(
 +        panel: WeakEntity<Self>,
 +        window_handle: gpui::AnyWindowHandle,
-+    ) -> impl Fn(&acp::SessionId, &mut App) -> bool + 'static {
++    ) -> impl Fn(&acp_v2::SessionId, &mut App) -> bool + 'static {
 +        move |session_id, cx| {
 +            // A window or panel that is gone shows nothing.
 +            window_handle
@@ -115,7 +115,7 @@ index d115e2f..7a0ed9f 100644
 +    /// `is_active` alone is not enough: switching a window to another workspace
 +    /// keeps the previous one alive without deactivating its panels, so a panel
 +    /// can be open in a workspace nobody is looking at.
-+    fn shows_session(&self, session_id: &acp::SessionId, window: &Window, cx: &App) -> bool {
++    fn shows_session(&self, session_id: &acp_v2::SessionId, window: &Window, cx: &App) -> bool {
 +        if !self.is_active {
 +            return false;
 +        }
@@ -133,7 +133,7 @@ index d115e2f..7a0ed9f 100644
      pub(crate) fn tasks_card(&self) -> &Entity<TasksCard> {
          &self.tasks_card
 diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
-index db70692..50f1002 100644
+index a955b5d..4e41c41 100644
 --- a/crates/agent_ui/src/tasks_card.rs
 +++ b/crates/agent_ui/src/tasks_card.rs
 @@ -30,6 +30,8 @@ use ui::{ButtonLike, Chip, CommonAnimationExt as _, Tooltip, prelude::*};
@@ -151,7 +151,7 @@ index db70692..50f1002 100644
  
 +/// Whether the thread of a session is in front of the user right now. The panel
 +/// that hosts the card answers it; see `TasksCard::with_in_view_query`.
-+type InViewQuery = Box<dyn Fn(&acp::SessionId, &mut App) -> bool>;
++type InViewQuery = Box<dyn Fn(&acp_v2::SessionId, &mut App) -> bool>;
 +
  /// What the card asks of the agent panel that hosts it. The card holds no handle
  /// to the panel — the panel owns the card — so it asks through an event the panel
@@ -189,7 +189,7 @@ index db70692..50f1002 100644
 +    /// back would be a cycle, and the panel's own state is what decides.
 +    pub(crate) fn with_in_view_query(
 +        mut self,
-+        in_view: impl Fn(&acp::SessionId, &mut App) -> bool + 'static,
++        in_view: impl Fn(&acp_v2::SessionId, &mut App) -> bool + 'static,
 +    ) -> Self {
 +        self.in_view = Some(Box::new(in_view));
 +        self
@@ -307,7 +307,7 @@ index 0000000..f863c60
 +}
 diff --git a/crates/agent_ui/src/tasks_card/tray.rs b/crates/agent_ui/src/tasks_card/tray.rs
 new file mode 100644
-index 0000000..8e4dd85
+index 0000000..6131499
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/tray.rs
 @@ -0,0 +1,179 @@
@@ -328,7 +328,7 @@ index 0000000..8e4dd85
 +};
 +
 +use acp_thread::{AgentTask, AgentTaskStatus};
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use gpui::{App, AppContext as _};
 +use serde::Serialize;
 +
@@ -391,7 +391,7 @@ index 0000000..8e4dd85
 +/// has no outcome to report.
 +pub(crate) fn datagram_for(
 +    task: &AgentTask,
-+    session_id: &acp::SessionId,
++    session_id: &acp_v2::SessionId,
 +    work_dir: Option<&Path>,
 +    thread_title: Option<&str>,
 +    now: SystemTime,
@@ -492,7 +492,7 @@ index 0000000..8e4dd85
 +}
 diff --git a/crates/agent_ui/src/tasks_card/tray/decision_tests.rs b/crates/agent_ui/src/tasks_card/tray/decision_tests.rs
 new file mode 100644
-index 0000000..b035a4c
+index 0000000..2be26f8
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/tray/decision_tests.rs
 @@ -0,0 +1,265 @@
@@ -506,7 +506,7 @@ index 0000000..b035a4c
 +};
 +
 +use acp_thread::{AgentTask, AgentTaskStatus};
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use gpui::{TestAppContext, VisualTestContext};
 +use serde_json::json;
 +
@@ -658,7 +658,7 @@ index 0000000..b035a4c
 +async fn model_tasks(
 +    wire: Vec<serde_json::Value>,
 +    cx: &mut TestAppContext,
-+) -> (Vec<AgentTask>, acp::SessionId, VisualTestContext) {
++) -> (Vec<AgentTask>, acp_v2::SessionId, VisualTestContext) {
 +    let (panel, mut cx) = setup_card_panel(cx).await;
 +    let connection = TaskActionsConnection::new();
 +    let thread = open_titled_thread(&panel, &connection, "T", &mut cx);
@@ -763,10 +763,10 @@ index 0000000..b035a4c
 +}
 diff --git a/crates/agent_ui/src/tasks_card/tray/dedupe_tests.rs b/crates/agent_ui/src/tasks_card/tray/dedupe_tests.rs
 new file mode 100644
-index 0000000..425920a
+index 0000000..31df055
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/tray/dedupe_tests.rs
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,277 @@
 +// Story 013 / task 9.2 — one ending, one datagram, however many views hold its
 +// thread (R5.10). Filter: `tasks_card::tray::dedupe`.
 +//
@@ -789,6 +789,7 @@ index 0000000..425920a
 +
 +use acp_thread::{AcpThread, AgentConnection};
 +use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use anyhow::{Result, anyhow};
 +use gpui::{
 +    App, AppContext as _, Entity, SharedString, Task, TestAppContext, VisualTestContext, WeakEntity,
@@ -838,7 +839,7 @@ index 0000000..425920a
 +#[derive(Clone)]
 +struct SharedSessionConnection {
 +    inner: TaskActionsConnection,
-+    threads: Arc<Mutex<HashMap<acp::SessionId, WeakEntity<AcpThread>>>>,
++    threads: Arc<Mutex<HashMap<acp_v2::SessionId, WeakEntity<AcpThread>>>>,
 +}
 +
 +impl SharedSessionConnection {
@@ -884,7 +885,7 @@ index 0000000..425920a
 +
 +    fn load_session(
 +        self: Rc<Self>,
-+        session_id: acp::SessionId,
++        session_id: acp_v2::SessionId,
 +        _project: Entity<Project>,
 +        _work_dirs: PathList,
 +        _title: Option<SharedString>,
@@ -914,7 +915,7 @@ index 0000000..425920a
 +        self.inner.prompt(params, cx)
 +    }
 +
-+    fn cancel(&self, session_id: &acp::SessionId, cx: &mut App) {
++    fn cancel(&self, session_id: &acp_v2::SessionId, cx: &mut App) {
 +        self.inner.cancel(session_id, cx)
 +    }
 +
@@ -925,7 +926,7 @@ index 0000000..425920a
 +
 +/// A second conversation view that loads the already open `session_id`.
 +fn second_view_of(
-+    session_id: &acp::SessionId,
++    session_id: &acp_v2::SessionId,
 +    connection: &SharedSessionConnection,
 +    workspace: &Entity<Workspace>,
 +    cx: &mut VisualTestContext,
@@ -1365,7 +1366,7 @@ index 0000000..b0548bd
 +}
 diff --git a/crates/agent_ui/src/tasks_card/tray/wiring_tests.rs b/crates/agent_ui/src/tasks_card/tray/wiring_tests.rs
 new file mode 100644
-index 0000000..27975cb
+index 0000000..cdd3890
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/tray/wiring_tests.rs
 @@ -0,0 +1,170 @@
@@ -1379,7 +1380,7 @@ index 0000000..27975cb
 +// in-view answer itself, not a datagram that merely failed to arrive.
 +
 +use acp_thread::AgentTask;
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use gpui::{Entity, TestAppContext, VisualTestContext};
 +use project::Project;
 +use workspace::MultiWorkspace;
@@ -1390,7 +1391,7 @@ index 0000000..27975cb
 +use crate::tasks_card::test_helpers::*;
 +
 +/// The card's answer to "is this session's thread in front of the user?".
-+fn in_view(card: &Entity<TasksCard>, session: &acp::SessionId, cx: &mut VisualTestContext) -> bool {
++fn in_view(card: &Entity<TasksCard>, session: &acp_v2::SessionId, cx: &mut VisualTestContext) -> bool {
 +    card.update(cx, |card, cx| {
 +        card.in_view
 +            .as_ref()
@@ -1503,7 +1504,7 @@ index 0000000..27975cb
 +async fn ended_task_titled(
 +    title: &str,
 +    cx: &mut TestAppContext,
-+) -> (AgentTask, acp::SessionId, VisualTestContext) {
++) -> (AgentTask, acp_v2::SessionId, VisualTestContext) {
 +    let (panel, mut cx) = setup_card_panel(cx).await;
 +    let connection = TaskActionsConnection::new();
 +    let thread = open_titled_thread(&panel, &connection, title, &mut cx);

@@ -17,9 +17,9 @@ CRATES="
 	adler2@2.0.1
 	adler32@1.2.0
 	aes@0.8.4
-	agent-client-protocol-derive@3.1.0
+	agent-client-protocol-derive@3.2.0
 	agent-client-protocol-schema@1.10.2
-	agent-client-protocol@3.1.0
+	agent-client-protocol@3.2.0
 	ahash@0.8.12
 	aho-corasick@1.1.3
 	aliasable@0.1.3
@@ -104,12 +104,14 @@ CRATES="
 	aws-smithy-eventstream@0.60.20
 	aws-smithy-http-client@1.1.10
 	aws-smithy-http@0.63.4
-	aws-smithy-json@0.62.5
+	aws-smithy-json@0.62.7
 	aws-smithy-observability@0.2.5
 	aws-smithy-query@0.60.15
-	aws-smithy-runtime-api@1.11.4
+	aws-smithy-runtime-api-macros@1.0.0
+	aws-smithy-runtime-api@1.12.3
 	aws-smithy-runtime@1.10.1
-	aws-smithy-types@1.4.7
+	aws-smithy-schema@0.1.0
+	aws-smithy-types@1.4.9
 	aws-smithy-xml@0.60.15
 	aws-types@1.3.12
 	axum-core@0.3.4
@@ -181,7 +183,6 @@ CRATES="
 	cfg-expr@0.20.9
 	cfg-if@1.0.4
 	cfg_aliases@0.2.1
-	cgl@0.3.2
 	chacha20@0.10.1
 	chardetng@0.1.17
 	chrono@0.4.42
@@ -227,12 +228,10 @@ CRATES="
 	core-graphics-helmer-fork@0.24.0
 	core-graphics-types@0.1.3
 	core-graphics-types@0.2.0
-	core-graphics2@0.5.2
 	core-graphics@0.23.2
 	core-graphics@0.24.0
 	core-services@1.0.0
 	core-text@21.0.0
-	core-video@0.5.2
 	core2@0.4.0
 	core_maths@0.1.1
 	coreaudio-rs@0.12.1
@@ -539,7 +538,6 @@ CRATES="
 	io-extras@0.19.0
 	io-lifetimes@2.0.4
 	io-lifetimes@3.0.1
-	io-surface@0.16.1
 	iovec@0.1.4
 	ipc-channel@0.19.0
 	ipnet@2.11.0
@@ -579,8 +577,6 @@ CRATES="
 	kv-log-macro@1.0.7
 	lalrpop-util@0.23.1
 	lazy_static@1.5.0
-	leak@0.1.2
-	leaky-cow@0.1.1
 	leb128@0.2.5
 	leb128fmt@0.1.0
 	lebe@0.5.3
@@ -712,6 +708,7 @@ CRATES="
 	objc2-core-image@0.2.2
 	objc2-core-media@0.3.2
 	objc2-core-services@0.3.2
+	objc2-core-text@0.3.2
 	objc2-core-video@0.3.2
 	objc2-encode@4.1.0
 	objc2-foundation@0.2.2
@@ -723,6 +720,7 @@ CRATES="
 	objc2-quartz-core@0.2.2
 	objc2-quartz-core@0.3.2
 	objc2-screen-capture-kit@0.3.2
+	objc2-security@0.3.2
 	objc2-user-notifications@0.3.2
 	objc2@0.5.2
 	objc2@0.6.3
@@ -1151,12 +1149,12 @@ CRATES="
 	tower@0.4.13
 	tower@0.5.2
 	tracing-attributes@0.1.31
-	tracing-core@0.1.35
+	tracing-core@0.1.36
 	tracing-log@0.2.0
 	tracing-serde@0.2.0
 	tracing-subscriber@0.3.22
 	tracing-tracy@0.11.4
-	tracing@0.1.43
+	tracing@0.1.44
 	tracy-client-sys@0.27.0
 	tracy-client@0.18.3
 	tree-sitter-bash@0.25.1
@@ -1425,7 +1423,7 @@ CRATES="
 	xml5ever@0.39.0
 	xmlparser@0.13.6
 	xmlwriter@0.1.0
-	xxhash-rust@0.8.15
+	xxhash-rust@0.8.16
 	y4m@0.8.0
 	yaml-rust2@0.8.1
 	yansi@1.0.1
@@ -1550,7 +1548,7 @@ declare -A GIT_CRATES=(
 # rewrites the date and EGIT_COMMIT; a second version variable it could not
 # keep current would leave a new tarball under an old, already-manifested name).
 
-EGIT_COMMIT="20aff31323605d87cc45883c706f85ec4cb04614"
+EGIT_COMMIT="089abd691765e6ffdfc09a34a29b6c7bbca18067"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.98.1"
 RUST_NEEDS_LLVM=1

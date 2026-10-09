@@ -68,7 +68,7 @@ its description, a 79-character rename stored as 60, kept across a restart.
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
-index 01a9da2..0159afb 100644
+index 71ab82d..17a10ad 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -463,11 +463,13 @@ dependencies = [
@@ -102,13 +102,13 @@ index 6010073..aa9d9dc 100644
  ui.workspace = true
  workspace.workspace = true
 diff --git a/crates/agent_tasks_panel/src/history_db.rs b/crates/agent_tasks_panel/src/history_db.rs
-index cb876de..8d0abd3 100644
+index d1666c8..f9114a0 100644
 --- a/crates/agent_tasks_panel/src/history_db.rs
 +++ b/crates/agent_tasks_panel/src/history_db.rs
 @@ -28,7 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
  
  use acp_thread::{AgentTaskId, AgentTaskStatus};
- use agent_client_protocol::schema::v1 as acp;
+ use agent_client_protocol::schema::v2 as acp_v2;
 -use agent_ui::TaskRecord;
 +use agent_ui::{TaskKey, TaskRecord};
  use anyhow::{Context as _, Result, anyhow};
@@ -538,12 +538,12 @@ index 0000000..daa2fb2
 +    );
 +}
 diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
-index 256b143..cd8d4dd 100644
+index 329d379..8b09fa1 100644
 --- a/crates/agent_tasks_panel/src/panel.rs
 +++ b/crates/agent_tasks_panel/src/panel.rs
 @@ -14,16 +14,17 @@ use std::{cmp::Reverse, ops::Range, sync::Arc};
  use acp_thread::{AgentTask, AgentTaskId, AgentTaskStatus};
- use agent_client_protocol::schema::v1 as acp;
+ use agent_client_protocol::schema::v2 as acp_v2;
  use agent_ui::{
 -    AgentPanel, DEFAULT_THREAD_TITLE, TaskRecord, TasksCard,
 +    AgentPanel, DEFAULT_THREAD_TITLE, TaskRecord, TasksCard, collapse_label, display_label,
@@ -618,7 +618,7 @@ index 256b143..cd8d4dd 100644
  /// row's error.
  #[derive(Default)]
 @@ -258,6 +287,8 @@ pub struct AgentTasksPanel {
-     group_focus_handles: HashMap<acp::SessionId, FocusHandle>,
+     group_focus_handles: HashMap<acp_v2::SessionId, FocusHandle>,
      /// A row's message after a click that opened nothing, until a later click opens it.
      notices: HashMap<TaskKey, SharedString>,
 +    /// The open rename, if any: at most one row edits its label at a time.
@@ -1113,7 +1113,7 @@ index 256b143..cd8d4dd 100644
  /// A row's element id, keyed by its task rather than its place in the list, so a row's hover
  /// and click state stay with it when rows above it come and go. Nested children keep the pair
  /// unambiguous where a joined string would not be (`a-b` + `c` against `a` + `b-c`).
-@@ -775,20 +1106,24 @@ fn row_element_id(session_id: &acp::SessionId, task_id: &AgentTaskId) -> Element
+@@ -775,20 +1106,24 @@ fn row_element_id(session_id: &acp_v2::SessionId, task_id: &AgentTaskId) -> Elem
      ElementId::NamedChild(Arc::new(session), task_id.clone())
  }
  
@@ -3006,13 +3006,13 @@ index 0000000..649e96a
 +    assert_eq!(editor_text(&mut panels), None, "the editor is closed");
 +}
 diff --git a/crates/agent_tasks_panel/src/store.rs b/crates/agent_tasks_panel/src/store.rs
-index 6719acf..fc31082 100644
+index bf29be0..75b7cec 100644
 --- a/crates/agent_tasks_panel/src/store.rs
 +++ b/crates/agent_tasks_panel/src/store.rs
 @@ -15,13 +15,15 @@ use std::{cmp, sync::atomic::Ordering};
  
  use acp_thread::{AgentTask, AgentTaskId};
- use agent_client_protocol::schema::v1 as acp;
+ use agent_client_protocol::schema::v2 as acp_v2;
 -use agent_ui::{TaskActivity, TaskRecord, TasksCard, ThreadTitleChanged};
 +use agent_ui::{
 +    TaskActivity, TaskLabels, TaskRecord, TasksCard, ThreadTitleChanged, normalize_user_label,
@@ -3028,7 +3028,7 @@ index 6719acf..fc31082 100644
  };
  
  use crate::{AgentTaskHistoryDb, HistoryEntry};
-@@ -76,8 +78,15 @@ pub type TaskKey = (acp::SessionId, AgentTaskId);
+@@ -76,8 +78,15 @@ pub type TaskKey = (acp_v2::SessionId, AgentTaskId);
  enum HistoryWrite {
      Started(TaskRecord),
      Ended(TaskRecord),
@@ -3409,7 +3409,7 @@ index 0000000..498f40f
 +    }
 +}
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index 75dabf6..4239763 100644
+index beae776..875fcca 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
 @@ -25,6 +25,7 @@ mod model_selector;
@@ -3533,7 +3533,7 @@ index 0000000..f27e064
 +mod tests;
 diff --git a/crates/agent_ui/src/task_label/task_label_tests.rs b/crates/agent_ui/src/task_label/task_label_tests.rs
 new file mode 100644
-index 0000000..d9aef1e
+index 0000000..57a3790
 --- /dev/null
 +++ b/crates/agent_ui/src/task_label/task_label_tests.rs
 @@ -0,0 +1,239 @@
@@ -3549,7 +3549,7 @@ index 0000000..d9aef1e
 +// Hostile fixtures come before benign ones.
 +
 +use acp_thread::AgentTaskId;
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use gpui::SharedString;
 +
 +use crate::task_label::{
@@ -3558,9 +3558,9 @@ index 0000000..d9aef1e
 +
 +const HEREDOC: &str = "cat > f <<'EOF'\n{\"a\": 1}\nEOF";
 +
-+fn key(session: &str, task: &str) -> (acp::SessionId, AgentTaskId) {
++fn key(session: &str, task: &str) -> (acp_v2::SessionId, AgentTaskId) {
 +    (
-+        acp::SessionId::new(session.to_string()),
++        acp_v2::SessionId::new(session.to_string()),
 +        AgentTaskId::from(task.to_string()),
 +    )
 +}
@@ -3777,7 +3777,7 @@ index 0000000..d9aef1e
 +    assert!(!collapsed.contains('…'));
 +}
 diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
-index 2f699cd..f3a3b11 100644
+index ab8fd99..2d76e50 100644
 --- a/crates/agent_ui/src/tasks_card.rs
 +++ b/crates/agent_ui/src/tasks_card.rs
 @@ -30,6 +30,7 @@ use ui::{ButtonLike, Chip, CommonAnimationExt as _, Tooltip, prelude::*};
@@ -3813,7 +3813,7 @@ index 2f699cd..f3a3b11 100644
  /// A task is named by its thread and its id: two threads may run tasks with the
  /// same id, and the adapter only promises uniqueness within a session.
 -pub(crate) type TaskKey = (acp::SessionId, AgentTaskId);
-+pub type TaskKey = (acp::SessionId, AgentTaskId);
++pub type TaskKey = (acp_v2::SessionId, AgentTaskId);
  
  /// Whether the thread of a session is in front of the user right now. The panel
  /// that hosts the card answers it; see `TasksCard::with_in_view_query`.
@@ -3941,7 +3941,7 @@ index 2f699cd..f3a3b11 100644
  fn card_tooltip(
 diff --git a/crates/agent_ui/src/tasks_card/label_tests.rs b/crates/agent_ui/src/tasks_card/label_tests.rs
 new file mode 100644
-index 0000000..33a3f21
+index 0000000..71988c1
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/label_tests.rs
 @@ -0,0 +1,355 @@
@@ -4040,7 +4040,7 @@ index 0000000..33a3f21
 +}
 +
 +fn set_label(
-+    key: (agent_client_protocol::schema::v1::SessionId, AgentTaskId),
++    key: (agent_client_protocol::schema::v2::SessionId, AgentTaskId),
 +    label: Option<&str>,
 +    cx: &mut VisualTestContext,
 +) {

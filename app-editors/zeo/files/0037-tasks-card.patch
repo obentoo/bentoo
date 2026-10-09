@@ -282,7 +282,7 @@ index 0000000..54bdc62
 +    }
 +}
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index d999899..d115e2f 100644
+index 715a483..c14e0b2 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -39,6 +39,7 @@ use crate::ExpandMessageEditor;
@@ -436,7 +436,7 @@ index d999899..d115e2f 100644
 +    /// is `session_id`'s.
 +    fn held_conversation_view(
 +        &self,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        cx: &App,
 +    ) -> Option<Entity<ConversationView>> {
 +        self.conversation_views().into_iter().find(|view| {
@@ -450,9 +450,9 @@ index d999899..d115e2f 100644
 +    /// (R4.6); a failure is shown on the task's row.
 +    fn open_task_from_card(
 +        &mut self,
-+        session_id: acp::SessionId,
++        session_id: acp_v2::SessionId,
 +        task_id: acp_thread::AgentTaskId,
-+        tool_call_id: Option<&acp::ToolCallId>,
++        tool_call_id: Option<&acp_v2::ToolCallId>,
 +        window: &mut Window,
 +        cx: &mut Context<Self>,
 +    ) {
@@ -472,8 +472,8 @@ index d999899..d115e2f 100644
 +
 +    fn open_thread_at_tool_call(
 +        &mut self,
-+        session_id: &acp::SessionId,
-+        tool_call_id: Option<&acp::ToolCallId>,
++        session_id: &acp_v2::SessionId,
++        tool_call_id: Option<&acp_v2::ToolCallId>,
 +        window: &mut Window,
 +        cx: &mut Context<Self>,
 +    ) -> Result<()> {
@@ -756,7 +756,7 @@ index d999899..d115e2f 100644
      }
  
      /// Opens an external thread using an arbitrary AgentServer.
-@@ -14471,8 +14738,8 @@ mod tests {
+@@ -14472,8 +14739,8 @@ mod tests {
          // directly remove from retained_threads and drop the handle
          // so on_release → close_all_sessions fires only on A.
          drop(retained_conversation_a);
@@ -768,7 +768,7 @@ index d999899..d115e2f 100644
          cx.run_until_parked();
  
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index b553947..4eef1dc 100644
+index 224b6d3..23981dc 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
 @@ -25,6 +25,7 @@ mod model_selector;
@@ -791,7 +791,7 @@ index b553947..4eef1dc 100644
              max_idle_retained_threads: 5,
              threads_sidebar: agent_settings::ThreadsSidebarSettings {
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index a585eea..2f0dbc5 100644
+index 939a008..67a3676 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -1862,21 +1862,30 @@ impl ConversationView {
@@ -835,7 +835,7 @@ index a585eea..2f0dbc5 100644
                          active.sync_generating_indicator(cx);
                      });
 diff --git a/crates/agent_ui/src/entry_view_state.rs b/crates/agent_ui/src/entry_view_state.rs
-index 54ea5eb..7f36b58 100644
+index 92158c9..3cd98fc 100644
 --- a/crates/agent_ui/src/entry_view_state.rs
 +++ b/crates/agent_ui/src/entry_view_state.rs
 @@ -229,6 +229,11 @@ impl EntryViewState {
@@ -852,7 +852,7 @@ index 54ea5eb..7f36b58 100644
          index: usize,
 diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
 new file mode 100644
-index 0000000..db70692
+index 0000000..a955b5d
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card.rs
 @@ -0,0 +1,1625 @@
@@ -874,7 +874,7 @@ index 0000000..db70692
 +};
 +
 +use acp_thread::{AcpThread, AcpThreadEvent, AgentTask, AgentTaskId, AgentTaskStatus};
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use agent_settings::AgentSettings;
 +use collections::{HashMap, HashSet};
 +use gpui::{
@@ -954,9 +954,9 @@ index 0000000..db70692
 +    /// root thread holds that tool call, scroll to it (R4.6). A failure comes back
 +    /// through `set_row_error` on the task's row.
 +    OpenTask {
-+        session_id: acp::SessionId,
++        session_id: acp_v2::SessionId,
 +        task_id: AgentTaskId,
-+        tool_call_id: Option<acp::ToolCallId>,
++        tool_call_id: Option<acp_v2::ToolCallId>,
 +    },
 +}
 +
@@ -965,7 +965,7 @@ index 0000000..db70692
 +/// The rows of one thread, as the card lists them.
 +#[derive(Clone, Debug)]
 +pub struct ThreadGroup {
-+    pub session_id: acp::SessionId,
++    pub session_id: acp_v2::SessionId,
 +    pub title: SharedString,
 +    /// The last component of the thread's first work directory, or empty.
 +    pub project: SharedString,
@@ -1006,7 +1006,7 @@ index 0000000..db70692
 +    /// survives a repaint (Q14); a row's handles go when the row does.
 +    row_focus_handles: HashMap<(TaskKey, RowControl), FocusHandle>,
 +    /// The same for each group header's Open control; it goes with its group.
-+    group_focus_handles: HashMap<acp::SessionId, FocusHandle>,
++    group_focus_handles: HashMap<acp_v2::SessionId, FocusHandle>,
 +}
 +
 +/// A per-row control that takes keyboard focus.
@@ -1037,7 +1037,7 @@ index 0000000..db70692
 +struct HeldThread {
 +    thread: WeakEntity<AcpThread>,
 +    thread_id: EntityId,
-+    session_id: acp::SessionId,
++    session_id: acp_v2::SessionId,
 +    _subscription: Subscription,
 +}
 +
@@ -1217,7 +1217,7 @@ index 0000000..db70692
 +    #[cfg(test)]
 +    pub(crate) fn watch_focus_handle(
 +        &self,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        task_id: &AgentTaskId,
 +    ) -> Option<FocusHandle> {
 +        self.row_focus_handles
@@ -1228,7 +1228,7 @@ index 0000000..db70692
 +    #[cfg(test)]
 +    pub(crate) fn stop_focus_handle(
 +        &self,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        task_id: &AgentTaskId,
 +    ) -> Option<FocusHandle> {
 +        self.row_focus_handles
@@ -1239,7 +1239,7 @@ index 0000000..db70692
 +    #[cfg(test)]
 +    pub(crate) fn background_focus_handle(
 +        &self,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        task_id: &AgentTaskId,
 +    ) -> Option<FocusHandle> {
 +        self.row_focus_handles
@@ -1253,7 +1253,7 @@ index 0000000..db70692
 +    #[cfg(test)]
 +    pub(crate) fn open_focus_handle(
 +        &self,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        task_id: &AgentTaskId,
 +    ) -> Option<FocusHandle> {
 +        self.row_focus_handles
@@ -1264,7 +1264,7 @@ index 0000000..db70692
 +    #[cfg(test)]
 +    pub(crate) fn group_open_focus_handle(
 +        &self,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +    ) -> Option<FocusHandle> {
 +        self.group_focus_handles.get(session_id).cloned()
 +    }
@@ -1272,7 +1272,7 @@ index 0000000..db70692
 +    /// Marks or unmarks one thread's task as watched (R3.1).
 +    pub fn toggle_watch(
 +        &mut self,
-+        session_id: acp::SessionId,
++        session_id: acp_v2::SessionId,
 +        task_id: AgentTaskId,
 +        cx: &mut Context<Self>,
 +    ) {
@@ -1288,7 +1288,7 @@ index 0000000..db70692
 +    /// closed — is a Cancel, never a Stop.
 +    pub fn request_stop(
 +        &mut self,
-+        session_id: acp::SessionId,
++        session_id: acp_v2::SessionId,
 +        task_id: AgentTaskId,
 +        window: &mut Window,
 +        cx: &mut Context<Self>,
@@ -1364,7 +1364,7 @@ index 0000000..db70692
 +    /// answer that nothing moved, is shown on the row (R4.7).
 +    pub fn send_to_background(
 +        &mut self,
-+        session_id: acp::SessionId,
++        session_id: acp_v2::SessionId,
 +        task_id: AgentTaskId,
 +        cx: &mut Context<Self>,
 +    ) {
@@ -1418,7 +1418,7 @@ index 0000000..db70692
 +    /// started it (R4.6). An ended row still on show opens the same way.
 +    pub fn open_task(
 +        &mut self,
-+        session_id: acp::SessionId,
++        session_id: acp_v2::SessionId,
 +        task_id: AgentTaskId,
 +        _window: &mut Window,
 +        cx: &mut Context<Self>,
@@ -1435,7 +1435,7 @@ index 0000000..db70692
 +    /// task was targeted — the oldest running, else the oldest on show.
 +    fn open_group(
 +        &mut self,
-+        session_id: acp::SessionId,
++        session_id: acp_v2::SessionId,
 +        window: &mut Window,
 +        cx: &mut Context<Self>,
 +    ) {
@@ -1465,7 +1465,7 @@ index 0000000..db70692
 +    fn emit_open(
 +        &mut self,
 +        (session_id, task_id): TaskKey,
-+        tool_call_id: Option<acp::ToolCallId>,
++        tool_call_id: Option<acp_v2::ToolCallId>,
 +        cx: &mut Context<Self>,
 +    ) {
 +        cx.emit(TasksCardEvent::OpenTask {
@@ -1487,7 +1487,7 @@ index 0000000..db70692
 +        cx.notify();
 +    }
 +
-+    fn row(&self, session_id: &acp::SessionId, task: AgentTask) -> TaskRow {
++    fn row(&self, session_id: &acp_v2::SessionId, task: AgentTask) -> TaskRow {
 +        let key = (session_id.clone(), task.id.clone());
 +        TaskRow {
 +            watched: self.watched.contains(&key),
@@ -1760,7 +1760,7 @@ index 0000000..db70692
 +
 +    /// Drops every piece of state that belongs to a thread the card no longer holds.
 +    fn forget_unheld_sessions(&mut self, cx: &mut Context<Self>) {
-+        let held: HashSet<acp::SessionId> = self
++        let held: HashSet<acp_v2::SessionId> = self
 +            .held_threads()
 +            .map(|held| held.session_id.clone())
 +            .collect();
@@ -1972,7 +1972,7 @@ index 0000000..db70692
 +
 +    fn render_row(
 +        &mut self,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        row: TaskRow,
 +        now: SystemTime,
 +        cx: &mut Context<Self>,
@@ -2234,7 +2234,7 @@ index 0000000..db70692
 +
 +/// The tool call a "Send to Background" for `task` is addressed to; `None` when
 +/// the task is already in the background or has no tool call to address (R4.4).
-+fn background_target(task: &AgentTask) -> Option<&acp::ToolCallId> {
++fn background_target(task: &AgentTask) -> Option<&acp_v2::ToolCallId> {
 +    task.tool_call_id.as_ref().filter(|_| !task.background)
 +}
 +
@@ -2919,16 +2919,17 @@ index 0000000..ac5de33
 +}
 diff --git a/crates/agent_ui/src/tasks_card/group_open_tests.rs b/crates/agent_ui/src/tasks_card/group_open_tests.rs
 new file mode 100644
-index 0000000..fd5303a
+index 0000000..f35dd10
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/group_open_tests.rs
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,162 @@
 +// Story 013 / task 9.1 — activating a thread group's header opens the thread at
 +// its oldest running task's tool call, or only opens it when no running task has
 +// one (R4.8). Filter: `tasks_card::group_open`.
 +
 +use acp_thread::{AcpThread, AgentThreadEntry};
 +use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
 +
 +use super::test_helpers::*;
@@ -2992,7 +2993,7 @@ index 0000000..fd5303a
 +}
 +
 +/// Clicks the painted header of `session`'s group, as the user does.
-+fn click_group_header(session: &acp::SessionId, cx: &mut VisualTestContext) {
++fn click_group_header(session: &acp_v2::SessionId, cx: &mut VisualTestContext) {
 +    draw(cx);
 +    // `debug_bounds` takes a `&'static str`; the selector carries the session id.
 +    let selector: &'static str = format!("tasks-card-open-group-{}", session.0).leak();
@@ -3786,7 +3787,7 @@ index 0000000..3eea8da
 +}
 diff --git a/crates/agent_ui/src/tasks_card/panel_close_tests.rs b/crates/agent_ui/src/tasks_card/panel_close_tests.rs
 new file mode 100644
-index 0000000..ed8af59
+index 0000000..2c4f9cd
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/panel_close_tests.rs
 @@ -0,0 +1,86 @@
@@ -3827,7 +3828,7 @@ index 0000000..ed8af59
 +fn sessions(
 +    panel: &gpui::Entity<crate::AgentPanel>,
 +    cx: &mut gpui::VisualTestContext,
-+) -> Vec<agent_client_protocol::schema::v1::SessionId> {
++) -> Vec<agent_client_protocol::schema::v2::SessionId> {
 +    let card = card(panel, cx);
 +    rows(&card, cx)
 +        .into_iter()
@@ -4265,10 +4266,10 @@ index 0000000..49f0bb1
 +}
 diff --git a/crates/agent_ui/src/tasks_card/row_error_tests.rs b/crates/agent_ui/src/tasks_card/row_error_tests.rs
 new file mode 100644
-index 0000000..8b8630f
+index 0000000..7371783
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/row_error_tests.rs
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,182 @@
 +// Story 013 / task 5.2 — the row-error lifecycle owed by 5.1 (R4.3, R4.7).
 +// Filter: `tasks_card::row_error`.
 +
@@ -4276,6 +4277,7 @@ index 0000000..8b8630f
 +
 +use acp_thread::{AcpThread, AgentConnection};
 +use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use anyhow::{Context as _, Result, anyhow};
 +use gpui::{App, AppContext as _, Entity, SharedString, Task, TestAppContext};
 +use project::{AgentId, Project};
@@ -4403,7 +4405,7 @@ index 0000000..8b8630f
 +                self.clone(),
 +                project,
 +                action_log,
-+                acp::SessionId::new("tasks-card-not-running-session"),
++                acp_v2::SessionId::new("tasks-card-not-running-session"),
 +                watch::Receiver::constant(agent_client_protocol::schema::v2::PromptCapabilities::new()),
 +                cx,
 +            )
@@ -4427,13 +4429,13 @@ index 0000000..8b8630f
 +        self.inner.prompt(params, cx)
 +    }
 +
-+    fn cancel(&self, session_id: &acp::SessionId, cx: &mut App) {
++    fn cancel(&self, session_id: &acp_v2::SessionId, cx: &mut App) {
 +        self.inner.cancel(session_id, cx)
 +    }
 +
 +    fn stop_task(
 +        self: Rc<Self>,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        task_id: &str,
 +        _cx: &mut App,
 +    ) -> Task<Result<()>> {
@@ -4608,10 +4610,10 @@ index 0000000..54c31cc
 +}
 diff --git a/crates/agent_ui/src/tasks_card/test_helpers.rs b/crates/agent_ui/src/tasks_card/test_helpers.rs
 new file mode 100644
-index 0000000..291168d
+index 0000000..218492b
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/test_helpers.rs
-@@ -0,0 +1,418 @@
+@@ -0,0 +1,419 @@
 +// Story 013 — shared fixtures for the tasks card tests (patch 0033/0034).
 +//
 +// Declared in `src/tasks_card.rs` as:
@@ -4653,17 +4655,17 @@ index 0000000..291168d
 +//
 +// Contract assumed beyond design.md's signatures (the card's projection types):
 +//   - the card is created in `AgentPanel::new`; `AgentPanel::tasks_card(&self) -> &Entity<TasksCard>`
-+//   - `ThreadGroup { session_id: acp::SessionId, title: SharedString, project: SharedString, rows: Vec<TaskRow> }`
++//   - `ThreadGroup { session_id: acp_v2::SessionId, title: SharedString, project: SharedString, rows: Vec<TaskRow> }`
 +//   - `TaskRow { task: AgentTask, watched: bool, error: Option<SharedString> }`
 +//   - `TasksCard::is_minimized(&self) -> bool`
-+//   - actions keyed by `(acp::SessionId, AgentTaskId)` (012: `pub type AgentTaskId = SharedString`):
++//   - actions keyed by `(acp_v2::SessionId, AgentTaskId)` (012: `pub type AgentTaskId = SharedString`):
 +//     `toggle_watch(sid, id, cx)`, `toggle_minimized(cx)`, `request_stop(sid, id, window, cx)`,
 +//     `send_to_background(sid, id, cx)`, `open_task(sid, id, window, cx)`
 +//   - debug selectors: `tasks-card`, `tasks-card-pill`, `tasks-card-row-{task_id}`,
 +//     `tasks-card-details-{task_id}`, `tasks-card-background-{task_id}`,
 +//     `tasks-card-elapsed-{task_id}` (running row), `tasks-card-ended-{task_id}` (an ended
 +//     row's final status and duration)
-+//   - tray: `datagram_for(task: &AgentTask, session_id: &acp::SessionId, work_dir: Option<&Path>,
++//   - tray: `datagram_for(task: &AgentTask, session_id: &acp_v2::SessionId, work_dir: Option<&Path>,
 +//     thread_title: Option<&str>, now: SystemTime) -> Option<TaskOutcomeDatagram>`
 +
 +#![allow(dead_code)]
@@ -4678,6 +4680,7 @@ index 0000000..291168d
 +
 +use acp_thread::{AcpThread, AgentConnection, StubAgentConnection};
 +use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::schema::v2 as acp_v2;
 +use anyhow::{Result, anyhow};
 +use fs::FakeFs;
 +use gpui::{
@@ -4772,7 +4775,7 @@ index 0000000..291168d
 +        let session_id = {
 +            let mut next = self.next_session.lock().unwrap();
 +            *next += 1;
-+            acp::SessionId::new(format!("tasks-card-session-{}", *next))
++            acp_v2::SessionId::new(format!("tasks-card-session-{}", *next))
 +        };
 +        let action_log = cx.new(|_| action_log::ActionLog::new(project.clone()));
 +        let thread = cx.new(|cx| {
@@ -4807,12 +4810,12 @@ index 0000000..291168d
 +        Task::ready(Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)))
 +    }
 +
-+    fn cancel(&self, _session_id: &acp::SessionId, _cx: &mut App) {}
++    fn cancel(&self, _session_id: &acp_v2::SessionId, _cx: &mut App) {}
 +
 +    // Story 012's task actions (AgentConnection, design.md of 012).
 +    fn stop_task(
 +        self: Rc<Self>,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        task_id: &str,
 +        _cx: &mut App,
 +    ) -> Task<Result<()>> {
@@ -4828,7 +4831,7 @@ index 0000000..291168d
 +
 +    fn background_task(
 +        self: Rc<Self>,
-+        session_id: &acp::SessionId,
++        session_id: &acp_v2::SessionId,
 +        tool_call_id: &str,
 +        _cx: &mut App,
 +    ) -> Task<Result<bool>> {
@@ -4901,7 +4904,7 @@ index 0000000..291168d
 +    thread
 +}
 +
-+pub(crate) fn session_of(thread: &Entity<AcpThread>, cx: &VisualTestContext) -> acp::SessionId {
++pub(crate) fn session_of(thread: &Entity<AcpThread>, cx: &VisualTestContext) -> acp_v2::SessionId {
 +    thread.read_with(cx, |thread, _| thread.session_id().clone())
 +}
 +
@@ -4968,7 +4971,7 @@ index 0000000..291168d
 +/// The rows of the group for `session` (empty when the thread has no group).
 +pub(crate) fn rows_of(
 +    card: &Entity<TasksCard>,
-+    session: &acp::SessionId,
++    session: &acp_v2::SessionId,
 +    cx: &mut VisualTestContext,
 +) -> Vec<TaskRow> {
 +    rows(card, cx)
@@ -4984,7 +4987,7 @@ index 0000000..291168d
 +
 +pub(crate) fn find_row(
 +    card: &Entity<TasksCard>,
-+    session: &acp::SessionId,
++    session: &acp_v2::SessionId,
 +    task_id: &str,
 +    cx: &mut VisualTestContext,
 +) -> Option<TaskRow> {
