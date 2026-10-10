@@ -31,15 +31,15 @@ CRATES="
 	cc@1.4.4
 	cfg-if@1.0.4
 	cfg_aliases@0.2.2
-	clap@4.6.6
-	clap_builder@4.6.6
-	clap_complete@4.6.9
-	clap_derive@4.6.4
+	clap@4.6.7
+	clap_builder@4.6.7
+	clap_complete@4.6.11
+	clap_derive@4.6.7
 	clap_lex@1.1.0
 	codespan-reporting@0.13.1
 	colorchoice@1.0.5
 	convert_case@0.10.0
-	convert_case@0.11.0
+	convert_case@0.12.0
 	coolor@1.1.0
 	crokey-proc_macros@1.5.0
 	crokey@1.5.0
@@ -56,6 +56,8 @@ CRATES="
 	derive_more-impl@2.1.1
 	derive_more@2.1.1
 	difflib@0.4.0
+	directories@6.0.0
+	dirs-sys@0.5.0
 	document-features@0.2.12
 	dyn-clone@1.0.20
 	equivalent@1.0.2
@@ -65,6 +67,7 @@ CRATES="
 	float-cmp@0.10.0
 	fluent-uri@0.4.1
 	fnv@1.0.7
+	fs2@0.4.3
 	futures-channel@0.3.34
 	futures-core@0.3.34
 	futures-executor@0.3.34
@@ -93,6 +96,7 @@ CRATES="
 	libc@0.2.189
 	libloading@0.9.0
 	libm@0.2.16
+	libredox@0.1.25
 	linux-raw-sys@0.12.1
 	litrs@1.0.0
 	lock_api@0.4.14
@@ -103,11 +107,11 @@ CRATES="
 	minicov@0.3.9
 	minimad@0.16.0
 	mio@1.2.2
-	napi-build@2.4.1
-	napi-derive-backend@6.1.2
-	napi-derive@3.6.3
-	napi-sys@3.3.0
-	napi@3.12.2
+	napi-build@2.5.0
+	napi-derive-backend@6.1.4
+	napi-derive@3.6.10
+	napi-sys@3.3.2
+	napi@3.13.0
 	nix@0.31.3
 	nohash-hasher@0.2.0
 	normalize-line-endings@0.3.0
@@ -116,6 +120,7 @@ CRATES="
 	once_cell@1.21.4
 	once_cell_polyfill@1.70.2
 	oorandom@11.1.5
+	option-ext@0.2.0
 	parking_lot@0.12.5
 	parking_lot_core@0.9.12
 	percent-encoding@2.3.2
@@ -136,6 +141,7 @@ CRATES="
 	quote@1.0.47
 	r-efi@6.0.0
 	redox_syscall@0.5.18
+	redox_users@0.5.3
 	ref-cast-impl@1.0.27
 	ref-cast@1.0.27
 	regex-automata@0.4.18
@@ -169,7 +175,7 @@ CRATES="
 	signal-hook@0.3.18
 	similar@3.2.0
 	slab@0.4.12
-	smallvec@1.15.2
+	smallvec@1.16.2
 	streaming-iterator@0.1.9
 	strict@0.2.0
 	strsim@0.11.1
@@ -183,20 +189,20 @@ CRATES="
 	target-triple@1.0.1
 	tempfile@3.27.0
 	termcolor@1.4.1
-	termimad@0.35.2
+	termimad@0.35.5
 	terminal-light@1.9.1
 	termtree@0.5.1
 	thiserror-impl@1.0.69
-	thiserror-impl@2.0.20
+	thiserror-impl@2.0.21
 	thiserror@1.0.69
-	thiserror@2.0.20
+	thiserror@2.0.21
 	thread_local@1.1.10
 	tokio-macros@2.7.2
 	tokio-stream@0.1.19
 	tokio-util@0.7.19
-	tokio@1.53.1
+	tokio@1.53.2
 	toml_datetime@1.1.1+spec-1.1.0
-	toml_edit@0.25.13+spec-1.1.0
+	toml_edit@0.25.15+spec-1.1.0
 	toml_parser@1.1.3+spec-1.1.0
 	toml_writer@1.1.2+spec-1.1.0
 	tower-layer@0.3.3
@@ -236,6 +242,7 @@ CRATES="
 	tree-sitter-swift@0.7.3
 	tree-sitter-typescript@0.23.2
 	tree-sitter-yaml@0.7.2
+	tree-sitter-zig@1.1.2
 	tree-sitter@0.27.0
 	typed-builder-macro@0.21.2
 	typed-builder@0.21.2
@@ -292,7 +299,7 @@ LICENSE="MIT"
 # Dependent crate licenses
 LICENSE+="
 	Apache-2.0 Apache-2.0-with-LLVM-exceptions BSD-2 ISC MIT MIT-0
-	Unicode-3.0
+	MPL-2.0 Unicode-3.0
 "
 SLOT="0"
 KEYWORDS="~amd64 ~arm64"
