@@ -1,0 +1,5088 @@
+From 164e925f9285003d239583affd6d6ceef07e3c88 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 9 Oct 2026 01:09:44 -0300
+Subject: [PATCH] agent: give thread organization a store of its own
+
+Zeo's sidebar is about to gain a Pinned section, drag-reordered threads,
+tags, cross-project lists and sub-threads linked to their parent (stories
+for patches 0049-0055). Each needs to remember something per thread across
+restarts. This patch is that memory, with no UI: story 031, 2026-10-09.
+
+Why a domain of its own. sqlez migrations are positional per domain and a
+changed step aborts startup ("Migration changed for {domain} at step
+{index}"). A step appended to upstream's ThreadMetadataDb list would be
+overtaken by upstream's next one and stop Zeo from starting. So
+ThreadOrganizationDb is its own domain, beside upstream's in the same file,
+with an append-only list -- the shape 0035's AgentTaskHistoryDb already
+proved. Step 0 must never be edited once it ships; later stories append.
+
+Schema (step 0):
+
+  thread_organization(thread_id PK, pinned_position, manual_position,
+                      manual_project_key, list_id, parent_thread_id,
+                      fork_kind CHECK with_context|clean)
+  thread_lists(id AUTOINCREMENT, name, name_key UNIQUE, position)
+  thread_tags(thread_id, tag_key) PK both;  tags(tag_key PK, display)
+  project_sort_mode(project_key PK, mode CHECK manual)
+
+The project order itself is not here: upstream already persists it per
+window (multi_workspace_state).
+
+  thread_organization.rs adds ThreadOrganizationStore, a global entity that
+  loads every row once (synchronously, retried on a busy read), answers
+  from memory, and writes through one ordered background writer, one
+  transaction per user action. Reads: organization, pinned, sort_mode,
+  manual_position_in(thread, project), lists, threads_in_list, tags,
+  all_tags, parent, children, sub_threads. Writes: pin/unpin/move_pinned,
+  set_manual_order/set_sort_mode (per-project Recent or Manual),
+  create/rename/move/delete_list, set_list, add/remove_tag, set_parent.
+
+Rules decided with the requester: deleting a list keeps its threads, which
+only lose the list; tags are case-insensitive (Unicode to_lowercase, never
+SQL LOWER, which folds ASCII only) and display their first spelling; a
+sub-thread outlives its parent with a dangling link; a draft (no session
+yet) cannot be organized; an archived thread keeps everything. Limits: a
+tag is 1-32 characters with no whitespace, '#' or ','; at most 20 per
+thread; a list name is 1-64 characters, unique ignoring case.
+
+ProjectKey is the JSON array [host, [sorted main-worktree paths]], host
+null locally or ["ssh"|"wsl"|"docker", <the fields
+same_remote_connection_identity compares>]: arrays, because an object's key
+order depends on serde_json's preserve_order feature; JSON, because a
+folder named "/a\n/b" must not collide with /a and /b.
+
+Forward compatibility: only the columns this build owns are written
+(INSERT .. ON CONFLICT DO UPDATE), the parent link by its own upsert. A row
+holding a value this build does not recognize (a newer Zeo wrote it) is
+skipped at load with a warning naming the thread, never overwritten, and
+deleted only when its thread is.
+
+Failure: the in-memory fallback (db::ALL_FILE_DB_FAILED) and a failed load
+keep organization working for the session and warn once; a failed write
+logs the operation and the thread or list ids -- never tag, list or project
+text.
+
+Upstream lines touched, three: `pub mod thread_organization;` and
+`thread_organization::init(cx);` in agent_ui.rs, and
+`crate::thread_organization::forget(thread_id, cx);` as the first line of
+ThreadMetadataStore::delete, the funnel of every deletion path -- the shape
+of the draft_prompt_store call there, placed at the top so 0036's hunk at the
+end of delete keeps its context.
+forget never reads ThreadMetadataStore (it runs inside its update) and
+queues nothing for a thread with nothing stored: drafts are deleted all the
+time. Every write that names a thread reads ThreadMetadataStore to refuse
+drafts, so none may be called from inside its update, and threads are
+unknown until its first load (reload_task).
+
+Tests (72, crates/agent_ui/src/thread_organization/): migrations beside a
+growing upstream domain and a reopen from step 0; normalization's hostile
+halves (Rust/rust one tag, rust/rust-lang two, non-ASCII and final sigma);
+project keys (folder order, hosts, separators, pinned stored form); the
+store across restarts, refused writes changing nothing, the fallback
+warning, failed writes logged without user text, skipped newer rows kept;
+and deletion through the real ThreadMetadataStore::delete and delete_all.
+
+Forward-ported to zeo 0.2.3 (upstream 089abd69) by story 032, 2026-10-09.
+The new base asked for one change: test_helpers.rs imports
+agent_client_protocol::schema::v2 as acp, since ThreadMetadata.session_id is
+now an Option<v2::SessionId>. And one fix: delete_list cleared list_id only
+on the rows it had loaded, so a row skipped at load (a newer Zeo wrote it)
+kept naming the deleted list. Change::ClearList -- UPDATE thread_organization
+SET list_id = NULL WHERE list_id = ? -- now runs in the same write before
+DeleteList, the shape ClearManual already has, and leaves the skipped row's
+other values as they were. Three more tests, in store_clear_list_tests.rs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index 6179212..e0cc65b 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -31,6 +31,7 @@ pub mod terminal_thread_metadata_store;
+ pub mod test_support;
+ mod thread_import;
+ pub mod thread_metadata_store;
++pub mod thread_organization;
+ pub mod thread_worktree_archive;
+ 
+ pub mod threads_archive_view;
+@@ -711,6 +712,7 @@ pub fn init(
+     agent_panel::init(cx);
+     context_server_configuration::init(language_registry, fs.clone(), cx);
+     thread_metadata_store::init(cx);
++    thread_organization::init(cx);
+     terminal_thread_metadata_store::init(cx);
+ 
+     inline_assistant::init(fs.clone(), prompt_builder.clone(), cx);
+diff --git a/crates/agent_ui/src/thread_metadata_store.rs b/crates/agent_ui/src/thread_metadata_store.rs
+index a26f7ed..e003837 100644
+--- a/crates/agent_ui/src/thread_metadata_store.rs
++++ b/crates/agent_ui/src/thread_metadata_store.rs
+@@ -1139,6 +1139,7 @@ impl ThreadMetadataStore {
+     }
+ 
+     pub fn delete(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) {
++        crate::thread_organization::forget(thread_id, cx);
+         if let Some(thread) = self.threads.get(&thread_id) {
+             if let Some(sid) = &thread.session_id {
+                 self.threads_by_session.remove(sid);
+diff --git a/crates/agent_ui/src/thread_organization.rs b/crates/agent_ui/src/thread_organization.rs
+new file mode 100644
+index 0000000..fc86555
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization.rs
+@@ -0,0 +1,1374 @@
++//! How the user organized their threads: pinned order, a per-project manual order, lists, tags
++//! and a sub-thread's parent link.
++//!
++//! This lives in a `sqlez` domain of its own rather than in `ThreadMetadataDb`, because migrations
++//! are positional per domain and a changed step aborts startup ("Migration changed for {domain} at
++//! step {index}"): a step appended to upstream's list would be overtaken by upstream's next one.
++//! The list below is append-only — never edit a step that has shipped.
++//!
++//! The store loads every row once and answers from memory; writes go to disk in order through one
++//! background writer. Upstream calls [`forget`] from `ThreadMetadataStore::delete`, the funnel of
++//! every thread deletion.
++
++use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
++use std::fmt;
++use std::sync::atomic::Ordering;
++
++use anyhow::{Context as _, Result};
++use db::{
++    sqlez::{domain::Domain, thread_safe_connection::ThreadSafeConnection},
++    sqlez_macros::sql,
++};
++use futures::{StreamExt as _, channel::mpsc};
++use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global, SharedString, Task};
++use project::ProjectGroupKey;
++use remote::{RemoteConnectionIdentity, RemoteConnectionOptions, remote_connection_identity};
++
++use crate::thread_metadata_store::{ThreadId, ThreadMetadataStore};
++
++const MAX_TAG_CHARS: usize = 32;
++const MAX_LIST_NAME_CHARS: usize = 64;
++const MAX_TAGS_PER_THREAD: usize = 20;
++
++struct ThreadOrganizationDb(ThreadSafeConnection);
++
++// One `static` so the list registered with `inventory` and `MIGRATIONS` are the same allocation.
++// A plain string rather than `sql!`: the CHECK constraints need single-quoted string literals,
++// which are not Rust tokens.
++static ORGANIZATION_MIGRATIONS: [&str; 1] = ["CREATE TABLE thread_organization(
++    thread_id BLOB PRIMARY KEY NOT NULL,
++    pinned_position INTEGER,
++    manual_position INTEGER,
++    manual_project_key TEXT,
++    list_id INTEGER,
++    parent_thread_id BLOB,
++    fork_kind TEXT CHECK (fork_kind IN ('with_context', 'clean'))
++) STRICT;
++CREATE INDEX thread_organization_list ON thread_organization(list_id);
++CREATE INDEX thread_organization_parent ON thread_organization(parent_thread_id);
++CREATE TABLE thread_lists(
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    name TEXT NOT NULL,
++    name_key TEXT NOT NULL UNIQUE,
++    position INTEGER NOT NULL
++) STRICT;
++CREATE TABLE thread_tags(
++    thread_id BLOB NOT NULL,
++    tag_key TEXT NOT NULL,
++    PRIMARY KEY(thread_id, tag_key)
++) STRICT;
++CREATE TABLE tags(
++    tag_key TEXT PRIMARY KEY NOT NULL,
++    display TEXT NOT NULL
++) STRICT;
++CREATE TABLE project_sort_mode(
++    project_key TEXT PRIMARY KEY NOT NULL,
++    mode TEXT NOT NULL CHECK (mode IN ('manual'))
++) STRICT;"];
++
++impl Domain for ThreadOrganizationDb {
++    const NAME: &str = stringify!(ThreadOrganizationDb);
++    const MIGRATIONS: &[&str] = &ORGANIZATION_MIGRATIONS;
++}
++
++db::static_connection!(ThreadOrganizationDb, []);
++
++#[derive(Clone, Debug, Default, PartialEq)]
++pub struct ThreadOrganization {
++    pub pinned_position: Option<u32>,
++    /// Read through [`ThreadOrganizationStore::manual_position_in`]: a position only means
++    /// something in the project it was given in.
++    manual_position: Option<u32>,
++    pub list_id: Option<ListId>,
++    pub parent: Option<(ThreadId, ForkKind)>,
++    /// The project `manual_position` belongs to, so going back to Recent finds the position even
++    /// when the thread's folders changed since.
++    manual_project: Option<ProjectKey>,
++}
++
++impl ThreadOrganization {
++    fn is_empty(&self) -> bool {
++        self.pinned_position.is_none()
++            && self.manual_position.is_none()
++            && self.list_id.is_none()
++            && self.parent.is_none()
++    }
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum SortMode {
++    Recent,
++    Manual,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub enum ForkKind {
++    WithContext,
++    Clean,
++}
++
++impl ForkKind {
++    fn as_str(self) -> &'static str {
++        match self {
++            ForkKind::WithContext => "with_context",
++            ForkKind::Clean => "clean",
++        }
++    }
++
++    fn parse(text: &str) -> Option<Self> {
++        match text {
++            "with_context" => Some(ForkKind::WithContext),
++            "clean" => Some(ForkKind::Clean),
++            _ => None,
++        }
++    }
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
++pub struct ListId(i64);
++
++impl fmt::Display for ListId {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(formatter, "{}", self.0)
++    }
++}
++
++#[derive(Clone, Debug, PartialEq)]
++pub struct ThreadList {
++    pub id: ListId,
++    pub name: SharedString,
++}
++
++#[derive(Clone, Debug, PartialEq)]
++pub struct Tag {
++    /// The normalized form: identity, and what a `#tag` filter matches.
++    pub key: SharedString,
++    /// The first spelling ever typed for this key.
++    pub display: SharedString,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Hash)]
++pub struct ProjectKey(SharedString);
++
++impl ProjectKey {
++    /// JSON rather than a separator-joined string: a folder whose name holds the separator would
++    /// otherwise collide with two folders, and a remote host with the local marker.
++    pub fn from_group(group: &ProjectGroupKey) -> Self {
++        let host = group.host().map(|options| host_identity(&options));
++        let mut paths: Vec<String> = group
++            .path_list()
++            .paths()
++            .iter()
++            .map(|path| path.to_string_lossy().into_owned())
++            .collect();
++        paths.sort();
++        Self(serde_json::json!([host, paths]).to_string().into())
++    }
++}
++
++/// Built from exactly the fields `remote::same_remote_connection_identity` compares, so a
++/// nickname or a password never makes the same host a second project.
++fn host_identity(options: &RemoteConnectionOptions) -> serde_json::Value {
++    // Arrays, not objects: an object's key order depends on serde_json's `preserve_order`
++    // feature, and a key that changed with a feature flag would silently lose every remote
++    // project's Manual mode.
++    match remote_connection_identity(options) {
++        RemoteConnectionIdentity::Ssh {
++            host,
++            username,
++            port,
++        } => serde_json::json!(["ssh", host, username, port]),
++        RemoteConnectionIdentity::Wsl { distro_name, user } => {
++            serde_json::json!(["wsl", distro_name, user])
++        }
++        RemoteConnectionIdentity::Docker {
++            container_id,
++            name,
++            remote_user,
++        } => serde_json::json!(["docker", container_id, name, remote_user]),
++        // Only the test-support `Mock` variant reaches this arm; which builds have it depends on
++        // `remote`'s features, so a `cfg` here could not match them reliably.
++        #[allow(unreachable_patterns)]
++        other => serde_json::json!(["other", other.persistence_key()]),
++    }
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum OrganizeError {
++    Draft { thread_id: ThreadId },
++    UnknownThread { thread_id: ThreadId },
++    UnknownList { list_id: ListId },
++    InvalidListName,
++    DuplicateListName { list_id: ListId },
++    InvalidTag,
++    TooManyTags { thread_id: ThreadId },
++    AlreadyHasParent { thread_id: ThreadId },
++    SelfParent { thread_id: ThreadId },
++}
++
++// Names ids only: tag and list text is the user's and never reaches an error or a log line.
++impl fmt::Display for OrganizeError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            OrganizeError::Draft { thread_id } => write!(
++                formatter,
++                "thread {} has no message yet and cannot be organized",
++                thread_id.to_key_string()
++            ),
++            OrganizeError::UnknownThread { thread_id } => {
++                write!(formatter, "thread {} is unknown", thread_id.to_key_string())
++            }
++            OrganizeError::UnknownList { list_id } => {
++                write!(formatter, "list {list_id} is unknown")
++            }
++            OrganizeError::InvalidListName => write!(
++                formatter,
++                "a list name must be 1 to {MAX_LIST_NAME_CHARS} characters"
++            ),
++            OrganizeError::DuplicateListName { list_id } => {
++                write!(formatter, "list {list_id} already has this name")
++            }
++            OrganizeError::InvalidTag => write!(
++                formatter,
++                "a tag must be 1 to {MAX_TAG_CHARS} characters with no space, '#' or ','"
++            ),
++            OrganizeError::TooManyTags { thread_id } => write!(
++                formatter,
++                "thread {} already has {MAX_TAGS_PER_THREAD} tags",
++                thread_id.to_key_string()
++            ),
++            OrganizeError::AlreadyHasParent { thread_id } => write!(
++                formatter,
++                "thread {} already has a parent",
++                thread_id.to_key_string()
++            ),
++            OrganizeError::SelfParent { thread_id } => write!(
++                formatter,
++                "thread {} cannot be its own parent",
++                thread_id.to_key_string()
++            ),
++        }
++    }
++}
++
++impl std::error::Error for OrganizeError {}
++
++/// Returns `(key, display)`. Folded with `str::to_lowercase`, never SQL `LOWER()`, which folds
++/// ASCII only and would keep `É` and `é` apart.
++pub fn normalize_tag(input: &str) -> Result<(SharedString, SharedString), OrganizeError> {
++    let display = input.trim();
++    let length = display.chars().count();
++    if length == 0
++        || length > MAX_TAG_CHARS
++        || display
++            .chars()
++            .any(|character| character.is_whitespace() || character == '#' || character == ',')
++    {
++        return Err(OrganizeError::InvalidTag);
++    }
++    Ok((display.to_lowercase().into(), display.to_string().into()))
++}
++
++/// Returns `(key, display)`, with the same case folding as [`normalize_tag`].
++fn normalize_list_name(input: &str) -> Result<(SharedString, SharedString), OrganizeError> {
++    let display = input.trim();
++    let length = display.chars().count();
++    if length == 0 || length > MAX_LIST_NAME_CHARS {
++        return Err(OrganizeError::InvalidListName);
++    }
++    Ok((display.to_lowercase().into(), display.to_string().into()))
++}
++
++/// Consumers watch the store with `cx.observe`, as they watch `ThreadMetadataStore`; the event
++/// stays for the tests that pin R1.7.
++enum ThreadOrganizationEvent {
++    Changed,
++}
++
++struct GlobalThreadOrganizationStore(Entity<ThreadOrganizationStore>);
++
++impl Global for GlobalThreadOrganizationStore {}
++
++pub fn init(cx: &mut App) {
++    let db = ThreadOrganizationDb::global(cx);
++    let store = cx.new(|cx| ThreadOrganizationStore::new(db, cx));
++    cx.set_global(GlobalThreadOrganizationStore(store));
++}
++
++/// Called by `ThreadMetadataStore::delete` while that store is being updated, so this must not
++/// read it. A thread with nothing stored queues nothing: drafts are deleted all the time.
++pub fn forget(thread_id: ThreadId, cx: &mut App) {
++    if let Some(store) = ThreadOrganizationStore::try_global(cx) {
++        store.update(cx, |store, cx| store.forget_thread(thread_id, cx));
++    }
++}
++
++pub struct ThreadOrganizationStore {
++    threads: HashMap<ThreadId, ThreadOrganization>,
++    thread_tags: HashMap<ThreadId, BTreeSet<SharedString>>,
++    tag_displays: BTreeMap<SharedString, SharedString>,
++    lists: Vec<ThreadList>,
++    manual_projects: HashSet<ProjectKey>,
++    /// Rows on disk holding a value this build does not recognize (a later Zeo wrote them). They
++    /// are not loaded, and their own columns are only ever cleared, never deleted, so the data a
++    /// newer build owns survives this one.
++    foreign_rows: HashSet<ThreadId>,
++    /// Never reuses an id, not even across restarts (`AUTOINCREMENT`), so a `ListId` a view holds
++    /// never names a different list.
++    next_list_id: i64,
++    /// `None` when loading failed: writing beside rows that were never read would duplicate
++    /// positions and list names, so the session stays in memory.
++    writes: Option<mpsc::UnboundedSender<DbWrite>>,
++    _writer: Task<()>,
++}
++
++impl EventEmitter<ThreadOrganizationEvent> for ThreadOrganizationStore {}
++
++/// Every write that names a thread reads `ThreadMetadataStore` to refuse drafts and unknown
++/// threads, so a write must not be called from inside a `ThreadMetadataStore` update (that entity
++/// would be read while borrowed), and a thread is unknown until that store's first load finishes
++/// (`ThreadMetadataStore::reload_task`).
++impl ThreadOrganizationStore {
++    pub fn global(cx: &App) -> Entity<Self> {
++        cx.global::<GlobalThreadOrganizationStore>().0.clone()
++    }
++
++    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
++        cx.try_global::<GlobalThreadOrganizationStore>()
++            .map(|global| global.0.clone())
++    }
++
++    /// `static_connection!` never reports an open failure: it falls back to an in-memory database
++    /// and raises `db::ALL_FILE_DB_FAILED`, which is the only signal left.
++    fn new(db: ThreadOrganizationDb, cx: &mut Context<Self>) -> Self {
++        let on_fallback = db::ALL_FILE_DB_FAILED.load(Ordering::Acquire);
++        Self::with_fallback_flag(db, on_fallback, cx)
++    }
++
++    fn with_fallback_flag(
++        db: ThreadOrganizationDb,
++        on_fallback: bool,
++        cx: &mut Context<Self>,
++    ) -> Self {
++        if on_fallback {
++            log::warn!("thread_organization: database unavailable, organization will not persist");
++        }
++        let mut store = Self {
++            threads: HashMap::default(),
++            thread_tags: HashMap::default(),
++            tag_displays: BTreeMap::default(),
++            lists: Vec::new(),
++            manual_projects: HashSet::default(),
++            foreign_rows: HashSet::default(),
++            next_list_id: 1,
++            writes: None,
++            _writer: Task::ready(()),
++        };
++        match load_with_retries(&db) {
++            Ok(loaded) => store.apply_loaded(loaded),
++            Err(error) => {
++                log::warn!(
++                    "thread_organization: loading failed, organization will not persist this \
++                     session: {error:#}"
++                );
++                return store;
++            }
++        }
++        let (writes, mut queue) = mpsc::unbounded::<DbWrite>();
++        store.writes = Some(writes);
++        store._writer = cx.background_spawn(async move {
++            while let Some(write) = queue.next().await {
++                let operation = write.operation;
++                let subjects = write.subjects();
++                if let Err(error) = db.write(move |connection| write.apply(connection)).await {
++                    log::error!(
++                        "thread_organization: {operation} failed for {subjects}: {error:#}"
++                    );
++                }
++            }
++        });
++        store
++    }
++
++    fn apply_loaded(&mut self, loaded: Loaded) {
++        self.threads = loaded.threads;
++        self.thread_tags = loaded.thread_tags;
++        self.tag_displays = loaded.tag_displays;
++        self.lists = loaded.lists;
++        self.manual_projects = loaded.manual_projects;
++        self.foreign_rows = loaded.foreign_rows;
++        self.next_list_id = self
++            .lists
++            .iter()
++            .map(|list| list.id.0)
++            .chain(loaded.highest_list_id)
++            .max()
++            .unwrap_or(0)
++            + 1;
++        // Positions read from disk are made dense again, in memory only: the next reorder writes
++        // them back.
++        let pinned = self.pinned().collect::<Vec<_>>();
++        for (position, thread_id) in pinned.into_iter().enumerate() {
++            if let Some(organization) = self.threads.get_mut(&thread_id) {
++                organization.pinned_position = Some(position as u32);
++            }
++        }
++    }
++
++    pub fn organization(&self, thread_id: ThreadId) -> Option<&ThreadOrganization> {
++        self.threads.get(&thread_id)
++    }
++
++    pub fn pinned(&self) -> impl Iterator<Item = ThreadId> + '_ {
++        let mut pinned: Vec<(u32, ThreadId)> = self
++            .threads
++            .iter()
++            .filter_map(|(thread_id, organization)| {
++                organization
++                    .pinned_position
++                    .map(|position| (position, *thread_id))
++            })
++            .collect();
++        pinned.sort_by_key(|(position, thread_id)| (*position, thread_id.to_key_string()));
++        pinned.into_iter().map(|(_, thread_id)| thread_id)
++    }
++
++    pub fn sort_mode(&self, project: &ProjectKey) -> SortMode {
++        if self.manual_projects.contains(project) {
++            SortMode::Manual
++        } else {
++            SortMode::Recent
++        }
++    }
++
++    /// `None` when the thread has no slot in `project`, including a slot it still holds in the
++    /// project it was ordered in before its folders changed: the sidebar then places it like a
++    /// new thread, instead of colliding with a thread that owns that slot here.
++    pub fn manual_position_in(&self, thread_id: ThreadId, project: &ProjectKey) -> Option<u32> {
++        self.threads
++            .get(&thread_id)
++            .filter(|organization| organization.manual_project.as_ref() == Some(project))
++            .and_then(|organization| organization.manual_position)
++    }
++
++    fn manual_position(&self, thread_id: ThreadId) -> Option<u32> {
++        self.threads
++            .get(&thread_id)
++            .and_then(|organization| organization.manual_position)
++    }
++
++    pub fn lists(&self) -> &[ThreadList] {
++        &self.lists
++    }
++
++    pub fn threads_in_list(&self, list: ListId) -> Vec<ThreadId> {
++        self.threads_where(|organization| organization.list_id == Some(list))
++    }
++
++    pub fn tags(&self, thread_id: ThreadId) -> Vec<Tag> {
++        self.thread_tags
++            .get(&thread_id)
++            .into_iter()
++            .flatten()
++            .map(|key| self.tag(key))
++            .collect()
++    }
++
++    pub fn all_tags(&self) -> Vec<Tag> {
++        self.tag_displays
++            .iter()
++            .map(|(key, display)| Tag {
++                key: key.clone(),
++                display: display.clone(),
++            })
++            .collect()
++    }
++
++    pub fn parent(&self, thread_id: ThreadId) -> Option<(ThreadId, ForkKind)> {
++        self.threads
++            .get(&thread_id)
++            .and_then(|organization| organization.parent)
++    }
++
++    pub fn children(&self, thread_id: ThreadId) -> Vec<ThreadId> {
++        self.threads_where(|organization| {
++            organization
++                .parent
++                .is_some_and(|(parent, _)| parent == thread_id)
++        })
++    }
++
++    /// Every thread with a parent link, the deleted parent's included: what a history-wide view
++    /// lists without asking each thread [`Self::parent`].
++    pub fn sub_threads(&self) -> Vec<ThreadId> {
++        self.threads_where(|organization| organization.parent.is_some())
++    }
++
++    pub fn pin(
++        &mut self,
++        thread_id: ThreadId,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        admit(thread_id, cx)?;
++        if self.pinned_position(thread_id).is_some() {
++            return Ok(());
++        }
++        let mut order = vec![thread_id];
++        order.extend(self.pinned());
++        let mut write = DbWrite::new("pin");
++        self.set_pinned_order(&order, &mut write);
++        self.commit(write, cx);
++        Ok(())
++    }
++
++    pub fn unpin(
++        &mut self,
++        thread_id: ThreadId,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        admit(thread_id, cx)?;
++        if self.pinned_position(thread_id).is_none() {
++            return Ok(());
++        }
++        let mut write = DbWrite::new("unpin");
++        self.update_thread(thread_id, &mut write, |organization| {
++            organization.pinned_position = None
++        });
++        let order: Vec<ThreadId> = self.pinned().collect();
++        self.set_pinned_order(&order, &mut write);
++        self.commit(write, cx);
++        Ok(())
++    }
++
++    pub fn move_pinned(
++        &mut self,
++        thread_id: ThreadId,
++        to_index: usize,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        admit(thread_id, cx)?;
++        if self.pinned_position(thread_id).is_none() {
++            return Ok(());
++        }
++        let mut order: Vec<ThreadId> = self
++            .pinned()
++            .filter(|pinned| *pinned != thread_id)
++            .collect();
++        order.insert(to_index.min(order.len()), thread_id);
++        let mut write = DbWrite::new("move_pinned");
++        self.set_pinned_order(&order, &mut write);
++        self.commit(write, cx);
++        Ok(())
++    }
++
++    /// Replaces the project's manual order: a thread left out of `ordered` loses its slot rather
++    /// than keeping a stale one that could duplicate a new thread's.
++    pub fn set_manual_order(
++        &mut self,
++        project: ProjectKey,
++        ordered: &[ThreadId],
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        for thread_id in ordered {
++            admit(*thread_id, cx)?;
++        }
++        let mut write = DbWrite::new("set_manual_order");
++        write.changes.push(Change::ClearManual(project.clone()));
++        self.clear_manual_positions(&project, &mut write);
++        let mut seen = HashSet::new();
++        let mut left_projects = HashSet::new();
++        let mut position = 0;
++        for thread_id in ordered {
++            if !seen.insert(*thread_id) {
++                continue;
++            }
++            if let Some(previous) = self
++                .threads
++                .get(thread_id)
++                .and_then(|organization| organization.manual_project.clone())
++            {
++                left_projects.insert(previous);
++            }
++            let project = project.clone();
++            self.update_thread(*thread_id, &mut write, |organization| {
++                organization.manual_position = Some(position);
++                organization.manual_project = Some(project);
++            });
++            position += 1;
++        }
++        // A thread taken from another project's order leaves a gap there; close it.
++        for left in left_projects {
++            self.compact_manual_order(&left, &mut write);
++        }
++        self.manual_projects.insert(project.clone());
++        write.changes.push(Change::ProjectMode(project, true));
++        self.commit(write, cx);
++        Ok(())
++    }
++
++    /// Manual keeps whatever positions the project has; Recent clears them.
++    pub fn set_sort_mode(
++        &mut self,
++        project: ProjectKey,
++        mode: SortMode,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        let mut write = DbWrite::new("set_sort_mode");
++        match mode {
++            SortMode::Manual => {
++                if !self.manual_projects.insert(project.clone()) {
++                    return Ok(());
++                }
++                write.changes.push(Change::ProjectMode(project, true));
++            }
++            SortMode::Recent => {
++                let was_manual = self.manual_projects.remove(&project);
++                self.clear_manual_positions(&project, &mut write);
++                if !was_manual && write.changes.is_empty() {
++                    return Ok(());
++                }
++                // Also reaches rows this build did not load.
++                write
++                    .changes
++                    .insert(0, Change::ClearManual(project.clone()));
++                write.changes.push(Change::ProjectMode(project, false));
++            }
++        }
++        self.commit(write, cx);
++        Ok(())
++    }
++
++    pub fn create_list(
++        &mut self,
++        name: &str,
++        cx: &mut Context<Self>,
++    ) -> Result<ListId, OrganizeError> {
++        let (key, display) = normalize_list_name(name)?;
++        if let Some(existing) = self.list_with_key(&key) {
++            return Err(OrganizeError::DuplicateListName { list_id: existing });
++        }
++        let id = ListId(self.next_list_id);
++        self.next_list_id += 1;
++        self.lists.push(ThreadList { id, name: display });
++        let mut write = DbWrite::new("create_list");
++        self.write_list_positions(&mut write);
++        self.commit(write, cx);
++        Ok(id)
++    }
++
++    pub fn rename_list(
++        &mut self,
++        list: ListId,
++        name: &str,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        let index = self.list_index(list)?;
++        let (key, display) = normalize_list_name(name)?;
++        if let Some(existing) = self
++            .list_with_key(&key)
++            .filter(|existing| *existing != list)
++        {
++            return Err(OrganizeError::DuplicateListName { list_id: existing });
++        }
++        if self.lists[index].name == display {
++            return Ok(());
++        }
++        self.lists[index].name = display;
++        let mut write = DbWrite::new("rename_list");
++        self.write_list_positions(&mut write);
++        self.commit(write, cx);
++        Ok(())
++    }
++
++    pub fn move_list(
++        &mut self,
++        list: ListId,
++        to_index: usize,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        let index = self.list_index(list)?;
++        let moved = self.lists.remove(index);
++        let to_index = to_index.min(self.lists.len());
++        self.lists.insert(to_index, moved);
++        if index == to_index {
++            return Ok(());
++        }
++        let mut write = DbWrite::new("move_list");
++        self.write_list_positions(&mut write);
++        self.commit(write, cx);
++        Ok(())
++    }
++
++    /// The list's threads keep everything else and simply lose `list_id`.
++    pub fn delete_list(
++        &mut self,
++        list: ListId,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        let index = self.list_index(list)?;
++        self.lists.remove(index);
++        let mut write = DbWrite::new("delete_list");
++        for thread_id in self.threads_in_list(list) {
++            self.update_thread(thread_id, &mut write, |organization| {
++                organization.list_id = None
++            });
++        }
++        // Also reaches rows this build did not load.
++        write.changes.push(Change::ClearList(list));
++        write.changes.push(Change::DeleteList(list));
++        self.write_list_positions(&mut write);
++        self.commit(write, cx);
++        Ok(())
++    }
++
++    pub fn set_list(
++        &mut self,
++        thread_id: ThreadId,
++        list: Option<ListId>,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        admit(thread_id, cx)?;
++        if let Some(list) = list {
++            self.list_index(list)?;
++        }
++        if self
++            .threads
++            .get(&thread_id)
++            .and_then(|organization| organization.list_id)
++            == list
++        {
++            return Ok(());
++        }
++        let mut write = DbWrite::new("set_list");
++        self.update_thread(thread_id, &mut write, |organization| {
++            organization.list_id = list
++        });
++        self.commit(write, cx);
++        Ok(())
++    }
++
++    pub fn add_tag(
++        &mut self,
++        thread_id: ThreadId,
++        tag: &str,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        admit(thread_id, cx)?;
++        let (key, display) = normalize_tag(tag)?;
++        let tags = self.thread_tags.entry(thread_id).or_default();
++        if tags.contains(&key) {
++            return Ok(());
++        }
++        if tags.len() >= MAX_TAGS_PER_THREAD {
++            return Err(OrganizeError::TooManyTags { thread_id });
++        }
++        tags.insert(key.clone());
++        let mut write = DbWrite::new("add_tag");
++        if !self.tag_displays.contains_key(&key) {
++            self.tag_displays.insert(key.clone(), display.clone());
++            write.changes.push(Change::Tag(key.clone(), Some(display)));
++        }
++        write.changes.push(Change::ThreadTag(thread_id, key, true));
++        self.commit(write, cx);
++        Ok(())
++    }
++
++    pub fn remove_tag(
++        &mut self,
++        thread_id: ThreadId,
++        tag: &str,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        admit(thread_id, cx)?;
++        let (key, _) = normalize_tag(tag)?;
++        let Some(tags) = self.thread_tags.get_mut(&thread_id) else {
++            return Ok(());
++        };
++        if !tags.remove(&key) {
++            return Ok(());
++        }
++        if tags.is_empty() {
++            self.thread_tags.remove(&thread_id);
++        }
++        let mut write = DbWrite::new("remove_tag");
++        write
++            .changes
++            .push(Change::ThreadTag(thread_id, key.clone(), false));
++        self.forget_unused_tag(&key, &mut write);
++        self.commit(write, cx);
++        Ok(())
++    }
++
++    pub fn set_parent(
++        &mut self,
++        child: ThreadId,
++        parent: ThreadId,
++        kind: ForkKind,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        if child == parent {
++            return Err(OrganizeError::SelfParent { thread_id: child });
++        }
++        admit(child, cx)?;
++        admit(parent, cx)?;
++        // A row this build skipped carries a newer build's link; it must not be overwritten.
++        if self.parent(child).is_some() || self.foreign_rows.contains(&child) {
++            return Err(OrganizeError::AlreadyHasParent { thread_id: child });
++        }
++        let mut write = DbWrite::new("set_parent");
++        self.update_thread(child, &mut write, |organization| {
++            organization.parent = Some((parent, kind))
++        });
++        write.changes.push(Change::SetParent(child, parent, kind));
++        self.commit(write, cx);
++        Ok(())
++    }
++
++    /// Children keep their link to a deleted parent: the requester decided sub-threads outlive it.
++    fn forget_thread(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) {
++        let organization = self.threads.remove(&thread_id);
++        let tags = self.thread_tags.remove(&thread_id);
++        let foreign = self.foreign_rows.remove(&thread_id);
++        if organization.is_none() && tags.is_none() && !foreign {
++            return;
++        }
++        let mut write = DbWrite::new("forget");
++        write.changes.push(Change::DeleteThread(thread_id));
++        write.changes.push(Change::ForgetThreadTags(thread_id));
++        for key in tags.into_iter().flatten() {
++            self.forget_unused_tag(&key, &mut write);
++        }
++        if let Some(organization) = organization {
++            if organization.pinned_position.is_some() {
++                let order: Vec<ThreadId> = self.pinned().collect();
++                self.set_pinned_order(&order, &mut write);
++            }
++            if let Some(project) = organization.manual_project {
++                self.compact_manual_order(&project, &mut write);
++            }
++        }
++        self.commit(write, cx);
++    }
++
++    fn tag(&self, key: &SharedString) -> Tag {
++        Tag {
++            key: key.clone(),
++            display: self
++                .tag_displays
++                .get(key)
++                .cloned()
++                .unwrap_or_else(|| key.clone()),
++        }
++    }
++
++    fn threads_where(&self, predicate: impl Fn(&ThreadOrganization) -> bool) -> Vec<ThreadId> {
++        let mut threads: Vec<ThreadId> = self
++            .threads
++            .iter()
++            .filter(|(_, organization)| predicate(organization))
++            .map(|(thread_id, _)| *thread_id)
++            .collect();
++        threads.sort_by_key(|thread_id| thread_id.to_key_string());
++        threads
++    }
++
++    fn pinned_position(&self, thread_id: ThreadId) -> Option<u32> {
++        self.threads
++            .get(&thread_id)
++            .and_then(|organization| organization.pinned_position)
++    }
++
++    fn manual_order(&self, project: &ProjectKey) -> Vec<ThreadId> {
++        let mut order: Vec<(u32, ThreadId)> = self
++            .threads
++            .iter()
++            .filter(|(_, organization)| organization.manual_project.as_ref() == Some(project))
++            .filter_map(|(thread_id, organization)| {
++                organization
++                    .manual_position
++                    .map(|position| (position, *thread_id))
++            })
++            .collect();
++        order.sort_by_key(|(position, thread_id)| (*position, thread_id.to_key_string()));
++        order.into_iter().map(|(_, thread_id)| thread_id).collect()
++    }
++
++    fn set_pinned_order(&mut self, order: &[ThreadId], write: &mut DbWrite) {
++        for (position, thread_id) in order.iter().enumerate() {
++            let position = Some(position as u32);
++            if self.pinned_position(*thread_id) != position {
++                self.update_thread(*thread_id, write, |organization| {
++                    organization.pinned_position = position
++                });
++            }
++        }
++    }
++
++    fn compact_manual_order(&mut self, project: &ProjectKey, write: &mut DbWrite) {
++        for (position, thread_id) in self.manual_order(project).into_iter().enumerate() {
++            let position = Some(position as u32);
++            if self.manual_position(thread_id) != position {
++                self.update_thread(thread_id, write, |organization| {
++                    organization.manual_position = position
++                });
++            }
++        }
++    }
++
++    fn clear_manual_positions(&mut self, project: &ProjectKey, write: &mut DbWrite) {
++        for thread_id in self.manual_order(project) {
++            self.update_thread(thread_id, write, |organization| {
++                organization.manual_position = None;
++                organization.manual_project = None;
++            });
++        }
++    }
++
++    /// Applies `change` to the thread's row in memory and queues the row as it now stands;
++    /// a row left with nothing in it is deleted.
++    fn update_thread(
++        &mut self,
++        thread_id: ThreadId,
++        write: &mut DbWrite,
++        change: impl FnOnce(&mut ThreadOrganization),
++    ) {
++        let organization = self.threads.entry(thread_id).or_default();
++        change(organization);
++        let row = if !organization.is_empty() {
++            Change::UpsertThread(thread_id, organization.clone())
++        } else {
++            self.threads.remove(&thread_id);
++            if self.foreign_rows.contains(&thread_id) {
++                Change::ClearThread(thread_id)
++            } else {
++                Change::DeleteThread(thread_id)
++            }
++        };
++        write.changes.retain(|queued| match queued {
++            Change::UpsertThread(queued_id, _)
++            | Change::DeleteThread(queued_id)
++            | Change::ClearThread(queued_id) => *queued_id != thread_id,
++            _ => true,
++        });
++        write.changes.push(row);
++    }
++
++    fn forget_unused_tag(&mut self, key: &SharedString, write: &mut DbWrite) {
++        let still_used = self.thread_tags.values().any(|tags| tags.contains(key));
++        if !still_used && self.tag_displays.remove(key).is_some() {
++            write.changes.push(Change::Tag(key.clone(), None));
++        }
++    }
++
++    fn list_index(&self, list: ListId) -> Result<usize, OrganizeError> {
++        self.lists
++            .iter()
++            .position(|existing| existing.id == list)
++            .ok_or(OrganizeError::UnknownList { list_id: list })
++    }
++
++    fn list_with_key(&self, key: &SharedString) -> Option<ListId> {
++        // A stored name is already trimmed, so its key is its lowercase form.
++        self.lists
++            .iter()
++            .find(|list| list.name.to_lowercase() == key.as_ref())
++            .map(|list| list.id)
++    }
++
++    fn write_list_positions(&self, write: &mut DbWrite) {
++        // Rewritten whole: a list keeps its id and name, and positions stay dense.
++        write.changes.push(Change::ListPositions(
++            self.lists
++                .iter()
++                .enumerate()
++                .map(|(position, list)| (list.id, list.name.clone(), position as u32))
++                .collect(),
++        ));
++    }
++
++    fn commit(&mut self, write: DbWrite, cx: &mut Context<Self>) {
++        if write.changes.is_empty() {
++            return;
++        }
++        if let Some(writes) = &self.writes
++            && let Err(error) = writes.unbounded_send(write)
++        {
++            log::error!("thread_organization: the writer stopped, a change was not saved: {error}");
++        }
++        cx.emit(ThreadOrganizationEvent::Changed);
++        cx.notify();
++    }
++}
++
++/// Every write whose subject is a thread names one `ThreadMetadataStore` knows and that has a
++/// session: a draft is created and discarded constantly and is not organized.
++fn admit(thread_id: ThreadId, cx: &App) -> Result<(), OrganizeError> {
++    let Some(metadata) = ThreadMetadataStore::try_global(cx) else {
++        return Err(OrganizeError::UnknownThread { thread_id });
++    };
++    match metadata.read(cx).entry(thread_id) {
++        None => Err(OrganizeError::UnknownThread { thread_id }),
++        Some(entry) if entry.is_draft() => Err(OrganizeError::Draft { thread_id }),
++        Some(_) => Ok(()),
++    }
++}
++
++enum Change {
++    /// Writes only the columns this build owns, so a later step's columns and a parent link
++    /// written by a newer build survive.
++    UpsertThread(ThreadId, ThreadOrganization),
++    DeleteThread(ThreadId),
++    /// For a row this build did not load: its own columns go, the row stays.
++    ClearThread(ThreadId),
++    SetParent(ThreadId, ThreadId, ForkKind),
++    ClearManual(ProjectKey),
++    /// Clears a deleted list from every stored row, loaded or not.
++    ClearList(ListId),
++    ForgetThreadTags(ThreadId),
++    ThreadTag(ThreadId, SharedString, bool),
++    Tag(SharedString, Option<SharedString>),
++    DeleteList(ListId),
++    ListPositions(Vec<(ListId, SharedString, u32)>),
++    ProjectMode(ProjectKey, bool),
++}
++
++/// One user action's changes, applied to disk in one transaction.
++struct DbWrite {
++    operation: &'static str,
++    changes: Vec<Change>,
++}
++
++impl DbWrite {
++    fn new(operation: &'static str) -> Self {
++        Self {
++            operation,
++            changes: Vec::new(),
++        }
++    }
++
++    /// The ids involved, for the log: never tag text, list names or project paths.
++    fn subjects(&self) -> String {
++        let mut threads = BTreeSet::new();
++        let mut lists = BTreeSet::new();
++        for change in &self.changes {
++            match change {
++                Change::UpsertThread(thread_id, _)
++                | Change::DeleteThread(thread_id)
++                | Change::ClearThread(thread_id)
++                | Change::SetParent(thread_id, _, _)
++                | Change::ForgetThreadTags(thread_id)
++                | Change::ThreadTag(thread_id, _, _) => {
++                    threads.insert(thread_id.to_key_string());
++                }
++                Change::ClearList(list_id) | Change::DeleteList(list_id) => {
++                    lists.insert(*list_id);
++                }
++                Change::ListPositions(positions) => {
++                    lists.extend(positions.iter().map(|(list_id, _, _)| *list_id));
++                }
++                Change::Tag(..) | Change::ProjectMode(..) | Change::ClearManual(..) => {}
++            }
++        }
++        let mut subjects: Vec<String> = threads
++            .into_iter()
++            .map(|thread_id| format!("thread {thread_id}"))
++            .collect();
++        subjects.extend(lists.into_iter().map(|list_id| format!("list {list_id}")));
++        if subjects.is_empty() {
++            "no thread or list".to_string()
++        } else {
++            subjects.join(", ")
++        }
++    }
++
++    fn apply(self, connection: &db::sqlez::connection::Connection) -> Result<()> {
++        connection.with_savepoint("thread_organization", || {
++            for change in self.changes {
++                apply_change(connection, change)?;
++            }
++            Ok(())
++        })
++    }
++}
++
++fn apply_change(connection: &db::sqlez::connection::Connection, change: Change) -> Result<()> {
++    match change {
++        Change::DeleteThread(thread_id) => connection.exec_bound::<ThreadId>(sql!(
++            DELETE FROM thread_organization WHERE thread_id = ?
++        ))?(thread_id),
++        Change::ClearThread(thread_id) => connection.exec_bound::<ThreadId>(sql!(
++            UPDATE thread_organization SET
++                pinned_position = NULL,
++                manual_position = NULL,
++                manual_project_key = NULL,
++                list_id = NULL
++            WHERE thread_id = ?
++        ))?(thread_id),
++        Change::UpsertThread(thread_id, organization) => connection.exec_bound::<(
++            ThreadId,
++            Option<i64>,
++            Option<i64>,
++            Option<String>,
++            Option<i64>,
++        )>(sql!(
++            INSERT INTO thread_organization(
++                thread_id, pinned_position, manual_position, manual_project_key, list_id
++            ) VALUES (?, ?, ?, ?, ?)
++            ON CONFLICT(thread_id) DO UPDATE SET
++                pinned_position = excluded.pinned_position,
++                manual_position = excluded.manual_position,
++                manual_project_key = excluded.manual_project_key,
++                list_id = excluded.list_id
++        ))?((
++            thread_id,
++            organization.pinned_position.map(i64::from),
++            organization.manual_position.map(i64::from),
++            organization
++                .manual_project
++                .as_ref()
++                .map(|project| project.0.to_string()),
++            organization.list_id.map(|list_id| list_id.0),
++        )),
++        // An upsert, so the link lands whether or not the row's own upsert ran before it.
++        Change::SetParent(thread_id, parent, kind) => {
++            connection.exec_bound::<(ThreadId, ThreadId, &str)>(sql!(
++                INSERT INTO thread_organization(thread_id, parent_thread_id, fork_kind)
++                VALUES (?, ?, ?)
++                ON CONFLICT(thread_id) DO UPDATE SET
++                    parent_thread_id = excluded.parent_thread_id,
++                    fork_kind = excluded.fork_kind
++            ))?((thread_id, parent, kind.as_str()))
++        }
++        Change::ClearManual(project) => connection.exec_bound::<String>(sql!(
++            UPDATE thread_organization SET manual_position = NULL, manual_project_key = NULL
++            WHERE manual_project_key = ?
++        ))?(project.0.to_string()),
++        Change::ClearList(list_id) => connection.exec_bound::<i64>(sql!(
++            UPDATE thread_organization SET list_id = NULL WHERE list_id = ?
++        ))?(list_id.0),
++        Change::ForgetThreadTags(thread_id) => connection
++            .exec_bound::<ThreadId>(sql!(DELETE FROM thread_tags WHERE thread_id = ?))?(
++            thread_id
++        ),
++        Change::ThreadTag(thread_id, key, true) => connection.exec_bound::<(ThreadId, &str)>(
++            sql!(INSERT OR IGNORE INTO thread_tags(thread_id, tag_key) VALUES (?, ?)),
++        )?((thread_id, key.as_ref())),
++        Change::ThreadTag(thread_id, key, false) => connection.exec_bound::<(ThreadId, &str)>(
++            sql!(DELETE FROM thread_tags WHERE thread_id = ? AND tag_key = ?),
++        )?((thread_id, key.as_ref())),
++        Change::Tag(key, Some(display)) => connection.exec_bound::<(&str, &str)>(sql!(
++            INSERT OR REPLACE INTO tags(tag_key, display) VALUES (?, ?)
++        ))?((key.as_ref(), display.as_ref())),
++        Change::Tag(key, None) => {
++            connection.exec_bound::<&str>(sql!(DELETE FROM tags WHERE tag_key = ?))?(key.as_ref())
++        }
++        Change::DeleteList(list_id) => {
++            connection.exec_bound::<i64>(sql!(DELETE FROM thread_lists WHERE id = ?))?(list_id.0)
++        }
++        Change::ListPositions(positions) => {
++            // Rewrites the table from memory, so a rename or delete that failed earlier cannot
++            // leave a stale `name_key` that every later write would collide with. A placeholder
++            // key starts with a space, which a trimmed name never does.
++            let kept = positions
++                .iter()
++                .map(|(list_id, _, _)| list_id.0.to_string())
++                .collect::<Vec<_>>()
++                .join(", ");
++            connection.exec(&format!(
++                "DELETE FROM thread_lists WHERE id NOT IN ({kept})"
++            ))?()?;
++            connection.exec("UPDATE thread_lists SET name_key = ' ' || id")?()?;
++            for (list_id, name, position) in positions {
++                let key = name.to_lowercase();
++                connection.exec_bound::<(i64, &str, String, i64)>(sql!(
++                    INSERT INTO thread_lists(id, name, name_key, position) VALUES (?, ?, ?, ?)
++                    ON CONFLICT(id) DO UPDATE SET
++                        name = excluded.name,
++                        name_key = excluded.name_key,
++                        position = excluded.position
++                ))?((list_id.0, name.as_ref(), key, i64::from(position)))?;
++            }
++            Ok(())
++        }
++        Change::ProjectMode(project, true) => connection.exec_bound::<String>(
++            "INSERT OR REPLACE INTO project_sort_mode(project_key, mode) VALUES (?, 'manual')",
++        )?(project.0.to_string()),
++        Change::ProjectMode(project, false) => connection.exec_bound::<String>(sql!(
++            DELETE FROM project_sort_mode WHERE project_key = ?
++        ))?(project.0.to_string()),
++    }
++}
++
++#[derive(Default)]
++struct Loaded {
++    threads: HashMap<ThreadId, ThreadOrganization>,
++    thread_tags: HashMap<ThreadId, BTreeSet<SharedString>>,
++    tag_displays: BTreeMap<SharedString, SharedString>,
++    lists: Vec<ThreadList>,
++    manual_projects: HashSet<ProjectKey>,
++    foreign_rows: HashSet<ThreadId>,
++    highest_list_id: Option<i64>,
++}
++
++/// The foreground read connection has no busy timeout, so a read that meets a writer is retried
++/// before the session gives up persisting.
++fn load_with_retries(db: &ThreadOrganizationDb) -> Result<Loaded> {
++    const ATTEMPTS: u32 = 3;
++    let mut attempt = 1;
++    loop {
++        match load(db) {
++            Ok(loaded) => return Ok(loaded),
++            Err(error) if attempt < ATTEMPTS => {
++                log::warn!(
++                    "thread_organization: load attempt {attempt} failed, retrying: {error:#}"
++                );
++                std::thread::sleep(std::time::Duration::from_millis(25));
++                attempt += 1;
++            }
++            Err(error) => return Err(error),
++        }
++    }
++}
++
++fn load(db: &ThreadOrganizationDb) -> Result<Loaded> {
++    let mut loaded = Loaded::default();
++
++    let rows = db.select::<(
++        ThreadId,
++        Option<i64>,
++        Option<i64>,
++        Option<String>,
++        Option<i64>,
++    )>(sql!(
++        SELECT thread_id, pinned_position, manual_position, manual_project_key, list_id
++        FROM thread_organization
++    ))?()
++    .context("reading thread_organization")?;
++    for (thread_id, pinned_position, manual_position, manual_project, list_id) in rows {
++        loaded.threads.insert(
++            thread_id,
++            ThreadOrganization {
++                pinned_position: pinned_position.and_then(|position| u32::try_from(position).ok()),
++                manual_position: manual_position.and_then(|position| u32::try_from(position).ok()),
++                list_id: list_id.map(ListId),
++                parent: None,
++                manual_project: manual_project.map(|project| ProjectKey(project.into())),
++            },
++        );
++    }
++
++    let links = db.select::<(ThreadId, ThreadId, Option<String>)>(sql!(
++        SELECT thread_id, parent_thread_id, fork_kind
++        FROM thread_organization WHERE parent_thread_id IS NOT NULL
++    ))?()
++    .context("reading sub-thread links")?;
++    for (thread_id, parent, kind) in links {
++        match kind.as_deref().and_then(ForkKind::parse) {
++            Some(kind) => {
++                if let Some(organization) = loaded.threads.get_mut(&thread_id) {
++                    organization.parent = Some((parent, kind));
++                }
++            }
++            None => {
++                log::warn!(
++                    "thread_organization: skipping thread {} with an unrecognized sub-thread kind",
++                    thread_id.to_key_string()
++                );
++                loaded.threads.remove(&thread_id);
++                loaded.foreign_rows.insert(thread_id);
++            }
++        }
++    }
++    loaded
++        .threads
++        .retain(|_, organization| !organization.is_empty());
++
++    let lists = db.select::<(i64, String)>(sql!(
++        SELECT id, name FROM thread_lists ORDER BY position, id
++    ))?()
++    .context("reading thread_lists")?;
++    loaded.highest_list_id =
++        db.select_row::<i64>("SELECT seq FROM sqlite_sequence WHERE name = 'thread_lists'")?()
++            .context("reading the highest list id")?;
++    loaded.lists = lists
++        .into_iter()
++        .map(|(id, name)| ThreadList {
++            id: ListId(id),
++            name: name.into(),
++        })
++        .collect();
++
++    let tags = db.select::<(String, String)>(sql!(SELECT tag_key, display FROM tags))?()
++        .context("reading tags")?;
++    loaded.tag_displays = tags
++        .into_iter()
++        .map(|(key, display)| (key.into(), display.into()))
++        .collect();
++
++    let thread_tags = db.select::<(ThreadId, String)>(sql!(
++        SELECT thread_id, tag_key FROM thread_tags
++    ))?()
++    .context("reading thread_tags")?;
++    for (thread_id, key) in thread_tags {
++        let key = SharedString::from(key);
++        loaded
++            .tag_displays
++            .entry(key.clone())
++            .or_insert_with(|| key.clone());
++        loaded.thread_tags.entry(thread_id).or_default().insert(key);
++    }
++
++    let modes = db.select::<(String, String)>(sql!(
++        SELECT project_key, mode FROM project_sort_mode
++    ))?()
++    .context("reading project_sort_mode")?;
++    for (project, mode) in modes {
++        if mode == "manual" {
++            loaded.manual_projects.insert(ProjectKey(project.into()));
++        } else {
++            log::warn!("thread_organization: skipping a project with an unrecognized sort mode");
++        }
++    }
++
++    Ok(loaded)
++}
++
++#[cfg(test)]
++#[path = "thread_organization/test_helpers.rs"]
++mod test_helpers;
++
++#[cfg(test)]
++#[path = "thread_organization/migration_tests.rs"]
++mod migration;
++
++#[cfg(test)]
++#[path = "thread_organization/normalize_tests.rs"]
++mod normalize;
++
++#[cfg(test)]
++#[path = "thread_organization/project_key_tests.rs"]
++mod project_key;
++
++#[cfg(test)]
++#[path = "thread_organization/store_persistence_tests.rs"]
++mod store_persistence;
++
++#[cfg(test)]
++#[path = "thread_organization/store_order_tests.rs"]
++mod store_order;
++
++#[cfg(test)]
++#[path = "thread_organization/store_lists_tags_tests.rs"]
++mod store_lists_tags;
++
++#[cfg(test)]
++#[path = "thread_organization/store_admission_tests.rs"]
++mod store_admission;
++
++#[cfg(test)]
++#[path = "thread_organization/lifecycle_tests.rs"]
++mod lifecycle;
++
++#[cfg(test)]
++#[path = "thread_organization/store_clear_list_tests.rs"]
++mod store_clear_list;
+diff --git a/crates/agent_ui/src/thread_organization/lifecycle_tests.rs b/crates/agent_ui/src/thread_organization/lifecycle_tests.rs
+new file mode 100644
+index 0000000..ebf0774
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/lifecycle_tests.rs
+@@ -0,0 +1,326 @@
++// Story 031, task 4.2 — a thread's organization across delete, archive and unarchive
++// (R6.4, R8.1–R8.4, Q4, Q12).
++//
++// Materialize with, in `src/thread_organization.rs` (with `test_helpers`):
++//     #[cfg(test)]
++//     #[path = "thread_organization/lifecycle_tests.rs"]
++//     mod lifecycle;
++// Filter: `cargo test -p agent_ui thread_organization::lifecycle`.
++//
++// The store is the real global (`thread_organization::init`) over the per-test AppDatabase, and
++// threads are deleted through upstream's funnel — `ThreadMetadataStore::delete` and
++// `delete_all` — never by calling `forget` directly, except in the one test that proves a bare
++// `forget` of an unorganized thread queues nothing (R8.4). A `forget` that read
++// `ThreadMetadataStore` would panic here (it runs inside that store's update).
++
++use gpui::{Entity, TestAppContext};
++
++use super::test_helpers::*;
++use super::{ForkKind, SortMode, ThreadOrganizationDb, ThreadOrganizationStore};
++use crate::thread_metadata_store::ThreadId;
++
++const TABLES: [&str; 5] = [
++    "thread_organization",
++    "thread_lists",
++    "thread_tags",
++    "tags",
++    "project_sort_mode",
++];
++
++/// The app with the organization store installed as Zed installs it.
++fn init_with_store(
++    cx: &mut TestAppContext,
++) -> (Entity<ThreadOrganizationStore>, ThreadOrganizationDb) {
++    init(cx);
++    cx.update(|cx| super::init(cx));
++    cx.run_until_parked();
++    cx.update(|cx| {
++        (
++            ThreadOrganizationStore::global(cx),
++            ThreadOrganizationDb::global(cx),
++        )
++    })
++}
++
++/// A second store loading the same database: what a restart would report.
++fn after_restart(
++    db: &ThreadOrganizationDb,
++    cx: &mut TestAppContext,
++) -> Entity<ThreadOrganizationStore> {
++    cx.run_until_parked();
++    open_store(db, cx)
++}
++
++fn parent_of(
++    store: &Entity<ThreadOrganizationStore>,
++    child: ThreadId,
++    cx: &TestAppContext,
++) -> Option<(ThreadId, ForkKind)> {
++    store.read_with(cx, |store, _| store.parent(child))
++}
++
++// R8.1 (hostile half first: what must SURVIVE the deletion) — a sibling sharing the deleted
++// thread's list and a tag keeps both, its pin and the shared tag; the deleted thread's parent
++// keeps its own pin. Then everything of the deleted thread is gone — pin, manual position, list
++// membership, tags (an orphaned tag stops being offered) and parent link — in memory, on disk
++// and after a restart.
++#[gpui::test]
++async fn lifecycle_deleting_a_thread_removes_all_of_its_organization(cx: &mut TestAppContext) {
++    let (store, db) = init_with_store(cx);
++    let parent = thread_in(PROJECT_A, cx);
++    let doomed = thread_in(PROJECT_A, cx);
++    let sibling = thread_in(PROJECT_A, cx);
++    let list = store.update(cx, |store, cx| {
++        let list = store.create_list("Shared", cx).unwrap();
++        store.pin(parent, cx).unwrap();
++        store.pin(sibling, cx).unwrap();
++        store.pin(doomed, cx).unwrap();
++        store
++            .set_manual_order(project(&[PROJECT_A]), &[doomed, sibling], cx)
++            .unwrap();
++        store.set_list(doomed, Some(list), cx).unwrap();
++        store.set_list(sibling, Some(list), cx).unwrap();
++        store.add_tag(doomed, "Rust", cx).unwrap();
++        store.add_tag(doomed, "solo", cx).unwrap();
++        store.add_tag(sibling, "rust", cx).unwrap();
++        store
++            .set_parent(doomed, parent, ForkKind::WithContext, cx)
++            .unwrap();
++        list
++    });
++    cx.run_until_parked();
++
++    delete_thread(doomed, cx);
++
++    let check = |store: &Entity<ThreadOrganizationStore>, cx: &TestAppContext| {
++        assert_eq!(
++            pinned(store, cx),
++            vec![sibling, parent],
++            "the others keep their pins"
++        );
++        assert_eq!(in_list(store, list, cx), vec![sibling]);
++        assert_eq!(tag_displays(store, sibling, cx), ["Rust"]);
++        assert_eq!(
++            known_tags(store, cx),
++            vec![("rust".to_string(), "Rust".to_string())],
++            "the shared tag stays, the orphaned one goes"
++        );
++        assert!(!has_organization(store, doomed, cx));
++        assert!(tag_displays(store, doomed, cx).is_empty());
++        store.read_with(cx, |store, _| {
++            assert_eq!(store.manual_position(doomed), None);
++            assert_eq!(store.parent(doomed), None);
++            assert!(store.children(parent).is_empty());
++        });
++    };
++    check(&store, cx);
++
++    cx.run_until_parked();
++    assert_eq!(rows_of(&db, "thread_organization", doomed), 0);
++    assert_eq!(rows_of(&db, "thread_tags", doomed), 0);
++    assert_eq!(strings(&db, "SELECT tag_key FROM tags"), ["rust"]);
++    let restarted = after_restart(&db, cx);
++    check(&restarted, cx);
++}
++
++// R8.1 — the worktree-archive path deletes through `delete_all`; it forgets every thread.
++#[gpui::test]
++async fn lifecycle_delete_all_forgets_every_deleted_thread(cx: &mut TestAppContext) {
++    let (store, db) = init_with_store(cx);
++    let (first, second, survivor) = (thread(cx), thread(cx), thread(cx));
++    store.update(cx, |store, cx| {
++        for thread in [first, second, survivor] {
++            store.pin(thread, cx).unwrap();
++            store.add_tag(thread, "batch", cx).unwrap();
++        }
++    });
++    cx.run_until_parked();
++
++    delete_threads(vec![first, second], cx);
++
++    assert_eq!(pinned(&store, cx), vec![survivor]);
++    for thread in [first, second] {
++        assert!(!has_organization(&store, thread, cx));
++        assert_eq!(rows_of(&db, "thread_organization", thread), 0);
++        assert_eq!(rows_of(&db, "thread_tags", thread), 0);
++    }
++    assert_eq!(tag_displays(&store, survivor, cx), ["batch"]);
++}
++
++// R6.4 — deleting a parent leaves its sub-threads' link pointing at the deleted id, with its kind,
++// and the sub-thread's own organization untouched — after a restart too.
++#[gpui::test]
++async fn lifecycle_deleting_a_parent_keeps_the_childs_dangling_link(cx: &mut TestAppContext) {
++    let (store, db) = init_with_store(cx);
++    let (parent, child) = (thread(cx), thread(cx));
++    store.update(cx, |store, cx| {
++        store
++            .set_parent(child, parent, ForkKind::Clean, cx)
++            .unwrap();
++        store.pin(child, cx).unwrap();
++        store.pin(parent, cx).unwrap();
++    });
++    cx.run_until_parked();
++
++    delete_thread(parent, cx);
++
++    assert_eq!(
++        parent_of(&store, child, cx),
++        Some((parent, ForkKind::Clean))
++    );
++    assert_eq!(pinned(&store, cx), vec![child]);
++    let restarted = after_restart(&db, cx);
++    assert_eq!(
++        parent_of(&restarted, child, cx),
++        Some((parent, ForkKind::Clean))
++    );
++    assert_eq!(pinned(&restarted, cx), vec![child]);
++}
++
++// R8.2, R8.3 — archiving keeps every piece of organization; unarchiving reports what the thread
++// had before; a restart in between changes nothing.
++#[gpui::test]
++async fn lifecycle_archive_keeps_and_unarchive_restores_the_organization(cx: &mut TestAppContext) {
++    let (store, db) = init_with_store(cx);
++    let (t, parent) = (thread_in(PROJECT_A, cx), thread(cx));
++    store.update(cx, |store, cx| {
++        let list = store.create_list("Later", cx).unwrap();
++        store.pin(t, cx).unwrap();
++        store
++            .set_manual_order(project(&[PROJECT_A]), &[t], cx)
++            .unwrap();
++        store.set_list(t, Some(list), cx).unwrap();
++        store.add_tag(t, "Rust", cx).unwrap();
++        store
++            .set_parent(t, parent, ForkKind::WithContext, cx)
++            .unwrap();
++    });
++    cx.run_until_parked();
++    let before = reported(&store, t, cx);
++
++    archive(t, cx);
++    assert_eq!(
++        reported(&store, t, cx),
++        before,
++        "archiving keeps everything"
++    );
++    assert_eq!(reported(&after_restart(&db, cx), t, cx), before);
++
++    unarchive(t, cx);
++    assert_eq!(
++        reported(&store, t, cx),
++        before,
++        "unarchiving reports it all back"
++    );
++    store.read_with(cx, |store, _| {
++        assert_eq!(store.sort_mode(&project(&[PROJECT_A])), SortMode::Manual);
++    });
++}
++
++// R8.4 — deleting a thread with no organization writes nothing for it: not for a discarded draft
++// (the frequent case), not for an unorganized thread, not for a bare `forget`. The probe: every
++// table of the store is dropped, so ANY statement the store ran would fail and be logged at error
++// level naming the thread (R9.4). Positive control: deleting an ORGANIZED thread under the same
++// probe does log, proving the probe would have seen a write.
++#[gpui::test]
++async fn lifecycle_forgetting_an_unorganized_thread_writes_nothing(cx: &mut TestAppContext) {
++    let (store, db) = init_with_store(cx);
++    let organized = thread(cx);
++    let draft = draft_in(PROJECT_A, cx);
++    let unorganized = thread(cx);
++    let never_organized = thread(cx);
++    store
++        .update(cx, |store, cx| store.pin(organized, cx))
++        .unwrap();
++    cx.run_until_parked();
++    for table in TABLES {
++        run_sql(&db, format!("DROP TABLE {table}")).await;
++    }
++    capture_logs();
++
++    delete_thread(draft, cx);
++    delete_thread(unorganized, cx);
++    cx.update(|cx| super::forget(never_organized, cx));
++    cx.run_until_parked();
++
++    let errors = error_lines();
++    for quiet in [draft, unorganized, never_organized] {
++        assert!(
++            !errors.iter().any(|line| line.contains(&id_text(quiet))),
++            "no write was attempted for an unorganized thread: {errors:?}"
++        );
++    }
++    assert_eq!(pinned(&store, cx), vec![organized]);
++
++    delete_thread(organized, cx);
++    let errors = error_lines();
++    assert!(
++        errors.iter().any(|line| line.contains(&id_text(organized))),
++        "control: forgetting an organized thread does write (and fails on the dropped tables): \
++         {errors:?}"
++    );
++    assert!(pinned(&store, cx).is_empty());
++}
++
++// The store is the one Zed installs: `init` makes `global` and `try_global` answer.
++#[gpui::test]
++async fn lifecycle_init_installs_the_global_store(cx: &mut TestAppContext) {
++    init(cx);
++    assert!(
++        cx.update(|cx| ThreadOrganizationStore::try_global(cx))
++            .is_none()
++    );
++    cx.update(|cx| super::init(cx));
++    cx.run_until_parked();
++    let (global, try_global) = cx.update(|cx| {
++        (
++            ThreadOrganizationStore::global(cx),
++            ThreadOrganizationStore::try_global(cx),
++        )
++    });
++    assert_eq!(
++        Some(global.entity_id()),
++        try_global.map(|store| store.entity_id())
++    );
++    let t = thread(cx);
++    global.update(cx, |store, cx| store.pin(t, cx)).unwrap();
++    assert_eq!(pinned(&global, cx), vec![t]);
++}
++
++// Task 5.1 (consumer contract) — a history-wide view (the tasks panel) lists sub-threads without
++// a parent in hand: `sub_threads` names every thread with a parent link, one whose parent was
++// deleted included (R6.4), and drops a sub-thread once it is deleted itself — after a restart too.
++#[gpui::test]
++async fn lifecycle_sub_threads_lists_every_linked_thread(cx: &mut TestAppContext) {
++    let (store, db) = init_with_store(cx);
++    let (parent, other_parent) = (thread(cx), thread(cx));
++    let (child, sibling, unlinked) = (thread(cx), thread(cx), thread(cx));
++    store.update(cx, |store, cx| {
++        store
++            .set_parent(child, parent, ForkKind::WithContext, cx)
++            .unwrap();
++        store
++            .set_parent(sibling, other_parent, ForkKind::Clean, cx)
++            .unwrap();
++        store.pin(unlinked, cx).unwrap();
++    });
++    let sorted = |mut threads: Vec<ThreadId>| {
++        threads.sort_by_key(|thread_id| thread_id.to_key_string());
++        threads
++    };
++    let sub_threads = |store: &Entity<ThreadOrganizationStore>, cx: &TestAppContext| {
++        store.read_with(cx, |store, _| store.sub_threads())
++    };
++    assert_eq!(sub_threads(&store, cx), sorted(vec![child, sibling]));
++
++    delete_thread(parent, cx);
++    assert_eq!(
++        sub_threads(&store, cx),
++        sorted(vec![child, sibling]),
++        "a deleted parent leaves its sub-thread listed"
++    );
++
++    delete_thread(sibling, cx);
++    assert_eq!(sub_threads(&store, cx), vec![child]);
++    assert_eq!(sub_threads(&after_restart(&db, cx), cx), vec![child]);
++}
+diff --git a/crates/agent_ui/src/thread_organization/migration_tests.rs b/crates/agent_ui/src/thread_organization/migration_tests.rs
+new file mode 100644
+index 0000000..a39a35b
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/migration_tests.rs
+@@ -0,0 +1,411 @@
++// Story 031, task 2.1 — the `ThreadOrganizationDb` domain and its step 0 (R9.1, R9.2, R9.6, Q11).
++//
++// Materialize with, in `src/thread_organization.rs`:
++//     #[cfg(test)]
++//     #[path = "thread_organization/migration_tests.rs"]
++//     mod migration;
++// Filter: `cargo test -p agent_ui thread_organization::migration`.
++//
++// Plain `#[test]`s over `Connection::open_memory`, the pattern of patch 0035's
++// `history_db::migration`. Uniqueness rules are checked hostile half first: the rows that
++// must stay apart are inserted before the duplicate that must be refused.
++
++use db::sqlez::{connection::Connection, domain::Domain as _};
++
++use super::ThreadOrganizationDb;
++use crate::thread_metadata_store::{ThreadId, run_thread_metadata_migrations};
++
++const TABLES: [&str; 5] = [
++    "project_sort_mode",
++    "tags",
++    "thread_lists",
++    "thread_organization",
++    "thread_tags",
++];
++
++fn migrate_all(connection: &Connection) {
++    connection
++        .migrate(
++            ThreadOrganizationDb::NAME,
++            ThreadOrganizationDb::MIGRATIONS,
++            &mut |_, _, _| false,
++        )
++        .expect("the thread organization migrations should apply");
++}
++
++fn fresh(name: &str) -> Connection {
++    let connection = Connection::open_memory(Some(name));
++    migrate_all(&connection);
++    connection
++}
++
++fn run(connection: &Connection, sql: &str) -> anyhow::Result<()> {
++    connection.exec(sql).and_then(|mut statement| statement())
++}
++
++fn strings(connection: &Connection, sql: &str) -> Vec<String> {
++    connection
++        .select::<String>(sql)
++        .expect("query should prepare")()
++    .expect("query should run")
++}
++
++fn count(connection: &Connection, sql: &str) -> i64 {
++    connection
++        .select_row::<i64>(sql)
++        .expect("count should prepare")()
++    .expect("count should run")
++    .expect("count returns a row")
++}
++
++fn columns(connection: &Connection, table: &str) -> Vec<String> {
++    let mut names = strings(
++        connection,
++        &format!("SELECT name FROM pragma_table_info('{table}')"),
++    );
++    names.sort();
++    names
++}
++
++/// The columns of the indexes created explicitly on `table` (origin `c`), leaving out the
++/// automatic ones SQLite adds for a primary key or a UNIQUE constraint.
++fn explicit_index_columns(connection: &Connection, table: &str) -> Vec<String> {
++    let mut indexed = strings(
++        connection,
++        &format!(
++            "SELECT info.name FROM pragma_index_list('{table}') AS list \
++             JOIN pragma_index_info(list.name) AS info \
++             WHERE list.origin = 'c'"
++        ),
++    );
++    indexed.sort();
++    indexed
++}
++
++fn insert_thread_row(
++    connection: &Connection,
++    thread_id: ThreadId,
++    fork_kind: &str,
++) -> anyhow::Result<()> {
++    let sql = format!(
++        "INSERT INTO thread_organization (thread_id, pinned_position, fork_kind) \
++         VALUES (?, 0, {fork_kind})"
++    );
++    connection.exec_bound::<ThreadId>(&sql)?(thread_id)
++}
++
++// R9.1, R9.6 — a domain of its own: its own name, registered once, after no upstream domain,
++// and the registered list is the very list `MIGRATIONS` names (one `static` allocation).
++#[test]
++fn migration_domain_is_its_own_registered_once_with_no_dependency() {
++    assert_eq!(ThreadOrganizationDb::NAME, "ThreadOrganizationDb");
++    assert!(
++        !ThreadOrganizationDb::MIGRATIONS.is_empty(),
++        "the domain has at least its step 0"
++    );
++    let registered: Vec<&db::DomainMigration> = db::inventory::iter::<db::DomainMigration>
++        .into_iter()
++        .filter(|migration| migration.name == ThreadOrganizationDb::NAME)
++        .collect();
++    assert_eq!(
++        registered.len(),
++        1,
++        "the domain is registered exactly once (static_connection!)"
++    );
++    assert!(
++        registered[0].dependencies.is_empty(),
++        "the organization domain must not depend on any upstream domain, got {:?}",
++        registered[0].dependencies
++    );
++    assert!(
++        std::ptr::eq(registered[0].migrations, ThreadOrganizationDb::MIGRATIONS),
++        "the registered list is the domain's own list, not a copy"
++    );
++}
++
++// Q11 — step 0 alone creates every table of design.md "Data Models", with exactly its columns,
++// and the two indexes.
++#[test]
++fn migration_step_zero_creates_every_table_with_its_columns() {
++    let connection = Connection::open_memory(Some("thread_organization_migration_step_zero"));
++    connection
++        .migrate(
++            ThreadOrganizationDb::NAME,
++            &ThreadOrganizationDb::MIGRATIONS[..1],
++            &mut |_, _, _| false,
++        )
++        .expect("step 0 alone should apply");
++
++    let mut tables = strings(
++        &connection,
++        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
++         AND name != 'migrations'",
++    );
++    tables.sort();
++    assert_eq!(tables, TABLES.map(String::from).to_vec());
++
++    assert_eq!(
++        columns(&connection, "thread_organization"),
++        [
++            "fork_kind",
++            "list_id",
++            "manual_position",
++            "manual_project_key",
++            "parent_thread_id",
++            "pinned_position",
++            "thread_id",
++        ]
++        .map(String::from)
++        .to_vec()
++    );
++    assert_eq!(
++        columns(&connection, "thread_lists"),
++        ["id", "name", "name_key", "position"]
++            .map(String::from)
++            .to_vec()
++    );
++    assert_eq!(
++        columns(&connection, "thread_tags"),
++        ["tag_key", "thread_id"].map(String::from).to_vec()
++    );
++    assert_eq!(
++        columns(&connection, "tags"),
++        ["display", "tag_key"].map(String::from).to_vec()
++    );
++    assert_eq!(
++        columns(&connection, "project_sort_mode"),
++        ["mode", "project_key"].map(String::from).to_vec()
++    );
++    assert_eq!(
++        explicit_index_columns(&connection, "thread_organization"),
++        ["list_id", "parent_thread_id"].map(String::from).to_vec(),
++        "a deleted list's threads and a parent's children are looked up by index"
++    );
++    for table in TABLES {
++        assert_eq!(
++            count(&connection, &format!("SELECT COUNT(*) FROM {table}")),
++            0,
++            "{table} starts empty"
++        );
++    }
++}
++
++// The keys of design.md "Data Models", hostile half first: rows that are different things must
++// all be accepted before the same thing twice is shown to be refused.
++#[test]
++fn migration_keys_keep_distinct_rows_apart_and_refuse_the_same_row_twice() {
++    let connection = fresh("thread_organization_migration_keys");
++    let thread = ThreadId::new();
++    let other_thread = ThreadId::new();
++
++    // thread_tags: the key is the (thread, tag) pair.
++    let tag = |thread_id: ThreadId, key: &str| -> anyhow::Result<()> {
++        connection.exec_bound::<(ThreadId, &str)>(
++            "INSERT INTO thread_tags (thread_id, tag_key) VALUES (?, ?)",
++        )?((thread_id, key))
++    };
++    tag(thread, "rust").expect("first tag");
++    tag(thread, "rust-lang").expect("another tag on the same thread is another row");
++    tag(other_thread, "rust").expect("the same tag on another thread is another row");
++    assert!(
++        tag(thread, "rust").is_err(),
++        "the same (thread_id, tag_key) twice must violate the primary key"
++    );
++
++    // tags: one row per key.
++    run(
++        &connection,
++        "INSERT INTO tags (tag_key, display) VALUES ('rust', 'Rust')",
++    )
++    .expect("tag");
++    run(
++        &connection,
++        "INSERT INTO tags (tag_key, display) VALUES ('rust-lang', 'rust-lang')",
++    )
++    .expect("a different key is another tag");
++    assert!(
++        run(
++            &connection,
++            "INSERT INTO tags (tag_key, display) VALUES ('rust', 'RUST')"
++        )
++        .is_err(),
++        "a second display for an existing key must be refused by the key"
++    );
++
++    // thread_lists: unique by normalized name.
++    run(
++        &connection,
++        "INSERT INTO thread_lists (name, name_key, position) VALUES ('Personal', 'personal', 0)",
++    )
++    .expect("list");
++    run(
++        &connection,
++        "INSERT INTO thread_lists (name, name_key, position) \
++         VALUES ('Personal projects', 'personal projects', 1)",
++    )
++    .expect("a list whose key only starts the same is another list");
++    assert!(
++        run(
++            &connection,
++            "INSERT INTO thread_lists (name, name_key, position) \
++             VALUES ('PERSONAL', 'personal', 2)",
++        )
++        .is_err(),
++        "two lists with the same name_key must be refused"
++    );
++
++    // thread_organization: one row per thread.
++    insert_thread_row(&connection, thread, "NULL").expect("organization row");
++    insert_thread_row(&connection, other_thread, "NULL").expect("another thread's row");
++    assert!(
++        insert_thread_row(&connection, thread, "NULL").is_err(),
++        "a second row for the same thread must violate the primary key"
++    );
++
++    // project_sort_mode: one row per project key.
++    let mode = |key: &str| -> anyhow::Result<()> {
++        connection.exec_bound::<&str>(
++            "INSERT INTO project_sort_mode (project_key, mode) VALUES (?, 'manual')",
++        )?(key)
++    };
++    mode("local\n/a").expect("mode");
++    mode("local\n/b").expect("another project's mode");
++    assert!(
++        mode("local\n/a").is_err(),
++        "a second mode row for the same project must be refused"
++    );
++}
++
++// design.md "Data Models": CHECK constraints on `fork_kind` and `mode`. Every value the design
++// names is accepted before an unknown one is shown to be refused.
++#[test]
++fn migration_checks_accept_the_known_values_and_refuse_others() {
++    let connection = fresh("thread_organization_migration_checks");
++
++    insert_thread_row(&connection, ThreadId::new(), "'with_context'").expect("with_context");
++    insert_thread_row(&connection, ThreadId::new(), "'clean'").expect("clean");
++    insert_thread_row(&connection, ThreadId::new(), "NULL").expect("not a sub-thread");
++    assert!(
++        insert_thread_row(&connection, ThreadId::new(), "'sideways'").is_err(),
++        "an unknown fork_kind must be refused by the CHECK constraint"
++    );
++
++    run(
++        &connection,
++        "INSERT INTO project_sort_mode (project_key, mode) VALUES ('k1', 'manual')",
++    )
++    .expect("manual");
++    assert!(
++        run(
++            &connection,
++            "INSERT INTO project_sort_mode (project_key, mode) VALUES ('k2', 'alphabetical')"
++        )
++        .is_err(),
++        "an unknown mode must be refused by the CHECK constraint"
++    );
++}
++
++// R9.1, R9.6 — beside upstream's real thread database and a stand-in upstream domain that grows
++// a step later: this domain's data survives, upstream's tables and data are untouched.
++#[test]
++fn migration_beside_upstream_domains_that_grow_keeps_both_sides_intact() {
++    let connection = Connection::open_memory(Some("thread_organization_migration_upstream"));
++    run_thread_metadata_migrations(&connection);
++    let upstream: &[&str] =
++        &["CREATE TABLE upstream_items(id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;"];
++    connection
++        .migrate("UpstreamStandInDb", upstream, &mut |_, _, _| false)
++        .expect("stand-in upstream step 0");
++    run(
++        &connection,
++        "INSERT INTO upstream_items (id, name) VALUES (1, 'kept')",
++    )
++    .expect("upstream row");
++
++    migrate_all(&connection);
++    let thread = ThreadId::new();
++    insert_thread_row(&connection, thread, "NULL").expect("an organization row");
++
++    // Upstream appends a step to its own list: positional migrations are per domain.
++    let upstream_grown: &[&str] = &[
++        upstream[0],
++        "ALTER TABLE upstream_items ADD COLUMN note TEXT;",
++    ];
++    connection
++        .migrate("UpstreamStandInDb", upstream_grown, &mut |_, _, _| false)
++        .expect("a grown upstream list still applies");
++    run_thread_metadata_migrations(&connection);
++    migrate_all(&connection);
++
++    assert_eq!(
++        strings(&connection, "SELECT name FROM upstream_items WHERE id = 1"),
++        vec!["kept".to_string()]
++    );
++    assert_eq!(
++        strings(
++            &connection,
++            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sidebar_threads'"
++        ),
++        vec!["sidebar_threads".to_string()],
++        "upstream's thread table is still there"
++    );
++    let kept = connection
++        .select_row_bound::<ThreadId, i64>(
++            "SELECT pinned_position FROM thread_organization WHERE thread_id = ?",
++        )
++        .expect("select")(thread)
++    .expect("run");
++    assert_eq!(
++        kept,
++        Some(0),
++        "this domain's row survives upstream's growth"
++    );
++}
++
++// R9.2, Q11 — append-only: a database written by step 0 only opens under the full list, keeps
++// its rows, and re-running the full list is a no-op rather than "Migration changed".
++#[test]
++fn migration_opens_a_database_created_by_its_first_step() {
++    let connection = Connection::open_memory(Some("thread_organization_migration_first"));
++    connection
++        .migrate(
++            ThreadOrganizationDb::NAME,
++            &ThreadOrganizationDb::MIGRATIONS[..1],
++            &mut |_, _, _| false,
++        )
++        .expect("step 0 alone should apply");
++    let thread = ThreadId::new();
++    let parent = ThreadId::new();
++    connection
++        .exec_bound::<(ThreadId, ThreadId)>(
++            "INSERT INTO thread_organization \
++             (thread_id, pinned_position, manual_position, list_id, parent_thread_id, fork_kind) \
++             VALUES (?, 3, 1, NULL, ?, 'clean')",
++        )
++        .expect("prepare")((thread, parent))
++    .expect("a row written by step 0's schema");
++    run(
++        &connection,
++        "INSERT INTO tags (tag_key, display) VALUES ('rust', 'Rust')",
++    )
++    .expect("tag");
++
++    migrate_all(&connection);
++    migrate_all(&connection);
++
++    let row = connection
++        .select_row_bound::<ThreadId, (i64, i64, ThreadId, String)>(
++            "SELECT pinned_position, manual_position, parent_thread_id, fork_kind \
++             FROM thread_organization WHERE thread_id = ?",
++        )
++        .expect("select")(thread)
++    .expect("run");
++    assert_eq!(row, Some((3, 1, parent, "clean".to_string())));
++    assert_eq!(
++        strings(
++            &connection,
++            "SELECT display FROM tags WHERE tag_key = 'rust'"
++        ),
++        vec!["Rust".to_string()]
++    );
++}
+diff --git a/crates/agent_ui/src/thread_organization/normalize_tests.rs b/crates/agent_ui/src/thread_organization/normalize_tests.rs
+new file mode 100644
+index 0000000..57fa672
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/normalize_tests.rs
+@@ -0,0 +1,200 @@
++// Story 031, task 2.2 — tag and list-name normalization (R4.2, R5.1, R5.2, R5.3, R5.7).
++//
++// Materialize with, in `src/thread_organization.rs`:
++//     #[cfg(test)]
++//     #[path = "thread_organization/normalize_tests.rs"]
++//     mod normalize;
++// Filter: `cargo test -p agent_ui thread_organization::normalize`.
++//
++// Contract (design.md "Validation rules"): trimmed; a tag is 1–32 characters with no
++// whitespace, `#` or `,`; a list name is 1–64 characters; the key is Unicode
++// `str::to_lowercase()` of the trimmed text; the display is the trimmed text as typed.
++// Identity is tested hostile half first: spellings that must stay TWO tags come before
++// spellings that must collapse into ONE.
++
++use super::{OrganizeError, normalize_list_name, normalize_tag};
++
++fn tag(input: &str) -> (String, String) {
++    let (key, display) = normalize_tag(input)
++        .unwrap_or_else(|error| panic!("{input:?} should be a valid tag, got {error:?}"));
++    (key.to_string(), display.to_string())
++}
++
++fn tag_key(input: &str) -> String {
++    tag(input).0
++}
++
++fn list(input: &str) -> (String, String) {
++    let (key, display) = normalize_list_name(input)
++        .unwrap_or_else(|error| panic!("{input:?} should be a valid list name, got {error:?}"));
++    (key.to_string(), display.to_string())
++}
++
++fn list_key(input: &str) -> String {
++    list(input).0
++}
++
++fn assert_invalid_tag(input: &str) {
++    let result = normalize_tag(input);
++    assert!(
++        matches!(result, Err(OrganizeError::InvalidTag { .. })),
++        "{input:?} must be refused with InvalidTag, got {:?}",
++        result.map(|(key, display)| (key.to_string(), display.to_string()))
++    );
++}
++
++fn assert_invalid_list_name(input: &str) {
++    let result = normalize_list_name(input);
++    assert!(
++        matches!(result, Err(OrganizeError::InvalidListName { .. })),
++        "{input:?} must be refused with InvalidListName, got {:?}",
++        result.map(|(key, display)| (key.to_string(), display.to_string()))
++    );
++}
++
++// R5.2 (hostile: must NOT collapse) — tags that differ by anything other than letter case stay
++// two, including a dotted capital İ against a plain I and an accent against no accent: a fold
++// that strips marks or maps İ to i would merge them.
++#[test]
++fn normalize_tag_keeps_tags_that_differ_by_more_than_case_apart() {
++    for (left, right) in [
++        ("rust", "rust-lang"),
++        ("rust", "rusty"),
++        ("go", "go2"),
++        ("c", "c++"),
++        ("ação", "acao"),
++        ("İstanbul", "Istanbul"),
++        ("Σίσυφος", "Σισυφος"),
++    ] {
++        assert_ne!(
++            tag_key(left),
++            tag_key(right),
++            "{left:?} and {right:?} differ by more than case and must be two tags"
++        );
++    }
++}
++
++// R5.1, R5.7 (hostile: must NOT split) — spellings that differ only by letter case are one tag,
++// including non-ASCII letters SQLite's ASCII-only LOWER() would leave apart, and a final capital
++// sigma, which a character-by-character fold lowers to σ instead of ς.
++#[test]
++fn normalize_tag_collapses_spellings_that_differ_only_by_case() {
++    for spellings in [
++        &["Rust", "rust", "RUST", "rUsT"][..],
++        &["Ação", "AÇÃO", "ação"][..],
++        &["Émile", "ÉMILE", "émile"][..],
++        &["İstanbul", "İSTANBUL"][..],
++        &["ΣΊΣΥΦΟΣ", "Σίσυφος", "σίσυφος"][..],
++    ] {
++        let keys: Vec<String> = spellings.iter().map(|spelling| tag_key(spelling)).collect();
++        assert!(
++            keys.windows(2).all(|pair| pair[0] == pair[1]),
++            "{spellings:?} differ only by case and must share one key, got {keys:?}"
++        );
++    }
++    assert_eq!(
++        tag_key("AÇÃO"),
++        "ação",
++        "the key is the Unicode lowercase form"
++    );
++}
++
++// Trimming is part of identity (hostile: must NOT split): surrounding blanks never make a
++// second tag, and the display is the trimmed spelling exactly as typed.
++#[test]
++fn normalize_tag_trims_before_keying_and_displays_the_spelling_as_typed() {
++    assert_eq!(tag("  Rust  "), ("rust".to_string(), "Rust".to_string()));
++    assert_eq!(tag_key(" rust"), tag_key("rust "));
++    assert_eq!(tag("PHP").1, "PHP", "the display keeps the user's case");
++    assert_eq!(tag("c++").1, "c++");
++}
++
++// R5.3 — empty, whitespace inside (any Unicode whitespace), `#` and `,` are refused.
++#[test]
++fn normalize_tag_refuses_empty_text_whitespace_hash_and_comma() {
++    for input in [
++        "",
++        "   ",
++        "\t\n",
++        "rust lang",
++        "rust\tlang",
++        "rust\u{a0}lang",
++        "rust\u{3000}lang",
++        "#rust",
++        "rust#",
++        "c#",
++        "rust,go",
++        ",",
++    ] {
++        assert_invalid_tag(input);
++    }
++}
++
++// R5.3 — the 32-character limit counts characters after trimming, not bytes: 32 two-byte
++// letters are accepted, 33 are not, and surrounding blanks do not count.
++#[test]
++fn normalize_tag_counts_characters_after_trimming_not_bytes() {
++    assert_eq!(tag(&"a".repeat(32)).1.chars().count(), 32);
++    assert_invalid_tag(&"a".repeat(33));
++    assert_eq!(
++        tag(&"ç".repeat(32)).1,
++        "ç".repeat(32),
++        "64 bytes, 32 characters"
++    );
++    assert_invalid_tag(&"ç".repeat(33));
++    assert_eq!(
++        tag(&format!("   {}   ", "a".repeat(32))).1,
++        "a".repeat(32),
++        "blanks around the text are trimmed before counting"
++    );
++}
++
++// R4.2, R4.3 (hostile: must NOT collapse) — list names that differ by more than case stay apart.
++#[test]
++fn normalize_list_name_keeps_names_that_differ_by_more_than_case_apart() {
++    for (left, right) in [
++        ("Personal", "Personal projects"),
++        ("Work", "Work 2"),
++        ("Ação", "Acao"),
++    ] {
++        assert_ne!(list_key(left), list_key(right), "{left:?} vs {right:?}");
++    }
++}
++
++// R4.3 (hostile: must NOT split) — list names that differ only by case or surrounding blanks
++// share one key, non-ASCII included; the display is the trimmed name as typed.
++#[test]
++fn normalize_list_name_collapses_case_and_surrounding_blanks() {
++    assert_eq!(list_key("Personal projects"), list_key("PERSONAL PROJECTS"));
++    assert_eq!(
++        list_key("  personal projects "),
++        list_key("Personal projects")
++    );
++    assert_eq!(list_key("AÇÃO"), list_key("ação"));
++    assert_eq!(
++        list("  Personal projects  "),
++        (
++            "personal projects".to_string(),
++            "Personal projects".to_string()
++        )
++    );
++}
++
++// R4.2 — a list name is free text of 1–64 characters: inner spaces, `#` and `,` are fine (the
++// tag rules do not apply), empty and over-long names are refused, characters are counted.
++#[test]
++fn normalize_list_name_accepts_free_text_within_its_length_and_refuses_the_rest() {
++    assert_eq!(list("Work, misc #2").1, "Work, misc #2");
++    assert_eq!(list(&"a".repeat(64)).1.chars().count(), 64);
++    assert_eq!(
++        list(&"é".repeat(64)).1,
++        "é".repeat(64),
++        "128 bytes, 64 characters"
++    );
++    assert_eq!(list(&format!("  {}  ", "a".repeat(64))).1, "a".repeat(64));
++    for input in ["", "   ", "\t"] {
++        assert_invalid_list_name(input);
++    }
++    assert_invalid_list_name(&"a".repeat(65));
++    assert_invalid_list_name(&"é".repeat(65));
++}
+diff --git a/crates/agent_ui/src/thread_organization/project_key_tests.rs b/crates/agent_ui/src/thread_organization/project_key_tests.rs
+new file mode 100644
+index 0000000..7ae3051
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/project_key_tests.rs
+@@ -0,0 +1,173 @@
++// Story 031, task 2.3 — `ProjectKey::from_group` (R3.4, R3.5).
++//
++// Materialize with, in `src/thread_organization.rs`:
++//     #[cfg(test)]
++//     #[path = "thread_organization/project_key_tests.rs"]
++//     mod project_key;
++// Filter: `cargo test -p agent_ui thread_organization::project_key`.
++//
++// Contract: two project groups are the same project exactly when they have the same set of main
++// worktree paths (order irrelevant) on the same host identity — the identity
++// `remote::same_remote_connection_identity` compares, so runtime-only fields such as an SSH
++// nickname or password never split a project. Hostile halves first: keys that must stay APART
++// (including derived renderings that could coincide), then keys that must come TOGETHER.
++
++use std::path::Path;
++
++use project::ProjectGroupKey;
++use remote::{RemoteConnectionOptions, SshConnectionOptions, WslConnectionOptions};
++use workspace::PathList;
++
++use super::ProjectKey;
++
++fn key(host: Option<RemoteConnectionOptions>, paths: &[&str]) -> ProjectKey {
++    let paths: Vec<&Path> = paths.iter().map(Path::new).collect();
++    ProjectKey::from_group(&ProjectGroupKey::new(host, PathList::new(&paths)))
++}
++
++fn local(paths: &[&str]) -> ProjectKey {
++    key(None, paths)
++}
++
++fn ssh(host: &str, username: Option<&str>, port: Option<u16>) -> Option<RemoteConnectionOptions> {
++    Some(RemoteConnectionOptions::Ssh(SshConnectionOptions {
++        host: host.into(),
++        username: username.map(str::to_string),
++        port,
++        ..Default::default()
++    }))
++}
++
++fn wsl(distro: &str, user: Option<&str>) -> Option<RemoteConnectionOptions> {
++    Some(RemoteConnectionOptions::Wsl(WslConnectionOptions {
++        distro_name: distro.to_string(),
++        user: user.map(str::to_string),
++    }))
++}
++
++// R3.4 (hostile: must NOT collapse) — different folder sets are different projects, even when
++// one set contains the other or their joined text looks alike.
++#[test]
++fn project_key_keeps_projects_with_different_folders_apart() {
++    assert_ne!(local(&["/a"]), local(&["/a", "/b"]));
++    assert_ne!(local(&["/a/b"]), local(&["/a", "/b"]));
++    assert_ne!(local(&["/a"]), local(&["/b"]));
++    assert_ne!(local(&["/work/zed"]), local(&["/work/zed-patches"]));
++}
++
++// Derived value (hostile: a THIRD element colliding with the rendered key) — the key is a
++// rendering of a folder list. A single folder whose name holds the rendering's separator must not
++// render byte-identical to two folders: Linux allows a newline in a file name, so `"/a\n/b"` is
++// one real folder, not `/a` and `/b`.
++#[test]
++fn project_key_keeps_a_folder_whose_name_holds_the_separator_apart_from_two_folders() {
++    assert_ne!(local(&["/a\n/b"]), local(&["/a", "/b"]));
++    assert_ne!(local(&["/a\n/b", "/c"]), local(&["/a", "/b\n/c"]));
++}
++
++// R3.5 (hostile: must NOT collapse) — the same folders on different hosts are different
++// projects: local against remote, two remote hosts, and the same host under a field that
++// `same_remote_connection_identity` compares (user, port, WSL user, transport).
++#[test]
++fn project_key_keeps_the_same_folders_on_different_hosts_apart() {
++    let paths = ["/srv/app"];
++    let keys = [
++        key(None, &paths),
++        key(ssh("alpha.example.com", None, None), &paths),
++        key(ssh("beta.example.com", None, None), &paths),
++        key(ssh("alpha.example.com", Some("deploy"), None), &paths),
++        key(ssh("alpha.example.com", None, Some(2222)), &paths),
++        key(wsl("Ubuntu", None), &paths),
++        key(wsl("Ubuntu", Some("root")), &paths),
++        key(wsl("Debian", None), &paths),
++    ];
++    for (i, left) in keys.iter().enumerate() {
++        for right in &keys[i + 1..] {
++            assert_ne!(
++                left, right,
++                "different hosts must give different project keys"
++            );
++        }
++    }
++}
++
++// Derived value (hostile: a THIRD element colliding with the local rendering) — a remote host
++// literally named like the local marker is still a remote host.
++#[test]
++fn project_key_keeps_a_remote_host_named_local_apart_from_the_local_machine() {
++    let paths = ["/srv/app"];
++    assert_ne!(key(None, &paths), key(ssh("local", None, None), &paths));
++    assert_ne!(key(None, &paths), key(wsl("local", None), &paths));
++}
++
++// R3.4 (hostile: must NOT split) — the order the folders were added in is not identity, locally
++// or on a remote host.
++#[test]
++fn project_key_treats_projects_that_differ_only_in_folder_order_as_one() {
++    assert_eq!(local(&["/b", "/a"]), local(&["/a", "/b"]));
++    assert_eq!(local(&["/c", "/a", "/b"]), local(&["/b", "/c", "/a"]));
++    let host = ssh("alpha.example.com", Some("deploy"), Some(22));
++    assert_eq!(
++        key(host.clone(), &["/srv/b", "/srv/a"]),
++        key(host, &["/srv/a", "/srv/b"])
++    );
++}
++
++// R3.5's converse (hostile: must NOT split) — fields `same_remote_connection_identity` ignores
++// (nickname, password, extra args, timeout) never make the same host a second project.
++#[test]
++fn project_key_ignores_remote_fields_that_are_not_host_identity() {
++    let plain = Some(RemoteConnectionOptions::Ssh(SshConnectionOptions {
++        host: "alpha.example.com".into(),
++        username: Some("deploy".to_string()),
++        port: Some(2222),
++        ..Default::default()
++    }));
++    let decorated = Some(RemoteConnectionOptions::Ssh(SshConnectionOptions {
++        host: "alpha.example.com".into(),
++        username: Some("deploy".to_string()),
++        port: Some(2222),
++        password: Some("secret".to_string()),
++        args: Some(vec!["-v".to_string()]),
++        connection_timeout: Some(30),
++        nickname: Some("work".to_string()),
++        upload_binary_over_ssh: true,
++        ..Default::default()
++    }));
++    assert!(remote::same_remote_connection_identity(
++        plain.as_ref(),
++        decorated.as_ref()
++    ));
++    assert_eq!(key(plain, &["/srv/app"]), key(decorated, &["/srv/app"]));
++}
++
++// The key is a pure function of the group: deriving it twice gives the same key.
++#[test]
++fn project_key_is_stable_for_the_same_group() {
++    assert_eq!(local(&["/a", "/b"]), local(&["/a", "/b"]));
++    assert_eq!(
++        key(ssh("alpha.example.com", None, None), &["/srv/app"]),
++        key(ssh("alpha.example.com", None, None), &["/srv/app"])
++    );
++}
++
++// Tech review L1 — the stored form itself is pinned, so a change in how the key is rendered (a
++// serde_json feature reordering object keys, a refactor) fails here instead of silently losing
++// every project's Manual mode on the next start.
++#[test]
++fn project_key_stored_form_is_pinned() {
++    assert_eq!(local(&["/b", "/a"]).0.as_ref(), r#"[null,["/a","/b"]]"#);
++    assert_eq!(
++        key(
++            ssh("alpha.example.com", Some("deploy"), Some(2222)),
++            &["/srv/app"]
++        )
++        .0
++        .as_ref(),
++        r#"[["ssh","alpha.example.com","deploy",2222],["/srv/app"]]"#
++    );
++    assert_eq!(
++        key(wsl("Ubuntu", None), &["/home/u"]).0.as_ref(),
++        r#"[["wsl","Ubuntu",null],["/home/u"]]"#
++    );
++}
+diff --git a/crates/agent_ui/src/thread_organization/store_admission_tests.rs b/crates/agent_ui/src/thread_organization/store_admission_tests.rs
+new file mode 100644
+index 0000000..a418330
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/store_admission_tests.rs
+@@ -0,0 +1,329 @@
++// Story 031, task 3.4 — the sub-thread parent link and what the store accepts
++// (R1.6, R6.1–R6.3, R7.1–R7.5, Q4, Q12).
++//
++// Materialize with, in `src/thread_organization.rs` (with `test_helpers`):
++//     #[cfg(test)]
++//     #[path = "thread_organization/store_admission_tests.rs"]
++//     mod store_admission;
++// Filter: `cargo test -p agent_ui thread_organization::store_admission`.
++//
++// Threads are created through upstream's real `ThreadMetadataStore`: a draft is a known thread
++// with no session; an unknown thread is a `ThreadId` that store never saw.
++
++use gpui::{Entity, TestAppContext};
++
++use super::test_helpers::*;
++use super::{ForkKind, OrganizeError, SortMode, ThreadOrganizationDb, ThreadOrganizationStore};
++use crate::thread_metadata_store::ThreadId;
++
++fn children(
++    store: &Entity<ThreadOrganizationStore>,
++    parent: ThreadId,
++    cx: &TestAppContext,
++) -> Vec<ThreadId> {
++    let mut children = store.read_with(cx, |store, _| store.children(parent));
++    children.sort_by_key(|id| id.to_key_string());
++    children
++}
++
++fn sorted(mut ids: Vec<ThreadId>) -> Vec<ThreadId> {
++    ids.sort_by_key(|id| id.to_key_string());
++    ids
++}
++
++fn parent_of(
++    store: &Entity<ThreadOrganizationStore>,
++    child: ThreadId,
++    cx: &TestAppContext,
++) -> Option<(ThreadId, ForkKind)> {
++    store.read_with(cx, |store, _| store.parent(child))
++}
++
++/// Nothing at all is stored for `thread_id` in any of the store's tables.
++fn nothing_on_disk_for(db: &ThreadOrganizationDb, thread_id: ThreadId) {
++    assert_eq!(rows_of(db, "thread_organization", thread_id), 0);
++    assert_eq!(rows_of(db, "thread_tags", thread_id), 0);
++}
++
++// R6.1, R1.6 — a sub-thread reports its parent and kind and is listed among the parent's
++// sub-threads; another thread's children do not leak in; both kinds survive a restart.
++#[gpui::test]
++async fn store_admission_records_a_parent_link_with_its_kind(cx: &mut TestAppContext) {
++    init(cx);
++    let (parent, with_context, clean) = (thread(cx), thread(cx), thread(cx));
++    let (other_parent, other_child) = (thread(cx), thread(cx));
++    let db = open_db("thread_organization_store_admission_parent").await;
++    let store = open_store(&db, cx);
++
++    store.update(cx, |store, cx| {
++        store
++            .set_parent(with_context, parent, ForkKind::WithContext, cx)
++            .unwrap();
++        store
++            .set_parent(clean, parent, ForkKind::Clean, cx)
++            .unwrap();
++        store
++            .set_parent(other_child, other_parent, ForkKind::Clean, cx)
++            .unwrap();
++    });
++
++    let check = |store: &Entity<ThreadOrganizationStore>, cx: &TestAppContext| {
++        assert_eq!(
++            parent_of(store, with_context, cx),
++            Some((parent, ForkKind::WithContext))
++        );
++        assert_eq!(parent_of(store, clean, cx), Some((parent, ForkKind::Clean)));
++        assert_eq!(
++            children(store, parent, cx),
++            sorted(vec![with_context, clean])
++        );
++        assert_eq!(children(store, other_parent, cx), vec![other_child]);
++        assert_eq!(
++            parent_of(store, parent, cx),
++            None,
++            "the parent has no parent"
++        );
++        assert!(children(store, with_context, cx).is_empty());
++    };
++    check(&store, cx);
++    let store = restart(store, &db, cx);
++    check(&store, cx);
++}
++
++// R6.2, R6.3 — a second parent and a thread as its own parent are refused; the existing link is
++// unchanged.
++#[gpui::test]
++async fn store_admission_refuses_a_second_parent_and_a_self_parent(cx: &mut TestAppContext) {
++    init(cx);
++    let (parent, other, child) = (thread(cx), thread(cx), thread(cx));
++    let db = open_db("thread_organization_store_admission_parent_rules").await;
++    let store = open_store(&db, cx);
++    store
++        .update(cx, |store, cx| {
++            store.set_parent(child, parent, ForkKind::Clean, cx)
++        })
++        .unwrap();
++
++    let second = store.update(cx, |store, cx| {
++        store.set_parent(child, other, ForkKind::WithContext, cx)
++    });
++    assert!(
++        matches!(second, Err(OrganizeError::AlreadyHasParent { .. })),
++        "{second:?}"
++    );
++    let own = store.update(cx, |store, cx| {
++        store.set_parent(other, other, ForkKind::Clean, cx)
++    });
++    assert!(
++        matches!(own, Err(OrganizeError::SelfParent { .. })),
++        "{own:?}"
++    );
++
++    assert_eq!(
++        parent_of(&store, child, cx),
++        Some((parent, ForkKind::Clean))
++    );
++    assert_eq!(parent_of(&store, other, cx), None);
++    assert!(children(&store, other, cx).is_empty());
++}
++
++// R7.1, R7.4 (hostile half first: a refused write must not be applied in PART) — a manual order
++// mixing an accepted thread with a draft stores nothing for either; then every kind of write on
++// a draft is refused with Draft, emits nothing, and leaves memory and disk empty for it.
++#[gpui::test]
++async fn store_admission_refuses_every_write_on_a_draft_and_stores_nothing(
++    cx: &mut TestAppContext,
++) {
++    init(cx);
++    let accepted = thread_in(PROJECT_A, cx);
++    let draft = draft_in(PROJECT_A, cx);
++    let parent = thread_in(PROJECT_A, cx);
++    let db = open_db("thread_organization_store_admission_draft").await;
++    let store = open_store(&db, cx);
++    let list = store.update(cx, |store, cx| store.create_list("Inbox", cx).unwrap());
++    let changes = count_changes(&store, cx);
++
++    let mixed = store.update(cx, |store, cx| {
++        store.set_manual_order(project(&[PROJECT_A]), &[accepted, draft], cx)
++    });
++    assert!(
++        matches!(mixed, Err(OrganizeError::Draft { .. })),
++        "{mixed:?}"
++    );
++    store.read_with(cx, |store, _| {
++        assert_eq!(
++            store.sort_mode(&project(&[PROJECT_A])),
++            SortMode::Recent,
++            "the refused order did not flip the project"
++        );
++        assert_eq!(store.manual_position(accepted), None, "nor half-applied");
++    });
++
++    store.update(cx, |store, cx| {
++        let results = [
++            ("pin", store.pin(draft, cx)),
++            ("set_list", store.set_list(draft, Some(list), cx)),
++            ("add_tag", store.add_tag(draft, "draft-tag", cx)),
++            (
++                "set_parent",
++                store.set_parent(draft, parent, ForkKind::Clean, cx),
++            ),
++        ];
++        for (write, result) in results {
++            assert!(
++                matches!(result, Err(OrganizeError::Draft { .. })),
++                "{write} on a draft: {result:?}"
++            );
++        }
++    });
++
++    assert_eq!(changes.get(), 0, "refused writes emit no event");
++    assert!(!has_organization(&store, draft, cx));
++    assert!(pinned(&store, cx).is_empty());
++    assert!(in_list(&store, list, cx).is_empty());
++    assert!(
++        known_tags(&store, cx).is_empty(),
++        "the refused tag is not offered"
++    );
++    assert!(children(&store, parent, cx).is_empty());
++
++    cx.run_until_parked();
++    nothing_on_disk_for(&db, draft);
++    nothing_on_disk_for(&db, accepted);
++    assert_eq!(count(&db, "SELECT COUNT(*) FROM project_sort_mode"), 0);
++    assert_eq!(count(&db, "SELECT COUNT(*) FROM tags"), 0);
++
++    let store = restart(store, &db, cx);
++    assert!(!has_organization(&store, draft, cx));
++    assert!(pinned(&store, cx).is_empty());
++}
++
++// R7.2 — once the draft's first message gives it a session, the SAME ThreadId is organizable.
++#[gpui::test]
++async fn store_admission_accepts_a_draft_once_it_has_a_message(cx: &mut TestAppContext) {
++    init(cx);
++    let draft = draft_in(PROJECT_A, cx);
++    let db = open_db("thread_organization_store_admission_promoted").await;
++    let store = open_store(&db, cx);
++    let refused = store.update(cx, |store, cx| store.pin(draft, cx));
++    assert!(
++        matches!(refused, Err(OrganizeError::Draft { .. })),
++        "{refused:?}"
++    );
++
++    send_first_message(draft, cx);
++
++    store.update(cx, |store, cx| {
++        store
++            .pin(draft, cx)
++            .expect("the promoted thread can be pinned");
++        store.add_tag(draft, "promoted", cx).expect("and tagged");
++    });
++    assert_eq!(pinned(&store, cx), vec![draft]);
++    let store = restart(store, &db, cx);
++    assert_eq!(pinned(&store, cx), vec![draft]);
++    assert_eq!(tag_displays(&store, draft, cx), ["promoted"]);
++}
++
++// R7.3 — a ThreadId Zeo does not know is refused as the subject of any write, and as a parent.
++#[gpui::test]
++async fn store_admission_refuses_a_thread_zeo_does_not_know(cx: &mut TestAppContext) {
++    init(cx);
++    let known = thread(cx);
++    let unknown = ThreadId::new();
++    let db = open_db("thread_organization_store_admission_unknown").await;
++    let store = open_store(&db, cx);
++    let list = store.update(cx, |store, cx| store.create_list("Inbox", cx).unwrap());
++
++    store.update(cx, |store, cx| {
++        let results = [
++            ("pin", store.pin(unknown, cx)),
++            ("set_list", store.set_list(unknown, Some(list), cx)),
++            ("add_tag", store.add_tag(unknown, "ghost", cx)),
++            (
++                "set_manual_order",
++                store.set_manual_order(project(&[PROJECT_A]), &[unknown], cx),
++            ),
++            (
++                "set_parent child",
++                store.set_parent(unknown, known, ForkKind::Clean, cx),
++            ),
++            (
++                "set_parent parent",
++                store.set_parent(known, unknown, ForkKind::Clean, cx),
++            ),
++        ];
++        for (write, result) in results {
++            assert!(
++                matches!(result, Err(OrganizeError::UnknownThread { .. })),
++                "{write} naming an unknown thread: {result:?}"
++            );
++        }
++    });
++    assert!(!has_organization(&store, unknown, cx));
++    assert_eq!(parent_of(&store, known, cx), None);
++    assert!(known_tags(&store, cx).is_empty());
++    cx.run_until_parked();
++    nothing_on_disk_for(&db, unknown);
++}
++
++// R7.4 — refused writes on an ORGANIZED thread leave every reported value as it was, emit
++// nothing, and leave disk as it was (checked after a restart).
++#[gpui::test]
++async fn store_admission_a_refused_write_changes_neither_memory_nor_disk(cx: &mut TestAppContext) {
++    init(cx);
++    let (t, parent, other) = (thread_in(PROJECT_A, cx), thread(cx), thread(cx));
++    let db = open_db("thread_organization_store_admission_unchanged").await;
++    let store = open_store(&db, cx);
++    let gone = store.update(cx, |store, cx| {
++        let list = store.create_list("Kept", cx).unwrap();
++        let gone = store.create_list("Gone", cx).unwrap();
++        store.pin(t, cx).unwrap();
++        store.set_list(t, Some(list), cx).unwrap();
++        store.add_tag(t, "Rust", cx).unwrap();
++        store
++            .set_parent(t, parent, ForkKind::WithContext, cx)
++            .unwrap();
++        store
++            .set_manual_order(project(&[PROJECT_A]), &[t], cx)
++            .unwrap();
++        store.delete_list(gone, cx).unwrap();
++        gone
++    });
++    let before = reported(&store, t, cx);
++    let changes = count_changes(&store, cx);
++
++    store.update(cx, |store, cx| {
++        assert!(store.add_tag(t, "two words", cx).is_err());
++        assert!(store.set_list(t, Some(gone), cx).is_err());
++        assert!(store.set_parent(t, other, ForkKind::Clean, cx).is_err());
++        assert!(store.set_parent(t, t, ForkKind::Clean, cx).is_err());
++    });
++    assert_eq!(reported(&store, t, cx), before);
++    assert_eq!(changes.get(), 0);
++
++    let store = restart(store, &db, cx);
++    assert_eq!(reported(&store, t, cx), before);
++}
++
++// R7.5 — an archived thread can be organized.
++#[gpui::test]
++async fn store_admission_accepts_an_archived_thread(cx: &mut TestAppContext) {
++    init(cx);
++    let (archived, parent) = (thread(cx), thread(cx));
++    archive(archived, cx);
++    let db = open_db("thread_organization_store_admission_archived").await;
++    let store = open_store(&db, cx);
++
++    store.update(cx, |store, cx| {
++        store.pin(archived, cx).expect("pin an archived thread");
++        store
++            .add_tag(archived, "later", cx)
++            .expect("tag an archived thread");
++        store
++            .set_parent(archived, parent, ForkKind::Clean, cx)
++            .expect("give an archived thread a parent");
++    });
++    assert_eq!(pinned(&store, cx), vec![archived]);
++    assert_eq!(tag_displays(&store, archived, cx), ["later"]);
++}
+diff --git a/crates/agent_ui/src/thread_organization/store_clear_list_tests.rs b/crates/agent_ui/src/thread_organization/store_clear_list_tests.rs
+new file mode 100644
+index 0000000..a787b94
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/store_clear_list_tests.rs
+@@ -0,0 +1,321 @@
++// Story 032, task 2.1 — deleting a list clears it from every stored row, including a row this
++// build skipped at load (R7.1, R7.2, Q4).
++//
++// Materialize with, in `src/thread_organization.rs` (beside the other test modules, after
++// `test_helpers`):
++//     #[cfg(test)]
++//     #[path = "thread_organization/store_clear_list_tests.rs"]
++//     mod store_clear_list;
++// Filter: `cargo test -p agent_ui --lib thread_organization::store_clear_list`.
++//
++// A "skipped row" is the one story 031 defines (R9.5 there): a stored row carrying a value this
++// build does not recognize — here `fork_kind = 'sideways'`, written with CHECK constraints off as a
++// newer schema step could. The store does not load it, so only a statement run against the table
++// can reach it.
++//
++// Hostile halves first: a skipped row of ANOTHER list must keep its list (the clear must not fire
++// on it), and every other column of the skipped row must survive (the clear must not widen into a
++// row reset or a delete). Only then the benign case: the deleted list's own skipped row loses it.
++
++use gpui::TestAppContext;
++
++use super::test_helpers::*;
++use super::{ListId, ThreadOrganizationDb, ThreadOrganizationStore};
++use crate::thread_metadata_store::ThreadId;
++
++/// Every column of one `thread_organization` row, as stored.
++#[derive(Debug, PartialEq)]
++struct StoredRow {
++    pinned_position: Option<i64>,
++    manual_position: Option<i64>,
++    manual_project_key: Option<String>,
++    list_id: Option<i64>,
++    /// Lowercase hex of the stored BLOB.
++    parent_thread_id: Option<String>,
++    fork_kind: Option<String>,
++}
++
++fn hex(thread_id: ThreadId) -> String {
++    thread_id.to_key_string().replace('-', "")
++}
++
++/// Runs `sql` with CHECK constraints off, as a newer schema step could have written it.
++async fn write_unchecked(db: &ThreadOrganizationDb, sql: String) {
++    db.write(move |connection| {
++        for statement in [
++            "PRAGMA ignore_check_constraints = ON",
++            sql.as_str(),
++            "PRAGMA ignore_check_constraints = OFF",
++        ] {
++            connection
++                .exec(statement)
++                .unwrap_or_else(|error| panic!("{statement} should prepare: {error:?}"))(
++            )
++            .unwrap_or_else(|error| panic!("{statement} should run: {error:?}"));
++        }
++    })
++    .await;
++}
++
++/// A row as a newer Zeo could have written it: every column set, and a `fork_kind` this build
++/// does not recognize.
++async fn insert_skipped_row(
++    db: &ThreadOrganizationDb,
++    thread_id: ThreadId,
++    parent: ThreadId,
++    list: ListId,
++    pinned_position: i64,
++) {
++    write_unchecked(
++        db,
++        format!(
++            "INSERT INTO thread_organization \
++             (thread_id, pinned_position, manual_position, manual_project_key, list_id, \
++              parent_thread_id, fork_kind) \
++             VALUES (X'{}', {pinned_position}, 7, 'a-newer-builds-project-key', {}, X'{}', \
++              'sideways')",
++            hex(thread_id),
++            list.0,
++            hex(parent),
++        ),
++    )
++    .await;
++}
++
++fn stored_row(db: &ThreadOrganizationDb, thread_id: ThreadId) -> Option<StoredRow> {
++    db.select_row_bound::<ThreadId, (
++        Option<i64>,
++        Option<i64>,
++        Option<String>,
++        Option<i64>,
++        Option<String>,
++        Option<String>,
++    )>(
++        "SELECT pinned_position, manual_position, manual_project_key, list_id, \
++         lower(hex(parent_thread_id)), fork_kind FROM thread_organization WHERE thread_id = ?",
++    )
++    .expect("select should prepare")(thread_id)
++    .expect("select should run")
++    .map(
++        |(pinned_position, manual_position, manual_project_key, list_id, parent, fork_kind)| {
++            StoredRow {
++                pinned_position,
++                manual_position,
++                manual_project_key,
++                list_id,
++                parent_thread_id: parent,
++                fork_kind,
++            }
++        },
++    )
++}
++
++fn list_rows(db: &ThreadOrganizationDb, list: ListId) -> i64 {
++    count(
++        db,
++        &format!("SELECT COUNT(*) FROM thread_lists WHERE id = {}", list.0),
++    )
++}
++
++/// Two lists on disk, a skipped row in each, a loaded thread in the first, and an unrecognized
++/// sort-mode row; the store is restarted after the raw inserts so it skips both rows at load.
++struct Fixture {
++    db: ThreadOrganizationDb,
++    store: gpui::Entity<ThreadOrganizationStore>,
++    doomed: ListId,
++    other: ListId,
++    parent: ThreadId,
++    skipped_in_doomed: ThreadId,
++    skipped_in_other: ThreadId,
++    loaded_in_doomed: ThreadId,
++}
++
++async fn fixture(name: &'static str, cx: &mut TestAppContext) -> Fixture {
++    init(cx);
++    let parent = thread(cx);
++    let skipped_in_doomed = thread(cx);
++    let skipped_in_other = thread(cx);
++    let loaded_in_doomed = thread(cx);
++    let db = open_db(name).await;
++    let store = open_store(&db, cx);
++    let (doomed, other) = store.update(cx, |store, cx| {
++        let doomed = store.create_list("Doomed", cx).expect("first list");
++        let other = store.create_list("Other", cx).expect("second list");
++        store
++            .set_list(loaded_in_doomed, Some(doomed), cx)
++            .expect("a loaded thread joins the doomed list");
++        (doomed, other)
++    });
++    cx.run_until_parked();
++
++    insert_skipped_row(&db, skipped_in_doomed, parent, doomed, 3).await;
++    insert_skipped_row(&db, skipped_in_other, parent, other, 4).await;
++    write_unchecked(
++        &db,
++        "INSERT INTO project_sort_mode (project_key, mode) \
++         VALUES ('a-newer-builds-project-key', 'by_tag')"
++            .to_string(),
++    )
++    .await;
++    let store = restart(store, &db, cx);
++    assert!(
++        !has_organization(&store, skipped_in_doomed, cx)
++            && !has_organization(&store, skipped_in_other, cx),
++        "fixture: both rows carry an unrecognized fork_kind, so this build skips them at load"
++    );
++    assert_eq!(
++        in_list(&store, doomed, cx),
++        vec![loaded_in_doomed],
++        "fixture: the loaded thread is in the doomed list"
++    );
++
++    Fixture {
++        db,
++        store,
++        doomed,
++        other,
++        parent,
++        skipped_in_doomed,
++        skipped_in_other,
++        loaded_in_doomed,
++    }
++}
++
++// R7.1/R7.2 hostile half — the clear must not fire on a skipped row of ANOTHER list, and a skipped
++// row of the deleted list must not be deleted or reset: every column but `list_id` stays,
++// including the parent link and the unrecognized `fork_kind` a newer build owns; the unrecognized
++// `project_sort_mode` row is untouched.
++#[gpui::test]
++async fn store_clear_list_leaves_other_lists_and_every_other_column_alone(cx: &mut TestAppContext) {
++    let f = fixture("thread_organization_store_clear_list_hostile", cx).await;
++
++    f.store
++        .update(cx, |store, cx| store.delete_list(f.doomed, cx))
++        .expect("deleting a known list succeeds");
++    cx.run_until_parked();
++
++    assert_eq!(
++        stored_row(&f.db, f.skipped_in_other),
++        Some(StoredRow {
++            pinned_position: Some(4),
++            manual_position: Some(7),
++            manual_project_key: Some("a-newer-builds-project-key".into()),
++            list_id: Some(f.other.0),
++            parent_thread_id: Some(hex(f.parent)),
++            fork_kind: Some("sideways".into()),
++        }),
++        "a skipped row of another list keeps that list and everything else"
++    );
++    assert_eq!(
++        stored_row(&f.db, f.skipped_in_doomed),
++        Some(StoredRow {
++            pinned_position: Some(3),
++            manual_position: Some(7),
++            manual_project_key: Some("a-newer-builds-project-key".into()),
++            list_id: None,
++            parent_thread_id: Some(hex(f.parent)),
++            fork_kind: Some("sideways".into()),
++        }),
++        "the skipped row of the deleted list is updated, never deleted: only list_id changes"
++    );
++    assert_eq!(
++        strings(
++            &f.db,
++            "SELECT mode FROM project_sort_mode WHERE project_key = 'a-newer-builds-project-key'"
++        ),
++        vec!["by_tag".to_string()],
++        "an unrecognized sort-mode row is not touched by a list delete"
++    );
++    assert_eq!(list_rows(&f.db, f.other), 1, "the other list stays");
++}
++
++// R7.1 benign half — the deleted list is gone from the skipped row on disk, from the loaded thread
++// in memory and on disk, and from the lists table; after a restart nothing names it.
++#[gpui::test]
++async fn store_clear_list_clears_the_deleted_list_from_a_skipped_row(cx: &mut TestAppContext) {
++    let f = fixture("thread_organization_store_clear_list_benign", cx).await;
++
++    f.store
++        .update(cx, |store, cx| store.delete_list(f.doomed, cx))
++        .expect("deleting a known list succeeds");
++    cx.run_until_parked();
++
++    assert_eq!(
++        stored_row(&f.db, f.skipped_in_doomed).map(|row| row.list_id),
++        Some(None),
++        "the skipped row no longer names the deleted list"
++    );
++    assert_eq!(
++        count(
++            &f.db,
++            &format!(
++                "SELECT COUNT(*) FROM thread_organization WHERE list_id = {}",
++                f.doomed.0
++            )
++        ),
++        0,
++        "no stored row names the deleted list"
++    );
++    assert_eq!(list_rows(&f.db, f.doomed), 0);
++    assert_eq!(
++        reported(&f.store, f.loaded_in_doomed, cx).list_id,
++        None,
++        "the loaded thread leaves the list in memory, as before this fix"
++    );
++
++    let store = restart(f.store, &f.db, cx);
++    assert_eq!(list_ids(&store, cx), vec![f.other]);
++    assert_eq!(reported(&store, f.loaded_in_doomed, cx).list_id, None);
++}
++
++// design.md "Change::ClearList" — the clear and the list delete are one write: when the clear
++// cannot be applied, the list row stays on disk too (no list deleted while a row still names it),
++// and the existing writer logs the operation and the list id, never the list's name.
++#[gpui::test]
++async fn store_clear_list_commits_with_the_list_delete_or_not_at_all(cx: &mut TestAppContext) {
++    let f = fixture("thread_organization_store_clear_list_atomic", cx).await;
++    // The loaded member leaves the list first (its now-empty row is deleted, not updated), so the
++    // only UPDATE of thread_organization the list delete can issue is the clear of the skipped row.
++    f.store
++        .update(cx, |store, cx| store.set_list(f.loaded_in_doomed, None, cx))
++        .expect("leaving a list succeeds");
++    cx.run_until_parked();
++    run_sql(
++        &f.db,
++        "CREATE TRIGGER refuse_row_updates BEFORE UPDATE ON thread_organization \
++         BEGIN SELECT RAISE(ABORT, 'sabotaged by the test'); END"
++            .to_string(),
++    )
++    .await;
++    capture_logs();
++
++    f.store
++        .update(cx, |store, cx| store.delete_list(f.doomed, cx))
++        .expect("the in-memory delete succeeds; the disk write fails later");
++    cx.run_until_parked();
++
++    assert_eq!(
++        list_rows(&f.db, f.doomed),
++        1,
++        "the list row is kept when the clear of a skipped row fails in the same write"
++    );
++    assert_eq!(
++        stored_row(&f.db, f.skipped_in_doomed).map(|row| row.list_id),
++        Some(Some(f.doomed.0)),
++        "the skipped row is unchanged by the failed write"
++    );
++    let errors = error_lines();
++    assert!(
++        errors
++            .iter()
++            .any(|line| line.contains("delete_list")
++                && line.contains(&format!("list {}", f.doomed.0))),
++        "the failed write is logged with its operation and list id: {errors:?}"
++    );
++    assert!(
++        all_lines_lowercased()
++            .iter()
++            .all(|line| !line.contains("doomed")),
++        "a list's name never reaches a log line"
++    );
++}
+diff --git a/crates/agent_ui/src/thread_organization/store_lists_tags_tests.rs b/crates/agent_ui/src/thread_organization/store_lists_tags_tests.rs
+new file mode 100644
+index 0000000..02ba144
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/store_lists_tags_tests.rs
+@@ -0,0 +1,498 @@
++// Story 031, task 3.3 — lists and tags (R1.3, R1.4, R1.5, R4.1–R4.7, R5.1–R5.7, R9.4, Q12).
++//
++// Materialize with, in `src/thread_organization.rs` (with `test_helpers`):
++//     #[cfg(test)]
++//     #[path = "thread_organization/store_lists_tags_tests.rs"]
++//     mod store_lists_tags;
++// Filter: `cargo test -p agent_ui thread_organization::store_lists_tags`.
++//
++// Identity rules are tested hostile half first: names and tags that must stay TWO before those
++// that must collapse into ONE. The parent link of R4.5 is seeded as a stored row so this file
++// does not depend on task 3.4's `set_parent`.
++
++use gpui::TestAppContext;
++
++use super::test_helpers::*;
++use super::{ForkKind, OrganizeError, SortMode};
++
++// R4.1, R4.7, R1.3 — lists are appended last, can be renamed and reordered densely (an index past
++// the end means last), and names and order survive a restart.
++#[gpui::test]
++async fn store_lists_tags_lists_append_rename_reorder_and_survive_restart(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("thread_organization_store_lists_tags_lists").await;
++    let store = open_store(&db, cx);
++
++    let (personal, work, reading) = store.update(cx, |store, cx| {
++        (
++            store.create_list("Personal", cx).unwrap(),
++            store.create_list("Work", cx).unwrap(),
++            store.create_list("Reading", cx).unwrap(),
++        )
++    });
++    assert_eq!(list_names(&store, cx), ["Personal", "Work", "Reading"]);
++    assert_ne!(personal, work);
++    assert_ne!(work, reading);
++
++    store.update(cx, |store, cx| {
++        store.rename_list(work, "Day job", cx).unwrap();
++        store.move_list(reading, 0, cx).unwrap();
++    });
++    assert_eq!(list_names(&store, cx), ["Reading", "Personal", "Day job"]);
++    store
++        .update(cx, |store, cx| store.move_list(reading, 99, cx))
++        .unwrap();
++    assert_eq!(list_names(&store, cx), ["Personal", "Day job", "Reading"]);
++    assert_eq!(list_ids(&store, cx), vec![personal, work, reading]);
++
++    cx.run_until_parked();
++    let positions: Vec<i64> = db
++        .select::<i64>("SELECT position FROM thread_lists ORDER BY position")
++        .expect("select")()
++    .expect("run");
++    assert_eq!(positions, vec![0, 1, 2], "list positions are dense on disk");
++
++    let store = restart(store, &db, cx);
++    assert_eq!(list_names(&store, cx), ["Personal", "Day job", "Reading"]);
++    assert_eq!(list_ids(&store, cx), vec![personal, work, reading]);
++}
++
++// R4.2, R4.3 (hostile half first) — names that differ by more than case are two lists; then an
++// empty or over-long name, and a name equal to another list's ignoring case (non-ASCII too, on
++// create and on rename), are refused with nothing changed and no event.
++#[gpui::test]
++async fn store_lists_tags_refuses_invalid_and_duplicate_list_names(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("thread_organization_store_lists_tags_list_names").await;
++    let store = open_store(&db, cx);
++
++    let work = store.update(cx, |store, cx| {
++        store.create_list("Rust", cx).unwrap();
++        store
++            .create_list("Rust projects", cx)
++            .expect("a longer name is another list");
++        store.create_list("Ação", cx).unwrap();
++        store.create_list("Work", cx).unwrap()
++    });
++    let before = list_names(&store, cx);
++    let changes = count_changes(&store, cx);
++
++    store.update(cx, |store, cx| {
++        for name in ["", "   ", &"a".repeat(65)] {
++            let result = store.create_list(name, cx);
++            assert!(
++                matches!(result, Err(OrganizeError::InvalidListName { .. })),
++                "{name:?}: {result:?}"
++            );
++        }
++        for name in ["rust", "RUST", "  Rust  ", "AÇÃO", "ação"] {
++            let result = store.create_list(name, cx);
++            assert!(
++                matches!(result, Err(OrganizeError::DuplicateListName { .. })),
++                "{name:?} equals an existing list ignoring case: {result:?}"
++            );
++        }
++        let result = store.rename_list(work, "rust projects", cx);
++        assert!(
++            matches!(result, Err(OrganizeError::DuplicateListName { .. })),
++            "renaming onto another list's name: {result:?}"
++        );
++        let result = store.rename_list(work, " ", cx);
++        assert!(
++            matches!(result, Err(OrganizeError::InvalidListName { .. })),
++            "{result:?}"
++        );
++    });
++    assert_eq!(
++        list_names(&store, cx),
++        before,
++        "a refused name changes nothing"
++    );
++    assert_eq!(changes.get(), 0, "a refused write emits no event");
++
++    let store = restart(store, &db, cx);
++    assert_eq!(list_names(&store, cx), before, "nor anything on disk");
++}
++
++// R4.4, R1.4 — a thread is in at most one list: putting it in another moves it; `None` takes it
++// out; membership survives a restart.
++#[gpui::test]
++async fn store_lists_tags_a_thread_is_in_one_list_at_a_time(cx: &mut TestAppContext) {
++    init(cx);
++    let (t, u) = (thread(cx), thread(cx));
++    let db = open_db("thread_organization_store_lists_tags_membership").await;
++    let store = open_store(&db, cx);
++    let (first, second) = store.update(cx, |store, cx| {
++        (
++            store.create_list("First", cx).unwrap(),
++            store.create_list("Second", cx).unwrap(),
++        )
++    });
++
++    store.update(cx, |store, cx| {
++        store.set_list(t, Some(first), cx).unwrap();
++        store.set_list(u, Some(first), cx).unwrap();
++        store.set_list(t, Some(second), cx).unwrap();
++    });
++    assert_eq!(in_list(&store, first, cx), vec![u]);
++    assert_eq!(in_list(&store, second, cx), vec![t]);
++    assert_eq!(reported(&store, t, cx).list_id, Some(second));
++
++    let store = restart(store, &db, cx);
++    assert_eq!(in_list(&store, first, cx), vec![u]);
++    assert_eq!(in_list(&store, second, cx), vec![t]);
++
++    store
++        .update(cx, |store, cx| store.set_list(u, None, cx))
++        .unwrap();
++    assert!(in_list(&store, first, cx).is_empty());
++    assert_eq!(reported(&store, u, cx).list_id, None);
++}
++
++// R4.6 — a list that does not exist (here: one that was deleted) is refused, nothing changes.
++#[gpui::test]
++async fn store_lists_tags_refuses_an_unknown_list(cx: &mut TestAppContext) {
++    init(cx);
++    let t = thread(cx);
++    let db = open_db("thread_organization_store_lists_tags_unknown_list").await;
++    let store = open_store(&db, cx);
++    let (kept, gone) = store.update(cx, |store, cx| {
++        let kept = store.create_list("Kept", cx).unwrap();
++        let gone = store.create_list("Gone", cx).unwrap();
++        store.set_list(t, Some(kept), cx).unwrap();
++        store.delete_list(gone, cx).unwrap();
++        (kept, gone)
++    });
++
++    let result = store.update(cx, |store, cx| store.set_list(t, Some(gone), cx));
++    assert!(
++        matches!(result, Err(OrganizeError::UnknownList { .. })),
++        "{result:?}"
++    );
++    assert_eq!(reported(&store, t, cx).list_id, Some(kept));
++    assert_eq!(in_list(&store, kept, cx), vec![t]);
++}
++
++// R4.5 (hostile half first) — deleting a list touches only that list's membership: a thread of
++// ANOTHER list keeps its list, and the deleted list's thread keeps its pin, tags, manual
++// position and parent link — in memory, on disk (no dangling list_id), after a restart.
++#[gpui::test]
++async fn store_lists_tags_deleting_a_list_keeps_everything_else(cx: &mut TestAppContext) {
++    init(cx);
++    let parent = thread_in(PROJECT_A, cx);
++    let t = thread_in(PROJECT_A, cx);
++    let u = thread_in(PROJECT_A, cx);
++    let db = open_db("thread_organization_store_lists_tags_delete_list").await;
++    let parent_hex = parent.to_key_string().replace('-', "");
++    let t_hex = t.to_key_string().replace('-', "");
++    run_sql(
++        &db,
++        format!(
++            "INSERT INTO thread_organization (thread_id, parent_thread_id, fork_kind) \
++             VALUES (X'{t_hex}', X'{parent_hex}', 'with_context')"
++        ),
++    )
++    .await;
++    let store = open_store(&db, cx);
++    let (doomed, other) = store.update(cx, |store, cx| {
++        let doomed = store.create_list("Doomed", cx).unwrap();
++        let other = store.create_list("Other", cx).unwrap();
++        store.set_list(t, Some(doomed), cx).unwrap();
++        store.set_list(u, Some(other), cx).unwrap();
++        store.pin(t, cx).unwrap();
++        store.add_tag(t, "Rust", cx).unwrap();
++        store
++            .set_manual_order(project(&[PROJECT_A]), &[u, t], cx)
++            .unwrap();
++        (doomed, other)
++    });
++    let before = reported(&store, t, cx);
++    assert_eq!(before.parent, Some((parent, ForkKind::WithContext)));
++
++    store
++        .update(cx, |store, cx| store.delete_list(doomed, cx))
++        .unwrap();
++
++    let check = |store: &gpui::Entity<super::ThreadOrganizationStore>, cx: &TestAppContext| {
++        assert_eq!(list_ids(store, cx), vec![other]);
++        assert_eq!(
++            in_list(store, other, cx),
++            vec![u],
++            "another list keeps its thread"
++        );
++        let after = reported(store, t, cx);
++        assert_eq!(after.list_id, None);
++        assert_eq!(after.pinned_position, before.pinned_position);
++        assert_eq!(after.manual_position, before.manual_position);
++        assert_eq!(after.parent, before.parent);
++        assert_eq!(after.tags, before.tags);
++        assert_eq!(pinned(store, cx), vec![t]);
++        store.read_with(cx, |store, _| {
++            assert_eq!(store.sort_mode(&project(&[PROJECT_A])), SortMode::Manual);
++        });
++    };
++    check(&store, cx);
++
++    cx.run_until_parked();
++    assert_eq!(
++        count(
++            &db,
++            "SELECT COUNT(*) FROM thread_organization WHERE list_id IS NOT NULL \
++             AND list_id NOT IN (SELECT id FROM thread_lists)"
++        ),
++        0,
++        "no row points at the deleted list"
++    );
++    let store = restart(store, &db, cx);
++    check(&store, cx);
++}
++
++// R5.2 (hostile: must NOT collapse) — tags that differ by more than case are two tags.
++#[gpui::test]
++async fn store_lists_tags_keeps_tags_that_differ_by_more_than_case_apart(cx: &mut TestAppContext) {
++    init(cx);
++    let t = thread(cx);
++    let db = open_db("thread_organization_store_lists_tags_distinct_tags").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        store.add_tag(t, "rust", cx).unwrap();
++        store.add_tag(t, "rust-lang", cx).unwrap();
++        store.add_tag(t, "İstanbul", cx).unwrap();
++        store.add_tag(t, "Istanbul", cx).unwrap();
++    });
++    assert_eq!(tag_displays(&store, t, cx).len(), 4);
++    assert_eq!(known_tags(&store, cx).len(), 4);
++}
++
++// R5.1, R5.7, R1.5 (hostile: must NOT split) — a tag differing only by case, on any thread,
++// non-ASCII included, is the existing tag and keeps the first spelling typed, across a restart.
++#[gpui::test]
++async fn store_lists_tags_case_variants_are_one_tag_with_the_first_spelling(
++    cx: &mut TestAppContext,
++) {
++    init(cx);
++    let (t, u) = (thread(cx), thread(cx));
++    let db = open_db("thread_organization_store_lists_tags_case_tags").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        store.add_tag(t, "Rust", cx).unwrap();
++        store.add_tag(u, "rust", cx).unwrap();
++        store.add_tag(t, "Ação", cx).unwrap();
++        store.add_tag(u, "AÇÃO", cx).unwrap();
++    });
++
++    let check = |store: &gpui::Entity<super::ThreadOrganizationStore>, cx: &TestAppContext| {
++        assert_eq!(
++            known_tags(store, cx),
++            vec![
++                ("ação".to_string(), "Ação".to_string()),
++                ("rust".to_string(), "Rust".to_string()),
++            ],
++            "one tag per key, displayed as first typed, sorted by key"
++        );
++        let mut on_u = tag_displays(store, u, cx);
++        on_u.sort();
++        assert_eq!(on_u, ["Ação", "Rust"], "u reports the existing spelling");
++    };
++    check(&store, cx);
++    let store = restart(store, &db, cx);
++    check(&store, cx);
++}
++
++// R5.5 — adding a tag a thread already has, in any case or with blanks, keeps one copy and
++// reports success.
++#[gpui::test]
++async fn store_lists_tags_adding_a_tag_twice_keeps_one_copy(cx: &mut TestAppContext) {
++    init(cx);
++    let t = thread(cx);
++    let db = open_db("thread_organization_store_lists_tags_twice").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        for spelling in ["rust", "rust", "RUST", "  rust  "] {
++            let result = store.add_tag(t, spelling, cx);
++            assert!(result.is_ok(), "{spelling:?}: {result:?}");
++        }
++    });
++    assert_eq!(tag_displays(&store, t, cx), ["rust"]);
++    cx.run_until_parked();
++    assert_eq!(rows_of(&db, "thread_tags", t), 1);
++}
++
++// R5.3 — an invalid tag is refused with nothing changed and no event.
++#[gpui::test]
++async fn store_lists_tags_refuses_an_invalid_tag(cx: &mut TestAppContext) {
++    init(cx);
++    let t = thread(cx);
++    let db = open_db("thread_organization_store_lists_tags_invalid_tag").await;
++    let store = open_store(&db, cx);
++    store
++        .update(cx, |store, cx| store.add_tag(t, "kept", cx))
++        .unwrap();
++    let changes = count_changes(&store, cx);
++
++    store.update(cx, |store, cx| {
++        for input in ["", "  ", "two words", "#rust", "rust,go", &"a".repeat(33)] {
++            let result = store.add_tag(t, input, cx);
++            assert!(
++                matches!(result, Err(OrganizeError::InvalidTag { .. })),
++                "{input:?}: {result:?}"
++            );
++        }
++    });
++    assert_eq!(tag_displays(&store, t, cx), ["kept"]);
++    assert_eq!(known_tags(&store, cx).len(), 1);
++    assert_eq!(changes.get(), 0);
++}
++
++// R5.4 — a 21st tag is refused; R5.5's converse at the limit (hostile: must NOT refuse) —
++// re-adding a tag the thread already has is still a success when it has 20.
++#[gpui::test]
++async fn store_lists_tags_refuses_a_twenty_first_tag(cx: &mut TestAppContext) {
++    init(cx);
++    let t = thread(cx);
++    let db = open_db("thread_organization_store_lists_tags_limit").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        for n in 0..20 {
++            store.add_tag(t, &format!("tag{n}"), cx).unwrap();
++        }
++    });
++
++    let again = store.update(cx, |store, cx| store.add_tag(t, "TAG7", cx));
++    assert!(
++        again.is_ok(),
++        "a tag the thread already has is not a 21st: {again:?}"
++    );
++    let result = store.update(cx, |store, cx| store.add_tag(t, "tag20", cx));
++    assert!(
++        matches!(result, Err(OrganizeError::TooManyTags { .. })),
++        "{result:?}"
++    );
++    assert_eq!(tag_displays(&store, t, cx).len(), 20);
++    assert!(
++        !known_tags(&store, cx).iter().any(|(key, _)| key == "tag20"),
++        "the refused tag is not offered either"
++    );
++}
++
++// R5.6 — a tag stays known while any thread uses it and stops being offered when the last use
++// goes (removal matches case-insensitively), in memory and on disk; once gone, a new first
++// spelling is the display (the derived display is not resurrected).
++#[gpui::test]
++async fn store_lists_tags_last_use_removed_forgets_the_tag(cx: &mut TestAppContext) {
++    init(cx);
++    let (t, u) = (thread(cx), thread(cx));
++    let db = open_db("thread_organization_store_lists_tags_last_use").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        store.add_tag(t, "php", cx).unwrap();
++        store.add_tag(u, "php", cx).unwrap();
++        store.add_tag(u, "keep", cx).unwrap();
++    });
++
++    store
++        .update(cx, |store, cx| store.remove_tag(t, "PHP", cx))
++        .unwrap();
++    assert!(tag_displays(&store, t, cx).is_empty());
++    assert!(
++        known_tags(&store, cx).iter().any(|(key, _)| key == "php"),
++        "still used by u"
++    );
++
++    store
++        .update(cx, |store, cx| store.remove_tag(u, "php", cx))
++        .unwrap();
++    assert_eq!(
++        known_tags(&store, cx),
++        vec![("keep".to_string(), "keep".to_string())]
++    );
++    cx.run_until_parked();
++    assert_eq!(
++        strings(&db, "SELECT tag_key FROM tags ORDER BY tag_key"),
++        ["keep"]
++    );
++
++    let store = restart(store, &db, cx);
++    assert_eq!(
++        known_tags(&store, cx),
++        vec![("keep".to_string(), "keep".to_string())]
++    );
++    store
++        .update(cx, |store, cx| store.add_tag(t, "PHP", cx))
++        .unwrap();
++    assert_eq!(tag_displays(&store, t, cx), ["PHP"]);
++}
++
++// R9.4 — a failed write of a tag or a list is logged at error level naming the thread, and the
++// tag or list TEXT never reaches any log line.
++#[gpui::test]
++async fn store_lists_tags_failed_writes_never_log_tag_or_list_text(cx: &mut TestAppContext) {
++    init(cx);
++    let t = thread(cx);
++    let db = open_db("thread_organization_store_lists_tags_redaction").await;
++    let store = open_store(&db, cx);
++    let list = store.update(cx, |store, cx| store.create_list("Visible", cx).unwrap());
++    for table in ["thread_tags", "tags", "thread_lists"] {
++        sabotage(&db, table).await;
++    }
++    capture_logs();
++
++    store.update(cx, |store, cx| {
++        store.add_tag(t, "SecretTag", cx).unwrap();
++        store.create_list("Hidden List Name", cx).unwrap();
++        store.rename_list(list, "Private Rename", cx).unwrap();
++    });
++    cx.run_until_parked();
++
++    let errors = error_lines();
++    assert!(
++        errors.iter().any(|line| line.contains(&id_text(t))),
++        "the failed tag write names the thread: {errors:?}"
++    );
++    assert!(errors.len() >= 3, "each failed write is logged: {errors:?}");
++    for line in all_lines_lowercased() {
++        for text in ["secrettag", "hidden list name", "private rename"] {
++            assert!(
++                !line.contains(text),
++                "user text {text:?} reached a log line: {line}"
++            );
++        }
++    }
++}
++
++// Tech review L4 — a list id is never handed out twice, not even after the highest list was
++// deleted and Zeo restarted: a `ListId` a view still holds must not come to name another list.
++#[gpui::test]
++async fn store_lists_tags_never_reuses_a_list_id_across_restarts(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("thread_organization_store_lists_tags_list_ids").await;
++    let store = open_store(&db, cx);
++    let (kept, deleted) = store.update(cx, |store, cx| {
++        let kept = store.create_list("Kept", cx).unwrap();
++        let deleted = store.create_list("Deleted", cx).unwrap();
++        store.delete_list(deleted, cx).unwrap();
++        (kept, deleted)
++    });
++
++    let store = restart(store, &db, cx);
++    let created = store.update(cx, |store, cx| store.create_list("New", cx).unwrap());
++    assert_ne!(created, deleted, "the deleted list's id is not reused");
++    assert_ne!(created, kept);
++}
++
++// Tech review re-run (a) — deleting the only list rewrites the table from an empty memory
++// (`NOT IN ()`), and a restart then reports no list.
++#[gpui::test]
++async fn store_lists_tags_deleting_the_only_list_survives_restart(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("thread_organization_store_lists_tags_only_list").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        let only = store.create_list("Only", cx).unwrap();
++        store.delete_list(only, cx).unwrap();
++    });
++    cx.run_until_parked();
++    assert_eq!(count(&db, "SELECT COUNT(*) FROM thread_lists"), 0);
++    let store = restart(store, &db, cx);
++    assert!(list_names(&store, cx).is_empty());
++}
+diff --git a/crates/agent_ui/src/thread_organization/store_order_tests.rs b/crates/agent_ui/src/thread_organization/store_order_tests.rs
+new file mode 100644
+index 0000000..c3a1e41
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/store_order_tests.rs
+@@ -0,0 +1,442 @@
++// Story 031, task 3.2 — pinned order and per-project Recent/Manual mode
++// (R1.1, R1.2, R2.1–R2.5, R3.1–R3.5, Q12).
++//
++// Materialize with, in `src/thread_organization.rs` (with `test_helpers`):
++//     #[cfg(test)]
++//     #[path = "thread_organization/store_order_tests.rs"]
++//     mod store_order;
++// Filter: `cargo test -p agent_ui thread_organization::store_order`.
++//
++// Threads live in real projects: `thread_in(PROJECT_A)` is a thread whose main worktree is
++// `/project-a`, and `project(&[PROJECT_A])` is that project's key.
++
++use gpui::TestAppContext;
++
++use super::SortMode;
++use super::test_helpers::*;
++use crate::thread_metadata_store::ThreadId;
++
++fn pinned_positions(
++    store: &gpui::Entity<super::ThreadOrganizationStore>,
++    threads: &[ThreadId],
++    cx: &TestAppContext,
++) -> Vec<Option<u32>> {
++    threads
++        .iter()
++        .map(|thread| reported(store, *thread, cx).pinned_position)
++        .collect()
++}
++
++fn manual_positions(
++    store: &gpui::Entity<super::ThreadOrganizationStore>,
++    threads: &[ThreadId],
++    cx: &TestAppContext,
++) -> Vec<Option<u32>> {
++    store.read_with(cx, |store, _| {
++        threads
++            .iter()
++            .map(|thread| store.manual_position(*thread))
++            .collect()
++    })
++}
++
++// R2.1 — a newly pinned thread enters at the top.
++#[gpui::test]
++async fn store_order_pin_enters_at_the_top(cx: &mut TestAppContext) {
++    init(cx);
++    let (a, b, c) = (thread(cx), thread(cx), thread(cx));
++    let db = open_db("thread_organization_store_order_pin_top").await;
++    let store = open_store(&db, cx);
++
++    store.update(cx, |store, cx| {
++        store.pin(a, cx).unwrap();
++        store.pin(b, cx).unwrap();
++        store.pin(c, cx).unwrap();
++    });
++    assert_eq!(pinned(&store, cx), vec![c, b, a]);
++    assert_eq!(
++        pinned_positions(&store, &[c, b, a], cx),
++        vec![Some(0), Some(1), Some(2)]
++    );
++}
++
++// R2.2 (hostile: a repeated pin must NOT move the thread to the top) — pinning a pinned thread
++// succeeds and changes nothing.
++#[gpui::test]
++async fn store_order_pinning_a_pinned_thread_changes_nothing(cx: &mut TestAppContext) {
++    init(cx);
++    let (a, b, c) = (thread(cx), thread(cx), thread(cx));
++    let db = open_db("thread_organization_store_order_repin").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        store.pin(a, cx).unwrap();
++        store.pin(b, cx).unwrap();
++        store.pin(c, cx).unwrap();
++    });
++
++    let result = store.update(cx, |store, cx| store.pin(a, cx));
++    assert!(result.is_ok(), "re-pinning reports success: {result:?}");
++    assert_eq!(
++        pinned(&store, cx),
++        vec![c, b, a],
++        "the pinned order is unchanged"
++    );
++    let store = restart(store, &db, cx);
++    assert_eq!(pinned(&store, cx), vec![c, b, a]);
++}
++
++// R2.3, R2.4 — moving a pinned thread rewrites the positions densely (no gap, no duplicate),
++// in memory and on disk; an index past the end places it last.
++#[gpui::test]
++async fn store_order_move_pinned_rewrites_dense_positions_and_clamps(cx: &mut TestAppContext) {
++    init(cx);
++    let (a, b, c) = (thread(cx), thread(cx), thread(cx));
++    let db = open_db("thread_organization_store_order_move").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        store.pin(a, cx).unwrap();
++        store.pin(b, cx).unwrap();
++        store.pin(c, cx).unwrap();
++    });
++
++    store
++        .update(cx, |store, cx| store.move_pinned(a, 0, cx))
++        .unwrap();
++    assert_eq!(pinned(&store, cx), vec![a, c, b]);
++    assert_eq!(
++        pinned_positions(&store, &[a, c, b], cx),
++        vec![Some(0), Some(1), Some(2)]
++    );
++
++    store
++        .update(cx, |store, cx| store.move_pinned(c, 99, cx))
++        .unwrap();
++    assert_eq!(pinned(&store, cx), vec![a, b, c], "past the end means last");
++    assert_eq!(
++        pinned_positions(&store, &[a, b, c], cx),
++        vec![Some(0), Some(1), Some(2)]
++    );
++
++    cx.run_until_parked();
++    let on_disk: Vec<i64> = db
++        .select::<i64>(
++            "SELECT pinned_position FROM thread_organization \
++             WHERE pinned_position IS NOT NULL ORDER BY pinned_position",
++        )
++        .expect("select")()
++    .expect("run");
++    assert_eq!(on_disk, vec![0, 1, 2], "dense on disk too");
++}
++
++// R2.5 — unpinning removes the thread and keeps the rest in their relative order; a thread with
++// nothing else stored leaves no row behind (design.md: an all-NULL row is deleted).
++#[gpui::test]
++async fn store_order_unpin_keeps_the_others_in_order(cx: &mut TestAppContext) {
++    init(cx);
++    let (a, b, c) = (thread(cx), thread(cx), thread(cx));
++    let db = open_db("thread_organization_store_order_unpin").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        store.pin(a, cx).unwrap();
++        store.pin(b, cx).unwrap();
++        store.pin(c, cx).unwrap();
++    });
++
++    store.update(cx, |store, cx| store.unpin(b, cx)).unwrap();
++    assert_eq!(pinned(&store, cx), vec![c, a]);
++    assert_eq!(reported(&store, b, cx).pinned_position, None);
++
++    cx.run_until_parked();
++    assert_eq!(
++        rows_of(&db, "thread_organization", b),
++        0,
++        "no all-NULL row is kept"
++    );
++    let store = restart(store, &db, cx);
++    assert_eq!(pinned(&store, cx), vec![c, a]);
++}
++
++// R1.1 — the pinned threads and their order survive a restart.
++#[gpui::test]
++async fn store_order_restart_keeps_the_pinned_order(cx: &mut TestAppContext) {
++    init(cx);
++    let (a, b, c) = (thread(cx), thread(cx), thread(cx));
++    let db = open_db("thread_organization_store_order_restart_pins").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        store.pin(a, cx).unwrap();
++        store.pin(b, cx).unwrap();
++        store.pin(c, cx).unwrap();
++        store.move_pinned(a, 1, cx).unwrap();
++    });
++    let before = pinned(&store, cx);
++    assert_eq!(before, vec![c, a, b]);
++
++    let store = restart(store, &db, cx);
++    assert_eq!(pinned(&store, cx), before);
++}
++
++// R3.1 — a project never given a manual order reads as Recent, and its threads have no manual
++// position.
++#[gpui::test]
++async fn store_order_a_project_without_manual_order_is_recent(cx: &mut TestAppContext) {
++    init(cx);
++    let a = thread_in(PROJECT_A, cx);
++    let db = open_db("thread_organization_store_order_recent_default").await;
++    let store = open_store(&db, cx);
++    store.read_with(cx, |store, _| {
++        assert_eq!(store.sort_mode(&project(&[PROJECT_A])), SortMode::Recent);
++        assert_eq!(store.manual_position(a), None);
++    });
++}
++
++// R3.2, R3.4, R3.5 (hostile halves first) — a manual order makes ONLY that project Manual: not
++// another project, not the same folders on another host; while the same folders listed in
++// another order are the same project.
++#[gpui::test]
++async fn store_order_manual_order_applies_to_that_project_only(cx: &mut TestAppContext) {
++    init(cx);
++    let (a, b, c) = (
++        thread_in(PROJECT_A, cx),
++        thread_in(PROJECT_A, cx),
++        thread_in(PROJECT_A, cx),
++    );
++    let other = thread_in(PROJECT_B, cx);
++    let db = open_db("thread_organization_store_order_manual").await;
++    let store = open_store(&db, cx);
++
++    store
++        .update(cx, |store, cx| {
++            store.set_manual_order(project(&[PROJECT_A]), &[b, a, c], cx)
++        })
++        .unwrap();
++
++    store.read_with(cx, |store, _| {
++        assert_eq!(
++            store.sort_mode(&project(&[PROJECT_B])),
++            SortMode::Recent,
++            "another project is not touched"
++        );
++        assert_eq!(store.manual_position(other), None);
++        assert_eq!(
++            store.sort_mode(&project(&[PROJECT_A, PROJECT_B])),
++            SortMode::Recent,
++            "a project containing more folders is another project"
++        );
++        assert_eq!(store.sort_mode(&project(&[PROJECT_A])), SortMode::Manual);
++    });
++    assert_eq!(
++        manual_positions(&store, &[b, a, c], cx),
++        vec![Some(0), Some(1), Some(2)]
++    );
++}
++
++// R3.4 at the store — two folders added in either order name one project, so its mode is shared.
++#[gpui::test]
++async fn store_order_folder_order_does_not_split_a_project(cx: &mut TestAppContext) {
++    init(cx);
++    let a = thread_in_folders(&[PROJECT_A, PROJECT_B], cx);
++    let db = open_db("thread_organization_store_order_folder_order").await;
++    let store = open_store(&db, cx);
++
++    store
++        .update(cx, |store, cx| {
++            store.set_manual_order(project(&[PROJECT_B, PROJECT_A]), &[a], cx)
++        })
++        .unwrap();
++    store.read_with(cx, |store, _| {
++        assert_eq!(
++            store.sort_mode(&project(&[PROJECT_A, PROJECT_B])),
++            SortMode::Manual
++        );
++    });
++}
++
++// R3.3 (hostile half first) — back to Recent clears THAT project's manual positions and nothing
++// else: another project's manual order and the same threads' pins survive.
++#[gpui::test]
++async fn store_order_back_to_recent_clears_only_that_projects_positions(cx: &mut TestAppContext) {
++    init(cx);
++    let (a, b) = (thread_in(PROJECT_A, cx), thread_in(PROJECT_A, cx));
++    let other = thread_in(PROJECT_B, cx);
++    let db = open_db("thread_organization_store_order_back_to_recent").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        store
++            .set_manual_order(project(&[PROJECT_A]), &[a, b], cx)
++            .unwrap();
++        store
++            .set_manual_order(project(&[PROJECT_B]), &[other], cx)
++            .unwrap();
++        store.pin(a, cx).unwrap();
++    });
++
++    store
++        .update(cx, |store, cx| {
++            store.set_sort_mode(project(&[PROJECT_A]), SortMode::Recent, cx)
++        })
++        .unwrap();
++
++    store.read_with(cx, |store, _| {
++        assert_eq!(store.sort_mode(&project(&[PROJECT_B])), SortMode::Manual);
++        assert_eq!(store.manual_position(other), Some(0));
++        assert_eq!(store.sort_mode(&project(&[PROJECT_A])), SortMode::Recent);
++    });
++    assert_eq!(manual_positions(&store, &[a, b], cx), vec![None, None]);
++    assert_eq!(
++        pinned(&store, cx),
++        vec![a],
++        "the pin is not part of the manual order"
++    );
++
++    let store = restart(store, &db, cx);
++    store.read_with(cx, |store, _| {
++        assert_eq!(store.sort_mode(&project(&[PROJECT_A])), SortMode::Recent);
++        assert_eq!(store.sort_mode(&project(&[PROJECT_B])), SortMode::Manual);
++        assert_eq!(store.manual_position(other), Some(0));
++    });
++    assert_eq!(manual_positions(&store, &[a, b], cx), vec![None, None]);
++    assert_eq!(pinned(&store, cx), vec![a]);
++}
++
++// R1.2 — Manual mode and the thread order survive a restart.
++#[gpui::test]
++async fn store_order_restart_keeps_manual_mode_and_order(cx: &mut TestAppContext) {
++    init(cx);
++    let (a, b, c) = (
++        thread_in(PROJECT_A, cx),
++        thread_in(PROJECT_A, cx),
++        thread_in(PROJECT_A, cx),
++    );
++    let db = open_db("thread_organization_store_order_restart_manual").await;
++    let store = open_store(&db, cx);
++    store
++        .update(cx, |store, cx| {
++            store.set_manual_order(project(&[PROJECT_A]), &[c, a, b], cx)
++        })
++        .unwrap();
++
++    let store = restart(store, &db, cx);
++    store.read_with(cx, |store, _| {
++        assert_eq!(store.sort_mode(&project(&[PROJECT_A])), SortMode::Manual);
++    });
++    assert_eq!(
++        manual_positions(&store, &[c, a, b], cx),
++        vec![Some(0), Some(1), Some(2)]
++    );
++}
++
++// R3.2 (hostile half) — a new manual order replaces the project's previous one: a thread that
++// was positioned before and is left out of the new order loses its position instead of keeping a
++// stale one that could duplicate a new thread's slot. Another project's order is untouched.
++#[gpui::test]
++async fn store_order_new_manual_order_replaces_the_previous_one(cx: &mut TestAppContext) {
++    init(cx);
++    let (a, b, c) = (
++        thread_in(PROJECT_A, cx),
++        thread_in(PROJECT_A, cx),
++        thread_in(PROJECT_A, cx),
++    );
++    let other = thread_in(PROJECT_B, cx);
++    let db = open_db("thread_organization_store_order_replaces_previous").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        store
++            .set_manual_order(project(&[PROJECT_A]), &[a, b, c], cx)
++            .unwrap();
++        store
++            .set_manual_order(project(&[PROJECT_B]), &[other], cx)
++            .unwrap();
++    });
++
++    store
++        .update(cx, |store, cx| {
++            store.set_manual_order(project(&[PROJECT_A]), &[c, a], cx)
++        })
++        .unwrap();
++
++    assert_eq!(
++        manual_positions(&store, &[c, a, b], cx),
++        vec![Some(0), Some(1), None],
++        "b was left out of the new order"
++    );
++    let store = restart(store, &db, cx);
++    assert_eq!(
++        manual_positions(&store, &[c, a, b], cx),
++        vec![Some(0), Some(1), None]
++    );
++    store.read_with(cx, |store, _| {
++        assert_eq!(store.manual_position(other), Some(0));
++        assert_eq!(store.sort_mode(&project(&[PROJECT_B])), SortMode::Manual);
++    });
++}
++
++// design.md "Writes" — set_sort_mode(Manual) switches the project to Manual and keeps whatever
++// positions it has; on a project with none it is Ok and reports Manual with no position.
++#[gpui::test]
++async fn store_order_set_manual_mode_keeps_positions(cx: &mut TestAppContext) {
++    init(cx);
++    let (a, b) = (thread_in(PROJECT_A, cx), thread_in(PROJECT_A, cx));
++    let fresh = thread_in(PROJECT_B, cx);
++    let db = open_db("thread_organization_store_order_set_manual_mode").await;
++    let store = open_store(&db, cx);
++    store
++        .update(cx, |store, cx| {
++            store.set_manual_order(project(&[PROJECT_A]), &[b, a], cx)
++        })
++        .unwrap();
++
++    store.update(cx, |store, cx| {
++        store
++            .set_sort_mode(project(&[PROJECT_A]), SortMode::Manual, cx)
++            .unwrap();
++        store
++            .set_sort_mode(project(&[PROJECT_B]), SortMode::Manual, cx)
++            .unwrap();
++    });
++
++    let store = restart(store, &db, cx);
++    assert_eq!(
++        manual_positions(&store, &[b, a], cx),
++        vec![Some(0), Some(1)]
++    );
++    store.read_with(cx, |store, _| {
++        assert_eq!(store.sort_mode(&project(&[PROJECT_A])), SortMode::Manual);
++        assert_eq!(store.sort_mode(&project(&[PROJECT_B])), SortMode::Manual);
++        assert_eq!(store.manual_position(fresh), None);
++    });
++}
++
++// Task 5.1 (consumer contract) — the sidebar sorts a project's threads by
++// `manual_position_in(thread, group key)`. A thread still holding a slot in the project it was
++// ordered in, now shown under another project because its folders changed, answers `None` there
++// (placed like a new thread) instead of a position another thread owns — after a restart too.
++#[gpui::test]
++async fn store_order_manual_position_answers_only_in_its_own_project(cx: &mut TestAppContext) {
++    init(cx);
++    let moved = thread_in(PROJECT_A, cx);
++    let resident = thread_in(PROJECT_B, cx);
++    let db = open_db("thread_organization_store_order_manual_position_in").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        store
++            .set_manual_order(project(&[PROJECT_A]), &[moved], cx)
++            .unwrap();
++        store
++            .set_manual_order(project(&[PROJECT_B]), &[resident], cx)
++            .unwrap();
++    });
++
++    let store = restart(store, &db, cx);
++    store.read_with(cx, |store, _| {
++        let (old_home, new_home) = (project(&[PROJECT_A]), project(&[PROJECT_B]));
++        assert_eq!(store.manual_position_in(moved, &old_home), Some(0));
++        assert_eq!(store.manual_position_in(resident, &new_home), Some(0));
++        assert_eq!(
++            store.manual_position_in(moved, &new_home),
++            None,
++            "slot 0 of the new project belongs to its resident thread"
++        );
++        assert_eq!(store.manual_position_in(resident, &old_home), None);
++    });
++}
+diff --git a/crates/agent_ui/src/thread_organization/store_persistence_tests.rs b/crates/agent_ui/src/thread_organization/store_persistence_tests.rs
+new file mode 100644
+index 0000000..fc91d45
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/store_persistence_tests.rs
+@@ -0,0 +1,368 @@
++// Story 031, task 3.1 — load, global entity, ordered writer and degraded modes
++// (R1.7, R9.3, R9.4, R9.5, Q4, Q12).
++//
++// Materialize with, in `src/thread_organization.rs` (with `test_helpers`):
++//     #[cfg(test)]
++//     #[path = "thread_organization/store_persistence_tests.rs"]
++//     mod store_persistence;
++// Filter: `cargo test -p agent_ui thread_organization::store_persistence`.
++//
++// DEPENDENCY: R1.7, R9.3 and R9.4 are about a write, so these tests drive the store through
++// `pin` / `pinned` / `sort_mode`, which task 3.2 adds. Task 3.1's Validation can only pass once
++// those exist.
++//
++// Logs are captured with the thread-local logger in `test_helpers` (agent_ui had no capture
++// helper; this is patch 0035's).
++
++use gpui::{AppContext as _, TestAppContext};
++
++use super::test_helpers::*;
++use super::{ForkKind, SortMode, ThreadOrganizationDb, ThreadOrganizationStore};
++use crate::thread_metadata_store::ThreadId;
++
++/// Writes rows straight into the database, as a FUTURE schema step could have: CHECK constraints
++/// are switched off for the inserts so a value this Zeo does not know can be stored.
++async fn insert_rows_from_a_future_step(db: &ThreadOrganizationDb, rows: Vec<(ThreadId, String)>) {
++    db.write(move |connection| {
++        connection
++            .exec("PRAGMA ignore_check_constraints = ON")
++            .expect("pragma")()
++        .expect("pragma runs");
++        for (thread_id, values) in rows {
++            connection
++                .exec_bound::<ThreadId>(&format!(
++                    "INSERT INTO thread_organization \
++                     (thread_id, pinned_position, parent_thread_id, fork_kind) VALUES (?, {values})"
++                ))
++                .expect("insert should prepare")(thread_id)
++            .expect("insert should run");
++        }
++        connection
++            .exec("PRAGMA ignore_check_constraints = OFF")
++            .expect("pragma")()
++        .expect("pragma runs");
++    })
++    .await;
++}
++
++// R1.7 — a change is reported to readers at once, inside the same update, with one Changed
++// event; and it then reaches disk, bound as the 16-byte `ThreadId` BLOB (never its key string,
++// which would never match a later lookup).
++#[gpui::test]
++async fn store_persistence_reports_a_change_before_it_reaches_disk(cx: &mut TestAppContext) {
++    init(cx);
++    let a = thread(cx);
++    let db = open_db("thread_organization_store_persistence_immediate").await;
++    let store = open_store(&db, cx);
++    let changes = count_changes(&store, cx);
++
++    let seen_in_the_same_update = store.update(cx, |store, cx| {
++        store
++            .pin(a, cx)
++            .expect("pinning a thread with a session succeeds");
++        store.pinned().collect::<Vec<_>>()
++    });
++    assert_eq!(
++        seen_in_the_same_update,
++        vec![a],
++        "memory answers before any await"
++    );
++    assert_eq!(pinned(&store, cx), vec![a]);
++    assert_eq!(changes.get(), 1, "one Changed event per accepted write");
++
++    cx.run_until_parked();
++    let stored = db
++        .select_row_bound::<ThreadId, (String, i64, i64)>(
++            "SELECT typeof(thread_id), length(thread_id), pinned_position \
++             FROM thread_organization WHERE thread_id = ?",
++        )
++        .expect("select should prepare")(a)
++    .expect("select should run");
++    assert_eq!(stored, Some(("blob".to_string(), 16, 0)));
++}
++
++// The load path: a new store over the same database reports what the previous one wrote.
++#[gpui::test]
++async fn store_persistence_restart_loads_what_was_written(cx: &mut TestAppContext) {
++    init(cx);
++    let a = thread(cx);
++    let b = thread(cx);
++    let db = open_db("thread_organization_store_persistence_restart").await;
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| {
++        store.pin(a, cx).unwrap();
++        store.pin(b, cx).unwrap();
++    });
++
++    let store = restart(store, &db, cx);
++    assert_eq!(pinned(&store, cx), vec![b, a]);
++}
++
++// R9.5 — a row carrying a value this Zeo does not recognize is skipped with a warning naming its
++// thread; every other row loads. Hostile half: the valid rows next to it, including a valid
++// sub-thread row of the same parent, must not be dropped or flagged.
++#[gpui::test]
++async fn store_persistence_skips_an_unrecognized_row_with_a_warning_and_loads_the_rest(
++    cx: &mut TestAppContext,
++) {
++    init(cx);
++    let parent = thread(cx);
++    let unknown = thread(cx);
++    let plain = thread(cx);
++    let child = thread(cx);
++    let db = open_db("thread_organization_store_persistence_unknown_row").await;
++    let parent_hex = parent.to_key_string().replace('-', "");
++    insert_rows_from_a_future_step(
++        &db,
++        vec![
++            (unknown, format!("0, X'{parent_hex}', 'sideways'")),
++            (plain, "1, NULL, NULL".to_string()),
++            (child, format!("NULL, X'{parent_hex}', 'clean'")),
++        ],
++    )
++    .await;
++    let manual_project = project(&[PROJECT_A]);
++    let unknown_mode_project = project(&[PROJECT_B]);
++    run_sql(
++        &db,
++        format!(
++            "INSERT INTO project_sort_mode (project_key, mode) VALUES ('{}', 'manual')",
++            manual_project.0
++        ),
++    )
++    .await;
++    run_sql(&db, "PRAGMA ignore_check_constraints = ON".to_string()).await;
++    run_sql(
++        &db,
++        format!(
++            "INSERT INTO project_sort_mode (project_key, mode) VALUES ('{}', 'alphabetical')",
++            unknown_mode_project.0
++        ),
++    )
++    .await;
++    run_sql(&db, "PRAGMA ignore_check_constraints = OFF".to_string()).await;
++
++    capture_logs();
++    let store = open_store(&db, cx);
++
++    assert!(
++        !has_organization(&store, unknown, cx),
++        "the unrecognized row is skipped, not half-loaded"
++    );
++    assert_eq!(
++        pinned(&store, cx),
++        vec![plain],
++        "the valid pinned row loads"
++    );
++    assert_eq!(
++        reported(&store, child, cx).parent,
++        Some((parent, ForkKind::Clean)),
++        "a valid sub-thread row of the same parent loads"
++    );
++    store.read_with(cx, |store, _| {
++        assert_eq!(store.sort_mode(&manual_project), SortMode::Manual);
++        assert_eq!(
++            store.sort_mode(&unknown_mode_project),
++            SortMode::Recent,
++            "an unrecognized mode is skipped and the project reads as Recent"
++        );
++    });
++    let warnings = warn_lines();
++    assert!(
++        warnings.iter().any(|line| line.contains(&id_text(unknown))),
++        "the skipped row is logged at warn level with its ThreadId: {warnings:?}"
++    );
++    for valid in [plain, child, parent] {
++        assert!(
++            !warnings.iter().any(|line| line.contains(&id_text(valid))),
++            "a valid row is not flagged: {warnings:?}"
++        );
++    }
++}
++
++// R9.3 (hostile half first) — a store on a working database says nothing about persistence.
++#[gpui::test]
++async fn store_persistence_on_a_working_database_does_not_warn(cx: &mut TestAppContext) {
++    init(cx);
++    let a = thread(cx);
++    let db = open_db("thread_organization_store_persistence_no_fallback").await;
++    capture_logs();
++    let store = open_store(&db, cx);
++    store.update(cx, |store, cx| store.pin(a, cx).unwrap());
++    cx.run_until_parked();
++    let warnings = warn_lines();
++    assert!(
++        !warnings
++            .iter()
++            .any(|line| line.contains("will not persist")),
++        "no fallback warning without a fallback: {warnings:?}"
++    );
++}
++
++// R9.3 — on the in-memory fallback the store starts, organization keeps working for the session,
++// and exactly one warning says it will not persist, however many writes follow.
++#[gpui::test]
++async fn store_persistence_on_the_fallback_database_warns_once_and_keeps_working(
++    cx: &mut TestAppContext,
++) {
++    init(cx);
++    let a = thread(cx);
++    let b = thread(cx);
++    let db = open_db("thread_organization_store_persistence_fallback").await;
++    capture_logs();
++    let store = cx.new(|cx| ThreadOrganizationStore::with_fallback_flag(db.clone(), true, cx));
++    cx.run_until_parked();
++
++    store.update(cx, |store, cx| {
++        store
++            .pin(a, cx)
++            .expect("organization works on the fallback");
++        store
++            .pin(b, cx)
++            .expect("organization works on the fallback");
++    });
++    cx.run_until_parked();
++
++    assert_eq!(pinned(&store, cx), vec![b, a]);
++    let fallback_warnings: Vec<String> = warn_lines()
++        .into_iter()
++        .filter(|line| line.contains("will not persist"))
++        .collect();
++    assert_eq!(
++        fallback_warnings.len(),
++        1,
++        "exactly one fallback warning: {fallback_warnings:?}"
++    );
++}
++
++// R9.4 — a write that fails on disk is logged at error level naming the thread; memory keeps the
++// change; and the writer goes on: the next write is still attempted and reaches disk.
++#[gpui::test]
++async fn store_persistence_logs_a_failed_write_with_its_thread_and_keeps_writing(
++    cx: &mut TestAppContext,
++) {
++    init(cx);
++    let a = thread(cx);
++    let b = thread(cx);
++    let db = open_db("thread_organization_store_persistence_failed_write").await;
++    let store = open_store(&db, cx);
++
++    sabotage(&db, "thread_organization").await;
++    capture_logs();
++    store
++        .update(cx, |store, cx| store.pin(a, cx))
++        .expect("validation passes; disk fails later");
++    cx.run_until_parked();
++    assert_eq!(pinned(&store, cx), vec![a], "memory keeps the change");
++    let errors = error_lines();
++    assert!(
++        errors.iter().any(|line| line.contains(&id_text(a))),
++        "the failed write is logged at error level with the ThreadId: {errors:?}"
++    );
++
++    repair(&db, "thread_organization").await;
++    capture_logs();
++    store.update(cx, |store, cx| store.pin(b, cx)).unwrap();
++    cx.run_until_parked();
++    assert!(
++        error_lines().is_empty(),
++        "the repaired database takes the next write"
++    );
++
++    let store = restart(store, &db, cx);
++    assert!(
++        pinned(&store, cx).contains(&b),
++        "the write after the failure reached disk"
++    );
++}
++
++// Tech review M1 — a row this build skipped (a newer Zeo's value) keeps that value when this build
++// organizes the same thread and then clears it: only the columns this build owns are written, and
++// the row is cleared rather than deleted.
++#[gpui::test]
++async fn store_persistence_keeps_a_newer_builds_data_in_a_skipped_row(cx: &mut TestAppContext) {
++    init(cx);
++    let parent = thread(cx);
++    let newer = thread(cx);
++    let db = open_db("thread_organization_store_persistence_foreign_row").await;
++    let parent_hex = parent.to_key_string().replace('-', "");
++    insert_rows_from_a_future_step(
++        &db,
++        vec![(newer, format!("NULL, X'{parent_hex}', 'sideways'"))],
++    )
++    .await;
++    let store = open_store(&db, cx);
++
++    store.update(cx, |store, cx| store.pin(newer, cx)).unwrap();
++    cx.run_until_parked();
++    store
++        .update(cx, |store, cx| store.unpin(newer, cx))
++        .unwrap();
++    cx.run_until_parked();
++
++    let kept = db
++        .select_row_bound::<ThreadId, (Option<i64>, ThreadId, String)>(
++            "SELECT pinned_position, parent_thread_id, fork_kind FROM thread_organization \
++             WHERE thread_id = ?",
++        )
++        .expect("select should prepare")(newer)
++    .expect("select should run");
++    assert_eq!(kept, Some((None, parent, "sideways".to_string())));
++}
++
++// Tech review re-run L-a — deleting a thread whose row this build skipped deletes that row too:
++// a deleted thread leaves nothing for a newer build to load.
++#[gpui::test]
++async fn store_persistence_deleting_a_thread_removes_its_skipped_row(cx: &mut TestAppContext) {
++    init(cx);
++    cx.update(|cx| super::init(cx));
++    cx.run_until_parked();
++    let parent = thread(cx);
++    let newer = thread(cx);
++    let db = cx.update(|cx| ThreadOrganizationDb::global(cx));
++    let parent_hex = parent.to_key_string().replace('-', "");
++    insert_rows_from_a_future_step(
++        &db,
++        vec![(newer, format!("NULL, X'{parent_hex}', 'sideways'"))],
++    )
++    .await;
++    // The global store loaded before the row existed; reinstall it so it skips the row at load.
++    cx.update(|cx| super::init(cx));
++    cx.run_until_parked();
++
++    delete_thread(newer, cx);
++    cx.run_until_parked();
++    assert_eq!(rows_of(&db, "thread_organization", newer), 0);
++}
++
++// Tech review re-run L-b — a skipped row's parent link, written by a newer build, is not
++// overwritten: the thread is treated as already having a parent.
++#[gpui::test]
++async fn store_persistence_never_overwrites_a_skipped_rows_parent(cx: &mut TestAppContext) {
++    init(cx);
++    let (parent, other, newer) = (thread(cx), thread(cx), thread(cx));
++    let db = open_db("thread_organization_store_persistence_foreign_parent").await;
++    let parent_hex = parent.to_key_string().replace('-', "");
++    insert_rows_from_a_future_step(
++        &db,
++        vec![(newer, format!("NULL, X'{parent_hex}', 'sideways'"))],
++    )
++    .await;
++    let store = open_store(&db, cx);
++
++    let result = store.update(cx, |store, cx| {
++        store.set_parent(newer, other, ForkKind::Clean, cx)
++    });
++    assert!(
++        matches!(result, Err(super::OrganizeError::AlreadyHasParent { .. })),
++        "{result:?}"
++    );
++    cx.run_until_parked();
++    let kept = db
++        .select_row_bound::<ThreadId, (ThreadId, String)>(
++            "SELECT parent_thread_id, fork_kind FROM thread_organization WHERE thread_id = ?",
++        )
++        .expect("select should prepare")(newer)
++    .expect("select should run");
++    assert_eq!(kept, Some((parent, "sideways".to_string())));
++}
+diff --git a/crates/agent_ui/src/thread_organization/test_helpers.rs b/crates/agent_ui/src/thread_organization/test_helpers.rs
+new file mode 100644
+index 0000000..b2b7ff7
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/test_helpers.rs
+@@ -0,0 +1,451 @@
++// Story 031 — shared fixtures for the store and lifecycle tests (tasks 3.1–3.4, 4.2).
++//
++// Materialize with task 3.1, in `src/thread_organization.rs`:
++//     #[cfg(test)]
++//     #[path = "thread_organization/test_helpers.rs"]
++//     mod test_helpers;
++//
++// Threads are created through upstream's real `ThreadMetadataStore` (the store's admission check
++// reads it); a draft is a thread with `session_id: None`. A restart is a new
++// `ThreadOrganizationStore` over the same test database.
++
++use std::{
++    cell::{Cell, RefCell},
++    path::Path,
++    rc::Rc,
++    sync::Once,
++};
++
++use agent_client_protocol::schema::v2 as acp;
++use chrono::Utc;
++use fs::Fs;
++use gpui::{AppContext as _, Entity, TestAppContext};
++use project::{FakeFs, ProjectGroupKey};
++use workspace::PathList;
++
++use super::{
++    ForkKind, ListId, ProjectKey, ThreadOrganizationDb, ThreadOrganizationEvent,
++    ThreadOrganizationStore,
++};
++use crate::thread_metadata_store::{ThreadId, ThreadMetadata, ThreadMetadataStore, WorktreePaths};
++
++pub(super) const PROJECT_A: &str = "/project-a";
++pub(super) const PROJECT_B: &str = "/project-b";
++
++// ── App and upstream threads ───────────────────────────────────────────────
++
++/// The app globals upstream's own thread-store tests use (`thread_config_tests::init`), with a
++/// fresh per-test `AppDatabase` and the real `ThreadMetadataStore`.
++pub(super) fn init(cx: &mut TestAppContext) {
++    let fs = FakeFs::new(cx.executor());
++    cx.update(|cx| {
++        cx.set_global(db::AppDatabase::test_new());
++        let settings_store = settings::SettingsStore::test(cx);
++        cx.set_global(settings_store);
++        theme_settings::init(theme::LoadThemes::JustBase, cx);
++        editor::init(cx);
++        release_channel::init("0.0.0".parse().unwrap(), cx);
++        prompt_store::init(cx);
++        <dyn Fs>::set_global(fs, cx);
++        ThreadMetadataStore::init_global(cx);
++        agent::ThreadStore::init_global(cx);
++        language_model::LanguageModelRegistry::test(cx);
++    });
++    cx.run_until_parked();
++}
++
++fn new_session() -> acp::SessionId {
++    acp::SessionId::new(format!("session-{}", ThreadId::new().to_key_string()))
++}
++
++fn save(metadata: ThreadMetadata, cx: &mut TestAppContext) {
++    cx.update(|cx| {
++        ThreadMetadataStore::global(cx).update(cx, |store, cx| store.save(metadata, cx))
++    });
++    cx.run_until_parked();
++}
++
++fn metadata(folders: &[&str], session_id: Option<acp::SessionId>) -> ThreadMetadata {
++    let now = Utc::now();
++    let folders: Vec<&Path> = folders.iter().map(Path::new).collect();
++    ThreadMetadata {
++        thread_id: ThreadId::new(),
++        session_id,
++        agent_id: agent::ZED_AGENT_ID.clone(),
++        title: Some("Thread".into()),
++        title_override: None,
++        updated_at: now,
++        created_at: Some(now),
++        interacted_at: None,
++        worktree_paths: WorktreePaths::from_folder_paths(&PathList::new(&folders)),
++        remote_connection: None,
++        archived: false,
++    }
++}
++
++/// A thread with a sent message (it has a session) in the local project `folder`.
++pub(super) fn thread_in(folder: &str, cx: &mut TestAppContext) -> ThreadId {
++    thread_in_folders(&[folder], cx)
++}
++
++/// A thread with a sent message in the local project made of `folders`.
++pub(super) fn thread_in_folders(folders: &[&str], cx: &mut TestAppContext) -> ThreadId {
++    let metadata = metadata(folders, Some(new_session()));
++    let thread_id = metadata.thread_id;
++    save(metadata, cx);
++    thread_id
++}
++
++/// A thread with a sent message in `PROJECT_A`.
++pub(super) fn thread(cx: &mut TestAppContext) -> ThreadId {
++    thread_in(PROJECT_A, cx)
++}
++
++/// A draft: known to `ThreadMetadataStore`, no message sent, so no session.
++pub(super) fn draft_in(folder: &str, cx: &mut TestAppContext) -> ThreadId {
++    let metadata = metadata(&[folder], None);
++    let thread_id = metadata.thread_id;
++    save(metadata, cx);
++    thread_id
++}
++
++/// The draft's first message: the same `ThreadId` gets a session.
++pub(super) fn send_first_message(thread_id: ThreadId, cx: &mut TestAppContext) {
++    let mut entry = cx
++        .update(|cx| {
++            ThreadMetadataStore::global(cx)
++                .read(cx)
++                .entry(thread_id)
++                .cloned()
++        })
++        .expect("the draft is known to ThreadMetadataStore");
++    entry.session_id = Some(new_session());
++    save(entry, cx);
++}
++
++pub(super) fn archive(thread_id: ThreadId, cx: &mut TestAppContext) {
++    cx.update(|cx| {
++        ThreadMetadataStore::global(cx).update(cx, |store, cx| store.archive(thread_id, None, cx))
++    });
++    cx.run_until_parked();
++}
++
++pub(super) fn unarchive(thread_id: ThreadId, cx: &mut TestAppContext) {
++    cx.update(|cx| {
++        ThreadMetadataStore::global(cx).update(cx, |store, cx| store.unarchive(thread_id, cx))
++    });
++    cx.run_until_parked();
++}
++
++/// Deletes through upstream's funnel, `ThreadMetadataStore::delete`.
++pub(super) fn delete_thread(thread_id: ThreadId, cx: &mut TestAppContext) {
++    cx.update(|cx| {
++        ThreadMetadataStore::global(cx).update(cx, |store, cx| store.delete(thread_id, cx))
++    });
++    cx.run_until_parked();
++}
++
++/// Deletes through `ThreadMetadataStore::delete_all` (the worktree-archive path).
++pub(super) fn delete_threads(thread_ids: Vec<ThreadId>, cx: &mut TestAppContext) {
++    cx.update(|cx| {
++        ThreadMetadataStore::global(cx).update(cx, |store, cx| store.delete_all(thread_ids, cx))
++    });
++    cx.run_until_parked();
++}
++
++/// The project key of a local project made of `folders` — the project `thread_in(folder)` is in.
++pub(super) fn project(folders: &[&str]) -> ProjectKey {
++    let paths: Vec<&Path> = folders.iter().map(Path::new).collect();
++    ProjectKey::from_group(&ProjectGroupKey::new(None, PathList::new(&paths)))
++}
++
++// ── The organization store ─────────────────────────────────────────────────
++
++pub(super) async fn open_db(name: &'static str) -> ThreadOrganizationDb {
++    ThreadOrganizationDb::open_test_db(name).await
++}
++
++/// A store over `db`, loaded (`run_until_parked`), with the file database available.
++pub(super) fn open_store(
++    db: &ThreadOrganizationDb,
++    cx: &mut TestAppContext,
++) -> Entity<ThreadOrganizationStore> {
++    let db = db.clone();
++    let store = cx.new(|cx| ThreadOrganizationStore::with_fallback_flag(db, false, cx));
++    cx.run_until_parked();
++    store
++}
++
++/// A simulated restart: the running store goes away and a new one loads the same database.
++pub(super) fn restart(
++    store: Entity<ThreadOrganizationStore>,
++    db: &ThreadOrganizationDb,
++    cx: &mut TestAppContext,
++) -> Entity<ThreadOrganizationStore> {
++    cx.run_until_parked();
++    drop(store);
++    cx.run_until_parked();
++    open_store(db, cx)
++}
++
++/// Counts `ThreadOrganizationEvent::Changed` from now on.
++pub(super) fn count_changes(
++    store: &Entity<ThreadOrganizationStore>,
++    cx: &mut TestAppContext,
++) -> Rc<Cell<usize>> {
++    let changes = Rc::new(Cell::new(0));
++    let counter = changes.clone();
++    cx.update(|cx| {
++        cx.subscribe(store, move |_, event: &ThreadOrganizationEvent, _| {
++            if matches!(event, ThreadOrganizationEvent::Changed) {
++                counter.set(counter.get() + 1);
++            }
++        })
++        .detach()
++    });
++    changes
++}
++
++// ── Reads, as plain values ─────────────────────────────────────────────────
++
++pub(super) fn pinned(
++    store: &Entity<ThreadOrganizationStore>,
++    cx: &TestAppContext,
++) -> Vec<ThreadId> {
++    store.read_with(cx, |store, _| store.pinned().collect())
++}
++
++/// Everything the store reports about one thread, for "unchanged" comparisons.
++#[derive(Debug, PartialEq)]
++pub(super) struct Reported {
++    pub pinned_position: Option<u32>,
++    pub manual_position: Option<u32>,
++    pub list_id: Option<ListId>,
++    pub parent: Option<(ThreadId, ForkKind)>,
++    pub tags: Vec<(String, String)>,
++}
++
++pub(super) fn reported(
++    store: &Entity<ThreadOrganizationStore>,
++    thread_id: ThreadId,
++    cx: &TestAppContext,
++) -> Reported {
++    store.read_with(cx, |store, _| {
++        let organization = store.organization(thread_id);
++        Reported {
++            pinned_position: organization.and_then(|o| o.pinned_position),
++            manual_position: organization.and_then(|o| o.manual_position),
++            list_id: organization.and_then(|o| o.list_id),
++            parent: organization.and_then(|o| o.parent),
++            tags: store
++                .tags(thread_id)
++                .into_iter()
++                .map(|tag| (tag.key.to_string(), tag.display.to_string()))
++                .collect(),
++        }
++    })
++}
++
++pub(super) fn has_organization(
++    store: &Entity<ThreadOrganizationStore>,
++    thread_id: ThreadId,
++    cx: &TestAppContext,
++) -> bool {
++    store.read_with(cx, |store, _| store.organization(thread_id).is_some())
++}
++
++pub(super) fn tag_displays(
++    store: &Entity<ThreadOrganizationStore>,
++    thread_id: ThreadId,
++    cx: &TestAppContext,
++) -> Vec<String> {
++    store.read_with(cx, |store, _| {
++        store
++            .tags(thread_id)
++            .into_iter()
++            .map(|tag| tag.display.to_string())
++            .collect()
++    })
++}
++
++/// `all_tags()` as `(key, display)` pairs, in the store's order.
++pub(super) fn known_tags(
++    store: &Entity<ThreadOrganizationStore>,
++    cx: &TestAppContext,
++) -> Vec<(String, String)> {
++    store.read_with(cx, |store, _| {
++        store
++            .all_tags()
++            .into_iter()
++            .map(|tag| (tag.key.to_string(), tag.display.to_string()))
++            .collect()
++    })
++}
++
++pub(super) fn list_names(
++    store: &Entity<ThreadOrganizationStore>,
++    cx: &TestAppContext,
++) -> Vec<String> {
++    store.read_with(cx, |store, _| {
++        store
++            .lists()
++            .iter()
++            .map(|list| list.name.to_string())
++            .collect()
++    })
++}
++
++pub(super) fn list_ids(
++    store: &Entity<ThreadOrganizationStore>,
++    cx: &TestAppContext,
++) -> Vec<ListId> {
++    store.read_with(cx, |store, _| {
++        store.lists().iter().map(|list| list.id).collect()
++    })
++}
++
++pub(super) fn in_list(
++    store: &Entity<ThreadOrganizationStore>,
++    list: ListId,
++    cx: &TestAppContext,
++) -> Vec<ThreadId> {
++    store.read_with(cx, |store, _| store.threads_in_list(list))
++}
++
++// ── The database, read and sabotaged directly ──────────────────────────────
++
++pub(super) async fn run_sql(db: &ThreadOrganizationDb, sql: String) {
++    db.write(move |connection| {
++        connection
++            .exec(&sql)
++            .unwrap_or_else(|error| panic!("{sql} should prepare: {error:?}"))()
++        .unwrap_or_else(|error| panic!("{sql} should run: {error:?}"))
++    })
++    .await;
++}
++
++/// Rows of `table` whose `thread_id` is `thread_id`.
++pub(super) fn rows_of(db: &ThreadOrganizationDb, table: &str, thread_id: ThreadId) -> i64 {
++    db.select_row_bound::<ThreadId, i64>(&format!(
++        "SELECT COUNT(*) FROM {table} WHERE thread_id = ?"
++    ))
++    .expect("count should prepare")(thread_id)
++    .expect("count should run")
++    .expect("count returns a row")
++}
++
++pub(super) fn count(db: &ThreadOrganizationDb, sql: &str) -> i64 {
++    db.select_row::<i64>(sql).expect("count should prepare")()
++        .expect("count should run")
++        .expect("count returns a row")
++}
++
++pub(super) fn strings(db: &ThreadOrganizationDb, sql: &str) -> Vec<String> {
++    db.select::<String>(sql).expect("query should prepare")().expect("query should run")
++}
++
++/// Makes every INSERT, UPDATE and DELETE on `table` fail, row by row, until `repair`.
++pub(super) async fn sabotage(db: &ThreadOrganizationDb, table: &str) {
++    for operation in ["INSERT", "UPDATE", "DELETE"] {
++        run_sql(
++            db,
++            format!(
++                "CREATE TRIGGER sabotage_{table}_{operation} BEFORE {operation} ON {table} \
++                 BEGIN SELECT RAISE(ABORT, 'sabotaged by the test'); END"
++            ),
++        )
++        .await;
++    }
++}
++
++pub(super) async fn repair(db: &ThreadOrganizationDb, table: &str) {
++    for operation in ["INSERT", "UPDATE", "DELETE"] {
++        run_sql(db, format!("DROP TRIGGER sabotage_{table}_{operation}")).await;
++    }
++}
++
++// ── Log capture (R9.3–R9.5, Q4) ────────────────────────────────────────────
++//
++// The capture of patch 0035's `agent_tasks_panel::test_helpers`, which agent_ui has no copy of:
++// a process-wide logger recording into a thread-local buffer, so parallel tests do not see each
++// other's lines. GPUI test executors run spawned work on the test's own thread.
++
++thread_local! {
++    static CAPTURED: RefCell<Vec<(log::Level, String)>> = const { RefCell::new(Vec::new()) };
++}
++
++struct CaptureLogger;
++
++impl log::Log for CaptureLogger {
++    fn enabled(&self, _metadata: &log::Metadata) -> bool {
++        true
++    }
++
++    fn log(&self, record: &log::Record) {
++        let mut line = record.args().to_string();
++        struct Collect<'a>(&'a mut String);
++        impl<'kvs> log::kv::VisitSource<'kvs> for Collect<'_> {
++            fn visit_pair(
++                &mut self,
++                key: log::kv::Key<'kvs>,
++                value: log::kv::Value<'kvs>,
++            ) -> Result<(), log::kv::Error> {
++                self.0.push_str(&format!(" {key}={value}"));
++                Ok(())
++            }
++        }
++        let _ = record.key_values().visit(&mut Collect(&mut line));
++        CAPTURED.with(|captured| captured.borrow_mut().push((record.level(), line)));
++    }
++
++    fn flush(&self) {}
++}
++
++static INSTALL: Once = Once::new();
++
++/// Starts capturing log lines on this thread. Panics when another logger owns the process,
++/// rather than letting a log assertion pass or fail for the wrong reason.
++pub(super) fn capture_logs() {
++    INSTALL.call_once(|| {
++        log::set_boxed_logger(Box::new(CaptureLogger))
++            .expect("another logger is installed; the log capture cannot run");
++        log::set_max_level(log::LevelFilter::Trace);
++    });
++    CAPTURED.with(|captured| captured.borrow_mut().clear());
++}
++
++fn lines_at(level: log::Level) -> Vec<String> {
++    CAPTURED.with(|captured| {
++        captured
++            .borrow()
++            .iter()
++            .filter(|(line_level, _)| *line_level == level)
++            .map(|(_, line)| line.clone())
++            .collect()
++    })
++}
++
++pub(super) fn error_lines() -> Vec<String> {
++    lines_at(log::Level::Error)
++}
++
++pub(super) fn warn_lines() -> Vec<String> {
++    lines_at(log::Level::Warn)
++}
++
++/// Every captured line, any level, lowercased — for "this text never reaches a log".
++pub(super) fn all_lines_lowercased() -> Vec<String> {
++    CAPTURED.with(|captured| {
++        captured
++            .borrow()
++            .iter()
++            .map(|(_, line)| line.to_lowercase())
++            .collect()
++    })
++}
++
++/// The form a log line names a thread in: its hyphenated uuid, which both `ThreadId`'s `Debug`
++/// and `to_key_string()` contain.
++pub(super) fn id_text(thread_id: ThreadId) -> String {
++    thread_id.to_key_string()
++}

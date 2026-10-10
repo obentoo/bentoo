@@ -1802,6 +1802,8 @@ src_prepare() {
 		# claude-agent-acp-* flags below guarantee -- and fall back to 0033's
 		# npm package otherwise. Decided at launch, so it is ungrouped too.
 		"${FILESDIR}/0046-agent-default-agents-prefer-the-system-adapter.patch"
+		"${FILESDIR}/0048-agent-thread-organization-storage.patch"
+		"${FILESDIR}/0049-agent-sidebar-pinned-section.patch"
 	)
 
 	if use claude-agent-acp-plus; then

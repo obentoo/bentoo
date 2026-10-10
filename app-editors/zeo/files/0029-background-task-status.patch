@@ -327,26 +327,26 @@ index 36b217b..ad2fd04 100644
                  // A redraw is all this needs: the account section is built from the thread
                  // when the tooltip opens, so there is no per-turn state to recompute.
 diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
-index 9377ef7..fbc5a91 100644
+index e723f88..6f6067f 100644
 --- a/crates/sidebar/src/sidebar.rs
 +++ b/crates/sidebar/src/sidebar.rs
-@@ -1857,7 +1857,14 @@ impl Sidebar {
-                         && session_id
-                             .as_ref()
-                             .and_then(|sid| old_statuses.get(sid))
--                            .is_some_and(|(s, _)| *s == AgentThreadStatus::Running)
-+                            .is_some_and(|(s, _)| {
-+                                // Work finishing out of sight is news whether it ended a
-+                                // turn or the last background task after one.
-+                                matches!(
-+                                    s,
-+                                    AgentThreadStatus::Running | AgentThreadStatus::Background
-+                                )
-+                            })
-                     {
-                         notified_threads.insert(thread.metadata.thread_id);
-                     }
-@@ -1897,7 +1904,10 @@ impl Sidebar {
+@@ -443,7 +443,14 @@ fn apply_live_row_state(
+         && session_id
+             .as_ref()
+             .and_then(|sid| context.old_statuses.get(sid))
+-            .is_some_and(|(s, _)| *s == AgentThreadStatus::Running)
++            .is_some_and(|(s, _)| {
++                // Work finishing out of sight is news whether it ended a
++                // turn or the last background task after one.
++                matches!(
++                    s,
++                    AgentThreadStatus::Running | AgentThreadStatus::Background
++                )
++            })
+     {
+         notified_threads.insert(thread.metadata.thread_id);
+     }
+@@ -2008,7 +2015,10 @@ impl Sidebar {
                          let old_status = old_statuses.get(&info.session_id).map(|(s, _)| *s);
                          new_live_statuses.insert(info.session_id.clone(), (info.status, thread_id));
                          if info.status == AgentThreadStatus::Completed
@@ -358,7 +358,7 @@ index 9377ef7..fbc5a91 100644
                          {
                              notified_threads.insert(thread_id);
                          }
-@@ -5830,7 +5840,9 @@ impl Sidebar {
+@@ -6098,7 +6108,9 @@ impl Sidebar {
                      AgentThreadStatus::Running | AgentThreadStatus::WaitingForConfirmation => {
                          return;
                      }
@@ -369,7 +369,7 @@ index 9377ef7..fbc5a91 100644
                  }
                  if thread.draft.is_some() {
                      let workspace = thread.workspace.clone();
-@@ -8190,6 +8202,9 @@ fn all_thread_infos_for_workspace(
+@@ -8595,6 +8607,9 @@ fn all_thread_infos_for_workspace(
              } else {
                  match thread.status() {
                      ThreadStatus::Generating => AgentThreadStatus::Running,
@@ -380,10 +380,10 @@ index 9377ef7..fbc5a91 100644
                  }
              };
 diff --git a/crates/sidebar/src/sidebar_tests.rs b/crates/sidebar/src/sidebar_tests.rs
-index bed831b..83dade4 100644
+index 2f4cdb8..2d34c68 100644
 --- a/crates/sidebar/src/sidebar_tests.rs
 +++ b/crates/sidebar/src/sidebar_tests.rs
-@@ -681,6 +681,7 @@ fn visible_entries_as_strings(
+@@ -686,6 +686,7 @@ pub(super) fn visible_entries_as_strings(
                              let live = if thread.is_live { " *" } else { "" };
                              let status_str = match thread.status {
                                  AgentThreadStatus::Running => " (running)",
@@ -391,7 +391,7 @@ index bed831b..83dade4 100644
                                  AgentThreadStatus::Error => " (error)",
                                  AgentThreadStatus::WaitingForConfirmation => " (waiting)",
                                  _ => "",
-@@ -4585,6 +4586,72 @@ async fn test_background_thread_completion_triggers_notification(cx: &mut TestAp
+@@ -4600,6 +4601,72 @@ async fn test_background_thread_completion_triggers_notification(cx: &mut TestAp
      );
  }
  
@@ -461,9 +461,9 @@ index bed831b..83dade4 100644
 +    );
 +}
 +
- fn type_in_search(sidebar: &Entity<Sidebar>, query: &str, cx: &mut gpui::VisualTestContext) {
-     sidebar.update_in(cx, |sidebar, window, cx| {
-         window.focus(&sidebar.filter_editor.focus_handle(cx), cx);
+ pub(super) fn type_in_search(
+     sidebar: &Entity<Sidebar>,
+     query: &str,
 diff --git a/crates/ui/src/components/ai/thread_item.rs b/crates/ui/src/components/ai/thread_item.rs
 index 7cf5748..ba13b04 100644
 --- a/crates/ui/src/components/ai/thread_item.rs

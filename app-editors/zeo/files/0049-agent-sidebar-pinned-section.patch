@@ -1,0 +1,3804 @@
+From 367f66f2f8b2c5ce6a982b9e67d9bf52109d66ab Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 09 Oct 2026 21:20:57 -0300
+Subject: [PATCH] sidebar: pin threads to a section of their own
+
+The threads sidebar groups threads by project, so a thread someone keeps
+returning to scrolls away as newer ones arrive, and a thread of a project
+that is not open in this window cannot be reached from it at all. This
+patch adds a Pinned section, the first consumer of 0048's store: story 032,
+2026-10-09.
+
+What it does. "Pin Thread" / "Unpin Thread" in a thread row's context menu,
+a pin button on the hovered row, and agents_sidebar::TogglePinSelectedThread
+(shift-p in the "ThreadsSidebar && not_searching" context of the three
+default keymaps) toggle a pin. A pinned thread leaves its project group and
+is listed after the last group under a collapsible "Pinned" header, the most
+recently pinned first, each row labelled with its project's name; a project
+whose shown threads are all pinned keeps its header. A draft (no message
+sent yet) offers neither entry point. Pins are global, not per window: every
+window shows the same section, threads of projects not open there included.
+Activating such a row opens the project in this window when no window holds
+it, and activates the thread the way History does when another window does.
+An archived thread drops out of the section and keeps its pin; a pin naming
+a thread Zeo does not know shows nothing. The filter, keyboard navigation,
+the sticky header, rename and archive reach pinned rows as they reach group
+rows.
+
+How. rebuild_contents seeds seen_thread_ids with the pinned ids before the
+group loop, so every expanded-group path (main path, linked worktrees, open
+workspaces) skips them with no edit to those loops, while the group's
+has_threads still counts them. After the loop, pinned_section.rs appends one
+ListEntry::PinnedHeader and ordinary ListEntry::Thread rows built from the
+store's global pinned() order and ThreadMetadataStore::entry -- not from the
+window's project groups, which is what lets another project's thread
+appear. Being ordinary Thread entries, selection, confirm, rename, archive
+and the context menu work on them unchanged. The header is pushed onto
+project_header_indices, so the sticky header and header navigation see it;
+active_project_header_position and cycle_project skip it, since Pinned is
+never the active project. EntryShape gains PinnedThread, because the project
+label changes the row's height and an equal shape must mean an equal height.
+The sidebar observes ThreadOrganizationStore the way it observes
+ThreadMetadataStore, which is how a pin made in one window reaches the
+others.
+
+Failure: a pin or unpin the store refuses (a draft, a thread the metadata
+store does not know) logs a warning naming the thread id and changes
+nothing. pin/unpin read ThreadMetadataStore, so they are called only from UI
+handlers, never inside its update. Without the store (try_global is None)
+the sidebar draws no section and no entry point, exactly as before.
+
+Upstream touch points: crates/sidebar/src/sidebar.rs (ListEntry and its
+matches, EntryShape, ThreadEntry, rebuild_contents, render_sticky_header,
+render_thread's hover slot and context menu, confirm and the collapse and
+fold walks, cycle_project_impl, the actions! list and its .on_action,
+Sidebar::new's observers); crates/sidebar/src/sidebar_tests.rs (helpers made
+pub(super), a PinnedHeader arm in visible_entries_as_strings, the new
+ThreadEntry field in its fixtures); one line in each of
+assets/keymaps/default-{linux,macos,windows}.json. New:
+crates/sidebar/src/pinned_section.rs, and sidebar_pinned_tests.rs (36
+tests).
+
+UNGROUPED and unconditional, right after 0048, whose store it consumes. The
+claude-agent-acp-plus patches that also edit sidebar.rs (0028-0030) and the
+keymaps (0035, 0043, 0044) apply after it and are generated on top of it.
+
+Known limit: archiving a pinned row whose project is open only in another
+window does not clear that window's agent panel.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/assets/keymaps/default-linux.json b/assets/keymaps/default-linux.json
+index 5d7aa8f..89e589f 100644
+--- a/assets/keymaps/default-linux.json
++++ b/assets/keymaps/default-linux.json
+@@ -765,6 +765,7 @@
+     "bindings": {
+       "space": "menu::Confirm",
+       "shift-r": "agent::RenameSelectedThread",
++      "shift-p": "agents_sidebar::TogglePinSelectedThread",
+     },
+   },
+   {
+diff --git a/assets/keymaps/default-macos.json b/assets/keymaps/default-macos.json
+index f084301..80c3a64 100644
+--- a/assets/keymaps/default-macos.json
++++ b/assets/keymaps/default-macos.json
+@@ -820,6 +820,7 @@
+     "bindings": {
+       "space": "menu::Confirm",
+       "shift-r": "agent::RenameSelectedThread",
++      "shift-p": "agents_sidebar::TogglePinSelectedThread",
+     },
+   },
+   {
+diff --git a/assets/keymaps/default-windows.json b/assets/keymaps/default-windows.json
+index 0f2a06b..90412a7 100644
+--- a/assets/keymaps/default-windows.json
++++ b/assets/keymaps/default-windows.json
+@@ -773,6 +773,7 @@
+     "bindings": {
+       "space": "menu::Confirm",
+       "shift-r": "agent::RenameSelectedThread",
++      "shift-p": "agents_sidebar::TogglePinSelectedThread",
+     },
+   },
+   {
+diff --git a/crates/sidebar/src/pinned_section.rs b/crates/sidebar/src/pinned_section.rs
+new file mode 100644
+index 0000000..eb9f1ff
+--- /dev/null
++++ b/crates/sidebar/src/pinned_section.rs
+@@ -0,0 +1,200 @@
++//! The Pinned section: pinned threads are listed once, after the last project group, in the
++//! organization store's order. Rows come from the store rather than from this window's groups,
++//! which is what lets a thread of a project open nowhere be listed and opened from here.
++
++use std::collections::{HashMap, HashSet};
++use std::path::PathBuf;
++use std::sync::Arc;
++
++use action_log::DiffStats;
++use agent_ui::ThreadId;
++use agent_ui::thread_metadata_store::{
++    ThreadMetadata, ThreadMetadataStore, worktree_info_from_thread_paths,
++};
++use agent_ui::thread_organization::ThreadOrganizationStore;
++use agent_ui::threads_archive_view::fuzzy_match_positions;
++use gpui::{App, Entity, SharedString};
++use project::AgentId;
++use ui::{AgentThreadStatus, IconName};
++use workspace::{ProjectGroupKey, Workspace};
++
++use crate::{
++    LiveRowContext, Sidebar, ThreadEntry, ThreadEntryWorkspace, acp,
++    all_thread_infos_for_workspace, apply_live_row_state,
++};
++
++/// The pinned thread ids, newest pin first. Empty when the store is not installed, which leaves
++/// the sidebar exactly as it was before pinning existed.
++pub(crate) fn pinned_thread_ids(cx: &App) -> Vec<ThreadId> {
++    ThreadOrganizationStore::try_global(cx)
++        .map(|store| store.read(cx).pinned().collect())
++        .unwrap_or_default()
++}
++
++/// What the group loop of a rebuild already computed, reused for the pinned rows.
++pub(crate) struct PinnedBuildContext<'a> {
++    /// This window's workspaces: the only ones whose live state a pinned row shows.
++    pub workspaces: &'a [Entity<Workspace>],
++    pub active_workspace: Option<&'a Entity<Workspace>>,
++    /// The group headers' disambiguation, whose paths the pinned labels are disambiguated against.
++    pub path_detail_map: &'a HashMap<PathBuf, usize>,
++    pub branch_by_path: &'a HashMap<PathBuf, SharedString>,
++    pub resolve_agent_icon: &'a dyn Fn(&AgentId) -> (IconName, Option<SharedString>),
++    pub new_live_statuses: &'a mut HashMap<acp::SessionId, (AgentThreadStatus, ThreadId)>,
++    pub notified_threads: &'a mut HashSet<ThreadId>,
++}
++
++/// One row per pinned id, in the given order, skipping ids with no metadata, archived threads and
++/// drafts.
++pub(crate) fn build_pinned_rows(
++    sidebar: &Sidebar,
++    pinned: &[ThreadId],
++    context: PinnedBuildContext<'_>,
++    cx: &App,
++) -> Vec<Arc<ThreadEntry>> {
++    if pinned.is_empty() {
++        return Vec::new();
++    }
++
++    let store = ThreadMetadataStore::global(cx).read(cx);
++    let pinned_threads: Vec<(&ThreadMetadata, ProjectGroupKey)> = pinned
++        .iter()
++        .filter_map(|thread_id| store.entry(*thread_id))
++        .filter(|metadata| !metadata.archived && !metadata.is_draft())
++        .map(|metadata| {
++            // Derived from the thread alone, so the label does not change with where its project
++            // happens to be open.
++            let key = ProjectGroupKey::from_worktree_paths(
++                &metadata.worktree_paths,
++                metadata.remote_connection.clone(),
++            );
++            (metadata, key)
++        })
++        .collect();
++    if pinned_threads.is_empty() {
++        return Vec::new();
++    }
++
++    let pinned_detail_map = pinned_detail_map(
++        context.path_detail_map,
++        pinned_threads.iter().map(|(_, key)| key),
++    );
++
++    let live_info_by_session = context
++        .workspaces
++        .iter()
++        .flat_map(|workspace| all_thread_infos_for_workspace(workspace, cx))
++        .map(|info| (info.session_id.clone(), info))
++        .collect();
++    let live_context = LiveRowContext {
++        live_info_by_session: &live_info_by_session,
++        old_statuses: &sidebar.live_thread_statuses,
++        active_entry: sidebar.active_entry.as_ref(),
++        active_workspace: context.active_workspace,
++    };
++
++    pinned_threads
++        .into_iter()
++        .map(|(metadata, key)| {
++            let label = key.display_name(&pinned_detail_map);
++            let workspace = resolve_workspace(sidebar, metadata, key, cx);
++            let (icon, icon_from_external_svg) = (context.resolve_agent_icon)(&metadata.agent_id);
++            let worktrees =
++                worktree_info_from_thread_paths(&metadata.worktree_paths, context.branch_by_path);
++            let mut row = Arc::new(ThreadEntry {
++                metadata: metadata.clone(),
++                icon,
++                icon_from_external_svg,
++                status: AgentThreadStatus::default(),
++                workspace,
++                is_live: false,
++                is_background: false,
++                is_title_generating: false,
++                draft: None,
++                highlight_positions: Vec::new(),
++                worktrees,
++                diff_stats: DiffStats::default(),
++                pinned_project_label: Some(label),
++            });
++            apply_live_row_state(
++                &mut row,
++                &live_context,
++                context.new_live_statuses,
++                context.notified_threads,
++            );
++            row
++        })
++        .collect()
++}
++
++/// With filter text, the rows whose title or project label matches it. A title match records its
++/// highlight positions, as a group row's does; a match on the label alone keeps the row with no
++/// title highlights. With no text every row is kept unchanged.
++pub(crate) fn filter_pinned_rows(
++    rows: Vec<Arc<ThreadEntry>>,
++    query: &str,
++) -> Vec<Arc<ThreadEntry>> {
++    if query.is_empty() {
++        return rows;
++    }
++    rows.into_iter()
++        .filter_map(|mut row| {
++            if let Some(positions) =
++                fuzzy_match_positions(query, row.metadata.display_title().as_ref())
++            {
++                Arc::make_mut(&mut row).highlight_positions = positions;
++                return Some(row);
++            }
++            let label_matched = row
++                .pinned_project_label
++                .as_ref()
++                .is_some_and(|label| fuzzy_match_positions(query, label).is_some());
++            label_matched.then_some(row)
++        })
++        .collect()
++}
++
++/// The group headers' paths plus every pinned project's, so two pinned projects sharing a folder
++/// name get distinct labels. Group headers keep their own map: a pin never relabels a header.
++fn pinned_detail_map<'a>(
++    path_detail_map: &HashMap<PathBuf, usize>,
++    pinned_keys: impl Iterator<Item = &'a ProjectGroupKey>,
++) -> HashMap<PathBuf, usize> {
++    let mut all_paths: Vec<PathBuf> = path_detail_map
++        .keys()
++        .cloned()
++        .chain(pinned_keys.flat_map(|key| key.path_list().paths().iter().cloned()))
++        .collect();
++    all_paths.sort_unstable();
++    all_paths.dedup();
++    let details = util::disambiguate::compute_disambiguation_details(&all_paths, |path, detail| {
++        project::path_suffix(path, detail)
++    });
++    all_paths.into_iter().zip(details).collect()
++}
++
++/// The History view's order: a workspace of this window, else one open in another window, else a
++/// closed row that opens the project here.
++fn resolve_workspace(
++    sidebar: &Sidebar,
++    metadata: &ThreadMetadata,
++    key: ProjectGroupKey,
++    cx: &App,
++) -> ThreadEntryWorkspace {
++    let folder_paths = metadata.folder_paths();
++    let remote_connection = metadata.remote_connection.as_ref();
++    if let Some(workspace) =
++        sidebar.find_current_workspace_for_path_list(folder_paths, remote_connection, cx)
++    {
++        return ThreadEntryWorkspace::Open(workspace);
++    }
++    if let Some((_, workspace)) =
++        sidebar.find_open_workspace_for_path_list(folder_paths, remote_connection, cx)
++    {
++        return ThreadEntryWorkspace::Open(workspace);
++    }
++    ThreadEntryWorkspace::Closed {
++        folder_paths: folder_paths.clone(),
++        project_group_key: key,
++    }
++}
+diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
+index f351519..7e25ad1 100644
+--- a/crates/sidebar/src/sidebar.rs
++++ b/crates/sidebar/src/sidebar.rs
+@@ -1,3 +1,4 @@
++mod pinned_section;
+ mod thread_switcher;
+ 
+ use acp_thread::ThreadStatus;
+@@ -11,6 +12,7 @@ use agent_ui::terminal_thread_metadata_store::{
+ use agent_ui::thread_metadata_store::{
+     ThreadMetadata, ThreadMetadataStore, WorktreePaths, worktree_info_from_thread_paths,
+ };
++use agent_ui::thread_organization::ThreadOrganizationStore;
+ use agent_ui::threads_archive_view::{
+     ThreadsArchiveView, ThreadsArchiveViewEvent, format_history_entry_timestamp,
+     fuzzy_match_positions,
+@@ -78,6 +80,7 @@ use zed_actions::{CreateWorktree, NewWorktreeBranchTarget, OpenRecent};
+ 
+ use zed_actions::agents_sidebar::{FocusSidebarFilter, ToggleThreadSwitcher};
+ 
++use crate::pinned_section::PinnedBuildContext;
+ use crate::thread_switcher::{
+     ThreadSwitcher, ThreadSwitcherEntry, ThreadSwitcherEvent, ThreadSwitcherSelection,
+     ThreadSwitcherTerminalEntry, ThreadSwitcherThreadEntry,
+@@ -86,6 +89,9 @@ use crate::thread_switcher::{
+ #[cfg(test)]
+ mod sidebar_tests;
+ 
++#[cfg(test)]
++mod sidebar_pinned_tests;
++
+ gpui::actions!(
+     agents_sidebar,
+     [
+@@ -93,6 +99,8 @@ gpui::actions!(
+         NewThreadInGroup,
+         /// Toggles between the thread list and the thread history.
+         ToggleThreadHistory,
++        /// Pins the selected thread to the Pinned section, or unpins it.
++        TogglePinSelectedThread,
+     ]
+ );
+ 
+@@ -365,6 +373,9 @@ struct ThreadEntry {
+     highlight_positions: Vec<usize>,
+     worktrees: Vec<ThreadItemWorktreeInfo>,
+     diff_stats: DiffStats,
++    /// `Some` only on a row of the Pinned section, which names the thread's project because it
++    /// sits outside its project group.
++    pinned_project_label: Option<SharedString>,
+ }
+ 
+ #[derive(Clone)]
+@@ -394,6 +405,54 @@ impl ThreadEntry {
+     }
+ }
+ 
++/// What a rebuild reads to give a thread row its live state.
++struct LiveRowContext<'a> {
++    live_info_by_session: &'a HashMap<acp::SessionId, ActiveThreadInfo>,
++    old_statuses: &'a HashMap<acp::SessionId, (AgentThreadStatus, ThreadId)>,
++    active_entry: Option<&'a ActiveEntry>,
++    active_workspace: Option<&'a Entity<Workspace>>,
++}
++
++/// Group rows and pinned rows share this, so a thread is marked notified by one rule wherever
++/// it is listed. Recording the status is what lets the next rebuild see a turn end.
++fn apply_live_row_state(
++    thread: &mut Arc<ThreadEntry>,
++    context: &LiveRowContext<'_>,
++    new_live_statuses: &mut HashMap<acp::SessionId, (AgentThreadStatus, ThreadId)>,
++    notified_threads: &mut HashSet<ThreadId>,
++) {
++    if let Some(session_id) = thread.metadata.session_id.clone() {
++        if let Some(info) = context.live_info_by_session.get(&session_id) {
++            let status = info.status;
++            let thread_id = thread.metadata.thread_id;
++            Arc::make_mut(thread).apply_active_info(info);
++            new_live_statuses.insert(session_id, (status, thread_id));
++        }
++    }
++
++    let session_id = &thread.metadata.session_id;
++    let is_active_thread = context.active_entry.is_some_and(|entry| {
++        entry.is_active_thread(&thread.metadata.thread_id)
++            && context
++                .active_workspace
++                .is_some_and(|active| active == entry.workspace())
++    });
++
++    if thread.status == AgentThreadStatus::Completed
++        && !is_active_thread
++        && session_id
++            .as_ref()
++            .and_then(|sid| context.old_statuses.get(sid))
++            .is_some_and(|(s, _)| *s == AgentThreadStatus::Running)
++    {
++        notified_threads.insert(thread.metadata.thread_id);
++    }
++
++    if is_active_thread && !thread.is_background {
++        notified_threads.remove(&thread.metadata.thread_id);
++    }
++}
++
+ #[derive(Clone)]
+ enum ListEntry {
+     ProjectHeader {
+@@ -408,6 +467,9 @@ enum ListEntry {
+     },
+     Thread(Arc<ThreadEntry>),
+     Terminal(TerminalEntry),
++    PinnedHeader {
++        has_notifications: bool,
++    },
+ }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -427,7 +489,7 @@ impl RenameTarget {
+                 Self::Terminal(terminal.metadata.terminal_id),
+                 terminal.metadata.editable_title(),
+             )),
+-            ListEntry::ProjectHeader { .. } => None,
++            ListEntry::ProjectHeader { .. } | ListEntry::PinnedHeader { .. } => None,
+         }
+     }
+ }
+@@ -453,7 +515,7 @@ impl ActivatableEntry {
+                 metadata: terminal.metadata.clone(),
+                 workspace: terminal.workspace.clone(),
+             }),
+-            ListEntry::ProjectHeader { .. } => None,
++            ListEntry::ProjectHeader { .. } | ListEntry::PinnedHeader { .. } => None,
+         }
+     }
+ }
+@@ -463,7 +525,9 @@ impl ListEntry {
+     fn session_id(&self) -> Option<&acp::SessionId> {
+         match self {
+             ListEntry::Thread(thread_entry) => thread_entry.metadata.session_id.as_ref(),
+-            ListEntry::Terminal(_) | ListEntry::ProjectHeader { .. } => None,
++            ListEntry::Terminal(_)
++            | ListEntry::ProjectHeader { .. }
++            | ListEntry::PinnedHeader { .. } => None,
+         }
+     }
+ 
+@@ -484,6 +548,7 @@ impl ListEntry {
+             ListEntry::ProjectHeader { key, .. } => {
+                 multi_workspace.workspaces_for_project_group(key, cx)
+             }
++            ListEntry::PinnedHeader { .. } => Vec::new(),
+         }
+     }
+ }
+@@ -524,6 +589,11 @@ enum EntryShape {
+     },
+     Thread(ThreadId),
+     Terminal(TerminalId),
++    PinnedHeader {
++        is_collapsed: bool,
++    },
++    // Distinct from `Thread` so pinning or unpinning never reuses the other row's measurement.
++    PinnedThread(ThreadId),
+ }
+ 
+ impl SidebarContents {
+@@ -835,6 +905,8 @@ pub struct Sidebar {
+     /// Display names of other release channels that have threads available to
+     /// import.
+     cross_channel_import_channels: Vec<SharedString>,
++    /// Never serialized: the Pinned section's collapsed state lasts for the session.
++    pinned_collapsed: bool,
+ }
+ 
+ impl Sidebar {
+@@ -909,6 +981,14 @@ impl Sidebar {
+         )
+         .detach();
+ 
++        // Every window's sidebar watches the one global store, so a pin anywhere shows everywhere.
++        if let Some(store) = ThreadOrganizationStore::try_global(cx) {
++            cx.observe(&store, |this, _store, cx| {
++                this.schedule_update_entries(false, cx);
++            })
++            .detach();
++        }
++
+         cx.observe(&ThreadMetadataStore::global(cx), |this, _store, cx| {
+             this.schedule_update_entries(false, cx);
+         })
+@@ -979,9 +1059,42 @@ impl Sidebar {
+             update_task: None,
+             import_banners_use_verbose_labels: None,
+             cross_channel_import_channels: Vec::new(),
++            pinned_collapsed: false,
+         }
+     }
+ 
++    /// The one writer of a pin from the sidebar. It must run outside any `ThreadMetadataStore`
++    /// update: the store reads that entity to refuse drafts and unknown threads.
++    fn toggle_pin(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) {
++        let Some(store) = ThreadOrganizationStore::try_global(cx) else {
++            return;
++        };
++        let is_pinned = Self::is_pinned_in(&store, thread_id, cx);
++        let result = store.update(cx, |store, cx| {
++            if is_pinned {
++                store.unpin(thread_id, cx)
++            } else {
++                store.pin(thread_id, cx)
++            }
++        });
++        if let Err(error) = result {
++            log::warn!("sidebar: pin toggle refused for thread {thread_id:?}: {error}");
++        }
++    }
++
++    /// Whether `thread_id` is pinned, as every pin entry point must read it to name and perform
++    /// the toggle: by its `pinned_position`, never by which section its row is in.
++    fn is_pinned_in(
++        store: &Entity<ThreadOrganizationStore>,
++        thread_id: ThreadId,
++        cx: &App,
++    ) -> bool {
++        store
++            .read(cx)
++            .organization(thread_id)
++            .is_some_and(|organization| organization.pinned_position.is_some())
++    }
++
+     fn serialize(&mut self, cx: &mut Context<Self>) {
+         cx.emit(workspace::SidebarEvent::SerializeNeeded);
+     }
+@@ -1495,6 +1608,13 @@ impl Sidebar {
+             }
+         }
+ 
++        let pinned_ids = pinned_section::pinned_thread_ids(cx);
++        // Pinned threads are listed in their own section, so every group path skips them. The
++        // first group that would have listed one claims it, as an unpinned thread is listed by the
++        // first group that finds it, so that group still counts as having threads.
++        seen_thread_ids.extend(&pinned_ids);
++        let mut unclaimed_pinned_ids: HashSet<ThreadId> = pinned_ids.iter().copied().collect();
++
+         for group in &groups {
+             let group_key = &group.key;
+             let group_workspaces = &group.workspaces;
+@@ -1615,9 +1735,17 @@ impl Sidebar {
+             let mut has_running_threads = false;
+             let mut waiting_thread_count: usize = 0;
+             let group_host = group_key.host();
++            let mut has_pinned_threads = false;
+ 
+             if should_load_threads {
+                 let thread_store = ThreadMetadataStore::global(cx);
++                let mut admit_thread = |thread_id: ThreadId| {
++                    if seen_thread_ids.insert(thread_id) {
++                        return true;
++                    }
++                    has_pinned_threads |= unclaimed_pinned_ids.remove(&thread_id);
++                    false
++                };
+ 
+                 let make_thread_entry =
+                     |row: ThreadMetadata, workspace: ThreadEntryWorkspace| -> Arc<ThreadEntry> {
+@@ -1641,6 +1769,7 @@ impl Sidebar {
+                             highlight_positions: Vec::new(),
+                             worktrees,
+                             diff_stats: DiffStats::default(),
++                            pinned_project_label: None,
+                         })
+                     };
+ 
+@@ -1653,7 +1782,7 @@ impl Sidebar {
+                     .entries_for_main_worktree_path(group_key.path_list(), group_host.as_ref())
+                     .cloned()
+                 {
+-                    if !seen_thread_ids.insert(row.thread_id) {
++                    if !admit_thread(row.thread_id) {
+                         continue;
+                     }
+                     let workspace = resolve_workspace(row.folder_paths());
+@@ -1669,7 +1798,7 @@ impl Sidebar {
+                     .entries_for_path(group_key.path_list(), group_host.as_ref())
+                     .cloned()
+                 {
+-                    if !seen_thread_ids.insert(row.thread_id) {
++                    if !admit_thread(row.thread_id) {
+                         continue;
+                     }
+                     let workspace = resolve_workspace(row.folder_paths());
+@@ -1697,7 +1826,7 @@ impl Sidebar {
+                         .entries_for_path(&ws_paths, group_host.as_ref())
+                         .cloned()
+                     {
+-                        if !seen_thread_ids.insert(row.thread_id) {
++                        if !admit_thread(row.thread_id) {
+                             continue;
+                         }
+                         threads.push(make_thread_entry(
+@@ -1714,7 +1843,7 @@ impl Sidebar {
+                         .entries_for_path(worktree_path_list, group_host.as_ref())
+                         .cloned()
+                     {
+-                        if !seen_thread_ids.insert(row.thread_id) {
++                        if !admit_thread(row.thread_id) {
+                             continue;
+                         }
+                         threads.push(make_thread_entry(
+@@ -1776,37 +1905,19 @@ impl Sidebar {
+ 
+                 // Merge live info into threads and update notification state
+                 // in a single pass.
++                let live_context = LiveRowContext {
++                    live_info_by_session: &live_info_by_session,
++                    old_statuses,
++                    active_entry: self.active_entry.as_ref(),
++                    active_workspace: active_workspace.as_ref(),
++                };
+                 for thread in &mut threads {
+-                    if let Some(session_id) = thread.metadata.session_id.clone() {
+-                        if let Some(info) = live_info_by_session.get(&session_id) {
+-                            let status = info.status;
+-                            let thread_id = thread.metadata.thread_id;
+-                            Arc::make_mut(thread).apply_active_info(info);
+-                            new_live_statuses.insert(session_id, (status, thread_id));
+-                        }
+-                    }
+-
+-                    let session_id = &thread.metadata.session_id;
+-                    let is_active_thread = self.active_entry.as_ref().is_some_and(|entry| {
+-                        entry.is_active_thread(&thread.metadata.thread_id)
+-                            && active_workspace
+-                                .as_ref()
+-                                .is_some_and(|active| active == entry.workspace())
+-                    });
+-
+-                    if thread.status == AgentThreadStatus::Completed
+-                        && !is_active_thread
+-                        && session_id
+-                            .as_ref()
+-                            .and_then(|sid| old_statuses.get(sid))
+-                            .is_some_and(|(s, _)| *s == AgentThreadStatus::Running)
+-                    {
+-                        notified_threads.insert(thread.metadata.thread_id);
+-                    }
+-
+-                    if is_active_thread && !thread.is_background {
+-                        notified_threads.remove(&thread.metadata.thread_id);
+-                    }
++                    apply_live_row_state(
++                        thread,
++                        &live_context,
++                        &mut new_live_statuses,
++                        &mut notified_threads,
++                    );
+                 }
+ 
+                 threads.sort_by(|a, b| {
+@@ -1869,7 +1980,7 @@ impl Sidebar {
+                             thread_metadata_would_render_sidebar_row(metadata, &workspace, cx)
+                         })
+             };
+-            let has_threads = has_visible_rows || has_stored_thread_rows;
++            let has_threads = has_visible_rows || has_stored_thread_rows || has_pinned_threads;
+ 
+             if !query.is_empty() {
+                 let workspace_highlight_positions =
+@@ -1977,8 +2088,11 @@ impl Sidebar {
+                         .map(|m| m.thread_id)
+                         .collect::<HashSet<_>>();
+                     current_thread_ids.extend(group_thread_ids.iter());
++                    // A pinned thread is shown under Pinned, whose header reports its
++                    // notification; this header reports only the rows it would show.
+                     group_thread_ids
+                         .iter()
++                        .filter(|id| !pinned_ids.contains(id))
+                         .any(|id| notified_threads.contains(id))
+                 } else {
+                     threads
+@@ -2012,6 +2126,43 @@ impl Sidebar {
+             }
+         }
+ 
++        let pinned_rows = pinned_section::build_pinned_rows(
++            self,
++            &pinned_ids,
++            PinnedBuildContext {
++                workspaces: &workspaces,
++                active_workspace: active_workspace.as_ref(),
++                path_detail_map: &path_detail_map,
++                branch_by_path: &branch_by_path,
++                resolve_agent_icon: &resolve_agent_icon,
++                new_live_statuses: &mut new_live_statuses,
++                notified_threads: &mut notified_threads,
++            },
++            cx,
++        );
++        // Like a group's rows, a pinned row the filter drops is not registered below, so the
++        // header is decided by, and reports notifications of, only the rows that are shown.
++        let pinned_rows = pinned_section::filter_pinned_rows(pinned_rows, &query);
++        if !pinned_rows.is_empty() {
++            // Registered even while the section is collapsed, so the retains below keep the
++            // notifications its header reports.
++            for row in &pinned_rows {
++                if let Some(session_id) = &row.metadata.session_id {
++                    current_session_ids.insert(session_id.clone());
++                }
++                current_thread_ids.insert(row.metadata.thread_id);
++            }
++            let has_notifications = pinned_rows
++                .iter()
++                .any(|row| notified_threads.contains(&row.metadata.thread_id));
++            project_header_indices.push(entries.len());
++            entries.push(ListEntry::PinnedHeader { has_notifications });
++            // Like a project group, a collapsed section still shows what the filter matches.
++            if !self.pinned_collapsed || !query.is_empty() {
++                entries.extend(pinned_rows.into_iter().map(ListEntry::Thread));
++            }
++        }
++
+         notified_threads.retain(|id| current_thread_ids.contains(id));
+ 
+         self.thread_last_accessed
+@@ -2124,8 +2275,14 @@ impl Sidebar {
+                     .map(|state| !state.expanded)
+                     .unwrap_or(false),
+             },
++            ListEntry::Thread(thread) if thread.pinned_project_label.is_some() => {
++                EntryShape::PinnedThread(thread.metadata.thread_id)
++            }
+             ListEntry::Thread(thread) => EntryShape::Thread(thread.metadata.thread_id),
+             ListEntry::Terminal(terminal) => EntryShape::Terminal(terminal.metadata.terminal_id),
++            ListEntry::PinnedHeader { .. } => EntryShape::PinnedHeader {
++                is_collapsed: self.pinned_collapsed,
++            },
+         })
+     }
+ 
+@@ -2233,8 +2390,11 @@ impl Sidebar {
+         // is_selected means the keyboard selector is here.
+         let is_selected = is_focused && self.selection == Some(ix);
+ 
+-        let is_group_header_after_first =
+-            ix > 0 && matches!(entry, ListEntry::ProjectHeader { .. });
++        let is_group_header_after_first = ix > 0
++            && matches!(
++                entry,
++                ListEntry::ProjectHeader { .. } | ListEntry::PinnedHeader { .. }
++            );
+ 
+         let is_active = self
+             .active_entry
+@@ -2277,6 +2437,9 @@ impl Sidebar {
+             ListEntry::Terminal(terminal) => {
+                 self.render_terminal(ix, terminal, is_active, is_selected, cx)
+             }
++            ListEntry::PinnedHeader { has_notifications } => {
++                self.render_pinned_header(ix, false, *has_notifications, is_selected, cx)
++            }
+         };
+ 
+         if is_group_header_after_first {
+@@ -3224,6 +3387,77 @@ impl Sidebar {
+             .into_any_element()
+     }
+ 
++    fn render_pinned_header(
++        &self,
++        ix: usize,
++        is_sticky: bool,
++        has_notifications: bool,
++        is_focused: bool,
++        cx: &mut Context<Self>,
++    ) -> AnyElement {
++        let color = cx.theme().colors();
++        let disclosure_icon = if self.pinned_collapsed {
++            IconName::ChevronRight
++        } else {
++            IconName::ChevronDown
++        };
++        // The sticky copy is drawn over the list while the real header is still in it, so the
++        // two need distinct element ids.
++        let id_prefix = if is_sticky { "sticky-" } else { "" };
++        h_flex()
++            .id(SharedString::from(format!("{id_prefix}pinned-header-{ix}")))
++            .h(Tab::content_height(cx))
++            .w_full()
++            .pl_2()
++            .pr_1p5()
++            .gap_1()
++            .border_1()
++            .border_r_2()
++            .border_color(if is_focused {
++                color.panel_focused_border
++            } else {
++                gpui::transparent_black()
++            })
++            .child(Label::new("Pinned").color(Color::Muted))
++            .when(self.pinned_collapsed && has_notifications, |this| {
++                this.child(
++                    Icon::new(IconName::Circle)
++                        .size(IconSize::Small)
++                        .color(Color::Accent),
++                )
++            })
++            .when(!self.has_filter_query(cx), |this| {
++                this.child(
++                    Icon::new(disclosure_icon)
++                        .size(IconSize::Small)
++                        .color(Color::Muted),
++                )
++            })
++            .cursor_pointer()
++            .on_click(cx.listener(|this, _: &gpui::ClickEvent, _window, cx| {
++                if !this.has_filter_query(cx) {
++                    this.set_pinned_collapsed(!this.pinned_collapsed, cx);
++                }
++            }))
++            .block_mouse_except_scroll()
++            .into_any_element()
++    }
++
++    /// Collapses or expands the Pinned section. The state is session-only: unlike a project
++    /// group's, it is never serialized, so a new window starts with Pinned expanded.
++    fn set_pinned_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
++        if self.pinned_collapsed != collapsed {
++            self.pinned_collapsed = collapsed;
++            self.update_entries(cx);
++            // Collapsing drops the rows after the header, which is the last entry: a selected
++            // pinned row would otherwise point past the end of the list.
++            let len = self.contents.entries.len();
++            if self.selection.is_some_and(|ix| ix >= len) {
++                self.selection = len.checked_sub(1);
++            }
++        }
++    }
++
+     fn render_sticky_header(
+         &self,
+         window: &mut Window,
+@@ -3245,37 +3479,38 @@ impl Sidebar {
+             return None;
+         }
+ 
+-        let ListEntry::ProjectHeader {
+-            key,
+-            label,
+-            highlight_positions,
+-            has_running_threads,
+-            waiting_thread_count,
+-            has_notifications,
+-            is_active,
+-            has_threads,
+-        } = self.contents.entries.get(header_idx)?
+-        else {
+-            return None;
+-        };
+-
+         let is_focused = self.focus_handle.is_focused(window);
+         let is_selected = is_focused && self.selection == Some(header_idx);
+ 
+-        let header_element = self.render_project_header(
+-            header_idx,
+-            true,
+-            key,
+-            &label,
+-            &highlight_positions,
+-            *has_running_threads,
+-            *waiting_thread_count,
+-            *has_notifications,
+-            *is_active,
+-            is_selected,
+-            *has_threads,
+-            cx,
+-        );
++        let header_element = match self.contents.entries.get(header_idx)? {
++            ListEntry::ProjectHeader {
++                key,
++                label,
++                highlight_positions,
++                has_running_threads,
++                waiting_thread_count,
++                has_notifications,
++                is_active,
++                has_threads,
++            } => self.render_project_header(
++                header_idx,
++                true,
++                key,
++                &label,
++                &highlight_positions,
++                *has_running_threads,
++                *waiting_thread_count,
++                *has_notifications,
++                *is_active,
++                is_selected,
++                *has_threads,
++                cx,
++            ),
++            ListEntry::PinnedHeader { has_notifications } => {
++                self.render_pinned_header(header_idx, true, *has_notifications, is_selected, cx)
++            }
++            ListEntry::Thread(_) | ListEntry::Terminal(_) => return None,
++        };
+ 
+         let top_offset = self
+             .contents
+@@ -3680,6 +3915,9 @@ impl Sidebar {
+                 let workspace = terminal.workspace.clone();
+                 self.activate_terminal_entry(metadata, workspace, false, window, cx);
+             }
++            ListEntry::PinnedHeader { .. } => {
++                self.set_pinned_collapsed(!self.pinned_collapsed, cx);
++            }
+         }
+     }
+ 
+@@ -4379,16 +4617,20 @@ impl Sidebar {
+         let Some(ix) = self.selection else { return };
+ 
+         match self.contents.entries.get(ix) {
+-            Some(ListEntry::ProjectHeader { key, .. }) => {
++            Some(ListEntry::ProjectHeader { key, .. }) if self.is_group_collapsed(key, cx) => {
+                 let key = key.clone();
+-                if self.is_group_collapsed(&key, cx) {
+-                    self.set_group_expanded(&key, true, cx);
+-                    self.update_entries(cx);
+-                } else if ix + 1 < self.contents.entries.len() {
+-                    self.selection = Some(ix + 1);
+-                    self.list_state.scroll_to_reveal_item(ix + 1);
+-                    cx.notify();
+-                }
++                self.set_group_expanded(&key, true, cx);
++                self.update_entries(cx);
++            }
++            Some(ListEntry::PinnedHeader { .. }) if self.pinned_collapsed => {
++                self.set_pinned_collapsed(false, cx);
++            }
++            Some(ListEntry::ProjectHeader { .. } | ListEntry::PinnedHeader { .. })
++                if ix + 1 < self.contents.entries.len() =>
++            {
++                self.selection = Some(ix + 1);
++                self.list_state.scroll_to_reveal_item(ix + 1);
++                cx.notify();
+             }
+             _ => {}
+         }
+@@ -4412,16 +4654,26 @@ impl Sidebar {
+             }
+             Some(ListEntry::Thread(_) | ListEntry::Terminal(_)) => {
+                 for i in (0..ix).rev() {
+-                    if let Some(ListEntry::ProjectHeader { key, .. }) = self.contents.entries.get(i)
+-                    {
+-                        let key = key.clone();
+-                        self.selection = Some(i);
+-                        self.set_group_expanded(&key, false, cx);
+-                        self.update_entries(cx);
+-                        break;
++                    match self.contents.entries.get(i) {
++                        Some(ListEntry::ProjectHeader { key, .. }) => {
++                            let key = key.clone();
++                            self.selection = Some(i);
++                            self.set_group_expanded(&key, false, cx);
++                            self.update_entries(cx);
++                            break;
++                        }
++                        // Pinned rows follow the last group: stopping here keeps a pinned row
++                        // from collapsing that group.
++                        Some(ListEntry::PinnedHeader { .. }) => {
++                            self.selection = Some(i);
++                            self.set_pinned_collapsed(true, cx);
++                            break;
++                        }
++                        _ => {}
+                     }
+                 }
+             }
++            Some(ListEntry::PinnedHeader { .. }) => self.set_pinned_collapsed(true, cx),
+             None => {}
+         }
+     }
+@@ -4434,29 +4686,38 @@ impl Sidebar {
+     ) {
+         let Some(ix) = self.selection else { return };
+ 
+-        // Find the group header for the current selection.
++        // Find the section header for the current selection. The walk stops at the Pinned
++        // header too, so a pinned row folds Pinned and not the last group above it.
+         let header_ix = match self.contents.entries.get(ix) {
+-            Some(ListEntry::ProjectHeader { .. }) => Some(ix),
++            Some(ListEntry::ProjectHeader { .. } | ListEntry::PinnedHeader { .. }) => Some(ix),
+             Some(ListEntry::Thread(_) | ListEntry::Terminal(_)) => (0..ix).rev().find(|&i| {
+                 matches!(
+                     self.contents.entries.get(i),
+-                    Some(ListEntry::ProjectHeader { .. })
++                    Some(ListEntry::ProjectHeader { .. } | ListEntry::PinnedHeader { .. })
+                 )
+             }),
+             None => None,
+         };
+ 
+         if let Some(header_ix) = header_ix {
+-            if let Some(ListEntry::ProjectHeader { key, .. }) = self.contents.entries.get(header_ix)
+-            {
+-                let key = key.clone();
+-                if self.is_group_collapsed(&key, cx) {
+-                    self.set_group_expanded(&key, true, cx);
+-                } else {
+-                    self.selection = Some(header_ix);
+-                    self.set_group_expanded(&key, false, cx);
++            match self.contents.entries.get(header_ix) {
++                Some(ListEntry::ProjectHeader { key, .. }) => {
++                    let key = key.clone();
++                    if self.is_group_collapsed(&key, cx) {
++                        self.set_group_expanded(&key, true, cx);
++                    } else {
++                        self.selection = Some(header_ix);
++                        self.set_group_expanded(&key, false, cx);
++                    }
++                    self.update_entries(cx);
+                 }
+-                self.update_entries(cx);
++                Some(ListEntry::PinnedHeader { .. }) => {
++                    if !self.pinned_collapsed {
++                        self.selection = Some(header_ix);
++                    }
++                    self.set_pinned_collapsed(!self.pinned_collapsed, cx);
++                }
++                Some(ListEntry::Thread(_) | ListEntry::Terminal(_)) | None => {}
+             }
+         }
+     }
+@@ -4512,7 +4773,14 @@ impl Sidebar {
+     /// activatable entry, the nearest one in the whole list.
+     fn neighboring_activatable_entry(&self, current_position: usize) -> Option<ActivatableEntry> {
+         let entries = &self.contents.entries;
+-        let is_header = |entry: &ListEntry| matches!(entry, ListEntry::ProjectHeader { .. });
++        // The Pinned header closes the last group's section, so its rows are never a group row's
++        // neighbour.
++        let is_header = |entry: &ListEntry| {
++            matches!(
++                entry,
++                ListEntry::ProjectHeader { .. } | ListEntry::PinnedHeader { .. }
++            )
++        };
+ 
+         let section_start = entries
+             .get(..current_position)?
+@@ -5791,6 +6059,27 @@ impl Sidebar {
+         }
+     }
+ 
++    /// Pins or unpins the selected row when it is a thread with a message sent. Any other
++    /// selection (a header, a terminal, a draft, nothing) is not pinnable and is left alone
++    /// without reaching the store.
++    fn toggle_pin_selected_thread(
++        &mut self,
++        _: &TogglePinSelectedThread,
++        _window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        let Some(ListEntry::Thread(thread)) =
++            self.selection.and_then(|ix| self.contents.entries.get(ix))
++        else {
++            return;
++        };
++        if thread.draft.is_some() {
++            return;
++        }
++        let thread_id = thread.metadata.thread_id;
++        self.toggle_pin(thread_id, cx);
++    }
++
+     fn rename_selected_thread(
+         &mut self,
+         _: &RenameSelectedThread,
+@@ -5844,7 +6133,7 @@ impl Sidebar {
+                 }
+                 ListEntry::Thread(thread) => Sidebar::thread_display_time(&thread.metadata),
+                 ListEntry::Terminal(terminal) => terminal.metadata.created_at,
+-                ListEntry::ProjectHeader { .. } => unreachable!(),
++                ListEntry::ProjectHeader { .. } | ListEntry::PinnedHeader { .. } => unreachable!(),
+             }
+         }
+ 
+@@ -5902,21 +6191,34 @@ impl Sidebar {
+                     current_header_key = Some(key.clone());
+                     None
+                 }
++                // Pinned rows sit outside every group and carry their own project.
++                ListEntry::PinnedHeader { .. } => {
++                    current_header_label = None;
++                    current_header_key = None;
++                    None
++                }
+                 ListEntry::Thread(thread) => {
+                     if thread.draft == Some(DraftKind::Empty) {
+                         return None;
+                     }
+                     let workspace = match &thread.workspace {
+-                        ThreadEntryWorkspace::Open(workspace) => Some(workspace.clone()),
+-                        ThreadEntryWorkspace::Closed { .. } => {
+-                            current_header_key.as_ref().and_then(|key| {
+-                                self.multi_workspace.upgrade().and_then(|mw| {
+-                                    mw.read(cx).workspace_for_paths(
+-                                        key.path_list(),
+-                                        key.host().as_ref(),
+-                                        cx,
+-                                    )
+-                                })
++                        // A pinned row can resolve to a workspace of another window, and the
++                        // switcher activates its selection in this window, which would adopt that
++                        // window's workspace. Such a row is left out of the switcher.
++                        ThreadEntryWorkspace::Open(workspace) => self
++                            .find_workspace_in_current_window(cx, |candidate, _| {
++                                candidate == workspace
++                            }),
++                        ThreadEntryWorkspace::Closed {
++                            project_group_key, ..
++                        } => {
++                            let key = current_header_key.as_ref().unwrap_or(project_group_key);
++                            self.multi_workspace.upgrade().and_then(|mw| {
++                                mw.read(cx).workspace_for_paths(
++                                    key.path_list(),
++                                    key.host().as_ref(),
++                                    cx,
++                                )
+                             })
+                         }
+                     }?;
+@@ -5931,7 +6233,10 @@ impl Sidebar {
+                         status: thread.status,
+                         metadata: thread.metadata.clone(),
+                         workspace,
+-                        project_name: current_header_label.clone(),
++                        project_name: thread
++                            .pinned_project_label
++                            .clone()
++                            .or_else(|| current_header_label.clone()),
+                         worktrees: thread
+                             .worktrees
+                             .iter()
+@@ -6277,6 +6582,13 @@ impl Sidebar {
+         let session_id_for_delete = thread.metadata.session_id.clone();
+         let focus_handle = self.focus_handle.clone();
+         let rename_title_editor = is_renaming.then(|| self.render_rename_title_editor(cx));
++        // A draft cannot be pinned, and without the store there is nothing to toggle.
++        let is_pinned = if is_draft {
++            None
++        } else {
++            ThreadOrganizationStore::try_global(cx)
++                .map(|store| Self::is_pinned_in(&store, thread_id_for_actions, cx))
++        };
+ 
+         let id = SharedString::from(format!("thread-entry-{}", ix));
+ 
+@@ -6293,10 +6605,14 @@ impl Sidebar {
+ 
+         let is_remote = thread.workspace.is_remote(cx);
+ 
+-        let worktrees = apply_worktree_label_mode(
+-            thread.worktrees.clone(),
+-            cx.flag_value::<AgentThreadWorktreeLabelFlag>(),
+-        );
++        let worktrees = if thread.pinned_project_label.is_some() {
++            Vec::new()
++        } else {
++            apply_worktree_label_mode(
++                thread.worktrees.clone(),
++                cx.flag_value::<AgentThreadWorktreeLabelFlag>(),
++            )
++        };
+ 
+         let (icon, icon_svg) = if is_draft {
+             (IconName::Circle, None)
+@@ -6321,6 +6637,9 @@ impl Sidebar {
+                 this.custom_icon_from_external_svg(svg)
+             })
+             .worktrees(worktrees)
++            .when_some(thread.pinned_project_label.clone(), |this, label| {
++                this.project_name(label)
++            })
+             .timestamp(timestamp)
+             .highlight_positions(thread.highlight_positions.to_vec())
+             .title_generating(title_generating)
+@@ -6374,6 +6693,32 @@ impl Sidebar {
+                         })
+                     });
+ 
++                let pin_button = is_pinned.map(|is_pinned| {
++                    let (icon, label) = if is_pinned {
++                        (IconName::Unpin, "Unpin Thread")
++                    } else {
++                        (IconName::Pin, "Pin Thread")
++                    };
++                    IconButton::new(("pin-thread", ix), icon)
++                        .hover_background(button_hover_bg)
++                        .active_background(button_active_bg)
++                        .icon_size(IconSize::Small)
++                        .tooltip({
++                            let focus_handle = focus_handle.clone();
++                            move |_window, cx| {
++                                Tooltip::for_action_in(
++                                    label,
++                                    &TogglePinSelectedThread,
++                                    &focus_handle,
++                                    cx,
++                                )
++                            }
++                        })
++                        .on_click(cx.listener(move |this, _, _window, cx| {
++                            this.toggle_pin(thread_id_for_actions, cx);
++                        }))
++                });
++
+                 let contextual_action: Option<AnyElement> = if is_running {
+                     Some(
+                         IconButton::new("stop-thread", IconName::Stop)
+@@ -6441,6 +6786,7 @@ impl Sidebar {
+                     h_flex()
+                         .gap_0p5()
+                         .child(rename_button)
++                        .when_some(pin_button, |this, pin| this.child(pin))
+                         .when_some(contextual_action, |this, action| this.child(action)),
+                 )
+             })
+@@ -6484,6 +6830,13 @@ impl Sidebar {
+             ThreadEntryWorkspace::Open(workspace) => Some(workspace.clone()),
+             ThreadEntryWorkspace::Closed { .. } => None,
+         };
++        // A pinned row can resolve to a workspace of another window. Its panel must never be
++        // driven with this window's `Window`, so such a workspace is treated like a closed one
++        // and the markdown falls back to this window's active workspace. A group row's
++        // workspace always belongs to this window, so it is kept as is.
++        let markdown_workspace = thread_workspace.as_ref().and_then(|workspace| {
++            self.find_workspace_in_current_window(cx, |candidate, _| candidate == workspace)
++        });
+ 
+         let is_zed_thread = thread.metadata.agent_id.as_ref() == ZED_AGENT_ID.as_ref();
+         let can_open_as_markdown = thread.is_live || is_zed_thread;
+@@ -6500,9 +6853,19 @@ impl Sidebar {
+                     let sidebar = sidebar.clone();
+                     let active_workspace = active_workspace.clone();
+                     let thread_workspace = thread_workspace.clone();
++                    let markdown_workspace = markdown_workspace.clone();
+                     let markdown_title = markdown_title.clone();
+                     let rename_title = rename_title.clone();
+                     let folder_paths = folder_paths.clone();
++                    // Read when the menu opens, so the entry names the state the click toggles.
++                    // Without the store there is nothing to toggle, so no entry is offered.
++                    let pin_entry_label = ThreadOrganizationStore::try_global(cx).map(|store| {
++                        if Self::is_pinned_in(&store, thread_id, cx) {
++                            "Unpin Thread"
++                        } else {
++                            "Pin Thread"
++                        }
++                    });
+                     ContextMenu::build(_window, cx, move |mut menu, _window, _cx| {
+                         menu = menu.entry("Rename Title", None, {
+                             let sidebar = sidebar.clone();
+@@ -6548,16 +6911,16 @@ impl Sidebar {
+                             menu = menu.entry("Open Thread as Markdown", None, {
+                                 let session_id = session_id.clone();
+                                 let markdown_title = markdown_title.clone();
+-                                let thread_workspace = thread_workspace.clone();
++                                let markdown_workspace = markdown_workspace.clone();
+                                 move |window, cx| {
+-                                    if let Some(thread_workspace) = thread_workspace.as_ref()
++                                    if let Some(markdown_workspace) = markdown_workspace.as_ref()
+                                         && let Some(panel) =
+-                                            thread_workspace.read(cx).panel::<AgentPanel>(cx)
++                                            markdown_workspace.read(cx).panel::<AgentPanel>(cx)
+                                     {
+                                         let opened = panel.update(cx, |panel, cx| {
+                                             panel.open_thread_as_markdown(
+                                                 thread_id,
+-                                                thread_workspace.clone(),
++                                                markdown_workspace.clone(),
+                                                 window,
+                                                 cx,
+                                             )
+@@ -6582,6 +6945,19 @@ impl Sidebar {
+                             });
+                         }
+ 
++                        if let Some(label) = pin_entry_label {
++                            menu = menu.entry(label, None, {
++                                let sidebar = sidebar.clone();
++                                move |_window, cx| {
++                                    sidebar
++                                        .update(cx, |sidebar, cx| {
++                                            sidebar.toggle_pin(thread_id, cx);
++                                        })
++                                        .ok();
++                                }
++                            });
++                        }
++
+                         menu.separator().entry("Archive Thread", None, {
+                             let session_id = session_id.clone();
+                             move |window, cx| {
+@@ -6786,7 +7162,7 @@ impl Sidebar {
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
+-        if let Some(key) = self.selected_group_key() {
++        if let Some(key) = self.selected_group_key(cx) {
+             self.set_group_expanded(&key, true, cx);
+             self.selection = None;
+             if let Some(workspace) = self.workspace_for_group(&key, cx) {
+@@ -6812,7 +7188,7 @@ impl Sidebar {
+     ) {
+         cx.stop_propagation();
+ 
+-        if let Some(key) = self.selected_group_key() {
++        if let Some(key) = self.selected_group_key(cx) {
+             self.set_group_expanded(&key, true, cx);
+             self.selection = None;
+             if let Some(workspace) = self.workspace_for_group(&key, cx) {
+@@ -7110,22 +7486,39 @@ impl Sidebar {
+         });
+     }
+ 
+-    fn selected_group_key(&self) -> Option<ProjectGroupKey> {
++    fn selected_group_key(&self, cx: &App) -> Option<ProjectGroupKey> {
+         let ix = self.selection?;
+         match self.contents.entries.get(ix) {
+             Some(ListEntry::ProjectHeader { key, .. }) => Some(key.clone()),
+-            Some(ListEntry::Thread(_) | ListEntry::Terminal(_)) => {
+-                (0..ix)
+-                    .rev()
+-                    .find_map(|i| match self.contents.entries.get(i) {
+-                        Some(ListEntry::ProjectHeader { key, .. }) => Some(key.clone()),
+-                        _ => None,
+-                    })
+-            }
++            Some(entry @ (ListEntry::Thread(_) | ListEntry::Terminal(_))) => (0..ix)
++                .rev()
++                .find_map(|i| match self.contents.entries.get(i) {
++                    Some(ListEntry::ProjectHeader { key, .. }) => Some(Some(key.clone())),
++                    // Pinned rows sit after the last group but belong to no group: each carries
++                    // its own project.
++                    Some(ListEntry::PinnedHeader { .. }) => {
++                        Some(Self::pinned_row_group_key(entry, cx))
++                    }
++                    _ => None,
++                })
++                .flatten(),
+             _ => None,
+         }
+     }
+ 
++    /// The project a pinned row's thread belongs to.
++    fn pinned_row_group_key(entry: &ListEntry, cx: &App) -> Option<ProjectGroupKey> {
++        let ListEntry::Thread(thread) = entry else {
++            return None;
++        };
++        match &thread.workspace {
++            ThreadEntryWorkspace::Open(workspace) => Some(workspace.read(cx).project_group_key(cx)),
++            ThreadEntryWorkspace::Closed {
++                project_group_key, ..
++            } => Some(project_group_key.clone()),
++        }
++    }
++
+     fn workspace_for_group(&self, key: &ProjectGroupKey, cx: &App) -> Option<Entity<Workspace>> {
+         let mw = self.multi_workspace.upgrade()?;
+         let mw = mw.read(cx);
+@@ -7167,17 +7560,14 @@ impl Sidebar {
+         Some(multi_workspace.project_group_key_for_workspace(multi_workspace.workspace(), cx))
+     }
+ 
+-    fn active_project_header_position(&self, cx: &App) -> Option<usize> {
++    fn active_project_header_position(&self, header_indices: &[usize], cx: &App) -> Option<usize> {
+         let active_key = self.active_project_group_key(cx)?;
+-        self.contents
+-            .project_header_indices
+-            .iter()
+-            .position(|&entry_ix| {
+-                matches!(
+-                    &self.contents.entries[entry_ix],
+-                    ListEntry::ProjectHeader { key, .. } if *key == active_key
+-                )
+-            })
++        header_indices.iter().position(|&entry_ix| {
++            matches!(
++                &self.contents.entries[entry_ix],
++                ListEntry::ProjectHeader { key, .. } if *key == active_key
++            )
++        })
+     }
+ 
+     fn cycle_project_impl(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+@@ -7185,12 +7575,26 @@ impl Sidebar {
+             return;
+         };
+ 
+-        let header_count = self.contents.project_header_indices.len();
++        // The Pinned header is indexed for the sticky header only. It is not a project, so
++        // leaving it out lets the cycle wrap from the last group straight to the first.
++        let header_indices: Vec<usize> = self
++            .contents
++            .project_header_indices
++            .iter()
++            .copied()
++            .filter(|&entry_ix| {
++                matches!(
++                    self.contents.entries.get(entry_ix),
++                    Some(ListEntry::ProjectHeader { .. })
++                )
++            })
++            .collect();
++        let header_count = header_indices.len();
+         if header_count == 0 {
+             return;
+         }
+ 
+-        let current_pos = self.active_project_header_position(cx);
++        let current_pos = self.active_project_header_position(&header_indices, cx);
+ 
+         let next_pos = match current_pos {
+             Some(pos) => {
+@@ -7203,7 +7607,7 @@ impl Sidebar {
+             None => 0,
+         };
+ 
+-        let header_entry_ix = self.contents.project_header_indices[next_pos];
++        let header_entry_ix = header_indices[next_pos];
+         let Some(ListEntry::ProjectHeader { key, .. }) = self.contents.entries.get(header_entry_ix)
+         else {
+             return;
+@@ -7303,7 +7707,7 @@ impl Sidebar {
+                 let workspace = terminal.workspace.clone();
+                 self.activate_terminal_entry(metadata, workspace, true, window, cx);
+             }
+-            ListEntry::ProjectHeader { .. } => {}
++            ListEntry::ProjectHeader { .. } | ListEntry::PinnedHeader { .. } => {}
+         }
+     }
+ 
+@@ -7975,6 +8379,7 @@ impl Render for Sidebar {
+             .on_action(cx.listener(Self::unfold_all))
+             .on_action(cx.listener(Self::cancel))
+             .on_action(cx.listener(Self::archive_selected_thread))
++            .on_action(cx.listener(Self::toggle_pin_selected_thread))
+             .on_action(cx.listener(Self::rename_selected_thread))
+             .on_action(cx.listener(Self::new_thread_in_group))
+             .on_action(cx.listener(Self::new_terminal_thread))
+diff --git a/crates/sidebar/src/sidebar_pinned_tests.rs b/crates/sidebar/src/sidebar_pinned_tests.rs
+new file mode 100644
+index 0000000..99d587f
+--- /dev/null
++++ b/crates/sidebar/src/sidebar_pinned_tests.rs
+@@ -0,0 +1,2114 @@
++// Story 032 — the Pinned section of the agent sidebar (tasks 3.1–3.4, 4.1–4.3).
++//
++// Materialize with, in `crates/sidebar/src/sidebar.rs`, beside `mod sidebar_tests;`:
++//     #[cfg(test)]
++//     mod sidebar_pinned_tests;
++// Filter: `cargo test -p sidebar pinned`.
++//
++// Helpers reused from `sidebar_tests.rs` must become `pub(super)` there (nothing else changes in
++// them): `init_test`, `init_test_project_with_agent_panel`, `setup_sidebar`,
++// `setup_sidebar_with_agent_panel`, `save_thread_metadata_with_main_paths`,
++// `save_test_thread_metadata`, `visible_entries_as_strings`, `focus_sidebar`,
++// `enter_renamed_title`, `type_in_search`, `assert_project_header_has_threads`.
++//
++// TEXT FORMAT (the one exact format these tests assert). `pinned_entries` below wraps
++// `visible_entries_as_strings` and owns the two new shapes, so the tests do not depend on how that
++// helper is extended (it only needs a `ListEntry::PinnedHeader` arm to compile; printing
++// `"{v|>} Pinned{selected}"` there too is recommended, for consistency):
++//   - the Pinned header:   "v Pinned"  (expanded)  /  "> Pinned"  (collapsed, `pinned_collapsed`)
++//                          — no brackets, so it can never be confused with a project named
++//                          "Pinned", whose header is "v [Pinned]";
++//   - a pinned row:        "  {title} · {project label}{ *}{ (status)}{ (!)}"
++//                          i.e. the usual row with " · {label}" right after the title and no
++//                          worktree chips (the label takes their place, design.md);
++//   - everything else:     exactly `visible_entries_as_strings`.
++//   A selected entry ends in "  <== selected", as everywhere else.
++// A pinned row is a `ListEntry::Thread` whose `pinned_project_label` is `Some`.
++//
++// The store is installed with `agent_ui::thread_organization::init(cx)` BEFORE the sidebar is
++// created (the sidebar observes it from `Sidebar::new`). `init_test` already gives every test its
++// own `db::AppDatabase::test_new()`, which is the connection `ThreadOrganizationDb::global` uses,
++// so pins never leak between tests.
++//
++// Hostile halves come first in every identity rule: a pinned thread appears exactly once (not
++// zero, not twice) on every group path; a group whose only threads are pinned keeps its header
++// with no "No threads yet" while a truly empty group still shows it; the action on a header does
++// nothing while on a thread it toggles; the filter keeps a label-only match without title
++// highlights and drops a non-match.
++
++use super::*;
++use crate::sidebar_tests::{
++    assert_project_header_has_threads, enter_renamed_title, focus_sidebar, init_test,
++    init_test_project_with_agent_panel, save_test_thread_metadata,
++    save_thread_metadata_with_main_paths, setup_sidebar, setup_sidebar_with_agent_panel,
++    type_in_search, visible_entries_as_strings,
++};
++use acp_thread::StubAgentConnection;
++use agent_client_protocol::schema::v1 as acp_v1;
++use agent_ui::test_support::{active_session_id, open_thread_with_connection, send_message};
++use agent_ui::thread_organization::ThreadOrganizationStore;
++use fs::FakeFs;
++use gpui::{Bounds, MouseButton, Point, TestAppContext, VisualTestContext};
++use pretty_assertions::assert_eq;
++use std::cell::RefCell;
++use std::sync::Once;
++
++const ALPHA: &str = "/alpha";
++const BETA: &str = "/beta";
++const GAMMA: &str = "/gamma";
++/// Never opened in any window by these tests unless a test opens it on purpose.
++const DELTA: &str = "/delta";
++
++// ── Setup ──────────────────────────────────────────────────────────────────
++
++/// Sidebar test globals, a FakeFs holding every project folder, and the organization store.
++/// Returns the fs and a project for `ALPHA`.
++async fn init_pinned_test(cx: &mut TestAppContext) -> (Arc<FakeFs>, Entity<project::Project>) {
++    init_test(cx);
++    let fs = FakeFs::new(cx.executor());
++    for path in [ALPHA, BETA, GAMMA, DELTA] {
++        fs.insert_tree(path, serde_json::json!({ "src": {} })).await;
++    }
++    cx.update(|cx| {
++        <dyn fs::Fs>::set_global(fs.clone(), cx);
++        agent_ui::thread_organization::init(cx);
++    });
++    cx.run_until_parked();
++    let project = project::Project::test(fs.clone(), [ALPHA.as_ref()], cx).await;
++    (fs, project)
++}
++
++/// A window on `ALPHA` with its sidebar open.
++async fn alpha_window(
++    cx: &mut TestAppContext,
++) -> (
++    Arc<FakeFs>,
++    Entity<MultiWorkspace>,
++    Entity<Sidebar>,
++    &mut VisualTestContext,
++) {
++    let (fs, project) = init_pinned_test(cx).await;
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
++    let sidebar = setup_sidebar(&multi_workspace, cx);
++    (fs, multi_workspace, sidebar, cx)
++}
++
++/// Opens `path` as another project group of this window.
++async fn open_in_window(
++    path: &str,
++    fs: &Arc<FakeFs>,
++    multi_workspace: &Entity<MultiWorkspace>,
++    cx: &mut VisualTestContext,
++) -> Entity<Workspace> {
++    let project = project::Project::test(fs.clone() as Arc<dyn fs::Fs>, [path.as_ref()], cx).await;
++    let workspace = multi_workspace.update_in(cx, |mw, window, cx| {
++        mw.test_add_workspace(project, window, cx)
++    });
++    cx.run_until_parked();
++    workspace
++}
++
++/// Saves a thread with a sent message whose folders are `folder` and whose project (main
++/// worktree) is `main`; a later `hour` sorts higher in its group.
++fn save(
++    session: &str,
++    title: &str,
++    folder: &str,
++    main: &str,
++    hour: u32,
++    cx: &mut VisualTestContext,
++) -> ThreadId {
++    save_thread_metadata_with_main_paths(
++        session,
++        title,
++        PathList::new(&[PathBuf::from(folder)]),
++        PathList::new(&[PathBuf::from(main)]),
++        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, hour, 0, 0).unwrap(),
++        cx,
++    );
++    thread_id_of(session, cx)
++}
++
++/// A thread of the local project `folder`.
++fn save_in(
++    session: &str,
++    title: &str,
++    folder: &str,
++    hour: u32,
++    cx: &mut VisualTestContext,
++) -> ThreadId {
++    save(session, title, folder, folder, hour, cx)
++}
++
++fn thread_id_of(session: &str, cx: &mut VisualTestContext) -> ThreadId {
++    let session_id = acp::SessionId::new(Arc::from(session));
++    cx.update(|_, cx| {
++        ThreadMetadataStore::global(cx)
++            .read(cx)
++            .entries()
++            .find(|entry| entry.session_id.as_ref() == Some(&session_id))
++            .map(|entry| entry.thread_id)
++            .expect("the thread was saved")
++    })
++}
++
++// ── The store, driven directly (task 3 tests) ──────────────────────────────
++
++fn store_pin(thread_id: ThreadId, cx: &mut VisualTestContext) {
++    cx.update(|_, cx| {
++        ThreadOrganizationStore::global(cx).update(cx, |store, cx| store.pin(thread_id, cx))
++    })
++    .expect("the store accepts a pin of a known thread with a message");
++    cx.run_until_parked();
++}
++
++fn stored_pins(cx: &mut VisualTestContext) -> Vec<ThreadId> {
++    cx.update(|_, cx| {
++        ThreadOrganizationStore::global(cx)
++            .read(cx)
++            .pinned()
++            .collect()
++    })
++}
++
++fn archive(thread_id: ThreadId, cx: &mut VisualTestContext) {
++    cx.update(|_, cx| {
++        ThreadMetadataStore::global(cx).update(cx, |store, cx| store.archive(thread_id, None, cx))
++    });
++    cx.run_until_parked();
++}
++
++fn unarchive(thread_id: ThreadId, cx: &mut VisualTestContext) {
++    cx.update(|_, cx| {
++        ThreadMetadataStore::global(cx).update(cx, |store, cx| store.unarchive(thread_id, cx))
++    });
++    cx.run_until_parked();
++}
++
++fn delete(thread_id: ThreadId, cx: &mut VisualTestContext) {
++    cx.update(|_, cx| {
++        ThreadMetadataStore::global(cx).update(cx, |store, cx| store.delete(thread_id, cx))
++    });
++    cx.run_until_parked();
++}
++
++// ── Reading the sidebar ────────────────────────────────────────────────────
++
++/// `visible_entries_as_strings`, with the Pinned header and pinned rows in the format documented
++/// at the top of this file.
++fn pinned_entries(sidebar: &Entity<Sidebar>, cx: &mut VisualTestContext) -> Vec<String> {
++    let base = visible_entries_as_strings(sidebar, cx);
++    sidebar.read_with(cx, |sidebar, _cx| {
++        sidebar
++            .contents
++            .entries
++            .iter()
++            .enumerate()
++            .zip(base)
++            .map(|((ix, entry), line)| {
++                let selected = if sidebar.selection == Some(ix) {
++                    "  <== selected"
++                } else {
++                    ""
++                };
++                match entry {
++                    ListEntry::PinnedHeader { .. } => {
++                        let icon = if sidebar.pinned_collapsed { ">" } else { "v" };
++                        format!("{icon} Pinned{selected}")
++                    }
++                    ListEntry::Thread(thread) => match &thread.pinned_project_label {
++                        Some(label) => {
++                            let title = thread.metadata.display_title();
++                            let live = if thread.is_live { " *" } else { "" };
++                            let status = match thread.status {
++                                AgentThreadStatus::Running => " (running)",
++                                AgentThreadStatus::Error => " (error)",
++                                AgentThreadStatus::WaitingForConfirmation => " (waiting)",
++                                _ => "",
++                            };
++                            let notified = if sidebar
++                                .contents
++                                .is_thread_notified(&thread.metadata.thread_id)
++                            {
++                                " (!)"
++                            } else {
++                                ""
++                            };
++                            format!("  {title} · {label}{live}{status}{notified}{selected}")
++                        }
++                        None => line,
++                    },
++                    _ => line,
++                }
++            })
++            .collect()
++    })
++}
++
++/// How many entries are a row (group or pinned) of `thread_id`.
++fn rows_of(sidebar: &Entity<Sidebar>, thread_id: ThreadId, cx: &mut VisualTestContext) -> usize {
++    sidebar.read_with(cx, |sidebar, _| {
++        sidebar
++            .contents
++            .entries
++            .iter()
++            .filter(|entry| {
++                matches!(entry, ListEntry::Thread(thread) if thread.metadata.thread_id == thread_id)
++            })
++            .count()
++    })
++}
++
++/// The index of the Pinned header, if any.
++fn pinned_header_ix(sidebar: &Entity<Sidebar>, cx: &mut VisualTestContext) -> Option<usize> {
++    sidebar.read_with(cx, |sidebar, _| {
++        sidebar
++            .contents
++            .entries
++            .iter()
++            .position(|entry| matches!(entry, ListEntry::PinnedHeader { .. }))
++    })
++}
++
++/// The index of the pinned row of `thread_id` (a row whose `pinned_project_label` is set).
++fn pinned_row_ix(
++    sidebar: &Entity<Sidebar>,
++    thread_id: ThreadId,
++    cx: &mut VisualTestContext,
++) -> usize {
++    sidebar.read_with(cx, |sidebar, _| {
++        sidebar
++            .contents
++            .entries
++            .iter()
++            .position(|entry| {
++                matches!(entry, ListEntry::Thread(thread)
++                    if thread.metadata.thread_id == thread_id
++                        && thread.pinned_project_label.is_some())
++            })
++            .expect("the thread has a pinned row")
++    })
++}
++
++fn group_row_ix(
++    sidebar: &Entity<Sidebar>,
++    thread_id: ThreadId,
++    cx: &mut VisualTestContext,
++) -> usize {
++    sidebar.read_with(cx, |sidebar, _| {
++        sidebar
++            .contents
++            .entries
++            .iter()
++            .position(|entry| {
++                matches!(entry, ListEntry::Thread(thread)
++                    if thread.metadata.thread_id == thread_id
++                        && thread.pinned_project_label.is_none())
++            })
++            .expect("the thread has a row in its group")
++    })
++}
++
++fn select(sidebar: &Entity<Sidebar>, ix: usize, cx: &mut VisualTestContext) {
++    focus_sidebar(sidebar, cx);
++    sidebar.update_in(cx, |sidebar, _window, cx| {
++        sidebar.selection = Some(ix);
++        cx.notify();
++    });
++    cx.run_until_parked();
++}
++
++fn confirm_at(sidebar: &Entity<Sidebar>, ix: usize, cx: &mut VisualTestContext) {
++    sidebar.update_in(cx, |sidebar, window, cx| {
++        sidebar.selection = Some(ix);
++        sidebar.confirm(&Confirm, window, cx);
++    });
++    cx.run_until_parked();
++}
++
++fn toggle_pin(sidebar: &Entity<Sidebar>, thread_id: ThreadId, cx: &mut VisualTestContext) {
++    sidebar.update(cx, |sidebar, cx| sidebar.toggle_pin(thread_id, cx));
++    cx.run_until_parked();
++}
++
++/// The bounds of entry `ix`, after a frame of the window (the sidebar is open in it).
++fn entry_bounds(
++    sidebar: &Entity<Sidebar>,
++    ix: usize,
++    cx: &mut VisualTestContext,
++) -> Bounds<Pixels> {
++    cx.update(|window, _| window.refresh());
++    cx.run_until_parked();
++    sidebar.read_with(cx, |sidebar, _| {
++        sidebar
++            .list_state
++            .bounds_for_item(ix)
++            .expect("the entry is rendered")
++    })
++}
++
++fn right_click(position: Point<Pixels>, cx: &mut VisualTestContext) {
++    cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::none());
++    cx.simulate_mouse_up(position, MouseButton::Right, Modifiers::none());
++    cx.run_until_parked();
++}
++
++// ── Log capture (R1.8, Q4) ─────────────────────────────────────────────────
++//
++// Story 031's capture (patch 0035's), which the sidebar crate has no copy of: a process-wide
++// logger writing into a thread-local buffer, so parallel tests do not see each other's lines.
++
++thread_local! {
++    static CAPTURED: RefCell<Vec<(log::Level, String)>> = const { RefCell::new(Vec::new()) };
++}
++
++struct CaptureLogger;
++
++impl log::Log for CaptureLogger {
++    fn enabled(&self, _metadata: &log::Metadata) -> bool {
++        true
++    }
++
++    fn log(&self, record: &log::Record) {
++        let line = record.args().to_string();
++        CAPTURED.with(|captured| captured.borrow_mut().push((record.level(), line)));
++    }
++
++    fn flush(&self) {}
++}
++
++static INSTALL: Once = Once::new();
++
++/// Starts capturing log lines on this thread. Panics when another logger owns the process,
++/// rather than letting a log assertion pass or fail for the wrong reason.
++fn capture_logs() {
++    INSTALL.call_once(|| {
++        log::set_boxed_logger(Box::new(CaptureLogger))
++            .expect("another logger is installed; the log capture cannot run");
++        log::set_max_level(log::LevelFilter::Trace);
++    });
++    CAPTURED.with(|captured| captured.borrow_mut().clear());
++}
++
++fn warn_lines() -> Vec<String> {
++    CAPTURED.with(|captured| {
++        captured
++            .borrow()
++            .iter()
++            .filter(|(level, _)| *level == log::Level::Warn)
++            .map(|(_, line)| line.clone())
++            .collect()
++    })
++}
++
++// ═══ Task 3.1 — rows: skipped in groups, built after the loop ══════════════
++
++// R2.2, R2.1, R2.3, R2.4, R2.7 — no pins, no header; with pins, one section after the LAST group,
++// newest pin first, each row naming its project, and the pinned threads gone from their groups.
++#[gpui::test]
++async fn pinned_section_follows_the_last_group_in_store_order(cx: &mut TestAppContext) {
++    let (fs, multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    open_in_window(BETA, &fs, &multi_workspace, cx).await;
++    let fix_login = save_in("a1", "Fix login", ALPHA, 3, cx);
++    let write_docs = save_in("a2", "Write docs", ALPHA, 2, cx);
++    let ship_release = save_in("b1", "Ship release", BETA, 1, cx);
++    let read_mail = save_in("b2", "Read mail", BETA, 0, cx);
++
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [beta]",
++            "  Ship release",
++            "  Read mail",
++            "v [alpha]",
++            "  Fix login",
++            "  Write docs",
++        ],
++        "no pinned thread, no Pinned header (the most recently opened project is listed first)"
++    );
++
++    store_pin(write_docs, cx);
++    store_pin(ship_release, cx);
++
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [beta]",
++            "  Read mail",
++            "v [alpha]",
++            "  Fix login",
++            "v Pinned",
++            "  Ship release · beta",
++            "  Write docs · alpha",
++        ],
++        "the section follows the last group, in stored order (newest pin first)"
++    );
++    for thread_id in [fix_login, write_docs, ship_release, read_mail] {
++        assert_eq!(
++            rows_of(&sidebar, thread_id, cx),
++            1,
++            "every thread is shown exactly once"
++        );
++    }
++}
++
++// R2.4 hostile half (shown once, never twice and never zero) on every path a group finds a thread
++// by: its project's main path, a linked worktree's folder (main path = the project), a row whose
++// stored main path disagrees with its folders, and a collapsed group (which never loads threads).
++#[gpui::test]
++async fn pinned_thread_is_shown_exactly_once_on_every_group_path(cx: &mut TestAppContext) {
++    let (fs, multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    open_in_window(BETA, &fs, &multi_workspace, cx).await;
++    let by_main_path = save_in("main", "By main path", ALPHA, 4, cx);
++    let in_linked_worktree = save(
++        "linked",
++        "In linked worktree",
++        "/alpha-feature",
++        ALPHA,
++        3,
++        cx,
++    );
++    let stale_main_path = save("stale", "Stale main path", ALPHA, "/elsewhere", 2, cx);
++    let in_beta = save_in("beta", "In beta", BETA, 1, cx);
++    let unpinned = save_in("plain", "Not pinned", ALPHA, 0, cx);
++    let pinned = [by_main_path, in_linked_worktree, stale_main_path, in_beta];
++    for thread_id in pinned {
++        assert_eq!(
++            rows_of(&sidebar, thread_id, cx),
++            1,
++            "fixture: the thread is shown once, in a group, before it is pinned"
++        );
++        store_pin(thread_id, cx);
++    }
++
++    let header = pinned_header_ix(&sidebar, cx).expect("a Pinned header");
++    for thread_id in pinned {
++        assert_eq!(
++            rows_of(&sidebar, thread_id, cx),
++            1,
++            "a pinned thread is shown exactly once: {:?}",
++            pinned_entries(&sidebar, cx)
++        );
++        assert!(
++            pinned_row_ix(&sidebar, thread_id, cx) > header,
++            "and it is in the section"
++        );
++    }
++    assert_eq!(rows_of(&sidebar, unpinned, cx), 1);
++    assert!(group_row_ix(&sidebar, unpinned, cx) < header);
++
++    // A collapsed group never loads its threads; its pinned threads must still be shown once.
++    // Opening BETA made it the active workspace: find ALPHA's group by its own path.
++    let alpha_key = multi_workspace.read_with(cx, |mw, cx| {
++        mw.workspaces()
++            .find(|workspace| workspace_path_list(workspace, cx).paths() == [PathBuf::from(ALPHA)])
++            .expect("fixture: ALPHA is open in this window")
++            .read(cx)
++            .project()
++            .read(cx)
++            .project_group_key(cx)
++    });
++    sidebar.update_in(cx, |sidebar, window, cx| {
++        sidebar.toggle_collapse(&alpha_key, window, cx)
++    });
++    cx.run_until_parked();
++    let entries = pinned_entries(&sidebar, cx);
++    // The groups are listed most recently opened first, so ALPHA is not necessarily first.
++    assert!(
++        entries.iter().any(|entry| entry == "> [alpha]"),
++        "{entries:?}"
++    );
++    for thread_id in pinned {
++        assert_eq!(
++            rows_of(&sidebar, thread_id, cx),
++            1,
++            "collapsed group: {entries:?}"
++        );
++    }
++    assert_eq!(
++        rows_of(&sidebar, unpinned, cx),
++        0,
++        "the collapsed group hides its own rows"
++    );
++}
++
++// R2.7 — a pinned row names the project the thread belongs to: for a linked worktree that is the
++// main project, not the worktree folder; and the label is the same text the project's group header
++// shows (including its disambiguation), so two projects with the same folder name stay apart.
++#[gpui::test]
++async fn pinned_row_label_is_the_projects_group_label(cx: &mut TestAppContext) {
++    let (fs, project) = init_pinned_test(cx).await;
++    fs.insert_tree("/work/app", serde_json::json!({ "src": {} }))
++        .await;
++    fs.insert_tree("/personal/app", serde_json::json!({ "src": {} }))
++        .await;
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
++    let sidebar = setup_sidebar(&multi_workspace, cx);
++    open_in_window("/work/app", &fs, &multi_workspace, cx).await;
++    open_in_window("/personal/app", &fs, &multi_workspace, cx).await;
++    let linked = save("linked", "Linked", "/alpha-feature", ALPHA, 3, cx);
++    let at_work = save_in("work", "At work", "/work/app", 2, cx);
++    let at_home = save_in("home", "At home", "/personal/app", 1, cx);
++    for thread_id in [linked, at_work, at_home] {
++        store_pin(thread_id, cx);
++    }
++
++    let (headers, labels) = sidebar.read_with(cx, |sidebar, _| {
++        let headers: Vec<String> = sidebar
++            .contents
++            .entries
++            .iter()
++            .filter_map(|entry| match entry {
++                ListEntry::ProjectHeader { label, .. } => Some(label.to_string()),
++                _ => None,
++            })
++            .collect();
++        let labels: HashMap<ThreadId, String> = sidebar
++            .contents
++            .entries
++            .iter()
++            .filter_map(|entry| match entry {
++                ListEntry::Thread(thread) => thread
++                    .pinned_project_label
++                    .as_ref()
++                    .map(|label| (thread.metadata.thread_id, label.to_string())),
++                _ => None,
++            })
++            .collect();
++        (headers, labels)
++    });
++    assert_eq!(labels.get(&linked).map(String::as_str), Some("alpha"));
++    let work_label = labels
++        .get(&at_work)
++        .expect("a pinned row for the work thread");
++    let home_label = labels
++        .get(&at_home)
++        .expect("a pinned row for the home thread");
++    assert_ne!(
++        work_label, home_label,
++        "two projects with the same folder name keep distinct labels"
++    );
++    assert!(
++        headers.contains(work_label),
++        "{work_label} is a header label: {headers:?}"
++    );
++    assert!(
++        headers.contains(home_label),
++        "{home_label} is a header label: {headers:?}"
++    );
++}
++
++/// The group header labels, in list order.
++fn header_labels(sidebar: &Entity<Sidebar>, cx: &mut VisualTestContext) -> Vec<String> {
++    sidebar.read_with(cx, |sidebar, _| {
++        sidebar
++            .contents
++            .entries
++            .iter()
++            .filter_map(|entry| match entry {
++                ListEntry::ProjectHeader { label, .. } => Some(label.to_string()),
++                _ => None,
++            })
++            .collect()
++    })
++}
++
++/// The label of `thread_id`'s pinned row, if it has one.
++fn pinned_label(
++    sidebar: &Entity<Sidebar>,
++    thread_id: ThreadId,
++    cx: &mut VisualTestContext,
++) -> Option<String> {
++    sidebar.read_with(cx, |sidebar, _| {
++        sidebar
++            .contents
++            .entries
++            .iter()
++            .find_map(|entry| match entry {
++                ListEntry::Thread(thread) if thread.metadata.thread_id == thread_id => thread
++                    .pinned_project_label
++                    .as_ref()
++                    .map(|label| label.to_string()),
++                _ => None,
++            })
++    })
++}
++
++// R2.7, design.md `pinned_detail_map` — the derived label must not collide: two pinned threads of
++// two projects open nowhere, whose folders share the name `app`, are told apart by the same
++// disambiguation the group headers use, computed over the groups' paths AND every pinned row's.
++#[gpui::test]
++async fn pinned_rows_of_two_closed_same_named_projects_have_distinct_labels(
++    cx: &mut TestAppContext,
++) {
++    let (fs, multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    fs.insert_tree("/x/app", serde_json::json!({ "src": {} }))
++        .await;
++    fs.insert_tree("/y/app", serde_json::json!({ "src": {} }))
++        .await;
++    let in_x = save_in("x", "In x", "/x/app", 2, cx);
++    let in_y = save_in("y", "In y", "/y/app", 1, cx);
++    store_pin(in_x, cx);
++    store_pin(in_y, cx);
++    assert_eq!(
++        multi_workspace.read_with(cx, |mw, _| mw.workspaces().count()),
++        1,
++        "fixture: neither /x/app nor /y/app is open"
++    );
++
++    assert_eq!(pinned_label(&sidebar, in_x, cx).as_deref(), Some("x/app"));
++    assert_eq!(pinned_label(&sidebar, in_y, cx).as_deref(), Some("y/app"));
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec!["v [alpha]", "v Pinned", "  In y · y/app", "  In x · x/app"]
++    );
++}
++
++// Hostile converse — a pin must not change a group header: with `/x/app` open as a group and a
++// pinned thread of the closed `/y/app`, the header keeps exactly its label from before the pin
++// (`app`); only the pinned row is disambiguated (`y/app`).
++#[gpui::test]
++async fn a_pin_never_changes_a_group_header_label(cx: &mut TestAppContext) {
++    let (fs, multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    fs.insert_tree("/x/app", serde_json::json!({ "src": {} }))
++        .await;
++    fs.insert_tree("/y/app", serde_json::json!({ "src": {} }))
++        .await;
++    open_in_window("/x/app", &fs, &multi_workspace, cx).await;
++    save_in("x", "In x", "/x/app", 2, cx);
++    let in_y = save_in("y", "In y", "/y/app", 1, cx);
++    let before = header_labels(&sidebar, cx);
++    assert_eq!(
++        before,
++        vec!["app", "alpha"],
++        "fixture: one `app` group, undisambiguated"
++    );
++
++    store_pin(in_y, cx);
++
++    assert_eq!(
++        header_labels(&sidebar, cx),
++        before,
++        "a pinned row's path never changes a group header"
++    );
++    assert_eq!(pinned_label(&sidebar, in_y, cx).as_deref(), Some("y/app"));
++}
++
++// R2.5 — hostile half first: a group whose only threads are pinned keeps its header and does NOT
++// show "No threads yet" (has_threads stays true), whether expanded or collapsed; a truly empty
++// group still shows it.
++#[gpui::test]
++async fn group_with_only_pinned_threads_keeps_its_header_without_the_empty_row(
++    cx: &mut TestAppContext,
++) {
++    let (fs, multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    let beta = open_in_window(BETA, &fs, &multi_workspace, cx).await;
++    open_in_window(GAMMA, &fs, &multi_workspace, cx).await;
++    save_in("a1", "Fix login", ALPHA, 2, cx);
++    let only_beta = save_in("b1", "Ship release", BETA, 1, cx);
++    store_pin(only_beta, cx);
++
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [gamma]",
++            "v [beta]",
++            "v [alpha]",
++            "  Fix login",
++            "v Pinned",
++            "  Ship release · beta",
++        ]
++    );
++    assert_project_header_has_threads(&sidebar, "beta", true, cx);
++    assert_project_header_has_threads(&sidebar, "gamma", false, cx);
++
++    let beta_key = beta.read_with(cx, |workspace, cx| {
++        workspace.project().read(cx).project_group_key(cx)
++    });
++    sidebar.update_in(cx, |sidebar, window, cx| {
++        sidebar.toggle_collapse(&beta_key, window, cx)
++    });
++    cx.run_until_parked();
++    assert_project_header_has_threads(&sidebar, "beta", true, cx);
++    assert_eq!(rows_of(&sidebar, only_beta, cx), 1);
++}
++
++// R2.8 — a pinned row carries the live status its group row would: a running thread shows as
++// live and running in the section.
++#[gpui::test]
++async fn pinned_row_shows_the_live_status(cx: &mut TestAppContext) {
++    let project = init_test_project_with_agent_panel("/my-project", cx).await;
++    cx.update(|cx| agent_ui::thread_organization::init(cx));
++    cx.run_until_parked();
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
++    let (sidebar, panel) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
++
++    let connection = StubAgentConnection::new();
++    open_thread_with_connection(&panel, connection.clone(), cx);
++    send_message(&panel, cx);
++    let running = active_session_id(&panel, cx);
++    save_test_thread_metadata(&running, &project, cx).await;
++    cx.update(|_, cx| {
++        connection.send_update(
++            running.clone(),
++            acp_v1::SessionUpdate::AgentMessageChunk(acp_v1::ContentChunk::new(
++                "working...".into(),
++            )),
++            cx,
++        );
++    });
++    cx.run_until_parked();
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec!["v [my-project]", "  Hello * (running)"],
++        "fixture: the thread runs in its group"
++    );
++
++    let running_id = thread_id_of(&running.0, cx);
++    store_pin(running_id, cx);
++
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [my-project]",
++            "v Pinned",
++            "  Hello · my-project * (running)"
++        ]
++    );
++}
++
++/// A window on `/project-a` with an agent panel, a pinned thread kept running in it, and a
++/// second workspace made active so the pinned thread is not the active one. Returns what is needed
++/// to finish the turn.
++async fn pinned_thread_running_in_the_background(
++    cx: &mut TestAppContext,
++) -> (
++    Entity<Sidebar>,
++    StubAgentConnection,
++    acp::SessionId,
++    &mut VisualTestContext,
++) {
++    let project_a = init_test_project_with_agent_panel("/project-a", cx).await;
++    cx.update(|cx| agent_ui::thread_organization::init(cx));
++    cx.run_until_parked();
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a.clone(), window, cx));
++    let (sidebar, panel_a) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
++    let connection_a = StubAgentConnection::new();
++    open_thread_with_connection(&panel_a, connection_a.clone(), cx);
++    send_message(&panel_a, cx);
++    let session_a = active_session_id(&panel_a, cx);
++    save_test_thread_metadata(&session_a, &project_a, cx).await;
++    cx.update(|_, cx| {
++        connection_a.send_update(
++            session_a.clone(),
++            acp_v1::SessionUpdate::AgentMessageChunk(acp_v1::ContentChunk::new("chunk".into())),
++            cx,
++        );
++    });
++    cx.run_until_parked();
++    let thread_a = thread_id_of(&session_a.0, cx);
++    store_pin(thread_a, cx);
++    let fs = cx.update(|_, cx| <dyn fs::Fs>::global(cx));
++    let project_b = project::Project::test(fs, [], cx).await;
++    multi_workspace.update_in(cx, |mw, window, cx| {
++        mw.test_add_workspace(project_b, window, cx);
++    });
++    cx.run_until_parked();
++    (sidebar, connection_a, session_a, cx)
++}
++
++fn pinned_header_has_notifications(
++    sidebar: &Entity<Sidebar>,
++    cx: &mut VisualTestContext,
++) -> Option<bool> {
++    sidebar.read_with(cx, |sidebar, _| {
++        sidebar
++            .contents
++            .entries
++            .iter()
++            .find_map(|entry| match entry {
++                ListEntry::PinnedHeader { has_notifications } => Some(*has_notifications),
++                _ => None,
++            })
++    })
++}
++
++// R2.8 — a pinned thread that finishes its turn (Running → Completed) while it is not the active
++// thread is marked notified on its pinned row, as its group row would be.
++#[gpui::test]
++async fn pinned_row_is_notified_when_its_turn_completes_in_the_background(cx: &mut TestAppContext) {
++    let (sidebar, connection, session, cx) = pinned_thread_running_in_the_background(cx).await;
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [project-a]",
++            "v Pinned",
++            "  Hello · project-a * (running)"
++        ],
++        "fixture: the pinned thread runs in the background, not yet notified"
++    );
++
++    connection.end_turn(session, acp_v1::StopReason::EndTurn);
++    cx.run_until_parked();
++
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec!["v [project-a]", "v Pinned", "  Hello · project-a * (!)"]
++    );
++}
++
++// R2.8, design.md "whether or not Pinned is collapsed" — with the section collapsed, the
++// notification is kept across rebuilds (not purged because no row is built) and the Pinned
++// header reports it; expanding shows the row still notified.
++#[gpui::test]
++async fn collapsed_pinned_header_keeps_and_reports_a_notification(cx: &mut TestAppContext) {
++    let (sidebar, connection, session, cx) = pinned_thread_running_in_the_background(cx).await;
++    let header = pinned_header_ix(&sidebar, cx).expect("fixture: a Pinned header");
++    confirm_at(&sidebar, header, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec!["v [project-a]", "> Pinned  <== selected"],
++        "fixture: Pinned is collapsed"
++    );
++    assert_eq!(pinned_header_has_notifications(&sidebar, cx), Some(false));
++
++    connection.end_turn(session, acp_v1::StopReason::EndTurn);
++    cx.run_until_parked();
++    sidebar.update(cx, |sidebar, cx| sidebar.update_entries(cx));
++    cx.run_until_parked();
++
++    assert_eq!(
++        pinned_header_has_notifications(&sidebar, cx),
++        Some(true),
++        "the collapsed Pinned header reports the notification"
++    );
++    confirm_at(&sidebar, header, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [project-a]",
++            "v Pinned  <== selected",
++            "  Hello · project-a * (!)"
++        ],
++        "the notification survived the rebuilds while collapsed"
++    );
++}
++
++// R3.1, R3.2, R3.3 — archiving hides a pinned thread from the section (and from its group) but
++// keeps it pinned; unarchiving puts it back at its stored position; deleting removes it.
++#[gpui::test]
++async fn archived_and_deleted_pinned_threads_leave_the_section(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    let first = save_in("t1", "First", ALPHA, 1, cx);
++    let second = save_in("t2", "Second", ALPHA, 2, cx);
++    let third = save_in("t3", "Third", ALPHA, 3, cx);
++    for thread_id in [first, second, third] {
++        store_pin(thread_id, cx);
++    }
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [alpha]",
++            "v Pinned",
++            "  Third · alpha",
++            "  Second · alpha",
++            "  First · alpha"
++        ]
++    );
++
++    archive(second, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [alpha]",
++            "v Pinned",
++            "  Third · alpha",
++            "  First · alpha"
++        ],
++        "an archived pinned thread is shown nowhere"
++    );
++    assert_eq!(
++        stored_pins(cx),
++        vec![third, second, first],
++        "and it stays pinned"
++    );
++
++    unarchive(second, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [alpha]",
++            "v Pinned",
++            "  Third · alpha",
++            "  Second · alpha",
++            "  First · alpha"
++        ],
++        "unarchived, it is back at its stored position"
++    );
++
++    delete(first, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [alpha]",
++            "v Pinned",
++            "  Third · alpha",
++            "  Second · alpha"
++        ]
++    );
++
++    archive(second, cx);
++    archive(third, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec!["v [alpha]"],
++        "with every pinned thread archived, no Pinned header"
++    );
++}
++
++// R3.4 — a stored pin naming a thread Zeo does not know gets no row; alone, it raises no header.
++#[gpui::test]
++async fn unknown_pinned_thread_gets_no_row(cx: &mut TestAppContext) {
++    let (_fs, project) = init_pinned_test(cx).await;
++    let unknown = ThreadId::new();
++    let sql = format!(
++        "INSERT INTO thread_organization (thread_id, pinned_position) VALUES (X'{}', 0)",
++        unknown.to_key_string().replace('-', "")
++    );
++    let connection = cx.update(|cx| db::AppDatabase::global(cx).clone());
++    connection
++        .write(move |connection| {
++            connection
++                .exec(&sql)
++                .unwrap_or_else(|error| panic!("{sql} should prepare: {error:?}"))()
++            .unwrap_or_else(|error| panic!("{sql} should run: {error:?}"))
++        })
++        .await;
++    // Reload the store so it reads the stored pin, before the sidebar starts observing it.
++    cx.update(|cx| agent_ui::thread_organization::init(cx));
++    cx.run_until_parked();
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
++    let sidebar = setup_sidebar(&multi_workspace, cx);
++    let known = save_in("k1", "Known", ALPHA, 1, cx);
++    assert!(
++        stored_pins(cx).contains(&unknown),
++        "fixture: the stored pin is loaded"
++    );
++
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec!["v [alpha]", "  Known"],
++        "an unknown pinned id alone raises no Pinned header"
++    );
++
++    store_pin(known, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec!["v [alpha]", "v Pinned", "  Known · alpha"]
++    );
++}
++
++// R2.11 — after a restart (a new store loading the same database, a new window) the same pinned
++// threads are shown in the same order.
++#[gpui::test]
++async fn pinned_section_survives_a_restart(cx: &mut TestAppContext) {
++    let (_fs, project) = init_pinned_test(cx).await;
++    let (multi_workspace, cx_a) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
++    let sidebar = setup_sidebar(&multi_workspace, cx_a);
++    let older = save_in("o", "Older pin", ALPHA, 1, cx_a);
++    let newer = save_in("n", "Newer pin", ALPHA, 2, cx_a);
++    let plain = save_in("p", "Plain", ALPHA, 3, cx_a);
++    store_pin(older, cx_a);
++    store_pin(newer, cx_a);
++    let before = pinned_entries(&sidebar, cx_a);
++    assert_eq!(
++        before,
++        vec![
++            "v [alpha]",
++            "  Plain",
++            "v Pinned",
++            "  Newer pin · alpha",
++            "  Older pin · alpha"
++        ]
++    );
++    let _ = plain;
++
++    cx.run_until_parked();
++    cx.update(|cx| agent_ui::thread_organization::init(cx));
++    cx.run_until_parked();
++    // A restarted Zeo opens its own project: reusing window A's would register its client
++    // handlers twice (proto::Follow).
++    let fs = cx.update(|cx| <dyn fs::Fs>::global(cx));
++    let reopened = project::Project::test(fs, [ALPHA.as_ref()], cx).await;
++    let (multi_workspace, cx_b) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(reopened, window, cx));
++    let sidebar = setup_sidebar(&multi_workspace, cx_b);
++
++    assert_eq!(pinned_entries(&sidebar, cx_b), before);
++}
++
++// R4.1 — a pinned thread of a project not open in this window (nor in any window) is shown, as a
++// closed row of its own project.
++#[gpui::test]
++async fn pinned_thread_of_a_project_not_open_is_shown(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    save_in("a1", "Fix login", ALPHA, 2, cx);
++    let elsewhere = save_in("d1", "Tune cache", DELTA, 1, cx);
++    assert_eq!(
++        rows_of(&sidebar, elsewhere, cx),
++        0,
++        "fixture: no group shows it"
++    );
++
++    store_pin(elsewhere, cx);
++
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [alpha]",
++            "  Fix login",
++            "v Pinned",
++            "  Tune cache · delta"
++        ]
++    );
++    let ix = pinned_row_ix(&sidebar, elsewhere, cx);
++    sidebar.read_with(cx, |sidebar, _| {
++        let ListEntry::Thread(thread) = &sidebar.contents.entries[ix] else {
++            panic!("a thread row");
++        };
++        assert!(
++            matches!(&thread.workspace, ThreadEntryWorkspace::Closed { folder_paths, .. }
++                if folder_paths.paths() == [PathBuf::from(DELTA)]),
++            "a project open nowhere is a closed row of its own folders"
++        );
++    });
++}
++
++// ═══ Task 3.2 — filter ═════════════════════════════════════════════════════
++
++// R5.1, R5.2 — hostile halves first: a label-only match keeps the row WITHOUT title highlights; a
++// non-match is dropped; with nothing matching there is no header. Then a title match keeps the row
++// with the matched characters highlighted.
++#[gpui::test]
++async fn filter_applies_to_the_pinned_section(cx: &mut TestAppContext) {
++    let (fs, multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    open_in_window(BETA, &fs, &multi_workspace, cx).await;
++    save_in("a1", "Fix login", ALPHA, 3, cx);
++    let write_docs = save_in("b1", "Write docs", BETA, 2, cx);
++    save_in("b2", "Read mail", BETA, 1, cx);
++    let tune_cache = save_in("d1", "Tune cache", DELTA, 0, cx);
++    store_pin(write_docs, cx);
++    store_pin(tune_cache, cx);
++
++    // "delta" is only the project label of one pinned row; no title or group header contains it.
++    // Every filter edit selects the first match (upstream behaviour), hence the marker.
++    type_in_search(&sidebar, "delta", cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec!["v Pinned", "  Tune cache · delta  <== selected"],
++        "a label-only match keeps the row and drops the non-matching pinned row"
++    );
++    let ix = pinned_row_ix(&sidebar, tune_cache, cx);
++    sidebar.read_with(cx, |sidebar, _| {
++        let ListEntry::Thread(thread) = &sidebar.contents.entries[ix] else {
++            panic!("a thread row");
++        };
++        assert_eq!(
++            thread.highlight_positions,
++            Vec::<usize>::new(),
++            "a label match highlights nothing in the title"
++        );
++    });
++
++    type_in_search(&sidebar, "zzz", cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        Vec::<String>::new(),
++        "nothing matches: no Pinned header"
++    );
++
++    type_in_search(&sidebar, "docs", cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec!["v Pinned", "  Write docs · beta  <== selected"]
++    );
++    let ix = pinned_row_ix(&sidebar, write_docs, cx);
++    sidebar.read_with(cx, |sidebar, _| {
++        let ListEntry::Thread(thread) = &sidebar.contents.entries[ix] else {
++            panic!("a thread row");
++        };
++        assert_eq!(
++            thread.highlight_positions,
++            vec![6, 7, 8, 9],
++            "\"docs\" in \"Write docs\""
++        );
++    });
++
++    // A group header matched by name still lists its own (unpinned) threads, and the pinned row of
++    // that project is matched by its label, once.
++    type_in_search(&sidebar, "beta", cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [beta]",
++            "  Read mail  <== selected",
++            "v Pinned",
++            "  Write docs · beta"
++        ]
++    );
++    assert_eq!(rows_of(&sidebar, write_docs, cx), 1);
++}
++
++// ═══ Task 3.3 — header, sticky header, keyboard, activation ════════════════
++
++// R2.9 — the Pinned header collapses and expands by confirm, SelectParent and SelectChild,
++// hiding only the pinned rows; collapsing it changes no project group, and vice versa.
++#[gpui::test]
++async fn pinned_header_collapses_only_the_section(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    save_in("a1", "Fix login", ALPHA, 2, cx);
++    let pinned = save_in("a2", "Write docs", ALPHA, 1, cx);
++    store_pin(pinned, cx);
++    let header = pinned_header_ix(&sidebar, cx).expect("a Pinned header");
++
++    confirm_at(&sidebar, header, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec!["v [alpha]", "  Fix login", "> Pinned  <== selected"],
++        "collapsed: the header stays, the rows go, the project group is untouched"
++    );
++    confirm_at(&sidebar, header, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [alpha]",
++            "  Fix login",
++            "v Pinned  <== selected",
++            "  Write docs · alpha"
++        ]
++    );
++
++    select(&sidebar, header, cx);
++    cx.dispatch_action(SelectParent);
++    cx.run_until_parked();
++    assert_eq!(pinned_entries(&sidebar, cx)[2], "> Pinned  <== selected");
++    cx.dispatch_action(SelectChild);
++    cx.run_until_parked();
++    assert_eq!(pinned_entries(&sidebar, cx)[2], "v Pinned  <== selected");
++    assert_eq!(pinned_entries(&sidebar, cx).len(), 4);
++}
++
++// R6.1 — moving down from the last row of the last group selects the Pinned header, then each
++// pinned row in order.
++#[gpui::test]
++async fn keyboard_walks_into_the_pinned_section(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    save_in("a1", "Fix login", ALPHA, 3, cx);
++    let older = save_in("a2", "Older", ALPHA, 1, cx);
++    let newer = save_in("a3", "Newer", ALPHA, 2, cx);
++    store_pin(older, cx);
++    store_pin(newer, cx);
++    select(&sidebar, 1, cx);
++
++    cx.dispatch_action(SelectNext);
++    cx.run_until_parked();
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [alpha]",
++            "  Fix login",
++            "v Pinned  <== selected",
++            "  Newer · alpha",
++            "  Older · alpha"
++        ]
++    );
++    cx.dispatch_action(SelectNext);
++    cx.run_until_parked();
++    assert_eq!(
++        pinned_entries(&sidebar, cx)[3],
++        "  Newer · alpha  <== selected"
++    );
++    cx.dispatch_action(SelectNext);
++    cx.run_until_parked();
++    assert_eq!(
++        pinned_entries(&sidebar, cx)[4],
++        "  Older · alpha  <== selected"
++    );
++}
++
++// R4.2, R6.2 — confirming a pinned row whose project is open in this window activates that
++// project's workspace.
++#[gpui::test]
++async fn confirm_on_a_pinned_row_activates_its_workspace_in_this_window(cx: &mut TestAppContext) {
++    let (fs, multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    let alpha = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
++    let beta = open_in_window(BETA, &fs, &multi_workspace, cx).await;
++    multi_workspace.update_in(cx, |mw, window, cx| {
++        mw.activate(alpha.clone(), None, window, cx)
++    });
++    cx.run_until_parked();
++    let in_beta = save_in("b1", "Ship release", BETA, 1, cx);
++    store_pin(in_beta, cx);
++    assert_eq!(
++        multi_workspace.read_with(cx, |mw, _| mw.workspace().clone()),
++        alpha
++    );
++
++    let ix = pinned_row_ix(&sidebar, in_beta, cx);
++    confirm_at(&sidebar, ix, cx);
++
++    assert_eq!(
++        multi_workspace.read_with(cx, |mw, _| mw.workspace().clone()),
++        beta,
++        "the thread's own workspace is activated"
++    );
++}
++
++// R4.3, R6.2 — confirming a pinned row whose project is open in no window opens the project in
++// this window.
++#[gpui::test]
++async fn confirm_on_a_pinned_row_of_a_closed_project_opens_it(cx: &mut TestAppContext) {
++    let (_fs, multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    let elsewhere = save_in("d1", "Tune cache", DELTA, 1, cx);
++    store_pin(elsewhere, cx);
++    assert_eq!(
++        multi_workspace.read_with(cx, |mw, _| mw.workspaces().count()),
++        1
++    );
++
++    let ix = pinned_row_ix(&sidebar, elsewhere, cx);
++    confirm_at(&sidebar, ix, cx);
++
++    assert_eq!(
++        multi_workspace.read_with(cx, |mw, _| mw.workspaces().count()),
++        2,
++        "the closed project is opened in this window"
++    );
++    let active_paths = multi_workspace.read_with(cx, |mw, cx| {
++        workspace_path_list(mw.workspace(), cx).paths().to_vec()
++    });
++    assert_eq!(
++        active_paths,
++        vec![PathBuf::from(DELTA)],
++        "and it is the active workspace"
++    );
++    assert_eq!(
++        rows_of(&sidebar, elsewhere, cx),
++        1,
++        "still shown exactly once once its project is open"
++    );
++}
++
++// R4.4 — confirming a pinned row whose project is open only in another window activates that
++// window, as History does; nothing is added to this window.
++#[gpui::test]
++async fn confirm_on_a_pinned_row_open_in_another_window_activates_that_window(
++    cx: &mut TestAppContext,
++) {
++    let (_fs, project_a) = init_pinned_test(cx).await;
++    let fs = cx.update(|cx| <dyn fs::Fs>::global(cx));
++    let project_b = project::Project::test(fs, [BETA.as_ref()], cx).await;
++    let window_a = cx.add_window(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
++    let window_b = cx.add_window(|window, cx| MultiWorkspace::test_new(project_b, window, cx));
++    let mw_a = window_a.root(cx).unwrap();
++    let mw_b = window_b.root(cx).unwrap();
++    let cx_b = &mut VisualTestContext::from_window(window_b.into(), cx);
++    let _sidebar_b = setup_sidebar(&mw_b, cx_b);
++    let cx_a = &mut VisualTestContext::from_window(window_a.into(), cx);
++    let sidebar_a = setup_sidebar(&mw_a, cx_a);
++    let in_beta = save_in("b1", "Ship release", BETA, 1, cx_a);
++    store_pin(in_beta, cx_a);
++    assert_eq!(
++        pinned_entries(&sidebar_a, cx_a),
++        vec!["v [alpha]", "v Pinned", "  Ship release · beta"]
++    );
++
++    let ix = pinned_row_ix(&sidebar_a, in_beta, cx_a);
++    confirm_at(&sidebar_a, ix, cx_a);
++
++    assert_eq!(
++        window_a
++            .read_with(cx_a, |mw, _| mw.workspaces().count())
++            .unwrap(),
++        1,
++        "nothing is added to this window"
++    );
++    assert!(
++        cx_a.read(|cx| cx.active_window().unwrap()) == *window_b,
++        "the window holding the project is activated"
++    );
++}
++
++// R6.3 — the existing archive and rename actions act on a selected pinned row.
++#[gpui::test]
++async fn archive_and_rename_act_on_a_selected_pinned_row(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    save_in("a1", "Fix login", ALPHA, 3, cx);
++    let to_rename = save_in("a2", "Rename me", ALPHA, 2, cx);
++    let to_archive = save_in("a3", "Archive me", ALPHA, 1, cx);
++    store_pin(to_rename, cx);
++    store_pin(to_archive, cx);
++
++    let ix = pinned_row_ix(&sidebar, to_rename, cx);
++    select(&sidebar, ix, cx);
++    cx.dispatch_action(RenameSelectedThread);
++    cx.run_until_parked();
++    enter_renamed_title(&sidebar, RenameTarget::Thread(to_rename), "Renamed pin", cx);
++    let title_override = cx.update(|_, cx| {
++        ThreadMetadataStore::global(cx)
++            .read(cx)
++            .entry(to_rename)
++            .and_then(|entry| entry.title_override.clone())
++    });
++    assert_eq!(title_override.as_deref(), Some("Renamed pin"));
++
++    let ix = pinned_row_ix(&sidebar, to_archive, cx);
++    select(&sidebar, ix, cx);
++    cx.dispatch_action(ArchiveSelectedThread);
++    cx.run_until_parked();
++    let archived = cx.update(|_, cx| {
++        ThreadMetadataStore::global(cx)
++            .read(cx)
++            .entry(to_archive)
++            .map(|entry| entry.archived)
++    });
++    assert_eq!(archived, Some(true));
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [alpha]",
++            "  Fix login",
++            "v Pinned",
++            // Archiving a row that is not the active thread keeps the selection index (upstream),
++            // which now points at the row that moved up.
++            "  Renamed pin · alpha  <== selected"
++        ]
++    );
++}
++
++// R2.10 — the Pinned header is a header for the sticky-header and header-navigation index, and
++// when the list is scrolled into the pinned rows a sticky header is rendered.
++#[gpui::test]
++async fn pinned_header_is_the_sticky_header_over_pinned_rows(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    // A list shorter than the window clamps its scroll back to the top on every redraw.
++    cx.simulate_resize(gpui::size(px(400.), px(160.)));
++    for hour in 0..6 {
++        save_in(
++            &format!("a{hour}"),
++            &format!("Group thread {hour}"),
++            ALPHA,
++            hour,
++            cx,
++        );
++    }
++    let mut pins = Vec::new();
++    for hour in 6..12 {
++        pins.push(save_in(
++            &format!("d{hour}"),
++            &format!("Pinned thread {hour}"),
++            DELTA,
++            hour,
++            cx,
++        ));
++    }
++    for thread_id in &pins {
++        store_pin(*thread_id, cx);
++    }
++    let header = pinned_header_ix(&sidebar, cx).expect("a Pinned header");
++    sidebar.read_with(cx, |sidebar, _| {
++        assert!(
++            sidebar.contents.project_header_indices.contains(&header),
++            "the Pinned header is indexed as a header: {:?}",
++            sidebar.contents.project_header_indices
++        );
++    });
++
++    let draw = |cx: &mut VisualTestContext| {
++        cx.draw(
++            gpui::point(px(0.), px(0.)),
++            gpui::size(px(400.), px(160.)),
++            |_, _| sidebar.clone().into_any_element(),
++        );
++        cx.run_until_parked();
++    };
++    draw(cx);
++    sidebar.update_in(cx, |sidebar, _window, cx| {
++        sidebar.list_state.scroll_to(gpui::ListOffset {
++            item_ix: header + 2,
++            offset_in_item: px(4.),
++        });
++        cx.notify();
++    });
++    draw(cx);
++
++    let has_sticky_header = sidebar.update_in(cx, |sidebar, window, cx| {
++        sidebar.render_sticky_header(window, cx).is_some()
++    });
++    assert!(
++        has_sticky_header,
++        "scrolled into the pinned rows, \"Pinned\" sticks at the top"
++    );
++}
++
++// R2.9, design.md "Back-walks that look for a header" — hostile half: SelectParent or ToggleFold
++// on a selected pinned row must not walk back past the Pinned header to the last project group;
++// it collapses Pinned and every project group stays expanded.
++#[gpui::test]
++async fn select_parent_and_toggle_fold_on_a_pinned_row_collapse_only_pinned(
++    cx: &mut TestAppContext,
++) {
++    let (fs, multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    open_in_window(BETA, &fs, &multi_workspace, cx).await;
++    save_in("b1", "Read mail", BETA, 3, cx);
++    save_in("a1", "Fix login", ALPHA, 2, cx);
++    let pinned = save_in("a2", "Write docs", ALPHA, 1, cx);
++    store_pin(pinned, cx);
++    let expanded = vec![
++        "v [beta]",
++        "  Read mail",
++        "v [alpha]",
++        "  Fix login",
++        "v Pinned",
++        "  Write docs · alpha",
++    ];
++    assert_eq!(pinned_entries(&sidebar, cx), expanded, "fixture");
++
++    let collapsed = vec![
++        "v [beta]",
++        "  Read mail",
++        "v [alpha]",
++        "  Fix login",
++        "> Pinned  <== selected",
++    ];
++
++    let ix = pinned_row_ix(&sidebar, pinned, cx);
++    select(&sidebar, ix, cx);
++    cx.dispatch_action(SelectParent);
++    cx.run_until_parked();
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        collapsed,
++        "SelectParent on a pinned row collapses Pinned only"
++    );
++
++    let header = pinned_header_ix(&sidebar, cx).expect("the Pinned header stays");
++    confirm_at(&sidebar, header, cx);
++    let ix = pinned_row_ix(&sidebar, pinned, cx);
++    select(&sidebar, ix, cx);
++    cx.dispatch_action(editor::actions::ToggleFold);
++    cx.run_until_parked();
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        collapsed,
++        "ToggleFold on a pinned row collapses Pinned only"
++    );
++}
++
++// design.md "Back-walks…" — NextProject from the last project group wraps to the first group and
++// PreviousProject from the first wraps to the last: the cycle never stops on, nor selects, the
++// Pinned header.
++#[gpui::test]
++async fn project_cycling_skips_the_pinned_header(cx: &mut TestAppContext) {
++    let (fs, multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    let alpha = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
++    let beta = open_in_window(BETA, &fs, &multi_workspace, cx).await;
++    save_in("b1", "Read mail", BETA, 3, cx);
++    save_in("a1", "Fix login", ALPHA, 2, cx);
++    let pinned = save_in("a2", "Write docs", ALPHA, 1, cx);
++    store_pin(pinned, cx);
++    assert_eq!(
++        header_labels(&sidebar, cx),
++        vec!["beta", "alpha"],
++        "fixture: beta is the first group, alpha the last"
++    );
++    let header = pinned_header_ix(&sidebar, cx).expect("fixture: a Pinned section");
++
++    multi_workspace.update_in(cx, |mw, window, cx| {
++        mw.activate(alpha.clone(), None, window, cx)
++    });
++    cx.run_until_parked();
++    sidebar.update_in(cx, |sidebar, window, cx| {
++        sidebar.on_next_project(&NextProject, window, cx)
++    });
++    cx.run_until_parked();
++    assert_eq!(
++        multi_workspace.read_with(cx, |mw, _| mw.workspace().clone()),
++        beta,
++        "NextProject from the last group wraps to the first"
++    );
++
++    sidebar.update_in(cx, |sidebar, window, cx| {
++        sidebar.on_previous_project(&PreviousProject, window, cx)
++    });
++    cx.run_until_parked();
++    assert_eq!(
++        multi_workspace.read_with(cx, |mw, _| mw.workspace().clone()),
++        alpha,
++        "PreviousProject from the first group wraps to the last"
++    );
++    sidebar.read_with(cx, |sidebar, _| {
++        assert_ne!(
++            sidebar.selection,
++            Some(header),
++            "the Pinned header is never selected"
++        );
++    });
++}
++
++// ═══ Task 3.4 — refresh in every window ════════════════════════════════════
++
++// R1.9 — a pin made in one window shows in every other window's sidebar, including a window where
++// the thread's project is not open; and an unpin leaves both.
++#[gpui::test]
++async fn a_pin_shows_in_every_window(cx: &mut TestAppContext) {
++    let (_fs, project_a) = init_pinned_test(cx).await;
++    let fs = cx.update(|cx| <dyn fs::Fs>::global(cx));
++    let project_b = project::Project::test(fs, [BETA.as_ref()], cx).await;
++    let window_a = cx.add_window(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
++    let window_b = cx.add_window(|window, cx| MultiWorkspace::test_new(project_b, window, cx));
++    let mw_a = window_a.root(cx).unwrap();
++    let mw_b = window_b.root(cx).unwrap();
++    let cx_b = &mut VisualTestContext::from_window(window_b.into(), cx);
++    let sidebar_b = setup_sidebar(&mw_b, cx_b);
++    let cx_a = &mut VisualTestContext::from_window(window_a.into(), cx);
++    let sidebar_a = setup_sidebar(&mw_a, cx_a);
++    let in_alpha = save_in("a1", "Fix login", ALPHA, 1, cx_a);
++    cx_b.run_until_parked();
++    assert_eq!(pinned_entries(&sidebar_b, cx_b), vec!["v [beta]"]);
++
++    toggle_pin(&sidebar_a, in_alpha, cx_a);
++    cx_b.run_until_parked();
++
++    assert_eq!(
++        pinned_entries(&sidebar_a, cx_a),
++        vec!["v [alpha]", "v Pinned", "  Fix login · alpha"]
++    );
++    assert_eq!(
++        pinned_entries(&sidebar_b, cx_b),
++        vec!["v [beta]", "v Pinned", "  Fix login · alpha"],
++        "the other window rebuilds from the store, with no event of its own"
++    );
++
++    toggle_pin(&sidebar_a, in_alpha, cx_a);
++    cx_b.run_until_parked();
++    assert_eq!(pinned_entries(&sidebar_b, cx_b), vec!["v [beta]"]);
++}
++
++// ═══ Task 4.1 — toggle_pin and the context menu ════════════════════════════
++
++// R1.1, R1.2 — toggle_pin puts the thread first in the section; toggling it again returns it to
++// its group at the place the group's order gives it (not at the top or the bottom).
++#[gpui::test]
++async fn toggle_pin_pins_first_and_unpins_back_into_group_order(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    save_in("t3", "Newest", ALPHA, 3, cx);
++    let middle = save_in("t2", "Middle", ALPHA, 2, cx);
++    let oldest = save_in("t1", "Oldest", ALPHA, 1, cx);
++
++    toggle_pin(&sidebar, oldest, cx);
++    toggle_pin(&sidebar, middle, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [alpha]",
++            "  Newest",
++            "v Pinned",
++            "  Middle · alpha",
++            "  Oldest · alpha"
++        ],
++        "the most recent pin is first"
++    );
++
++    toggle_pin(&sidebar, middle, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [alpha]",
++            "  Newest",
++            "  Middle",
++            "v Pinned",
++            "  Oldest · alpha"
++        ],
++        "unpinned, it is back in its group at its time-ordered place"
++    );
++    assert_eq!(stored_pins(cx), vec![oldest]);
++}
++
++// R1.8, Q4 — a refused toggle (a thread the metadata store does not know) leaves the sidebar
++// unchanged, pins nothing, and logs one warning naming the thread id.
++#[gpui::test]
++async fn refused_toggle_changes_nothing_and_warns_with_the_thread_id(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    save_in("a1", "Fix login", ALPHA, 1, cx);
++    let before = pinned_entries(&sidebar, cx);
++    let unknown = ThreadId::new();
++    capture_logs();
++
++    toggle_pin(&sidebar, unknown, cx);
++
++    assert_eq!(pinned_entries(&sidebar, cx), before);
++    assert_eq!(stored_pins(cx), Vec::<ThreadId>::new());
++    let warnings = warn_lines();
++    let naming_it: Vec<&String> = warnings
++        .iter()
++        .filter(|line| line.contains(&unknown.to_key_string()))
++        .collect();
++    assert_eq!(
++        naming_it.len(),
++        1,
++        "one warning names the refused thread: {warnings:?}"
++    );
++    assert!(
++        warnings.iter().all(|line| !line.contains("Fix login")),
++        "a log line never carries a thread title"
++    );
++}
++
++// R1.3, R1.1, R1.2 — the context menu offers "Pin Thread" on a thread that is not pinned and
++// "Unpin Thread" on a pinned one — never both — and each entry does what it says.
++#[gpui::test]
++async fn context_menu_entry_follows_the_pin_state(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    save_in("a1", "Fix login", ALPHA, 2, cx);
++    let target = save_in("a2", "Write docs", ALPHA, 1, cx);
++
++    let ix = group_row_ix(&sidebar, target, cx);
++    let row = entry_bounds(&sidebar, ix, cx);
++    right_click(row.center(), cx);
++    cx.debug_bounds("MENU_ITEM-Archive Thread")
++        .expect("fixture: the thread's context menu is open");
++    assert!(
++        cx.debug_bounds("MENU_ITEM-Unpin Thread").is_none(),
++        "an unpinned thread is not offered Unpin"
++    );
++    let pin_item = cx
++        .debug_bounds("MENU_ITEM-Pin Thread")
++        .expect("an unpinned thread is offered Pin Thread");
++    cx.simulate_click(pin_item.center(), Modifiers::none());
++    cx.run_until_parked();
++    assert_eq!(stored_pins(cx), vec![target]);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [alpha]",
++            "  Fix login",
++            "v Pinned",
++            "  Write docs · alpha"
++        ]
++    );
++
++    let ix = pinned_row_ix(&sidebar, target, cx);
++    let row = entry_bounds(&sidebar, ix, cx);
++    right_click(row.center(), cx);
++    cx.debug_bounds("MENU_ITEM-Archive Thread")
++        .expect("fixture: the pinned row's context menu is open");
++    assert!(
++        cx.debug_bounds("MENU_ITEM-Pin Thread").is_none(),
++        "a pinned thread is not offered Pin"
++    );
++    let unpin_item = cx
++        .debug_bounds("MENU_ITEM-Unpin Thread")
++        .expect("a pinned thread is offered Unpin Thread");
++    cx.simulate_click(unpin_item.center(), Modifiers::none());
++    cx.run_until_parked();
++    assert_eq!(stored_pins(cx), Vec::<ThreadId>::new());
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec!["v [alpha]", "  Fix login", "  Write docs"]
++    );
++}
++
++// ═══ Task 4.2 — hover pin button ═══════════════════════════════════════════
++
++// R1.4 — the hovered row shows a Pin button when the thread is not pinned and an Unpin button when
++// it is, and clicking it toggles.
++#[gpui::test]
++async fn hover_button_pins_and_unpins(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    save_in("a1", "Fix login", ALPHA, 2, cx);
++    let target = save_in("a2", "Write docs", ALPHA, 1, cx);
++
++    let ix = group_row_ix(&sidebar, target, cx);
++    let row = entry_bounds(&sidebar, ix, cx);
++    cx.simulate_mouse_move(row.center(), None, Modifiers::none());
++    cx.run_until_parked();
++    cx.debug_bounds("ICON-Pencil")
++        .expect("fixture: the row is hovered (its Rename button shows)");
++    assert!(
++        cx.debug_bounds("ICON-Unpin").is_none(),
++        "no Unpin on an unpinned row"
++    );
++    let pin = cx
++        .debug_bounds("ICON-Pin")
++        .expect("a Pin button on the hovered row");
++    cx.simulate_click(pin.center(), Modifiers::none());
++    cx.run_until_parked();
++    assert_eq!(stored_pins(cx), vec![target]);
++
++    let ix = pinned_row_ix(&sidebar, target, cx);
++    let row = entry_bounds(&sidebar, ix, cx);
++    cx.simulate_mouse_move(row.center(), None, Modifiers::none());
++    cx.run_until_parked();
++    cx.debug_bounds("ICON-Pencil")
++        .expect("fixture: the row is hovered (its Rename button shows)");
++    assert!(
++        cx.debug_bounds("ICON-Pin").is_none(),
++        "no Pin on a pinned row"
++    );
++    let unpin = cx
++        .debug_bounds("ICON-Unpin")
++        .expect("an Unpin button on the hovered pinned row");
++    cx.simulate_click(unpin.center(), Modifiers::none());
++    cx.run_until_parked();
++    assert_eq!(stored_pins(cx), Vec::<ThreadId>::new());
++}
++
++// ═══ Task 4.3 — TogglePinSelectedThread ════════════════════════════════════
++
++// R1.6 hostile half first — on a project header or the Pinned header the action changes nothing;
++// R1.5 — on a thread row it pins, and on a pinned row it unpins.
++#[gpui::test]
++async fn toggle_pin_action_acts_only_on_a_selected_thread_row(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    let fix_login = save_in("a1", "Fix login", ALPHA, 2, cx);
++    let write_docs = save_in("a2", "Write docs", ALPHA, 1, cx);
++    store_pin(write_docs, cx);
++    let before = pinned_entries(&sidebar, cx);
++
++    select(&sidebar, 0, cx);
++    cx.dispatch_action(TogglePinSelectedThread);
++    cx.run_until_parked();
++    assert_eq!(
++        stored_pins(cx),
++        vec![write_docs],
++        "a project header: nothing changes"
++    );
++
++    let header = pinned_header_ix(&sidebar, cx).expect("a Pinned header");
++    select(&sidebar, header, cx);
++    cx.dispatch_action(TogglePinSelectedThread);
++    cx.run_until_parked();
++    assert_eq!(
++        stored_pins(cx),
++        vec![write_docs],
++        "the Pinned header: nothing changes"
++    );
++    assert_eq!(
++        pinned_entries(&sidebar, cx)
++            .into_iter()
++            .map(|line| line.trim_end_matches("  <== selected").to_string())
++            .collect::<Vec<_>>(),
++        before
++    );
++
++    let ix = group_row_ix(&sidebar, fix_login, cx);
++    select(&sidebar, ix, cx);
++    cx.dispatch_action(TogglePinSelectedThread);
++    cx.run_until_parked();
++    assert_eq!(
++        stored_pins(cx),
++        vec![fix_login, write_docs],
++        "a thread row is pinned"
++    );
++
++    let ix = pinned_row_ix(&sidebar, write_docs, cx);
++    select(&sidebar, ix, cx);
++    cx.dispatch_action(TogglePinSelectedThread);
++    cx.run_until_parked();
++    assert_eq!(stored_pins(cx), vec![fix_login], "a pinned row is unpinned");
++}
++
++// R1.7, R1.6 — a draft row (no message sent) is not pinnable: the action does nothing and does
++// not even reach the store (no refusal warning).
++#[gpui::test]
++async fn toggle_pin_action_ignores_a_draft(cx: &mut TestAppContext) {
++    let project = init_test_project_with_agent_panel("/my-project", cx).await;
++    cx.update(|cx| agent_ui::thread_organization::init(cx));
++    cx.run_until_parked();
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
++    let (sidebar, panel) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
++    let connection = StubAgentConnection::new();
++    connection.set_next_prompt_updates(vec![acp_v1::SessionUpdate::AgentMessageChunk(
++        acp_v1::ContentChunk::new("Done".into()),
++    )]);
++    open_thread_with_connection(&panel, connection, cx);
++    send_message(&panel, cx);
++    let session_id = active_session_id(&panel, cx);
++    save_test_thread_metadata(&session_id, &project, cx).await;
++    panel.update_in(cx, |panel, window, cx| {
++        panel.new_thread(&NewThread, window, cx)
++    });
++    cx.run_until_parked();
++    let draft_ix = sidebar.read_with(cx, |sidebar, _| {
++        sidebar
++            .contents
++            .entries
++            .iter()
++            .position(|entry| matches!(entry, ListEntry::Thread(thread) if thread.draft.is_some()))
++            .expect("fixture: the new draft is shown")
++    });
++    capture_logs();
++
++    select(&sidebar, draft_ix, cx);
++    cx.dispatch_action(TogglePinSelectedThread);
++    cx.run_until_parked();
++
++    assert_eq!(stored_pins(cx), Vec::<ThreadId>::new());
++    assert_eq!(pinned_header_ix(&sidebar, cx), None);
++    assert_eq!(
++        warn_lines(),
++        Vec::<String>::new(),
++        "a draft never reaches the store"
++    );
++}
++
++// ═══ Tech review fixes (3.1) ═══════════════════════════════════════════════
++
++fn local_key(path: &str) -> ProjectGroupKey {
++    ProjectGroupKey::new(None, PathList::new(&[PathBuf::from(path)]))
++}
++
++fn group_header_has_notifications(
++    sidebar: &Entity<Sidebar>,
++    key: &ProjectGroupKey,
++    cx: &mut VisualTestContext,
++) -> Option<bool> {
++    sidebar.read_with(cx, |sidebar, _| {
++        sidebar
++            .contents
++            .entries
++            .iter()
++            .find_map(|entry| match entry {
++                ListEntry::ProjectHeader {
++                    key: header_key,
++                    has_notifications,
++                    ..
++                } if header_key == key => Some(*has_notifications),
++                _ => None,
++            })
++    })
++}
++
++// R4.4 — the thread switcher activates its selection in THIS window, so a pinned row whose project
++// is open only in another window is left out of it (offering it would adopt that window's
++// workspace here); a pinned row of this window is still offered.
++#[gpui::test]
++async fn switcher_leaves_out_a_pinned_row_open_in_another_window(cx: &mut TestAppContext) {
++    let (_fs, project_a) = init_pinned_test(cx).await;
++    let fs = cx.update(|cx| <dyn fs::Fs>::global(cx));
++    let project_b = project::Project::test(fs, [BETA.as_ref()], cx).await;
++    let window_a = cx.add_window(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
++    let window_b = cx.add_window(|window, cx| MultiWorkspace::test_new(project_b, window, cx));
++    let mw_a = window_a.root(cx).unwrap();
++    let mw_b = window_b.root(cx).unwrap();
++    let cx_b = &mut VisualTestContext::from_window(window_b.into(), cx);
++    let _sidebar_b = setup_sidebar(&mw_b, cx_b);
++    let cx_a = &mut VisualTestContext::from_window(window_a.into(), cx);
++    let sidebar_a = setup_sidebar(&mw_a, cx_a);
++    let in_alpha = save_in("a1", "Fix login", ALPHA, 2, cx_a);
++    let in_beta = save_in("b1", "Ship release", BETA, 1, cx_a);
++    store_pin(in_alpha, cx_a);
++    store_pin(in_beta, cx_a);
++    assert_eq!(
++        pinned_entries(&sidebar_a, cx_a),
++        vec![
++            "v [alpha]",
++            "v Pinned",
++            "  Ship release · beta",
++            "  Fix login · alpha"
++        ],
++        "fixture: both pinned rows are listed in this window"
++    );
++
++    let offered: Vec<ThreadId> = sidebar_a.read_with(cx_a, |sidebar, cx| {
++        sidebar
++            .mru_entries_for_switcher(cx)
++            .into_iter()
++            .filter_map(|entry| match entry {
++                ThreadSwitcherEntry::Thread(thread) => Some(thread.metadata.thread_id),
++                ThreadSwitcherEntry::Terminal(_) => None,
++            })
++            .collect()
++    });
++
++    assert_eq!(offered, vec![in_alpha]);
++}
++
++// R6.3 — the Pinned header closes the last group's section: the neighbour of that group's last
++// row is the row above it in the group, never a pinned row below.
++#[gpui::test]
++async fn neighbour_of_the_last_groups_last_row_stays_in_its_group(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    let newest = save_in("a1", "Fix login", ALPHA, 3, cx);
++    let pinned = save_in("a2", "Write docs", ALPHA, 2, cx);
++    let oldest = save_in("a3", "Old work", ALPHA, 1, cx);
++    store_pin(pinned, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [alpha]",
++            "  Fix login",
++            "  Old work",
++            "v Pinned",
++            "  Write docs · alpha"
++        ],
++        "fixture: the last group's last row sits right above the Pinned section"
++    );
++
++    let position = group_row_ix(&sidebar, oldest, cx);
++    let neighbour = sidebar.read_with(cx, |sidebar, _| {
++        match sidebar.neighboring_activatable_entry(position) {
++            Some(ActivatableEntry::Thread { metadata }) => Some(metadata.thread_id),
++            _ => None,
++        }
++    });
++
++    assert_eq!(neighbour, Some(newest));
++}
++
++// R4.2 — with a pinned row selected, a new thread in "the selected group" goes to that row's own
++// project, not to the group listed just above the Pinned section; the Pinned header itself
++// selects no group.
++#[gpui::test]
++async fn a_selected_pinned_row_selects_its_own_project(cx: &mut TestAppContext) {
++    let (fs, multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    open_in_window(BETA, &fs, &multi_workspace, cx).await;
++    save_in("b1", "Ship release", BETA, 3, cx);
++    let in_alpha = save_in("a1", "Fix login", ALPHA, 2, cx);
++    let elsewhere = save_in("d1", "Plan trip", DELTA, 1, cx);
++    store_pin(in_alpha, cx);
++    store_pin(elsewhere, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec![
++            "v [beta]",
++            "  Ship release",
++            "v [alpha]",
++            "v Pinned",
++            "  Plan trip · delta",
++            "  Fix login · alpha"
++        ],
++        "fixture: ALPHA is the group above Pinned; DELTA is open nowhere"
++    );
++
++    let selected_key = |ix: usize, cx: &mut VisualTestContext| {
++        select(&sidebar, ix, cx);
++        sidebar.read_with(cx, |sidebar, cx| sidebar.selected_group_key(cx))
++    };
++
++    let ix = pinned_row_ix(&sidebar, elsewhere, cx);
++    assert_eq!(
++        selected_key(ix, cx),
++        Some(local_key(DELTA)),
++        "a closed pinned row"
++    );
++    let ix = pinned_row_ix(&sidebar, in_alpha, cx);
++    assert_eq!(
++        selected_key(ix, cx),
++        Some(local_key(ALPHA)),
++        "an open pinned row"
++    );
++    let ix = pinned_header_ix(&sidebar, cx).expect("fixture: the Pinned header is shown");
++    assert_eq!(selected_key(ix, cx), None, "the Pinned header");
++}
++
++// R2.4 — a collapsed group's header reports only the notifications of the rows it would show: a
++// pinned thread's notification is reported by the Pinned header, not by its project's header.
++#[gpui::test]
++async fn collapsed_groups_header_does_not_report_a_pinned_threads_notification(
++    cx: &mut TestAppContext,
++) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    save_in("a1", "Fix login", ALPHA, 2, cx);
++    let pinned = save_in("a2", "Write docs", ALPHA, 1, cx);
++    store_pin(pinned, cx);
++    let alpha_key = local_key(ALPHA);
++    sidebar.update_in(cx, |sidebar, window, cx| {
++        sidebar.toggle_collapse(&alpha_key, window, cx)
++    });
++    cx.run_until_parked();
++    assert_eq!(
++        pinned_entries(&sidebar, cx),
++        vec!["> [alpha]", "v Pinned", "  Write docs · alpha"],
++        "fixture: the pinned thread's group is collapsed"
++    );
++
++    sidebar.update(cx, |sidebar, cx| {
++        sidebar.contents.notified_threads.insert(pinned);
++        sidebar.update_entries(cx);
++    });
++    cx.run_until_parked();
++
++    assert_eq!(
++        group_header_has_notifications(&sidebar, &alpha_key, cx),
++        Some(false),
++        "the collapsed group's header"
++    );
++    assert_eq!(
++        pinned_header_has_notifications(&sidebar, cx),
++        Some(true),
++        "the Pinned header"
++    );
++}
++
++// ═══ Tech review fixes (3.3) ═════════════════════════════════════════════════
++
++// Collapsing Pinned while one of its rows is selected (as a mouse click on the header does) must
++// leave the selection inside the list, on the header, not past its end.
++#[gpui::test]
++async fn collapsing_pinned_keeps_the_selection_in_the_list(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    save_in("a1", "Fix login", ALPHA, 2, cx);
++    let pinned = save_in("a2", "Write docs", ALPHA, 1, cx);
++    store_pin(pinned, cx);
++    let header = pinned_header_ix(&sidebar, cx).expect("a Pinned header");
++    let row = pinned_row_ix(&sidebar, pinned, cx);
++    select(&sidebar, row, cx);
++    assert_eq!(
++        pinned_entries(&sidebar, cx)[row],
++        "  Write docs · alpha  <== selected",
++        "fixture: the pinned row is selected"
++    );
++
++    sidebar.update(cx, |sidebar, cx| sidebar.set_pinned_collapsed(true, cx));
++    cx.run_until_parked();
++
++    assert_eq!(
++        sidebar.read_with(cx, |sidebar, _| sidebar.selection),
++        Some(header)
++    );
++}
++
++// R5.1 with Pinned collapsed: like a collapsed project group, the filter still shows the matching
++// pinned rows.
++#[gpui::test]
++async fn filter_shows_matches_of_a_collapsed_pinned_section(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    save_in("a1", "Fix login", ALPHA, 2, cx);
++    let pinned = save_in("a2", "Write docs", ALPHA, 1, cx);
++    store_pin(pinned, cx);
++    let header = pinned_header_ix(&sidebar, cx).expect("a Pinned header");
++    confirm_at(&sidebar, header, cx);
++    assert_eq!(
++        rows_of(&sidebar, pinned, cx),
++        0,
++        "fixture: Pinned is collapsed"
++    );
++
++    type_in_search(&sidebar, "docs", cx);
++
++    assert_eq!(
++        rows_of(&sidebar, pinned, cx),
++        1,
++        "{:?}",
++        pinned_entries(&sidebar, cx)
++    );
++}
+diff --git a/crates/sidebar/src/sidebar_tests.rs b/crates/sidebar/src/sidebar_tests.rs
+index a7ed677..a4a8967 100644
+--- a/crates/sidebar/src/sidebar_tests.rs
++++ b/crates/sidebar/src/sidebar_tests.rs
+@@ -51,7 +51,7 @@ fn set_max_idle_retained_threads(max_idle_retained_threads: usize, cx: &mut App)
+     );
+ }
+ 
+-fn init_test(cx: &mut TestAppContext) {
++pub(super) fn init_test(cx: &mut TestAppContext) {
+     use_unique_metadata_databases(cx);
+     cx.update(|cx| {
+         let settings_store = SettingsStore::test(cx);
+@@ -127,7 +127,7 @@ fn has_thread_entry(sidebar: &Sidebar, session_id: &acp::SessionId) -> bool {
+ }
+ 
+ #[track_caller]
+-fn assert_project_header_has_threads(
++pub(super) fn assert_project_header_has_threads(
+     sidebar: &Entity<Sidebar>,
+     project_name: &str,
+     expected_has_threads: bool,
+@@ -215,6 +215,11 @@ fn assert_remote_project_integration_sidebar_state(
+                     terminal.metadata.title
+                 );
+             }
++            ListEntry::PinnedHeader { .. } => {
++                panic!(
++                    "unexpected Pinned header while simulating remote project integration flicker"
++                );
++            }
+         }
+     }
+ 
+@@ -284,7 +289,7 @@ async fn test_workspace_menu_uses_bare_repository_worktree_name(cx: &mut TestApp
+     assert_eq!(labels[0].secondary_name, None);
+ }
+ 
+-fn setup_sidebar(
++pub(super) fn setup_sidebar(
+     multi_workspace: &Entity<MultiWorkspace>,
+     cx: &mut gpui::VisualTestContext,
+ ) -> Entity<Sidebar> {
+@@ -340,7 +345,7 @@ async fn save_n_test_threads(
+     cx.run_until_parked();
+ }
+ 
+-async fn save_test_thread_metadata(
++pub(super) async fn save_test_thread_metadata(
+     session_id: &acp::SessionId,
+     project: &Entity<project::Project>,
+     cx: &mut TestAppContext,
+@@ -503,7 +508,7 @@ fn save_thread_metadata(
+     cx.run_until_parked();
+ }
+ 
+-fn save_thread_metadata_with_main_paths(
++pub(super) fn save_thread_metadata_with_main_paths(
+     session_id: &str,
+     title: &str,
+     folder_paths: PathList,
+@@ -568,14 +573,14 @@ fn save_draft_metadata_with_main_paths(
+     thread_id
+ }
+ 
+-fn focus_sidebar(sidebar: &Entity<Sidebar>, cx: &mut gpui::VisualTestContext) {
++pub(super) fn focus_sidebar(sidebar: &Entity<Sidebar>, cx: &mut gpui::VisualTestContext) {
+     sidebar.update_in(cx, |_, window, cx| {
+         cx.focus_self(window);
+     });
+     cx.run_until_parked();
+ }
+ 
+-fn enter_renamed_title(
++pub(super) fn enter_renamed_title(
+     sidebar: &Entity<Sidebar>,
+     target: RenameTarget,
+     renamed_title: &str,
+@@ -648,7 +653,7 @@ fn format_linked_worktree_chips(worktrees: &[ThreadItemWorktreeInfo]) -> String
+     }
+ }
+ 
+-fn visible_entries_as_strings(
++pub(super) fn visible_entries_as_strings(
+     sidebar: &Entity<Sidebar>,
+     cx: &mut gpui::VisualTestContext,
+ ) -> Vec<String> {
+@@ -701,6 +706,10 @@ fn visible_entries_as_strings(
+                         let worktree = format_linked_worktree_chips(&terminal.worktrees);
+                         format!("  {title}{worktree}{selected}")
+                     }
++                    ListEntry::PinnedHeader { .. } => {
++                        let icon = if sidebar.pinned_collapsed { ">" } else { "v" };
++                        format!("{icon} Pinned{selected}")
++                    }
+                 }
+             })
+             .collect()
+@@ -1535,6 +1544,7 @@ async fn test_neighboring_activatable_entry_stays_within_project(cx: &mut TestAp
+             highlight_positions: Vec::new(),
+             worktrees: Vec::new(),
+             diff_stats: DiffStats::default(),
++            pinned_project_label: None,
+         }))
+     };
+ 
+@@ -1627,6 +1637,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
+                 highlight_positions: Vec::new(),
+                 worktrees: Vec::new(),
+                 diff_stats: DiffStats::default(),
++                pinned_project_label: None,
+             })),
+             // Active thread with Running status
+             ListEntry::Thread(Arc::new(ThreadEntry {
+@@ -1654,6 +1665,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
+                 highlight_positions: Vec::new(),
+                 worktrees: Vec::new(),
+                 diff_stats: DiffStats::default(),
++                pinned_project_label: None,
+             })),
+             // Active thread with Error status
+             ListEntry::Thread(Arc::new(ThreadEntry {
+@@ -1681,6 +1693,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
+                 highlight_positions: Vec::new(),
+                 worktrees: Vec::new(),
+                 diff_stats: DiffStats::default(),
++                pinned_project_label: None,
+             })),
+             // Thread with WaitingForConfirmation status, not active
+             // remote_connection: None,
+@@ -1709,6 +1722,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
+                 highlight_positions: Vec::new(),
+                 worktrees: Vec::new(),
+                 diff_stats: DiffStats::default(),
++                pinned_project_label: None,
+             })),
+             // Background thread that completed (should show notification)
+             // remote_connection: None,
+@@ -1737,6 +1751,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
+                 highlight_positions: Vec::new(),
+                 worktrees: Vec::new(),
+                 diff_stats: DiffStats::default(),
++                pinned_project_label: None,
+             })),
+             // Collapsed project header
+             ListEntry::ProjectHeader {
+@@ -2181,7 +2196,7 @@ async fn test_selection_clamps_after_entry_removal(cx: &mut TestAppContext) {
+     );
+ }
+ 
+-async fn init_test_project_with_agent_panel(
++pub(super) async fn init_test_project_with_agent_panel(
+     worktree_path: &str,
+     cx: &mut TestAppContext,
+ ) -> Entity<project::Project> {
+@@ -2213,7 +2228,7 @@ fn add_agent_panel(
+     })
+ }
+ 
+-fn setup_sidebar_with_agent_panel(
++pub(super) fn setup_sidebar_with_agent_panel(
+     multi_workspace: &Entity<MultiWorkspace>,
+     cx: &mut gpui::VisualTestContext,
+ ) -> (Entity<Sidebar>, Entity<AgentPanel>) {
+@@ -4585,7 +4600,11 @@ async fn test_background_thread_completion_triggers_notification(cx: &mut TestAp
+     );
+ }
+ 
+-fn type_in_search(sidebar: &Entity<Sidebar>, query: &str, cx: &mut gpui::VisualTestContext) {
++pub(super) fn type_in_search(
++    sidebar: &Entity<Sidebar>,
++    query: &str,
++    cx: &mut gpui::VisualTestContext,
++) {
+     sidebar.update_in(cx, |sidebar, window, cx| {
+         window.focus(&sidebar.filter_editor.focus_handle(cx), cx);
+         sidebar.filter_editor.update(cx, |editor, cx| {
+@@ -5767,7 +5786,9 @@ async fn test_rename_thread_from_sidebar_updates_title_override(cx: &mut TestApp
+                     thread.metadata.thread_id,
+                     thread.metadata.display_title(),
+                 )),
+-                ListEntry::ProjectHeader { .. } | ListEntry::Terminal(_) => None,
++                ListEntry::ProjectHeader { .. }
++                | ListEntry::Terminal(_)
++                | ListEntry::PinnedHeader { .. } => None,
+             })
+             .expect("sidebar should have a thread entry")
+     });
+@@ -5853,7 +5874,9 @@ async fn test_rename_thread_from_sidebar_updates_title_override(cx: &mut TestApp
+             .iter()
+             .find_map(|entry| match entry {
+                 ListEntry::Thread(thread) => Some(thread),
+-                ListEntry::ProjectHeader { .. } | ListEntry::Terminal(_) => None,
++                ListEntry::ProjectHeader { .. }
++                | ListEntry::Terminal(_)
++                | ListEntry::PinnedHeader { .. } => None,
+             })
+             .expect("renamed thread should match the search");
+         let title = thread.metadata.display_title();
+@@ -5892,7 +5915,9 @@ async fn test_rename_selected_thread_action_renames_selected_thread(cx: &mut Tes
+             .enumerate()
+             .find_map(|(ix, entry)| match entry {
+                 ListEntry::Thread(thread) => Some((ix, thread.metadata.thread_id)),
+-                ListEntry::ProjectHeader { .. } | ListEntry::Terminal(_) => None,
++                ListEntry::ProjectHeader { .. }
++                | ListEntry::Terminal(_)
++                | ListEntry::PinnedHeader { .. } => None,
+             })
+             .expect("sidebar should have a thread entry")
+     });
+@@ -7995,6 +8020,9 @@ async fn test_clicking_worktree_thread_does_not_briefly_render_as_separate_proje
+                         terminal.metadata.title
+                     );
+                 }
++                ListEntry::PinnedHeader { .. } => {
++                    panic!("unexpected Pinned header while opening linked worktree thread");
++                }
+             }
+         }
+ 
