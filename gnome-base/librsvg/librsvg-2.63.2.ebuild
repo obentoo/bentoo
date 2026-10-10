@@ -32,7 +32,7 @@ LICENSE+="
 SLOT="2"
 KEYWORDS="amd64 arm arm64 ~loong ppc ppc64 ~riscv ~s390 ~sparc x86"
 
-IUSE="gtk-doc +introspection test +vala"
+IUSE="avif gtk-doc +introspection test +vala"
 RESTRICT="!test? ( test )"
 REQUIRED_USE="
 	gtk-doc? ( introspection )
@@ -40,7 +40,7 @@ REQUIRED_USE="
 "
 
 RDEPEND="
-	>=x11-libs/cairo-1.17.0[glib,svg(+),${MULTILIB_USEDEP}]
+	>=x11-libs/cairo-1.18.0[glib,svg(+),${MULTILIB_USEDEP}]
 	>=media-libs/freetype-2.9:2[${MULTILIB_USEDEP}]
 	>=x11-libs/gdk-pixbuf-2.20:2[introspection?,${MULTILIB_USEDEP}]
 	>=dev-libs/glib-2.50.0:2[${MULTILIB_USEDEP}]
@@ -48,6 +48,7 @@ RDEPEND="
 	>=dev-libs/libxml2-2.9.1-r4:2=[${MULTILIB_USEDEP}]
 	>=x11-libs/pango-1.50.0[${MULTILIB_USEDEP}]
 
+	avif? ( >=media-libs/dav1d-1.3.0:=[${MULTILIB_USEDEP}] )
 	introspection? ( >=dev-libs/gobject-introspection-1.82.0-r2:= )
 "
 DEPEND="${RDEPEND}"
@@ -67,6 +68,9 @@ QA_FLAGS_IGNORED="
 	usr/lib.*/gdk-pixbuf*/*/loaders/*
 "
 
+# BENTOO-DIVERGENCE: PATCHES - ::gentoo dropped this patch from its 2.62.4, but
+# 2.63.2 still needs it: it applies forward and does not reverse-apply here
+# (checked 2026-10-10), so the libxml2-2.15 test fix is not upstream yet.
 PATCHES=(
 	"${FILESDIR}"/${PN}-2.60.0-libxml2-2.15.0-tests.patch
 )
@@ -87,7 +91,7 @@ src_configure() {
 
 multilib_src_configure() {
 	local emesonargs=(
-		-Davif=disabled
+		$(meson_native_use_feature avif)
 		$(meson_native_use_feature introspection)
 		-Dpixbuf=enabled
 		-Dpixbuf-loader=enabled

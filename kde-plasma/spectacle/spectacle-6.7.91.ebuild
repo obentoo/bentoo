@@ -10,6 +10,9 @@ EAPI=8
 # BENTOO-DIVERGENCE: DEPEND - upstream 6.8 beta, not in ::gentoo yet.
 # BENTOO-DIVERGENCE: IUSE - upstream 6.8 beta, not in ::gentoo yet.
 # BENTOO-DIVERGENCE: RDEPEND - upstream 6.8 beta, not in ::gentoo yet.
+# BENTOO-DIVERGENCE: PATCHES - ::gentoo's 6.7.5-r1 applies
+# remove-opencv-dep.patch, a backport of a 6.8 change; this 6.8 beta already
+# carries it upstream (no OpenCV in its CMakeLists.txt), so it needs no patch.
 
 ECM_HANDBOOK="optional"
 ECM_TEST="forceoptional"

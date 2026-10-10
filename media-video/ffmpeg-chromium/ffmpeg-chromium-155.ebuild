@@ -5,10 +5,10 @@ EAPI=9
 
 inherit flag-o-matic toolchain-funcs
 
-# ::gentoo's ffmpeg-chromium-152 with only COMMIT, SRC_URI and KEYWORDS
+# ::gentoo's ffmpeg-chromium-154 with only COMMIT, SRC_URI and KEYWORDS
 # changed. It exists for www-client/chromium-155 (USE="bindist
 # ffmpeg-chromium" depends on media-video/ffmpeg-chromium:155) while
-# ::gentoo stops at SLOT 152. Drop it once ::gentoo ships its own 155.
+# ::gentoo stops at SLOT 154. Drop it once ::gentoo ships its own 155.
 #
 # COMMIT is the 'ffmpeg_revision' in chromium/src's DEPS at tag
 # 155.0.8059.39. The tarball is a plain git archive of that commit,
@@ -129,9 +129,16 @@ RESTRICT="
 "
 
 PATCHES=(
-	"${FILESDIR}"/${PN}-152-configure-enable-libopus.patch
+	"${FILESDIR}"/${PN}-154-configure-enable-libopus.patch
 	"${FILESDIR}"/chromium.patch
 )
+
+pkg_setup() {
+	[[ ${MERGE_TYPE} != binary ]] || return
+
+	[[ ${EXTRA_FFMPEG_CONF} ]] &&
+		die "EXTRA_FFMPEG_CONF is set in the environment, please use EXTRA_ECONF instead"
+}
 
 src_prepare() {
 	export revision=git-N-g${COMMIT:0:10}
@@ -235,7 +242,7 @@ src_configure() {
 		--enable-pic \
 		--enable-static \
 		"${myconf[@]}" \
-		${EXTRA_FFMPEG_CONF}
+		${EXTRA_ECONF}
 
 	echo "${@}"
 	"${@}" || die
