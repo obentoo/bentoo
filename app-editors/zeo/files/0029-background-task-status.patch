@@ -56,13 +56,14 @@ No other agent sends the key, so for them nothing changes. Rides the
 claude-agent-acp-plus flag BY DEPENDENCY, like 0011 and 0013.
 
 Test added (0.2.3_p20261009): a malformed count (-1, "2", 1.5, null) leaves the last one.
+Tests added 2026-10-10 (story 032 v4): Background -> Completed marks a pinned row and header.
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 22f4e22..cd3fce4 100644
+index 929e595..3655e40 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -3624,6 +3624,15 @@ impl AccountUsage {
+@@ -3618,6 +3618,15 @@ impl AccountUsage {
  /// forwards the SDK's `rate_limit_event` here instead of dropping it.
  const CLAUDE_RATE_LIMIT_META_KEY: &str = "_claude/rateLimit";
  
@@ -78,7 +79,7 @@ index 22f4e22..cd3fce4 100644
  pub const TOKEN_USAGE_WARNING_THRESHOLD: f32 = 0.8;
  
  impl TokenUsage {
-@@ -3721,6 +3730,7 @@ pub struct AcpThread {
+@@ -3715,6 +3724,7 @@ pub struct AcpThread {
      activity: SessionActivity,
      token_usage: Option<TokenUsage>,
      account_usage: AccountUsage,
@@ -86,7 +87,7 @@ index 22f4e22..cd3fce4 100644
      cost: Option<SessionCost>,
      prompt_capabilities: acp_v2::PromptCapabilities,
      available_commands: Vec<acp_v2::AvailableCommand>,
-@@ -3848,6 +3858,7 @@ pub enum AcpThreadEvent {
+@@ -3842,6 +3852,7 @@ pub enum AcpThreadEvent {
      NoticesUpdated,
      TokenUsageUpdated,
      AccountUsageUpdated,
@@ -94,7 +95,7 @@ index 22f4e22..cd3fce4 100644
      EntryUpdated(usize),
      EntriesRemoved(Range<usize>),
      ToolAuthorizationRequested(PermissionRequestId),
-@@ -3999,6 +4010,7 @@ impl AcpThread {
+@@ -3993,6 +4004,7 @@ impl AcpThread {
                  | AcpThreadEvent::NoticesUpdated
                  | AcpThreadEvent::TokenUsageUpdated
                  | AcpThreadEvent::AccountUsageUpdated
@@ -102,7 +103,7 @@ index 22f4e22..cd3fce4 100644
                  | AcpThreadEvent::EntryUpdated(_)
                  | AcpThreadEvent::Retry(_)
                  | AcpThreadEvent::SubagentSpawned(_)
-@@ -4059,6 +4071,7 @@ impl AcpThread {
+@@ -4053,6 +4065,7 @@ impl AcpThread {
              connection,
              token_usage: None,
              account_usage: AccountUsage::default(),
@@ -110,7 +111,7 @@ index 22f4e22..cd3fce4 100644
              cost: None,
              prompt_capabilities,
              available_commands: Vec::new(),
-@@ -4537,6 +4550,12 @@ impl AcpThread {
+@@ -4535,6 +4548,12 @@ impl AcpThread {
          (!self.account_usage.is_empty()).then_some(&self.account_usage)
      }
  
@@ -123,7 +124,7 @@ index 22f4e22..cd3fce4 100644
      pub fn cost(&self) -> Option<&SessionCost> {
          self.cost.as_ref()
      }
-@@ -4702,6 +4721,22 @@ impl AcpThread {
+@@ -4700,6 +4719,22 @@ impl AcpThread {
                  self.push_notice(notices::from_v1(notice).map_err(acp_v1::Error::from)?, cx);
              }
              acp_v1::SessionUpdate::SessionInfoUpdate(info_update) => {
@@ -146,7 +147,7 @@ index 22f4e22..cd3fce4 100644
                  self.update_session_info(session_info_update_from_v1(info_update), cx);
              }
              acp_v1::SessionUpdate::AvailableCommandsUpdate(acp_v1::AvailableCommandsUpdate {
-@@ -19790,6 +19825,136 @@ mod tests {
+@@ -20480,6 +20515,136 @@ mod tests {
          );
      }
  
@@ -296,10 +297,10 @@ index f943a3c..9727fae 100644
              | AcpThreadEvent::SubagentSpawned(_)
              | AcpThreadEvent::EntriesRemoved(_)
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 36b217b..ad2fd04 100644
+index f61692b..5a71c2d 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
-@@ -339,6 +339,7 @@ impl Conversation {
+@@ -348,6 +348,7 @@ impl Conversation {
                      | AcpThreadEvent::TitleUpdated
                      | AcpThreadEvent::TokenUsageUpdated
                      | AcpThreadEvent::AccountUsageUpdated
@@ -307,7 +308,7 @@ index 36b217b..ad2fd04 100644
                      | AcpThreadEvent::EntryUpdated(_)
                      | AcpThreadEvent::EntriesRemoved(_)
                      | AcpThreadEvent::Retry(_)
-@@ -759,6 +760,7 @@ fn affects_thread_metadata(event: &AcpThreadEvent) -> bool {
+@@ -768,6 +769,7 @@ fn affects_thread_metadata(event: &AcpThreadEvent) -> bool {
          | AcpThreadEvent::Retry(_)
          | AcpThreadEvent::TokenUsageUpdated
          | AcpThreadEvent::AccountUsageUpdated
@@ -315,7 +316,7 @@ index 36b217b..ad2fd04 100644
          | AcpThreadEvent::PromptCapabilitiesUpdated
          | AcpThreadEvent::AvailableCommandsUpdated(_)
          | AcpThreadEvent::ModeUpdated(_)
-@@ -2091,6 +2093,10 @@ impl ConversationView {
+@@ -2122,6 +2124,10 @@ impl ConversationView {
                      });
                  }
              }
@@ -379,8 +380,231 @@ index e723f88..6f6067f 100644
                      ThreadStatus::Idle => AgentThreadStatus::Completed,
                  }
              };
+diff --git a/crates/sidebar/src/sidebar_pinned_background_tests.rs b/crates/sidebar/src/sidebar_pinned_background_tests.rs
+new file mode 100644
+index 0000000..593574e
+--- /dev/null
++++ b/crates/sidebar/src/sidebar_pinned_background_tests.rs
+@@ -0,0 +1,206 @@
++// Story 032 v4, task 10.2 — Background→Completed on a pinned row (R2.12). Patch `0029`.
++//
++// Compiles only with `0029` applied (`AgentThreadStatus::Background`, the `_claude/backgroundTasks`
++// meta key): `0029` adds this file and its `mod` line, never `0049`. Materialize as a child module
++// of `sidebar_pinned_tests.rs`, at the end of that file:
++//     #[path = "sidebar_pinned_background_tests.rs"]
++//     mod background;
++// Filter: `cargo test -p sidebar --lib sidebar_pinned_tests::background` (also matched by `pinned`).
++//
++// The `Background` arm lives in this file's own reader (`entries` below), not in `0049`'s
++// `pinned_entries`, so `0049` keeps compiling without `0029` (546bba9's reason, design.md v4
++// GOTCHA). The rows print as `pinned_entries` does, plus " (background)" for that status.
++//
++// Hostile halves first: a turn that ends while background work keeps running (Running →
++// Background) is NOT news — no marker; then the end of that work (Background → Completed) on a
++// pinned thread that is not the active one IS news on its row and on the Pinned header, with the
++// section expanded and collapsed; and the converse — the active pinned thread gets no marker.
++
++use super::*;
++use pretty_assertions::assert_eq;
++
++/// The adapter's background-task level, as `0029`'s own sidebar test sends it.
++fn background_tasks(count: u64) -> acp_v1::SessionUpdate {
++    let mut meta = serde_json::Map::new();
++    meta.insert(
++        "_claude/backgroundTasks".to_string(),
++        serde_json::json!({ "count": count, "tasks": [] }),
++    );
++    acp_v1::SessionUpdate::SessionInfoUpdate(acp_v1::SessionInfoUpdate::new().meta(meta))
++}
++
++/// `pinned_entries` with the `Background` status printed as " (background)".
++fn entries(sidebar: &Entity<Sidebar>, cx: &mut VisualTestContext) -> Vec<String> {
++    let base = pinned_entries(sidebar, cx);
++    sidebar.read_with(cx, |sidebar, _cx| {
++        sidebar
++            .contents
++            .entries
++            .iter()
++            .enumerate()
++            .zip(base)
++            .map(|((ix, entry), line)| match entry {
++                ListEntry::Thread(thread)
++                    if thread.pinned_project_label.is_some()
++                        && thread.status == AgentThreadStatus::Background =>
++                {
++                    let label = thread.pinned_project_label.as_ref().unwrap();
++                    let title = thread.metadata.display_title();
++                    let live = if thread.is_live { " *" } else { "" };
++                    let notified = if sidebar
++                        .contents
++                        .is_thread_notified(&thread.metadata.thread_id)
++                    {
++                        " (!)"
++                    } else {
++                        ""
++                    };
++                    let selected = if sidebar.selection == Some(ix) {
++                        "  <== selected"
++                    } else {
++                        ""
++                    };
++                    format!("  {title} · {label}{live} (background){notified}{selected}")
++                }
++                _ => line,
++            })
++            .collect()
++    })
++}
++
++/// A window on `/project-a` with an agent panel and a pinned thread whose turn launched
++/// background work and then ended. With `away`, a second workspace is made active first, so the
++/// pinned thread is not the active one.
++async fn pinned_thread_with_background_work(
++    cx: &mut TestAppContext,
++    away: bool,
++) -> (
++    Entity<Sidebar>,
++    StubAgentConnection,
++    acp::SessionId,
++    &mut VisualTestContext,
++) {
++    let project_a = init_test_project_with_agent_panel("/project-a", cx).await;
++    cx.update(|cx| agent_ui::thread_organization::init(cx));
++    cx.run_until_parked();
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a.clone(), window, cx));
++    let (sidebar, panel_a) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
++    let connection = StubAgentConnection::new();
++    open_thread_with_connection(&panel_a, connection.clone(), cx);
++    send_message(&panel_a, cx);
++    let session = active_session_id(&panel_a, cx);
++    save_test_thread_metadata(&session, &project_a, cx).await;
++    cx.update(|_, cx| connection.send_update(session.clone(), background_tasks(1), cx));
++    cx.run_until_parked();
++    let thread = thread_id_of(&session.0, cx);
++    store_pin(thread, cx);
++    if away {
++        let fs = cx.update(|_, cx| <dyn fs::Fs>::global(cx));
++        let project_b = project::Project::test(fs, [], cx).await;
++        multi_workspace.update_in(cx, |mw, window, cx| {
++            mw.test_add_workspace(project_b, window, cx);
++        });
++        cx.run_until_parked();
++    }
++    connection.end_turn(session.clone(), acp_v1::StopReason::EndTurn);
++    cx.run_until_parked();
++    (sidebar, connection, session, cx)
++}
++
++// R2.12 — out of sight: the turn ending with work still running is not news (hostile half: a
++// rule keyed on "the turn ended" would fire here); the work ending is, on the row and the header.
++#[gpui::test]
++async fn pinned_row_is_notified_when_its_background_work_ends_out_of_sight(
++    cx: &mut TestAppContext,
++) {
++    let (sidebar, connection, session, cx) = pinned_thread_with_background_work(cx, true).await;
++    assert_eq!(
++        entries(&sidebar, cx),
++        vec![
++            "v [project-a]",
++            "v Pinned",
++            "  Hello · project-a * (background)"
++        ],
++        "the turn ended with work running: Background, and no marker yet"
++    );
++    assert_eq!(pinned_header_has_notifications(&sidebar, cx), Some(false));
++
++    cx.update(|_, cx| connection.send_update(session.clone(), background_tasks(0), cx));
++    cx.run_until_parked();
++
++    assert_eq!(
++        entries(&sidebar, cx),
++        vec!["v [project-a]", "v Pinned", "  Hello · project-a * (!)"],
++        "Background → Completed out of sight marks the pinned row"
++    );
++    assert_eq!(
++        pinned_header_has_notifications(&sidebar, cx),
++        Some(true),
++        "and the Pinned header"
++    );
++}
++
++// R2.12 with Pinned collapsed — no row is shown, the header still reports the notification, and
++// expanding shows the row marked.
++#[gpui::test]
++async fn collapsed_pinned_header_reports_the_end_of_background_work(cx: &mut TestAppContext) {
++    let (sidebar, connection, session, cx) = pinned_thread_with_background_work(cx, true).await;
++    let header = pinned_header_ix(&sidebar, cx).expect("fixture: a Pinned header");
++    confirm_at(&sidebar, header, cx);
++    assert_eq!(
++        entries(&sidebar, cx),
++        vec!["v [project-a]", "> Pinned  <== selected"],
++        "fixture: Pinned is collapsed"
++    );
++    assert_eq!(pinned_header_has_notifications(&sidebar, cx), Some(false));
++
++    cx.update(|_, cx| connection.send_update(session.clone(), background_tasks(0), cx));
++    cx.run_until_parked();
++    sidebar.update(cx, |sidebar, cx| sidebar.update_entries(cx));
++    cx.run_until_parked();
++
++    assert_eq!(
++        pinned_header_has_notifications(&sidebar, cx),
++        Some(true),
++        "the collapsed Pinned header reports the end of the background work"
++    );
++    confirm_at(&sidebar, header, cx);
++    assert_eq!(
++        entries(&sidebar, cx),
++        vec![
++            "v [project-a]",
++            "v Pinned  <== selected",
++            "  Hello · project-a * (!)"
++        ],
++        "the row is marked once Pinned is expanded"
++    );
++}
++
++// R2.12 converse — the active pinned thread finishing its background work is in sight: no marker
++// on its row, none on the header.
++#[gpui::test]
++async fn active_pinned_thread_gets_no_marker_when_its_background_work_ends(
++    cx: &mut TestAppContext,
++) {
++    let (sidebar, connection, session, cx) = pinned_thread_with_background_work(cx, false).await;
++    assert_eq!(
++        entries(&sidebar, cx),
++        vec![
++            "v [project-a]",
++            "v Pinned",
++            "  Hello · project-a * (background)"
++        ],
++        "fixture: the active pinned thread runs in the background"
++    );
++
++    cx.update(|_, cx| connection.send_update(session.clone(), background_tasks(0), cx));
++    cx.run_until_parked();
++
++    assert_eq!(
++        entries(&sidebar, cx),
++        vec!["v [project-a]", "v Pinned", "  Hello · project-a *"],
++        "no marker on the active thread"
++    );
++    assert_eq!(pinned_header_has_notifications(&sidebar, cx), Some(false));
++}
+diff --git a/crates/sidebar/src/sidebar_pinned_tests.rs b/crates/sidebar/src/sidebar_pinned_tests.rs
+index 4bb603c..2c1641a 100644
+--- a/crates/sidebar/src/sidebar_pinned_tests.rs
++++ b/crates/sidebar/src/sidebar_pinned_tests.rs
+@@ -2115,3 +2115,6 @@ async fn filter_shows_matches_of_a_collapsed_pinned_section(cx: &mut TestAppCont
+ 
+ #[path = "sidebar_pinned_markdown_tests.rs"]
+ mod markdown;
++
++#[path = "sidebar_pinned_background_tests.rs"]
++mod background;
 diff --git a/crates/sidebar/src/sidebar_tests.rs b/crates/sidebar/src/sidebar_tests.rs
-index 2f4cdb8..2d34c68 100644
+index 86fdad4..15b8a79 100644
 --- a/crates/sidebar/src/sidebar_tests.rs
 +++ b/crates/sidebar/src/sidebar_tests.rs
 @@ -686,6 +686,7 @@ pub(super) fn visible_entries_as_strings(

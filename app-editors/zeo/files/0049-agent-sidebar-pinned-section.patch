@@ -66,6 +66,8 @@ keymaps (0035, 0043, 0044) apply after it and are generated on top of it.
 Known limit: archiving a pinned row whose project is open only in another
 window does not clear that window's agent panel.
 
+Tests added 2026-10-10 (story 032 v4): a pinned row's Markdown entry across two windows.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -1462,12 +1464,427 @@ index f351519..7e25ad1 100644
              .on_action(cx.listener(Self::rename_selected_thread))
              .on_action(cx.listener(Self::new_thread_in_group))
              .on_action(cx.listener(Self::new_terminal_thread))
+diff --git a/crates/sidebar/src/sidebar_pinned_markdown_tests.rs b/crates/sidebar/src/sidebar_pinned_markdown_tests.rs
+new file mode 100644
+index 0000000..b28dc3b
+--- /dev/null
++++ b/crates/sidebar/src/sidebar_pinned_markdown_tests.rs
+@@ -0,0 +1,409 @@
++// Story 032 v4, task 10.1 — "Open Thread as Markdown" on a pinned row (R4.5, R4.6). Patch `0049`.
++//
++// Materialize as a child module of `sidebar_pinned_tests.rs`, so it reuses that file's helpers
++// (`pinned_entries`, `pinned_row_ix`, `entry_bounds`, `right_click`, `store_pin`, ...) unchanged.
++// At the end of `crates/sidebar/src/sidebar_pinned_tests.rs`:
++//     #[path = "sidebar_pinned_markdown_tests.rs"]
++//     mod markdown;
++// (A `#[path]` in a non-mod.rs file is relative to that file's directory: `crates/sidebar/src/`.)
++// Filter: `cargo test -p sidebar --lib sidebar_pinned_tests::markdown` (also matched by `pinned`).
++//
++// The three cases of design.md "Open Thread as Markdown on a pinned row", hostile halves first:
++//   R4.5 hostile — a native pinned thread whose project is open only in window B, AND whose live
++//         view sits in B's agent panel (so a route through B's panel is available and would
++//         succeed): the entry in window A opens the Markdown in A's active workspace, loaded from
++//         the ThreadStore; B's items do not change.
++//   R4.6 hostile — a non-native pinned thread live only in B: A offers no Markdown entry.
++//   R4.6 converse — the same kind of non-native thread live in A IS offered the entry.
++//   R4.5 converse (benign) — a pinned row whose workspace is in A but is not A's active workspace
++//         opens in that workspace, not in the active one.
++// The Markdown language is registered on every project because `open_markdown_in_workspace`
++// resolves it by name; without it no item would open in any case and the tests would be blind.
++
++use super::*;
++use agent::{DbThread, Message, UserMessage, UserMessageContent};
++use agent_ui::test_support::active_thread_id;
++use pretty_assertions::assert_eq;
++use project::AgentId;
++
++/// A marker that only the ThreadStore copy of a thread carries, so an opened Markdown that holds
++/// it was loaded from the store, not rendered from a live view.
++const STORE_MARKER: &str = "Notes kept by the thread store";
++
++fn add_markdown_language(project: &Entity<project::Project>, cx: &mut TestAppContext) {
++    project.read_with(cx, |project, _| {
++        project.languages().add(language::markdown_lang())
++    });
++}
++
++fn add_panel(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Entity<AgentPanel> {
++    workspace.update_in(cx, |workspace, window, cx| {
++        let panel = cx.new(|cx| AgentPanel::test_new(workspace, window, cx));
++        workspace.add_panel(panel.clone(), window, cx);
++        panel
++    })
++}
++
++/// Saves metadata for `session` (keeping the thread id the panel gave it) with `agent_id`.
++fn save_with_agent(
++    session: &acp::SessionId,
++    title: &str,
++    folder: &str,
++    agent_id: AgentId,
++    cx: &mut VisualTestContext,
++) -> ThreadId {
++    cx.update(|_, cx| {
++        let store = ThreadMetadataStore::global(cx);
++        let thread_id = store
++            .read(cx)
++            .entries()
++            .find(|entry| entry.session_id.as_ref() == Some(session))
++            .map(|entry| entry.thread_id)
++            .unwrap_or_else(ThreadId::new);
++        let paths = PathList::new(&[PathBuf::from(folder)]);
++        let metadata = ThreadMetadata {
++            thread_id,
++            session_id: Some(session.clone()),
++            agent_id,
++            title: Some(SharedString::from(title.to_string())),
++            title_override: None,
++            updated_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, 1, 0, 0).unwrap(),
++            created_at: None,
++            interacted_at: None,
++            worktree_paths: WorktreePaths::from_path_lists(paths.clone(), paths).unwrap(),
++            archived: false,
++            remote_connection: None,
++        };
++        store.update(cx, |store, cx| store.save(metadata, cx));
++        thread_id
++    })
++}
++
++async fn save_to_thread_store(
++    session: &acp::SessionId,
++    title: &str,
++    folder: &str,
++    cx: &mut VisualTestContext,
++) {
++    let db_thread = DbThread {
++        title: SharedString::from(title.to_string()),
++        messages: vec![Arc::new(Message::User(UserMessage {
++            id: acp_thread::ClientUserMessageId::new(),
++            content: Arc::from([UserMessageContent::Text(STORE_MARKER.to_string())]),
++        }))],
++        updated_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, 1, 0, 0).unwrap(),
++        detailed_summary: None,
++        initial_project_snapshot: None,
++        cumulative_token_usage: Default::default(),
++        request_token_usage: Default::default(),
++        model: None,
++        profile: None,
++        subagent_context: None,
++        speed: None,
++        thinking_enabled: false,
++        thinking_effort: None,
++        draft_prompt: None,
++        ui_scroll_position: None,
++        sandboxed_terminal_temp_dir: None,
++        sandbox_grants: Default::default(),
++    };
++    let save = cx.update(|_, cx| {
++        ThreadStore::global(cx).update(cx, |store, cx| {
++            store.save_thread(
++                session.clone(),
++                db_thread,
++                PathList::new(&[PathBuf::from(folder)]),
++                cx,
++            )
++        })
++    });
++    save.await
++        .expect("fixture: the thread store saves the thread");
++    cx.run_until_parked();
++}
++
++/// Every editor item of `workspace`, as (buffer title, text).
++fn editors(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<(String, String)> {
++    workspace.read_with(cx, |workspace, cx| {
++        workspace
++            .items_of_type::<Editor>(cx)
++            .map(|editor| {
++                let editor = editor.read(cx);
++                (
++                    editor.buffer().read(cx).title(cx).to_string(),
++                    editor.text(cx),
++                )
++            })
++            .collect()
++    })
++}
++
++fn item_count(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> usize {
++    workspace.read_with(cx, |workspace, cx| workspace.items(cx).count())
++}
++
++/// Opens the pinned row's context menu in `cx`'s window.
++fn open_pinned_row_menu(
++    sidebar: &Entity<Sidebar>,
++    thread_id: ThreadId,
++    cx: &mut VisualTestContext,
++) {
++    let ix = pinned_row_ix(sidebar, thread_id, cx);
++    let row = entry_bounds(sidebar, ix, cx);
++    right_click(row.center(), cx);
++    cx.debug_bounds("MENU_ITEM-Archive Thread")
++        .expect("fixture: the pinned row's context menu is open");
++}
++
++/// Window A on `ALPHA` (sidebar, no agent panel) and window B on `BETA` (sidebar and agent
++/// panel), the organization store installed before either sidebar exists.
++async fn two_windows(
++    cx: &mut TestAppContext,
++) -> (
++    Entity<Sidebar>,
++    Entity<Workspace>,
++    VisualTestContext,
++    Entity<AgentPanel>,
++    Entity<Workspace>,
++    VisualTestContext,
++) {
++    let project_a = init_test_project_with_agent_panel(ALPHA, cx).await;
++    cx.update(|cx| agent_ui::thread_organization::init(cx));
++    let fs = cx.update(|cx| <dyn fs::Fs>::global(cx));
++    fs.as_fake()
++        .insert_tree(BETA, serde_json::json!({ "src": {} }))
++        .await;
++    cx.run_until_parked();
++    let project_b = project::Project::test(fs, [BETA.as_ref()], cx).await;
++    add_markdown_language(&project_a, cx);
++    add_markdown_language(&project_b, cx);
++
++    let window_a = cx.add_window(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
++    let window_b = cx.add_window(|window, cx| MultiWorkspace::test_new(project_b, window, cx));
++    let mw_a = window_a.root(cx).unwrap();
++    let mw_b = window_b.root(cx).unwrap();
++    let mut cx_b = VisualTestContext::from_window(window_b.into(), cx);
++    let _sidebar_b = setup_sidebar(&mw_b, &mut cx_b);
++    let workspace_b = mw_b.read_with(&cx_b, |mw, _| mw.workspace().clone());
++    let panel_b = add_panel(&workspace_b, &mut cx_b);
++    let mut cx_a = VisualTestContext::from_window(window_a.into(), cx);
++    let sidebar_a = setup_sidebar(&mw_a, &mut cx_a);
++    let workspace_a = mw_a.read_with(&cx_a, |mw, _| mw.workspace().clone());
++    (sidebar_a, workspace_a, cx_a, panel_b, workspace_b, cx_b)
++}
++
++/// Opens a thread in `panel` and sends a message, so the panel holds its live view.
++fn live_thread_in(panel: &Entity<AgentPanel>, cx: &mut VisualTestContext) -> acp::SessionId {
++    open_thread_with_connection(panel, StubAgentConnection::new(), cx);
++    send_message(panel, cx);
++    active_session_id(panel, cx)
++}
++
++// R4.5 hostile half — B's panel holds the thread's live view, so routing the entry to the row's
++// workspace (B's) would find a view and open the Markdown THERE, driving B's workspace with A's
++// window. The rule: a workspace of another window is treated as closed, the native thread is
++// loaded from the ThreadStore into A's active workspace, and B is left as it was.
++#[gpui::test]
++async fn markdown_of_a_native_pinned_thread_open_only_in_another_window_opens_here(
++    cx: &mut TestAppContext,
++) {
++    let (sidebar_a, workspace_a, mut cx_a, panel_b, workspace_b, mut cx_b) = two_windows(cx).await;
++    let cx_a = &mut cx_a;
++    let cx_b = &mut cx_b;
++    let session = live_thread_in(&panel_b, cx_b);
++    let thread = save_with_agent(&session, "Ship release", BETA, ZED_AGENT_ID.clone(), cx_b);
++    assert_eq!(
++        thread,
++        active_thread_id(&panel_b, cx_b),
++        "fixture: the pinned thread is the one live in B's panel"
++    );
++    save_to_thread_store(&session, "Ship release", BETA, cx_b).await;
++    store_pin(thread, cx_a);
++    cx_b.run_until_parked();
++    assert_eq!(
++        pinned_entries(&sidebar_a, cx_a),
++        vec!["v [alpha]", "v Pinned", "  Ship release · beta"],
++        "fixture: A lists the pinned thread, not live in A (live state is scoped to A)"
++    );
++    let b_items_before = item_count(&workspace_b, cx_b);
++    assert_eq!(
++        editors(&workspace_a, cx_a),
++        Vec::new(),
++        "fixture: A has no editor"
++    );
++
++    open_pinned_row_menu(&sidebar_a, thread, cx_a);
++    let entry = cx_a
++        .debug_bounds("MENU_ITEM-Open Thread as Markdown")
++        .expect("a native thread is offered Open Thread as Markdown");
++    cx_a.simulate_click(entry.center(), Modifiers::none());
++    cx_a.run_until_parked();
++    cx_b.run_until_parked();
++
++    let opened = editors(&workspace_a, cx_a);
++    assert_eq!(
++        opened.len(),
++        1,
++        "the Markdown opens in A's active workspace, got {opened:?}"
++    );
++    assert_eq!(opened[0].0, "Ship release", "titled after the thread");
++    assert!(
++        opened[0].1.contains(STORE_MARKER),
++        "loaded from the ThreadStore, not rendered from B's live view: {:?}",
++        opened[0].1
++    );
++    assert_eq!(
++        item_count(&workspace_b, cx_b),
++        b_items_before,
++        "window B is left unchanged"
++    );
++}
++
++// R4.6 hostile half — a non-native thread live in B only: A's live info cannot see it, and there
++// is no store copy to load, so A offers no Markdown entry at all.
++#[gpui::test]
++async fn non_native_pinned_thread_open_only_in_another_window_offers_no_markdown(
++    cx: &mut TestAppContext,
++) {
++    let (sidebar_a, _workspace_a, mut cx_a, panel_b, _workspace_b, mut cx_b) =
++        two_windows(cx).await;
++    let cx_a = &mut cx_a;
++    let cx_b = &mut cx_b;
++    let session = live_thread_in(&panel_b, cx_b);
++    let thread = save_with_agent(
++        &session,
++        "Ship release",
++        BETA,
++        AgentId::new("claude-acp"),
++        cx_b,
++    );
++    store_pin(thread, cx_a);
++    cx_b.run_until_parked();
++    assert_eq!(
++        pinned_entries(&sidebar_a, cx_a),
++        vec!["v [alpha]", "v Pinned", "  Ship release · beta"],
++        "fixture: the non-native thread is pinned and not live in A"
++    );
++
++    open_pinned_row_menu(&sidebar_a, thread, cx_a);
++    assert!(
++        cx_a.debug_bounds("MENU_ITEM-Open Thread as Markdown")
++            .is_none(),
++        "a non-native thread open only in another window is not offered Markdown"
++    );
++}
++
++// R4.6 converse — the rule must not suppress the entry for a non-native thread that IS live in
++// this window: the same kind of thread, live in A's own panel, is offered it.
++#[gpui::test]
++async fn non_native_pinned_thread_live_in_this_window_offers_markdown(cx: &mut TestAppContext) {
++    let project = init_test_project_with_agent_panel(ALPHA, cx).await;
++    cx.update(|cx| agent_ui::thread_organization::init(cx));
++    cx.run_until_parked();
++    add_markdown_language(&project, cx);
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
++    let (sidebar, panel) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
++    let session = live_thread_in(&panel, cx);
++    let thread = save_with_agent(
++        &session,
++        "Ship release",
++        ALPHA,
++        AgentId::new("claude-acp"),
++        cx,
++    );
++    store_pin(thread, cx);
++    let live = sidebar.read_with(cx, |sidebar, _| {
++        sidebar.contents.entries.iter().any(|entry| {
++            matches!(entry, ListEntry::Thread(row)
++                if row.metadata.thread_id == thread
++                    && row.pinned_project_label.is_some()
++                    && row.is_live)
++        })
++    });
++    assert!(live, "fixture: the pinned row is live in this window");
++
++    open_pinned_row_menu(&sidebar, thread, cx);
++    assert!(
++        cx.debug_bounds("MENU_ITEM-Open Thread as Markdown")
++            .is_some(),
++        "a non-native thread live in this window is offered Markdown"
++    );
++}
++
++// R4.5 converse (benign) — a pinned row whose workspace is in this window opens in THAT
++// workspace, even when another workspace of the window is the active one.
++#[gpui::test]
++async fn markdown_of_a_pinned_row_open_in_this_window_opens_in_its_workspace(
++    cx: &mut TestAppContext,
++) {
++    let project_a = init_test_project_with_agent_panel(ALPHA, cx).await;
++    cx.update(|cx| agent_ui::thread_organization::init(cx));
++    let fs = cx.update(|cx| <dyn fs::Fs>::global(cx));
++    fs.as_fake()
++        .insert_tree(GAMMA, serde_json::json!({ "src": {} }))
++        .await;
++    cx.run_until_parked();
++    let project_gamma = project::Project::test(fs, [GAMMA.as_ref()], cx).await;
++    add_markdown_language(&project_a, cx);
++    add_markdown_language(&project_gamma, cx);
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
++    let sidebar = setup_sidebar(&multi_workspace, cx);
++    let workspace_alpha = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
++    let workspace_gamma = multi_workspace.update_in(cx, |mw, window, cx| {
++        mw.test_add_workspace(project_gamma, window, cx)
++    });
++    cx.run_until_parked();
++    let panel_gamma = add_panel(&workspace_gamma, cx);
++    let session = live_thread_in(&panel_gamma, cx);
++    let thread = save_with_agent(&session, "Ship release", GAMMA, ZED_AGENT_ID.clone(), cx);
++    store_pin(thread, cx);
++    multi_workspace.update_in(cx, |mw, window, cx| {
++        mw.activate(workspace_alpha.clone(), None, window, cx)
++    });
++    cx.run_until_parked();
++    let (active_is_alpha, row_is_live) = sidebar.read_with(cx, |sidebar, cx| {
++        let active = sidebar.active_workspace(cx);
++        let live = sidebar.contents.entries.iter().any(|entry| {
++            matches!(entry, ListEntry::Thread(row)
++                if row.metadata.thread_id == thread
++                    && row.pinned_project_label.is_some()
++                    && row.is_live)
++        });
++        (active.as_ref() == Some(&workspace_alpha), live)
++    });
++    assert!(active_is_alpha, "fixture: alpha is the active workspace");
++    assert!(
++        row_is_live,
++        "fixture: the pinned row is live (gamma is in this window)"
++    );
++    assert_eq!(
++        editors(&workspace_alpha, cx),
++        Vec::new(),
++        "fixture: alpha has no editor"
++    );
++    assert_eq!(
++        editors(&workspace_gamma, cx),
++        Vec::new(),
++        "fixture: gamma has no editor"
++    );
++
++    open_pinned_row_menu(&sidebar, thread, cx);
++    let entry = cx
++        .debug_bounds("MENU_ITEM-Open Thread as Markdown")
++        .expect("the entry is offered");
++    cx.simulate_click(entry.center(), Modifiers::none());
++    cx.run_until_parked();
++
++    assert_eq!(
++        editors(&workspace_gamma, cx).len(),
++        1,
++        "the Markdown opens in the row's own workspace"
++    );
++    assert_eq!(
++        editors(&workspace_alpha, cx),
++        Vec::new(),
++        "not in the active workspace"
++    );
++}
 diff --git a/crates/sidebar/src/sidebar_pinned_tests.rs b/crates/sidebar/src/sidebar_pinned_tests.rs
 new file mode 100644
-index 0000000..99d587f
+index 0000000..4bb603c
 --- /dev/null
 +++ b/crates/sidebar/src/sidebar_pinned_tests.rs
-@@ -0,0 +1,2114 @@
+@@ -0,0 +1,2117 @@
 +// Story 032 — the Pinned section of the agent sidebar (tasks 3.1–3.4, 4.1–4.3).
 +//
 +// Materialize with, in `crates/sidebar/src/sidebar.rs`, beside `mod sidebar_tests;`:
@@ -3582,8 +3999,11 @@ index 0000000..99d587f
 +        pinned_entries(&sidebar, cx)
 +    );
 +}
++
++#[path = "sidebar_pinned_markdown_tests.rs"]
++mod markdown;
 diff --git a/crates/sidebar/src/sidebar_tests.rs b/crates/sidebar/src/sidebar_tests.rs
-index a7ed677..a4a8967 100644
+index 4f22a0e..7944252 100644
 --- a/crates/sidebar/src/sidebar_tests.rs
 +++ b/crates/sidebar/src/sidebar_tests.rs
 @@ -51,7 +51,7 @@ fn set_max_idle_retained_threads(max_idle_retained_threads: usize, cx: &mut App)

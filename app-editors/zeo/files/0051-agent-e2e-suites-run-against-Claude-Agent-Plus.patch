@@ -131,10 +131,10 @@ index 5711c45..d67b682 100644
                          cx,
                      );
 diff --git a/crates/agent/src/tests/mod.rs b/crates/agent/src/tests/mod.rs
-index c23b8ed..f9ac831 100644
+index 9fe0e17..a5b2721 100644
 --- a/crates/agent/src/tests/mod.rs
 +++ b/crates/agent/src/tests/mod.rs
-@@ -2550,20 +2550,26 @@ async fn test_mcp_tool_truncation(cx: &mut TestAppContext) {
+@@ -2558,20 +2558,26 @@ async fn test_mcp_tool_truncation(cx: &mut TestAppContext) {
  async fn test_cancellation(cx: &mut TestAppContext) {
      let ThreadTest { thread, .. } = setup(cx, TestModel::Sonnet4).await;
  
@@ -164,7 +164,7 @@ index c23b8ed..f9ac831 100644
      let mut echo_id = None;
      let mut echo_completed = false;
      while let Some(event) = events.next().await {
-@@ -2599,13 +2605,18 @@ async fn test_cancellation(cx: &mut TestAppContext) {
+@@ -2608,13 +2614,18 @@ async fn test_cancellation(cx: &mut TestAppContext) {
      // if one of the tools is still running.
      thread.update(cx, |thread, cx| thread.cancel(cx)).await;
      let events = events.collect::<Vec<_>>().await;
@@ -174,12 +174,12 @@ index c23b8ed..f9ac831 100644
      assert!(
 -        matches!(
 -            last_event,
--            Some(Ok(ThreadEvent::Stop(acp::StopReason::Cancelled)))
+-            Some(Ok(ThreadEvent::Stop(acp_v2::StopReason::Cancelled)))
 -        ),
 -        "unexpected event {last_event:?}"
 +        events.iter().any(|event| matches!(
 +            event,
-+            Ok(ThreadEvent::Stop(acp::StopReason::Cancelled))
++            Ok(ThreadEvent::Stop(acp_v2::StopReason::Cancelled))
 +        )),
 +        "no Stop(Cancelled) among {events:?}"
 +    );
@@ -189,7 +189,7 @@ index c23b8ed..f9ac831 100644
      );
  
      // Ensure we can still send a new message after cancellation.
-@@ -5142,7 +5153,8 @@ enum TestModel {
+@@ -5144,7 +5155,8 @@ enum TestModel {
  impl TestModel {
      fn id(&self) -> LanguageModelId {
          match self {
@@ -199,7 +199,7 @@ index c23b8ed..f9ac831 100644
              TestModel::Fake => unreachable!(),
          }
      }
-@@ -5218,19 +5230,31 @@ async fn setup(cx: &mut TestAppContext, model: TestModel) -> ThreadTest {
+@@ -5220,19 +5232,31 @@ async fn setup(cx: &mut TestAppContext, model: TestModel) -> ThreadTest {
              if let TestModel::Fake = model {
                  Task::ready(fake.model("fake"))
              } else {
@@ -255,7 +255,7 @@ index 6de17a2..be3970e 100644
  use client::ProxySettings;
  use collections::{HashMap, HashSet};
 diff --git a/crates/agent_servers/src/e2e_tests.rs b/crates/agent_servers/src/e2e_tests.rs
-index 95fbe3c..d667d75 100644
+index f3e5ed3..783b17f 100644
 --- a/crates/agent_servers/src/e2e_tests.rs
 +++ b/crates/agent_servers/src/e2e_tests.rs
 @@ -14,7 +14,6 @@ use std::{

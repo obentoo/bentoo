@@ -17,9 +17,9 @@ CRATES="
 	adler2@2.0.1
 	adler32@1.2.0
 	aes@0.8.4
-	agent-client-protocol-derive@3.2.0
-	agent-client-protocol-schema@1.10.2
-	agent-client-protocol@3.2.0
+	agent-client-protocol-derive@3.3.0
+	agent-client-protocol-schema@1.11.0
+	agent-client-protocol@3.3.0
 	ahash@0.8.12
 	aho-corasick@1.1.3
 	aliasable@0.1.3
@@ -1616,6 +1616,11 @@ KEYWORDS="~amd64"
 # media-plugins/alsa-plugins[pulseaudio], which is a runtime choice, not a
 # property of this binary.
 #
+# devtools-bridge was added on 2026-10-10 (Zeo 0.4.0, story 033): patch 0052, the
+# socket the zeo-devtools Vite plugin talks to. On by default; it needs the
+# claude-agent-acp-plus group (0040's router, 0045's new thread), not
+# claude-code-ide.
+#
 # ai-jail was added on 2026-10-03, carried over from app-editors/zed when that
 # package stopped being part of this chain: it pulls in sys-apps/ai-jail, a
 # sandbox for AI coding agents, and tells how to run claude-agent-acp-plus
@@ -1632,15 +1637,17 @@ KEYWORDS="~amd64"
 # zed-extension, zed-remote-server -- and renaming Zed's server infrastructure is
 # not what a rebrand of the editor is for.
 IUSE="+X ai-jail +claude-agent-acp-plus +claude-agent-acp-tui +claude-code-ide
-	inspector +mimalloc neovim screen-capture test tracy +wayland"
+	+devtools-bridge inspector +mimalloc neovim screen-capture test tracy +wayland"
 # BENTOO-DIVERGENCE: REQUIRED_USE - the || ( X wayland ) clause, which follows
 # from the X and wayland flags this overlay adds (see the IUSE tag). ::gentoo
 # exposes neither, so it has nothing to constrain. ai-jail? requires the agent
-# it wraps. test? requires the adapter flags the test-only patches (0050, 0051)
-# are generated on top of.
+# it wraps. devtools-bridge? requires the group 0052 is generated on top of.
+# test? requires the adapter flags the test-only patches (0050, 0051) are
+# generated on top of.
 REQUIRED_USE="
 	|| ( X wayland )
 	ai-jail? ( claude-agent-acp-plus )
+	devtools-bridge? ( claude-agent-acp-plus )
 	test? ( claude-agent-acp-plus claude-code-ide )
 "
 RESTRICT="!test? ( test )"
@@ -1994,6 +2001,13 @@ src_prepare() {
 	# terminal-ide story 001: Claude Code IDE integration (upstream PR #58300 + API-drift fixes).
 	if use claude-code-ide; then
 		PATCHES+=( "${FILESDIR}/0002-claude-code-ide-integration.patch" )
+	fi
+
+	# 0052 (story 033): the devtools bridge -- an element clicked in a Vite dev
+	# page becomes chips in the project's agent composer. Its own group, after
+	# every adapter group and before test; 0050/0051 apply on top of it unchanged.
+	if use devtools-bridge; then
+		PATCHES+=( "${FILESDIR}/0052-devtools-bridge.patch" )
 	fi
 
 	# 0050 and 0051 change tests only -- nothing in them reaches the binary -- so

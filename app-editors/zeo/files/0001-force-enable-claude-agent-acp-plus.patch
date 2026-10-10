@@ -101,44 +101,14 @@ without the patch -- a test that proved nothing. Measured in 0.2.2_p20261009: wi
 flags.rs hunk reverted, both fail. Their names are left as upstream has them.
 This is the first change to the hunks themselves, so the "byte-identical"
 sentence above holds for the flags.rs hunk only.
+
+Refreshed onto 96984225 (0.4.0_p20261010): upstream stopped forcing acp-beta
+"off" in test_compact_prompt_routes_to_manual_compaction and in the terminal-auth
+routing test, and no longer gates terminal auth on the flag, so the two test
+adaptations this patch carried are gone. What remains is the flag itself:
+upstream still reads it in acp_thread for the per-turn token count.
 ---
 
-diff --git a/crates/agent/src/agent.rs b/crates/agent/src/agent.rs
-index 2deba3a..ccc5585 100644
---- a/crates/agent/src/agent.rs
-+++ b/crates/agent/src/agent.rs
-@@ -4303,7 +4303,12 @@ mod internal_tests {
- 
-         let compact_message_id = ClientUserMessageId::new();
-         let prompt_task = cx.update(|cx| {
--            assert!(!cx.has_flag::<AcpBetaFeatureFlag>());
-+            // Zeo: upstream sets acp-beta "off" above and asserts it is off. 0001
-+            // makes the flag `enabled_for_all`, which wins over that override, so
-+            // it stays ON -- and only 0001 can make it so: a debug build counts as
-+            // staff, so without the override the flag would be on regardless.
-+            // /compact does not read the flag; the rest of the test is upstream's.
-+            assert!(cx.has_flag::<AcpBetaFeatureFlag>());
-             acp_thread::AgentSessionClientUserMessageIds::prompt(
-                 connection.as_ref(),
-                 compact_message_id,
-diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
-index 0e36a60..5cda715 100644
---- a/crates/agent_servers/src/acp.rs
-+++ b/crates/agent_servers/src/acp.rs
-@@ -3802,7 +3802,12 @@ mod tests {
-                     },
-                     cx,
-                 );
--                assert!(!cx.has_flag::<AcpBetaFeatureFlag>());
-+                // Zeo: upstream asserts the "off" override above turns acp-beta
-+                // off. 0001 makes the flag `enabled_for_all`, which wins over the
-+                // override, so it stays ON -- and only 0001 can make it so: a debug
-+                // build counts as staff, so without the override the flag would be
-+                // on regardless. terminal_auth_task does not read the flag.
-+                assert!(cx.has_flag::<AcpBetaFeatureFlag>());
-                 harness.connection.terminal_auth_task(&method_id, cx)
-             })
-             .expect("first-class terminal auth should be routed without ACP beta");
 diff --git a/crates/feature_flags/src/flags.rs b/crates/feature_flags/src/flags.rs
 index 6a10534..3375676 100644
 --- a/crates/feature_flags/src/flags.rs
