@@ -7,14 +7,15 @@ EAPI=8
 # are resolved by npm at install time, which the Portage sandbox forbids, so
 # they ship as a second distfile generated offline from this exact release.
 # Upstream publishes no npm-shrinkwrap.json; --before is what pins the
-# transitive tree (normally >= 7 days in the past; 2026-09-28 was a deliberate
-# same-day refresh, requested by the maintainer), and the resolved tree
+# transitive tree (>= 7 days in the past; 1.25.0 itself was published
+# 2026-10-09, but the root package comes from the local tgz so --before does
+# not touch it), and the resolved tree
 # is recorded in node_modules/.package-lock.json inside the tarball:
 #   tar xzf ${P}.tgz && cd package
 #   npm pkg delete devDependencies scripts
 #   npm install --omit=dev --ignore-scripts --no-audit --no-fund \
-#       --before=2026-09-28
-#   tar --sort=name --mtime='2026-09-28 00:00:00Z' --owner=0 --group=0 \
+#       --before=2026-10-02
+#   tar --sort=name --mtime='2026-10-02 00:00:00Z' --owner=0 --group=0 \
 #       --numeric-owner --format=gnu -cf - node_modules \
 #       | xz -T1 -9e > ${PN}-node_modules-${PVR}.tar.xz
 # Every bump must regenerate and upload this tarball, and redo the LICENSE

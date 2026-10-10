@@ -57,7 +57,7 @@ declare -A GIT_CRATES=(
 	[process_security_environment_spec]='https://github.com/microsoft/mxc;6cd3d58f05d3447e67109cfb75e042803b843ca4;mxc-%commit%/src/core/generated/process_security_environment_specification'
 	[sandbox_spec]='https://github.com/microsoft/mxc;6cd3d58f05d3447e67109cfb75e042803b843ca4;mxc-%commit%/src/core/generated/base_container_specification'
 	[wxc_common]='https://github.com/microsoft/mxc;6cd3d58f05d3447e67109cfb75e042803b843ca4;mxc-%commit%/src/core/wxc_common'
-	[crossterm]='https://github.com/openai-oss-forks/crossterm;efa177859fd9623d57b9fe7ae9bf491ae1ac6ec4;crossterm-%commit%'
+	[crossterm]='https://github.com/openai-oss-forks/crossterm;ed1cdab335221515706178d68495bba2aed1924f;crossterm-%commit%'
 	[h3-quinn]='https://github.com/hyperium/h3;e07e69412876f7e26f026bd75a48b2704d8c8283;h3-%commit%/h3-quinn'
 	[h3]='https://github.com/hyperium/h3;e07e69412876f7e26f026bd75a48b2704d8c8283;h3-%commit%/h3'
 	[nucleo-matcher]='https://github.com/helix-editor/nucleo;4253de9faabb4e5c6d81d946a5e35a90f87347ee;nucleo-%commit%/matcher'
@@ -89,7 +89,11 @@ RUST_MIN_VER="1.95.0"
 # release AND the two codex-rs/Cargo.lock files are byte-identical; say which
 # tag and why, as the 0.150.1 case did (both locks hashed
 # beb9a924bf01f03ecfa9fedbf50a602cbaa5399df5cbe57e2d6bd40529e055a6).
-MY_CRATES_TAG="rust-v${PV}"
+# 0.162.1: the fork published no tarball (rust-v0.162.1 404s) and the two
+# codex-rs/Cargo.lock files are byte-identical (both hashed
+# 49fe417bcafe3f69f1f6636e23274f90d37e75e388127a76888c39001a4f8117), so the
+# 0.162.0 tarball is the right one. Back to "rust-v${PV}" once the fork tags it.
+MY_CRATES_TAG="rust-v0.162.0"
 
 # Version of the prebuilt V8 static library, which MUST equal the version of
 # the "v8" crate the lock resolves -- the archive ships its own FFI bindings
