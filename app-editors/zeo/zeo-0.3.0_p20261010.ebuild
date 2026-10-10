@@ -1548,7 +1548,7 @@ declare -A GIT_CRATES=(
 # rewrites the date and EGIT_COMMIT; a second version variable it could not
 # keep current would leave a new tarball under an old, already-manifested name).
 
-EGIT_COMMIT="089abd691765e6ffdfc09a34a29b6c7bbca18067"
+EGIT_COMMIT="96984225abc235519e66b5c6c9ed23b87621f868"
 LLVM_COMPAT=( 22 )
 RUST_MIN_VER="1.98.1"
 RUST_NEEDS_LLVM=1
