@@ -48,14 +48,33 @@ KEYWORDS="~amd64 ~arm64"
 # ::gentoo's 8.15 still exposes. Same cause as the REQUIRED_USE tag below: the
 # calibre 9 series needs Python 3.14, so those two targets cannot build it and
 # there is no flag to offer.
-IUSE="+font-subsetting ios speech +system-mathjax test +udisks unrar"
+# BENTOO-DIVERGENCE: IUSE - piper, which ::gentoo lacks: there the extension is
+# patched out unconditionally because espeak-ng + onnxruntime "aren't packaged"
+# (bug #961974). This overlay carries sci-libs/onnxruntime{,-bin}, so the
+# neural Read aloud engine (Piper voices, and the Kokoro voices added in 9.16,
+# which run on the same extension) can be offered. Off by default: it pulls in
+# onnxruntime, and the voices themselves are downloaded at first use.
+#
+# The espeak-ng floor is load-bearing: piper.cpp calls
+# espeak_TextToPhonemesWithTerminator(), absent from every release up to
+# 1.52.0 (compile error, not a runtime one). 1.52.0_p20250712 is the commit
+# calibre pins in bypy/sources.json, mirrored in this overlay until ::gentoo
+# ships a release that has the function.
+IUSE="+font-subsetting ios piper speech +system-mathjax test +udisks unrar"
 
 RESTRICT="!test? ( test )"
 
 # BENTOO-DIVERGENCE: REQUIRED_USE - python3_14 alone, where ::gentoo still
 # accepts 3.12 and 3.13. Not a narrowing taken for its own sake: the calibre 9
 # series requires Python 3.14, so the older targets cannot build it at all.
-REQUIRED_USE="${PYTHON_REQUIRED_USE}"
+#
+# arm64? ( !piper ): both onnxruntime ebuilds are ~amd64 only. pkgcheck's
+# solver does not read REQUIRED_USE, so it still reports NonsolvableDeps for
+# arm64 profiles; an overlay cannot mask a flag per arch (profiles come from
+# ::gentoo). Drop this once onnxruntime gains ~arm64.
+REQUIRED_USE="${PYTHON_REQUIRED_USE}
+	arm64? ( !piper )
+"
 
 # BENTOO-DIVERGENCE: DEPEND - app-text/podofo:1 instead of :0, because calibre
 # 9.15.0 ported its bindings to the PoDoFo 1.x API (PdfErrorCode::FlateError,
@@ -123,6 +142,14 @@ COMMON_DEPEND="${PYTHON_DEPS}
 		>=app-pda/usbmuxd-1.0.8
 		>=app-pda/libimobiledevice-1.2.0
 	)
+	piper? (
+		>=app-accessibility/espeak-ng-1.52.0_p20250712
+		dev-python/pyqt6[multimedia,speech]
+		|| (
+			sci-libs/onnxruntime
+			sci-libs/onnxruntime-bin
+		)
+	)
 	speech? (
 		$(python_gen_cond_dep 'app-accessibility/speech-dispatcher[python,${PYTHON_USEDEP}]')
 		dev-python/pyqt6[multimedia,speech]
@@ -131,7 +158,8 @@ COMMON_DEPEND="${PYTHON_DEPS}
 	udisks? ( virtual/libudev )
 	unrar? ( dev-python/unrardll )
 "
-# BENTOO-DIVERGENCE: RDEPEND - same two, through COMMON_DEPEND above.
+# BENTOO-DIVERGENCE: RDEPEND - same two, through COMMON_DEPEND above, plus
+# piper? ( espeak-ng onnxruntime ), see the IUSE tag.
 RDEPEND="${COMMON_DEPEND}
 	udisks? ( sys-fs/udisks:2 )"
 # BENTOO-DIVERGENCE: DEPEND - pystache and tzlocal, new imports in the 9.x
@@ -170,16 +198,22 @@ BDEPEND="$(python_gen_cond_dep '
 "
 
 # BENTOO-DIVERGENCE: PATCHES - same two fixes as ::gentoo (jxr-test, piper),
-# rebased onto 9.x; the names carry the series they were rebased for.
+# rebased onto 9.x; the names carry the series they were rebased for. The
+# piper one is applied only with USE=-piper (src_prepare), not always.
 PATCHES=(
 	# Skip calling a binary (JxrDecApp) from libjxr which is used for tests
 	# We don't (yet?) package libjxr and it seems to be dead upstream
 	# (last commit in 2017)
 	"${FILESDIR}/${PN}-9.13.0-jxr-test.patch"
-	"${FILESDIR}/${PN}-9.13.0-piper.patch"
 )
 
 src_prepare() {
+	# Removes the piper extension from the build (and from the list of
+	# extensions calibre expects to import), so it is only wanted without
+	# the flag. setup/build_environment.py finds espeak-ng and onnxruntime
+	# through pkg-config otherwise.
+	use piper || PATCHES+=( "${FILESDIR}/${PN}-9.13.0-piper.patch" )
+
 	default
 
 	# Warning:
@@ -279,8 +313,9 @@ src_test() {
 		7z
 		# unpackaged Python dependency: pyzstd
 		test_zstd
-		# unpackaged TTS backend (optional at runtime): https://github.com/rhasspy/piper
-		piper
+		# the extension is patched out without the flag; with it, the test
+		# runs offline (espeak-ng phonemizing, no voice model needed)
+		$(usev !piper piper)
 		# tests if a completely unused module is bundled
 		pycryptodome
 
