@@ -1,0 +1,64 @@
+Install espeak-ng.pc under the real libdir, with libdir/includedir taken
+from GNUInstallDirs. As shipped at a4ca101c, cmake/package.cmake hardcodes
+lib/pkgconfig and ${exec_prefix}/lib, so on lib64 systems pkg-config cannot
+find espeak-ng at all. Backport of upstream 35524b3 + 6c3ba4e (2026-04),
+both on master; drop when the snapshot moves past them.
+
+diff -ru a/cmake/package.cmake b/cmake/package.cmake
+--- a/cmake/package.cmake
++++ b/cmake/package.cmake
+@@ -21,8 +21,8 @@
+ 
+ set(prefix ${CMAKE_INSTALL_PREFIX})
+ set(exec_prefix ${CMAKE_INSTALL_PREFIX})
+-set(libdir "\${exec_prefix}/lib")
+-set(includedir "\${prefix}/include")
++set(libdir ${CMAKE_INSTALL_FULL_LIBDIR})
++set(includedir ${CMAKE_INSTALL_FULL_INCLUDEDIR})
+ 
+ configure_file(
+   ${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}.pc.in
+@@ -31,5 +31,5 @@
+ )
+ 
+ install(
+-  FILES ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.pc DESTINATION lib/pkgconfig
+-)
+\ No newline at end of file
++  FILES ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
++)
+diff -ru a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -12,6 +12,7 @@
+ 
+ include(CTest)
+ 
++include(GNUInstallDirs)
+ include(cmake/deps.cmake)
+ include(cmake/config.cmake)
+ add_subdirectory(src)
+diff -ru a/src/CMakeLists.txt b/src/CMakeLists.txt
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -14,7 +14,7 @@
+ set_target_properties(
+   espeak-ng-bin PROPERTIES
+   MACOSX_RPATH ON
+-  INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
++  INSTALL_RPATH "${CMAKE_INSTALL_LIBDIR}"
+ )
+ if (MINGW)
+   target_link_options(espeak-ng-bin PRIVATE "-static-libstdc++" "-static")
+diff -ru a/src/libespeak-ng/CMakeLists.txt b/src/libespeak-ng/CMakeLists.txt
+--- a/src/libespeak-ng/CMakeLists.txt
++++ b/src/libespeak-ng/CMakeLists.txt
+@@ -40,7 +40,7 @@
+ set_target_properties(
+   espeak-ng PROPERTIES
+   MACOSX_RPATH ON
+-  INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
++  INSTALL_RPATH "${CMAKE_INSTALL_LIBDIR}"
+ )
+ 
+ target_include_directories(espeak-ng BEFORE PRIVATE $<TARGET_PROPERTY:espeak-include,INTERFACE_INCLUDE_DIRECTORIES>)
