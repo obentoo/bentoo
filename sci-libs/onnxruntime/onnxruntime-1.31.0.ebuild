@@ -97,12 +97,14 @@ BDEPEND="
 # the cpuinfo block into three branches (ARM64 / Linux / fallback), so three
 # hunks were rejected -- and eapply aborts the whole src_prepare on a single
 # rejection, which left 1.30.0 unbuildable for everyone. Reported and rebased
-# by IlgazC in obentoo/bentoo#46. Dry-run every patch on a clean tree at each
+# by IlgazC in obentoo/bentoo#46. 1.31.0 broke it again with a single context
+# line: google_benchmark gained a version floor (`FIND_PACKAGE_ARGS 1.9.5 NAMES
+# benchmark`). Dry-run every patch on a clean tree at each
 # bump; the rename has to travel with it.
 PATCHES=(
 	"${FILESDIR}/${PN}-1.22.2-relax-the-dependency-on-flatbuffers.patch"
 	"${FILESDIR}/${PN}-1.24.4-no-werror.patch"
-	"${FILESDIR}/${PN}-1.30.0-use-system-libraries.patch"
+	"${FILESDIR}/${PN}-1.31.0-use-system-libraries.patch"
 )
 
 CMAKE_USE_DIR="${S}/cmake"
