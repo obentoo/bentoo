@@ -520,7 +520,9 @@ multilib_src_configure() {
 		$(meson_feature unwind libunwind)
 		$(meson_feature vulkan display-info)
 		$(meson_feature zstd)
-		$(meson_use llvm amd-use-llvm)
+		# amd-use-llvm is deprecated in favour of the amd-options array, and
+		# meson forwards its "true" there verbatim, which is not a valid choice.
+		-Damd-options=$(usex llvm use-llvm '')
 		$(meson_use sysprof)
 		$(meson_use cpu_flags_x86_sse2 sse2)
 		-Dvalgrind=$(usex valgrind auto disabled)
