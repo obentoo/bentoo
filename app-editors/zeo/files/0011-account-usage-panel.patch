@@ -41,10 +41,10 @@ window and values above 1 are read as percentages.
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index b57ad43..115f238 100644
+index 55ba18f..b77fbcb 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
+@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
  use serde_json::to_string_pretty;
  use settings::{Settings, SettingsStore};
  use std::borrow::Cow;
@@ -53,7 +53,7 @@ index b57ad43..115f238 100644
  use std::error::Error;
  use std::fmt::{Formatter, Write};
  use std::ops::Range;
-@@ -3453,6 +3453,206 @@ pub struct SessionCost {
+@@ -3554,6 +3554,206 @@ pub struct SessionCost {
      pub meta: Option<acp_v2::Meta>,
  }
  
@@ -260,15 +260,15 @@ index b57ad43..115f238 100644
  pub const TOKEN_USAGE_WARNING_THRESHOLD: f32 = 0.8;
  
  impl TokenUsage {
-@@ -3555,6 +3755,7 @@ pub struct AcpThread {
-     received_session_state: bool,
+@@ -3658,6 +3858,7 @@ pub struct AcpThread {
+     subagent_outcomes: Vec<(usize, acp_v2::StateUpdate)>,
      reported_usage: Option<ReportedTokenUsage>,
      token_usage: Option<TokenUsage>,
 +    account_usage: AccountUsage,
      cost: Option<SessionCost>,
      prompt_capabilities: acp_v2::PromptCapabilities,
      available_commands: Vec<acp_v2::AvailableCommand>,
-@@ -3709,6 +3910,7 @@ pub enum AcpThreadEvent {
+@@ -3812,6 +4013,7 @@ pub enum AcpThreadEvent {
      TitleUpdated,
      NoticesUpdated,
      TokenUsageUpdated(OutputTokensUpdate),
@@ -276,7 +276,7 @@ index b57ad43..115f238 100644
      EntryUpdated(usize),
      EntriesRemoved(Range<usize>),
      ToolAuthorizationRequested(PermissionRequestId),
-@@ -3865,6 +4067,7 @@ impl AcpThread {
+@@ -3968,6 +4170,7 @@ impl AcpThread {
                  | AcpThreadEvent::TitleUpdated
                  | AcpThreadEvent::NoticesUpdated
                  | AcpThreadEvent::TokenUsageUpdated(_)
@@ -284,7 +284,7 @@ index b57ad43..115f238 100644
                  | AcpThreadEvent::EntryUpdated(_)
                  | AcpThreadEvent::Retry(_)
                  | AcpThreadEvent::SubagentSpawned(_)
-@@ -3934,6 +4137,7 @@ impl AcpThread {
+@@ -4021,6 +4224,7 @@ impl AcpThread {
              reported_usage: None,
              connection,
              token_usage: None,
@@ -292,7 +292,7 @@ index b57ad43..115f238 100644
              cost: None,
              prompt_capabilities,
              available_commands: Vec::new(),
-@@ -4669,6 +4873,15 @@ impl AcpThread {
+@@ -4805,6 +5009,15 @@ impl AcpThread {
          Ok(())
      }
  
@@ -308,7 +308,7 @@ index b57ad43..115f238 100644
      pub fn cost(&self) -> Option<&SessionCost> {
          self.cost.as_ref()
      }
-@@ -5899,9 +6112,20 @@ impl AcpThread {
+@@ -6102,9 +6315,20 @@ impl AcpThread {
                  meta: cost.meta,
              });
          }
@@ -329,7 +329,7 @@ index b57ad43..115f238 100644
      }
  
      pub fn update_retry_status(&mut self, status: RetryStatus, cx: &mut Context<Self>) {
-@@ -8449,6 +8673,198 @@ fn update_markdown_in_place(markdown: &Entity<Markdown>, text: &str, cx: &mut Ap
+@@ -8426,6 +8650,198 @@ fn update_markdown_in_place(markdown: &Entity<Markdown>, text: &str, cx: &mut Ap
  
  #[cfg(test)]
  mod tests {
@@ -541,10 +541,10 @@ index b79651c..69d201e 100644
              | AcpThreadEvent::SubagentSpawned(_)
              | AcpThreadEvent::SubagentAssociationUpdated
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index bdcebb3..5bb60e7 100644
+index 085706e..2f55fd9 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
-@@ -350,6 +350,7 @@ impl Conversation {
+@@ -349,6 +349,7 @@ impl Conversation {
                      | AcpThreadEvent::SubmissionUpdated(_)
                      | AcpThreadEvent::TitleUpdated
                      | AcpThreadEvent::TokenUsageUpdated(_)
@@ -552,7 +552,7 @@ index bdcebb3..5bb60e7 100644
                      | AcpThreadEvent::EntryUpdated(_)
                      | AcpThreadEvent::EntriesRemoved(_)
                      | AcpThreadEvent::Retry(_)
-@@ -785,6 +786,7 @@ fn affects_thread_metadata(event: &AcpThreadEvent) -> bool {
+@@ -788,6 +789,7 @@ fn affects_thread_metadata(event: &AcpThreadEvent) -> bool {
          | AcpThreadEvent::EntriesRemoved(_)
          | AcpThreadEvent::Retry(_)
          | AcpThreadEvent::TokenUsageUpdated(_)
@@ -560,7 +560,7 @@ index bdcebb3..5bb60e7 100644
          | AcpThreadEvent::PromptCapabilitiesUpdated
          | AcpThreadEvent::AvailableCommandsUpdated(_)
          | AcpThreadEvent::ModeUpdated(_)
-@@ -2287,6 +2289,13 @@ impl ConversationView {
+@@ -2291,6 +2293,13 @@ impl ConversationView {
                      });
                  }
              }
@@ -575,7 +575,7 @@ index bdcebb3..5bb60e7 100644
                  if let Some(thread_view) = self.thread_view(&session_id) {
                      let available_skills = thread
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index edef606..6bc1bd0 100644
+index d81b8eb..9d2c96f 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -9,9 +9,10 @@ use agent_client_protocol::schema::v2 as acp_v2;
@@ -584,15 +584,15 @@ index edef606..6bc1bd0 100644
  use acp_thread::{
 -    Elicitation, ElicitationEntryId, ElicitationStatus, ForegroundActivity, OutputTokensUpdate,
 -    SandboxAuthorizationDetails, SandboxFallbackAuthorizationDetails, SandboxNotAppliedReason,
--    SubmissionId, SubmissionResponse, SubmissionState, ToolCallLocation, decode_path_escapes,
+-    SessionMessageSide, SubmissionId, SubmissionResponse, SubmissionState, ToolCallLocation,
 +    AccountUsageStatus, Elicitation, ElicitationEntryId, ElicitationStatus, ForegroundActivity,
 +    OutputTokensUpdate, SandboxAuthorizationDetails, SandboxFallbackAuthorizationDetails,
-+    SandboxNotAppliedReason, SubmissionId, SubmissionResponse, SubmissionState, ToolCallLocation,
-+    decode_path_escapes,
++    SandboxNotAppliedReason, SessionMessageSide, SubmissionId, SubmissionResponse, SubmissionState,
++    ToolCallLocation,
+     decode_path_escapes,
  };
  use agent::{
-     SandboxStatusKey, SandboxStatusRefresh, SkillLoadingIssue, SkillLoadingIssueKind,
-@@ -5855,6 +5856,32 @@ impl ThreadView {
+@@ -5910,6 +5911,32 @@ impl ThreadView {
          let input_max_label = crate::humanize_token_count(max_input_tokens);
          let output_max_label = crate::humanize_token_count(max_output_tokens);
  
@@ -625,7 +625,7 @@ index edef606..6bc1bd0 100644
          let build_tooltip = {
              move |_window: &mut Window, cx: &mut App| {
                  let percentage = percentage.clone();
-@@ -5867,8 +5894,11 @@ impl ThreadView {
+@@ -5922,8 +5949,11 @@ impl ThreadView {
                  let project_entry_ids = project_entry_ids.clone();
                  let workspace = workspace.clone();
                  let cost_label = cost_label.clone();
@@ -637,7 +637,7 @@ index edef606..6bc1bd0 100644
                      used,
                      max,
                      input_tokens: input_tokens_label,
-@@ -6882,8 +6912,23 @@ impl ThreadView {
+@@ -6937,8 +6967,23 @@ impl ThreadView {
      }
  }
  
@@ -661,7 +661,7 @@ index edef606..6bc1bd0 100644
      used: String,
      max: String,
      input_tokens: String,
-@@ -6911,6 +6956,8 @@ impl Render for TokenUsageTooltip {
+@@ -6966,6 +7011,8 @@ impl Render for TokenUsageTooltip {
          let output_max = self.output_max.clone();
          let show_split = self.show_split;
          let cost_label = self.cost_label.clone();
@@ -670,7 +670,7 @@ index edef606..6bc1bd0 100644
          let global_agents_md_loaded = self.global_agents_md_loaded;
          let project_rules_count = self.project_rules_count;
          let project_entry_ids = self.project_entry_ids.clone();
-@@ -6973,6 +7020,68 @@ impl Render for TokenUsageTooltip {
+@@ -7028,6 +7075,68 @@ impl Render for TokenUsageTooltip {
                              .child(Label::new(cost_label)),
                      )
                  })

@@ -92,6 +92,18 @@ SET list_id = NULL WHERE list_id = ? -- now runs in the same write before
 DeleteList, the shape ClearManual already has, and leaves the skipped row's
 other values as they were. Three more tests, in store_clear_list_tests.rs.
 
+a4b39c38 review: (2026-11-01, story 072) Upstream removed
+remote_connection_identity, same_remote_connection_identity and
+RemoteConnectionIdentity::persistence_key, and dropped the container name from
+RemoteConnectionIdentity::Docker. ProjectKey's host part now comes from
+RemoteConnectionOptions::identity() for SSH and WSL, which gives the same bytes
+as before (host, username, port; distro, user). For Docker it is still built
+from DockerConnectionOptions as ["docker", container_id, name, remote_user], so
+Docker projects organized by earlier versions keep their keys. Wherever this
+header says "the fields same_remote_connection_identity compares", read
+RemoteConnectionOptions::identity for SSH/WSL and the triple above for Docker.
+project_key_stored_form_is_pinned now pins the Docker bytes as well.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -116,10 +128,10 @@ index 058c8c2..ed99247 100644
  
      inline_assistant::init(fs.clone(), prompt_builder.clone(), cx);
 diff --git a/crates/agent_ui/src/thread_metadata_store.rs b/crates/agent_ui/src/thread_metadata_store.rs
-index a26f7ed..e003837 100644
+index 3fdb3a9..559ebb2 100644
 --- a/crates/agent_ui/src/thread_metadata_store.rs
 +++ b/crates/agent_ui/src/thread_metadata_store.rs
-@@ -1139,6 +1139,7 @@ impl ThreadMetadataStore {
+@@ -1136,6 +1136,7 @@ impl ThreadMetadataStore {
      }
  
      pub fn delete(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) {
@@ -129,10 +141,10 @@ index a26f7ed..e003837 100644
                  self.threads_by_session.remove(sid);
 diff --git a/crates/agent_ui/src/thread_organization.rs b/crates/agent_ui/src/thread_organization.rs
 new file mode 100644
-index 0000000..fc86555
+index 0000000..8b828aa
 --- /dev/null
 +++ b/crates/agent_ui/src/thread_organization.rs
-@@ -0,0 +1,1374 @@
+@@ -0,0 +1,1381 @@
 +//! How the user organized their threads: pinned order, a per-project manual order, lists, tags
 +//! and a sub-thread's parent link.
 +//!
@@ -157,7 +169,7 @@ index 0000000..fc86555
 +use futures::{StreamExt as _, channel::mpsc};
 +use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global, SharedString, Task};
 +use project::ProjectGroupKey;
-+use remote::{RemoteConnectionIdentity, RemoteConnectionOptions, remote_connection_identity};
++use remote::{RemoteConnectionIdentity, RemoteConnectionOptions};
 +
 +use crate::thread_metadata_store::{ThreadId, ThreadMetadataStore};
 +
@@ -301,13 +313,25 @@ index 0000000..fc86555
 +    }
 +}
 +
-+/// Built from exactly the fields `remote::same_remote_connection_identity` compares, so a
-+/// nickname or a password never makes the same host a second project.
++/// SSH and WSL: the fields `RemoteConnectionOptions::identity` compares, so a nickname or a
++/// password never makes the same host a second project. Docker: container id, name and remote
++/// user — the key earlier versions stored, which no longer equals upstream's identity.
 +fn host_identity(options: &RemoteConnectionOptions) -> serde_json::Value {
 +    // Arrays, not objects: an object's key order depends on serde_json's `preserve_order`
 +    // feature, and a key that changed with a feature flag would silently lose every remote
 +    // project's Manual mode.
-+    match remote_connection_identity(options) {
++    if let RemoteConnectionOptions::Docker(docker) = options {
++        // Upstream dropped the container `name` from `RemoteConnectionIdentity::Docker` at
++        // a4b39c38; it stays in this key so Docker projects persisted by earlier Zeo versions
++        // keep their organization.
++        return serde_json::json!([
++            "docker",
++            docker.container_id,
++            docker.name,
++            docker.remote_user
++        ]);
++    }
++    match options.identity() {
 +        RemoteConnectionIdentity::Ssh {
 +            host,
 +            username,
@@ -316,15 +340,10 @@ index 0000000..fc86555
 +        RemoteConnectionIdentity::Wsl { distro_name, user } => {
 +            serde_json::json!(["wsl", distro_name, user])
 +        }
-+        RemoteConnectionIdentity::Docker {
-+            container_id,
-+            name,
-+            remote_user,
-+        } => serde_json::json!(["docker", container_id, name, remote_user]),
-+        // Only the test-support `Mock` variant reaches this arm; which builds have it depends on
-+        // `remote`'s features, so a `cfg` here could not match them reliably.
-+        #[allow(unreachable_patterns)]
-+        other => serde_json::json!(["other", other.persistence_key()]),
++        // Docker returned above; only the test-support `Mock` variant reaches this arm, and which
++        // builds have it depends on `remote`'s features, so a `cfg` here could not match them
++        // reliably.
++        other => serde_json::json!(["other", format!("{other:?}")]),
 +    }
 +}
 +
@@ -2464,10 +2483,10 @@ index 0000000..57fa672
 +}
 diff --git a/crates/agent_ui/src/thread_organization/project_key_tests.rs b/crates/agent_ui/src/thread_organization/project_key_tests.rs
 new file mode 100644
-index 0000000..7ae3051
+index 0000000..820ae9d
 --- /dev/null
 +++ b/crates/agent_ui/src/thread_organization/project_key_tests.rs
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,187 @@
 +// Story 031, task 2.3 — `ProjectKey::from_group` (R3.4, R3.5).
 +//
 +// Materialize with, in `src/thread_organization.rs`:
@@ -2478,14 +2497,16 @@ index 0000000..7ae3051
 +//
 +// Contract: two project groups are the same project exactly when they have the same set of main
 +// worktree paths (order irrelevant) on the same host identity — the identity
-+// `remote::same_remote_connection_identity` compares, so runtime-only fields such as an SSH
++// `RemoteConnectionOptions::identity` compares, so runtime-only fields such as an SSH
 +// nickname or password never split a project. Hostile halves first: keys that must stay APART
 +// (including derived renderings that could coincide), then keys that must come TOGETHER.
 +
 +use std::path::Path;
 +
 +use project::ProjectGroupKey;
-+use remote::{RemoteConnectionOptions, SshConnectionOptions, WslConnectionOptions};
++use remote::{
++    DockerConnectionOptions, RemoteConnectionOptions, SshConnectionOptions, WslConnectionOptions,
++};
 +use workspace::PathList;
 +
 +use super::ProjectKey;
@@ -2537,7 +2558,7 @@ index 0000000..7ae3051
 +
 +// R3.5 (hostile: must NOT collapse) — the same folders on different hosts are different
 +// projects: local against remote, two remote hosts, and the same host under a field that
-+// `same_remote_connection_identity` compares (user, port, WSL user, transport).
++// `RemoteConnectionOptions::identity` compares (user, port, WSL user, transport).
 +#[test]
 +fn project_key_keeps_the_same_folders_on_different_hosts_apart() {
 +    let paths = ["/srv/app"];
@@ -2583,7 +2604,7 @@ index 0000000..7ae3051
 +    );
 +}
 +
-+// R3.5's converse (hostile: must NOT split) — fields `same_remote_connection_identity` ignores
++// R3.5's converse (hostile: must NOT split) — fields `RemoteConnectionOptions::identity` ignores
 +// (nickname, password, extra args, timeout) never make the same host a second project.
 +#[test]
 +fn project_key_ignores_remote_fields_that_are_not_host_identity() {
@@ -2604,10 +2625,10 @@ index 0000000..7ae3051
 +        upload_binary_over_ssh: true,
 +        ..Default::default()
 +    }));
-+    assert!(remote::same_remote_connection_identity(
-+        plain.as_ref(),
-+        decorated.as_ref()
-+    ));
++    assert_eq!(
++        plain.as_ref().map(RemoteConnectionOptions::identity),
++        decorated.as_ref().map(RemoteConnectionOptions::identity)
++    );
 +    assert_eq!(key(plain, &["/srv/app"]), key(decorated, &["/srv/app"]));
 +}
 +
@@ -2639,6 +2660,18 @@ index 0000000..7ae3051
 +    assert_eq!(
 +        key(wsl("Ubuntu", None), &["/home/u"]).0.as_ref(),
 +        r#"[["wsl","Ubuntu",null],["/home/u"]]"#
++    );
++    // The container name stays in the Docker key although upstream's identity dropped it at
++    // a4b39c38: Docker projects stored by earlier versions keep their organization.
++    let docker = Some(RemoteConnectionOptions::Docker(DockerConnectionOptions {
++        name: "devbox".to_string(),
++        container_id: "c0ffee".to_string(),
++        remote_user: "vscode".to_string(),
++        ..Default::default()
++    }));
++    assert_eq!(
++        key(docker, &["/workspaces/app"]).0.as_ref(),
++        r#"[["docker","c0ffee","devbox","vscode"],["/workspaces/app"]]"#
 +    );
 +}
 diff --git a/crates/agent_ui/src/thread_organization/store_admission_tests.rs b/crates/agent_ui/src/thread_organization/store_admission_tests.rs

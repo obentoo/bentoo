@@ -64,13 +64,21 @@ claude-agent-acp-plus flag BY DEPENDENCY, like 0011 and 0013.
 Test added (0.2.3_p20261009): a malformed count (-1, "2", 1.5, null) leaves the last one.
 Tests added 2026-10-10 (story 032 v4): Background -> Completed marks a pinned row and header.
 Test added (0.6.1_p20261021): archiving a Background thread is refused.
+
+a4b39c38 review: (2026-11-01, story 072) Upstream #66255 now reports native
+subagent state the way it reports ACP subagents, through update_session_state,
+restore_subagent_outcomes and the linked session messages of #66101/#66102. This
+patch reads its _meta in the SessionInfoUpdate arm of
+AcpThread::handle_session_update, an arm upstream did not touch. Upstream
+changed only the SessionMessage arm there. No new dispatch path bypasses
+handle_session_update.
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index d60be95..1c50fa9 100644
+index c70e008..0572aee 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -3729,6 +3729,15 @@ impl AccountUsage {
+@@ -3830,6 +3830,15 @@ impl AccountUsage {
  /// forwards the SDK's `rate_limit_event` here instead of dropping it.
  const CLAUDE_RATE_LIMIT_META_KEY: &str = "_claude/rateLimit";
  
@@ -86,7 +94,7 @@ index d60be95..1c50fa9 100644
  pub const TOKEN_USAGE_WARNING_THRESHOLD: f32 = 0.8;
  
  impl TokenUsage {
-@@ -3832,6 +3841,7 @@ pub struct AcpThread {
+@@ -3935,6 +3944,7 @@ pub struct AcpThread {
      reported_usage: Option<ReportedTokenUsage>,
      token_usage: Option<TokenUsage>,
      account_usage: AccountUsage,
@@ -94,7 +102,7 @@ index d60be95..1c50fa9 100644
      cost: Option<SessionCost>,
      prompt_capabilities: acp_v2::PromptCapabilities,
      available_commands: Vec<acp_v2::AvailableCommand>,
-@@ -3987,6 +3997,7 @@ pub enum AcpThreadEvent {
+@@ -4090,6 +4100,7 @@ pub enum AcpThreadEvent {
      NoticesUpdated,
      TokenUsageUpdated(OutputTokensUpdate),
      AccountUsageUpdated,
@@ -102,7 +110,7 @@ index d60be95..1c50fa9 100644
      EntryUpdated(usize),
      EntriesRemoved(Range<usize>),
      ToolAuthorizationRequested(PermissionRequestId),
-@@ -4144,6 +4155,7 @@ impl AcpThread {
+@@ -4247,6 +4258,7 @@ impl AcpThread {
                  | AcpThreadEvent::NoticesUpdated
                  | AcpThreadEvent::TokenUsageUpdated(_)
                  | AcpThreadEvent::AccountUsageUpdated
@@ -110,7 +118,7 @@ index d60be95..1c50fa9 100644
                  | AcpThreadEvent::EntryUpdated(_)
                  | AcpThreadEvent::Retry(_)
                  | AcpThreadEvent::SubagentSpawned(_)
-@@ -4214,6 +4226,7 @@ impl AcpThread {
+@@ -4301,6 +4313,7 @@ impl AcpThread {
              connection,
              token_usage: None,
              account_usage: AccountUsage::default(),
@@ -118,7 +126,7 @@ index d60be95..1c50fa9 100644
              cost: None,
              prompt_capabilities,
              available_commands: Vec::new(),
-@@ -4958,6 +4971,12 @@ impl AcpThread {
+@@ -5094,6 +5107,12 @@ impl AcpThread {
          (!self.account_usage.is_empty()).then_some(&self.account_usage)
      }
  
@@ -131,7 +139,7 @@ index d60be95..1c50fa9 100644
      pub fn cost(&self) -> Option<&SessionCost> {
          self.cost.as_ref()
      }
-@@ -5126,6 +5145,22 @@ impl AcpThread {
+@@ -5262,6 +5281,22 @@ impl AcpThread {
                  self.push_notice(notices::from_v1(notice).map_err(acp_v1::Error::from)?, cx);
              }
              acp_v1::SessionUpdate::SessionInfoUpdate(info_update) => {
@@ -154,7 +162,7 @@ index d60be95..1c50fa9 100644
                  self.update_session_info(info_update, cx);
              }
              acp_v1::SessionUpdate::AvailableCommandsUpdate(acp_v1::AvailableCommandsUpdate {
-@@ -23277,6 +23312,136 @@ mod tests {
+@@ -22869,6 +22904,136 @@ mod tests {
          );
      }
  
@@ -304,10 +312,10 @@ index 69d201e..63b7ec7 100644
              | AcpThreadEvent::SubagentSpawned(_)
              | AcpThreadEvent::SubagentAssociationUpdated
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 5421a80..3a03b67 100644
+index 679073a..527ff0d 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
-@@ -351,6 +351,7 @@ impl Conversation {
+@@ -350,6 +350,7 @@ impl Conversation {
                      | AcpThreadEvent::TitleUpdated
                      | AcpThreadEvent::TokenUsageUpdated(_)
                      | AcpThreadEvent::AccountUsageUpdated
@@ -315,7 +323,7 @@ index 5421a80..3a03b67 100644
                      | AcpThreadEvent::EntryUpdated(_)
                      | AcpThreadEvent::EntriesRemoved(_)
                      | AcpThreadEvent::Retry(_)
-@@ -787,6 +788,7 @@ fn affects_thread_metadata(event: &AcpThreadEvent) -> bool {
+@@ -790,6 +791,7 @@ fn affects_thread_metadata(event: &AcpThreadEvent) -> bool {
          | AcpThreadEvent::Retry(_)
          | AcpThreadEvent::TokenUsageUpdated(_)
          | AcpThreadEvent::AccountUsageUpdated
@@ -323,7 +331,7 @@ index 5421a80..3a03b67 100644
          | AcpThreadEvent::PromptCapabilitiesUpdated
          | AcpThreadEvent::AvailableCommandsUpdated(_)
          | AcpThreadEvent::ModeUpdated(_)
-@@ -2289,6 +2291,10 @@ impl ConversationView {
+@@ -2293,6 +2295,10 @@ impl ConversationView {
                      });
                  }
              }
@@ -335,10 +343,10 @@ index 5421a80..3a03b67 100644
                  // A redraw is all this needs: the account section is built from the thread
                  // when the tooltip opens, so there is no per-turn state to recompute.
 diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
-index 4546628..2b0c815 100644
+index 81f4478..10f7502 100644
 --- a/crates/sidebar/src/sidebar.rs
 +++ b/crates/sidebar/src/sidebar.rs
-@@ -464,7 +464,14 @@ fn apply_live_row_state(
+@@ -462,7 +462,14 @@ fn apply_live_row_state(
          && session_id
              .as_ref()
              .and_then(|sid| context.old_statuses.get(sid))
@@ -354,7 +362,7 @@ index 4546628..2b0c815 100644
      {
          notified_threads.insert(thread.metadata.thread_id);
      }
-@@ -2030,7 +2037,10 @@ impl Sidebar {
+@@ -2043,7 +2050,10 @@ impl Sidebar {
                          let old_status = old_statuses.get(&info.session_id).map(|(s, _)| *s);
                          new_live_statuses.insert(info.session_id.clone(), (info.status, thread_id));
                          if info.status == AgentThreadStatus::Completed
@@ -366,7 +374,7 @@ index 4546628..2b0c815 100644
                          {
                              notified_threads.insert(thread_id);
                          }
-@@ -6200,9 +6210,12 @@ impl Sidebar {
+@@ -6163,9 +6173,12 @@ impl Sidebar {
          match self.contents.entries.get(ix) {
              Some(ListEntry::Thread(thread)) => {
                  match thread.status {
@@ -380,7 +388,7 @@ index 4546628..2b0c815 100644
                          return;
                      }
                      AgentThreadStatus::Completed | AgentThreadStatus::Error => {}
-@@ -6932,6 +6945,9 @@ impl Sidebar {
+@@ -6892,6 +6905,9 @@ impl Sidebar {
                                  })
                                  .into_any_element(),
                          ),
@@ -390,7 +398,7 @@ index 4546628..2b0c815 100644
                          None => Some(
                              IconButton::new("archive-thread", IconName::Archive)
                                  .hover_background(button_hover_bg)
-@@ -8734,6 +8750,9 @@ fn all_thread_infos_for_workspace(
+@@ -8714,6 +8730,9 @@ fn all_thread_infos_for_workspace(
                  match thread.status() {
                      ThreadStatus::Unconfirmed => AgentThreadStatus::Unconfirmed,
                      ThreadStatus::Generating => AgentThreadStatus::Running,
@@ -624,7 +632,7 @@ index ae1b2e4..b33851e 100644
 +#[path = "sidebar_pinned_background_tests.rs"]
 +mod background;
 diff --git a/crates/sidebar/src/sidebar_tests.rs b/crates/sidebar/src/sidebar_tests.rs
-index 09a5cef..0ad4dd4 100644
+index 4e6f754..decbc88 100644
 --- a/crates/sidebar/src/sidebar_tests.rs
 +++ b/crates/sidebar/src/sidebar_tests.rs
 @@ -686,6 +686,7 @@ pub(super) fn visible_entries_as_strings(

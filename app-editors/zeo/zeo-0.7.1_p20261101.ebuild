@@ -17,9 +17,9 @@ CRATES="
 	adler2@2.0.1
 	adler32@1.2.0
 	aes@0.8.4
-	agent-client-protocol-derive@3.5.0
-	agent-client-protocol-schema@1.12.0
-	agent-client-protocol@3.5.0
+	agent-client-protocol-derive@3.6.0
+	agent-client-protocol-schema@1.13.0
+	agent-client-protocol@3.6.0
 	ahash@0.8.12
 	aho-corasick@1.1.3
 	aliasable@0.1.3
@@ -139,7 +139,6 @@ CRATES="
 	block-padding@0.3.3
 	block2@0.5.1
 	block2@0.6.2
-	block@0.1.6
 	blocking@1.6.2
 	bmrng@0.5.2
 	bon-macros@3.8.2
@@ -161,8 +160,6 @@ CRATES="
 	bytes-utils@0.1.4
 	bytes@0.4.12
 	bytes@1.11.1
-	bzip2-sys@0.1.13+1.0.8
-	bzip2@0.4.4
 	bzip2@0.6.1
 	c-enum@0.2.3
 	cached@0.56.0
@@ -200,8 +197,6 @@ CRATES="
 	clap_lex@0.7.6
 	cmake@0.1.56
 	cobs@0.3.0
-	cocoa-foundation@0.1.2
-	cocoa@0.25.0
 	codespan-reporting@0.13.0
 	color_quant@1.1.0
 	colorchoice@1.0.4
@@ -217,16 +212,12 @@ CRATES="
 	const-random@0.1.18
 	const_format@0.2.35
 	const_format_proc_macros@0.2.34
-	constant_time_eq@0.1.5
 	convert_case@0.10.0
 	convert_case@0.11.0
 	core-foundation-sys@0.8.7
 	core-foundation@0.10.0
 	core-foundation@0.9.4
-	core-graphics-helmer-fork@0.24.0
-	core-graphics-types@0.1.3
 	core-graphics-types@0.2.0
-	core-graphics@0.23.2
 	core-graphics@0.24.0
 	core-services@1.0.0
 	core-text@21.0.0
@@ -253,7 +244,6 @@ CRATES="
 	cranelift-isle@0.135.7
 	cranelift-native@0.135.7
 	cranelift-srcgen@0.135.7
-	crash-context@0.8.0
 	crash-handler@0.8.0
 	crc-catalog@2.4.0
 	crc-fast@1.9.0
@@ -512,6 +502,8 @@ CRATES="
 	icu_properties@2.3.0
 	icu_properties_data@2.3.0
 	icu_provider@2.3.0
+	icu_segmenter@2.3.0
+	icu_segmenter_data@2.3.0
 	id-arena@2.3.0
 	ident_case@1.0.1
 	idna@1.1.0
@@ -625,7 +617,6 @@ CRATES="
 	mach2@0.6.0
 	macro_rules_attribute-proc_macro@0.2.3
 	macro_rules_attribute@0.2.3
-	malloc_buf@0.0.6
 	manatee@0.8.0-alpha.5
 	maplit@1.0.2
 	markup5ever@0.39.0
@@ -645,7 +636,6 @@ CRATES="
 	merman-core@0.8.0-alpha.5
 	merman-render@0.8.0-alpha.5
 	merman@0.8.0-alpha.5
-	metal@0.33.0
 	micromap@0.3.0
 	miette-derive@7.6.0
 	miette@7.6.0
@@ -672,6 +662,7 @@ CRATES="
 	nested@0.1.1
 	new_debug_unreachable@1.0.6
 	nix@0.30.1
+	nix@0.31.3
 	no_std_io2@0.9.4
 	nom@7.1.3
 	nom@8.0.0
@@ -697,7 +688,6 @@ CRATES="
 	num_enum@0.7.4
 	num_enum_derive@0.7.4
 	num_threads@0.1.7
-	objc-foundation@0.1.1
 	objc-sys@0.3.5
 	objc2-app-kit@0.2.2
 	objc2-app-kit@0.3.2
@@ -725,12 +715,10 @@ CRATES="
 	objc2-screen-capture-kit@0.3.2
 	objc2-security@0.3.2
 	objc2-ui-kit@0.3.2
+	objc2-uniform-type-identifiers@0.3.2
 	objc2-user-notifications@0.3.2
 	objc2@0.5.2
 	objc2@0.6.3
-	objc@0.2.7
-	objc_exception@0.1.2
-	objc_id@0.1.1
 	object@0.37.3
 	object@0.39.1
 	octocrab@0.49.7
@@ -760,7 +748,6 @@ CRATES="
 	parking_lot_core@0.9.12
 	parse_int@0.9.0
 	partial-json-fixer@0.5.3
-	password-hash@0.4.2
 	paste@1.0.15
 	pastey@0.1.1
 	pastey@0.2.3
@@ -770,7 +757,6 @@ CRATES="
 	pbjson-build@0.9.0
 	pbjson-types@0.9.0
 	pbjson@0.9.0
-	pbkdf2@0.11.0
 	pbkdf2@0.12.2
 	pciid-parser@0.8.0
 	peg-macros@0.8.5
@@ -965,8 +951,6 @@ CRATES="
 	schemars_derive@1.0.4
 	scoped-tls@1.0.1
 	scopeguard@1.2.0
-	screencapturekit-sys@0.2.8
-	screencapturekit@0.2.8
 	scroll@0.12.0
 	scroll_derive@0.12.1
 	sdd@4.6.2
@@ -1104,7 +1088,6 @@ CRATES="
 	system-deps@7.0.7
 	taffy@0.15.0
 	tagptr@0.2.0
-	tao-core-video-sys@0.2.0
 	target-lexicon@0.13.5
 	target-spec@3.7.0
 	tauri-winrt-notification@0.7.3
@@ -1171,7 +1154,6 @@ CRATES="
 	tree-sitter-diff@0.1.0
 	tree-sitter-elixir@0.3.4
 	tree-sitter-embedded-template@0.23.2
-	tree-sitter-go@0.25.0
 	tree-sitter-html@0.23.2
 	tree-sitter-jsdoc@0.23.2
 	tree-sitter-json@0.24.8
@@ -1184,6 +1166,7 @@ CRATES="
 	ttf-parser@0.25.1
 	tungstenite@0.20.1
 	tungstenite@0.28.0
+	typed-path@0.13.0
 	typeid@1.0.3
 	typenum@1.19.0
 	ucd-trie@0.1.7
@@ -1452,12 +1435,11 @@ CRATES="
 	zerotrie@0.2.5
 	zerovec-derive@0.11.5
 	zerovec@0.11.8
-	zip@0.6.6
+	zip@9.1.3
+	zlib-rs@0.5.5
 	zmij@1.0.23
-	zstd-safe@5.0.2+zstd.1.5.2
 	zstd-safe@7.3.0
 	zstd-sys@2.0.16+zstd.1.5.7
-	zstd@0.11.2+zstd.1.5.2
 	zstd@0.13.3
 	zune-core@0.5.1
 	zune-inflate@0.2.54
@@ -1475,18 +1457,19 @@ declare -A GIT_CRATES=(
 	[async-task]='https://github.com/zed-industries/async-task;015845a19fc31752c02367567d3b8900a406f9da;async-task-%commit%'
 	[calloop]='https://github.com/zed-industries/calloop;3759371fee14c40066d64777e2a36b6ffcc22590;calloop-%commit%'
 	[cpal]='https://github.com/RustAudio/cpal;e1612d5d98152f8dc2a62e1b51ef7cbf4f7f26b7;cpal-%commit%'
+	[crash-context]='https://github.com/rust-minidump/minidump-writer;911b04e09b79b736cc15cbe712e83e2d3f348bb9;minidump-writer-%commit%/crates/crash-context'
 	[dap-types]='https://github.com/zed-industries/dap-types;1b461b310481d01e02b2603c16d7144b926339f8;dap-types-%commit%/dap-types'
 	[gh-workflow-macros]='https://github.com/zed-industries/gh-workflow;37f3c0575d379c218a9c455ee67585184e40d43f;gh-workflow-%commit%/crates/gh-workflow-macros'
 	[gh-workflow]='https://github.com/zed-industries/gh-workflow;37f3c0575d379c218a9c455ee67585184e40d43f;gh-workflow-%commit%/crates/gh-workflow'
 	[khronos-egl]='https://github.com/zed-industries/khronos-egl;42214b36347b108fd9630ca6254b96dde59e04fe;khronos-egl-%commit%'
-	[libwebrtc]='https://github.com/zed-industries/livekit-rust-sdks;0a1c519cfce9b365229026b55de9b9dbdb6fed3c;livekit-rust-sdks-%commit%/libwebrtc'
-	[livekit-api]='https://github.com/zed-industries/livekit-rust-sdks;0a1c519cfce9b365229026b55de9b9dbdb6fed3c;livekit-rust-sdks-%commit%/livekit-api'
-	[livekit-protocol]='https://github.com/zed-industries/livekit-rust-sdks;0a1c519cfce9b365229026b55de9b9dbdb6fed3c;livekit-rust-sdks-%commit%/livekit-protocol'
-	[livekit-runtime]='https://github.com/zed-industries/livekit-rust-sdks;0a1c519cfce9b365229026b55de9b9dbdb6fed3c;livekit-rust-sdks-%commit%/livekit-runtime'
-	[livekit]='https://github.com/zed-industries/livekit-rust-sdks;0a1c519cfce9b365229026b55de9b9dbdb6fed3c;livekit-rust-sdks-%commit%/livekit'
+	[libwebrtc]='https://github.com/zed-industries/livekit-rust-sdks;fbda05eb278b4a7c5be8fc9b2a92e9b62e732236;livekit-rust-sdks-%commit%/libwebrtc'
+	[livekit-api]='https://github.com/zed-industries/livekit-rust-sdks;fbda05eb278b4a7c5be8fc9b2a92e9b62e732236;livekit-rust-sdks-%commit%/livekit-api'
+	[livekit-protocol]='https://github.com/zed-industries/livekit-rust-sdks;fbda05eb278b4a7c5be8fc9b2a92e9b62e732236;livekit-rust-sdks-%commit%/livekit-protocol'
+	[livekit-runtime]='https://github.com/zed-industries/livekit-rust-sdks;fbda05eb278b4a7c5be8fc9b2a92e9b62e732236;livekit-rust-sdks-%commit%/livekit-runtime'
+	[livekit]='https://github.com/zed-industries/livekit-rust-sdks;fbda05eb278b4a7c5be8fc9b2a92e9b62e732236;livekit-rust-sdks-%commit%/livekit'
 	[lsp-types]='https://github.com/zed-industries/lsp-types;82d7fc66ebdfabcfeb26ba16bbed9f3d26211fc3;lsp-types-%commit%'
-	[naga-types]='https://github.com/gfx-rs/wgpu;3b3506ea31154edc04de64debda0e780cba2639c;wgpu-%commit%/naga-types'
-	[naga]='https://github.com/gfx-rs/wgpu;3b3506ea31154edc04de64debda0e780cba2639c;wgpu-%commit%/naga'
+	[naga-types]='https://github.com/gfx-rs/wgpu;cddb2f5d80dc0009b2ef6767635140cacf90a007;wgpu-%commit%/naga-types'
+	[naga]='https://github.com/gfx-rs/wgpu;cddb2f5d80dc0009b2ef6767635140cacf90a007;wgpu-%commit%/naga'
 	[notify-types]='https://github.com/zed-industries/notify;d842f16b2716bd60f09caf3ae3a894237ab38f54;notify-%commit%/notify-types'
 	[notify]='https://github.com/zed-industries/notify;d842f16b2716bd60f09caf3ae3a894237ab38f54;notify-%commit%/notify'
 	[nvim-rs]='https://github.com/KillTheMule/nvim-rs;764dd270c642f77f10f3e19d05cc178a6cbe69f3;nvim-rs-%commit%'
@@ -1522,35 +1505,36 @@ declare -A GIT_CRATES=(
 	[trash]='https://github.com/zed-industries/trash-rs;41c6c800d884a89351f3b8856d12894cccee261d;trash-rs-%commit%'
 	[tree-sitter-cpp]='https://github.com/tree-sitter/tree-sitter-cpp;5cb9b693cfd7bfacab1d9ff4acac1a4150700609;tree-sitter-cpp-%commit%'
 	[tree-sitter-gitcommit]='https://github.com/zed-industries/tree-sitter-git-commit;88309716a69dd13ab83443721ba6e0b491d37ee9;tree-sitter-git-commit-%commit%'
+	[tree-sitter-go]='https://github.com/zed-industries/tree-sitter-go;6862a49e3c5a7567a6c576420e9a8f944e198a85;tree-sitter-go-%commit%'
 	[tree-sitter-gomod]='https://github.com/camdencheek/tree-sitter-go-mod;2e886870578eeba1927a2dc4bd2e2b3f598c5f9a;tree-sitter-go-mod-%commit%'
 	[tree-sitter-gowork]='https://github.com/zed-industries/tree-sitter-go-work;acb0617bf7f4fda02c6217676cc64acb89536dc7;tree-sitter-go-work-%commit%'
 	[tree-sitter-heex]='https://github.com/zed-industries/tree-sitter-heex;1dd45142fbb05562e35b2040c6129c9bca346592;tree-sitter-heex-%commit%'
-	[tree-sitter-language]='https://github.com/tree-sitter/tree-sitter;43623ec9bf0eaaf7113285c46e8a09018f181b18;tree-sitter-%commit%/crates/language'
+	[tree-sitter-language]='https://github.com/tree-sitter/tree-sitter;803c6ebaac27d69e1808b45058482e868d073ceb;tree-sitter-%commit%/crates/language'
 	[tree-sitter-md]='https://github.com/zed-industries/tree-sitter-markdown;b596e737286780d7bfa9fcddceaeeb754574b352;tree-sitter-markdown-%commit%'
 	[tree-sitter-typescript]='https://github.com/zed-industries/tree-sitter-typescript;e2c53597d6a5d9cf7bbe8dccde576fe1e46c5899;tree-sitter-typescript-%commit%'
 	[tree-sitter-yaml]='https://github.com/zed-industries/tree-sitter-yaml;baff0b51c64ef6a1fb1f8390f3ad6015b83ec13a;tree-sitter-yaml-%commit%'
-	[tree-sitter]='https://github.com/tree-sitter/tree-sitter;43623ec9bf0eaaf7113285c46e8a09018f181b18;tree-sitter-%commit%/lib'
+	[tree-sitter]='https://github.com/tree-sitter/tree-sitter;803c6ebaac27d69e1808b45058482e868d073ceb;tree-sitter-%commit%/lib'
 	[wasm_thread]='https://github.com/zed-industries/wasm_thread;0cf96c7708dfb97ccf3da50347e25edcf75d6937;wasm_thread-%commit%'
-	[webrtc-sys-build]='https://github.com/zed-industries/livekit-rust-sdks;0a1c519cfce9b365229026b55de9b9dbdb6fed3c;livekit-rust-sdks-%commit%/webrtc-sys/build'
-	[webrtc-sys]='https://github.com/zed-industries/livekit-rust-sdks;0a1c519cfce9b365229026b55de9b9dbdb6fed3c;livekit-rust-sdks-%commit%/webrtc-sys'
-	[wgpu-core-deps-apple]='https://github.com/gfx-rs/wgpu;3b3506ea31154edc04de64debda0e780cba2639c;wgpu-%commit%/wgpu-core/platform-deps/apple'
-	[wgpu-core-deps-emscripten]='https://github.com/gfx-rs/wgpu;3b3506ea31154edc04de64debda0e780cba2639c;wgpu-%commit%/wgpu-core/platform-deps/emscripten'
-	[wgpu-core-deps-linux-android-bsd]='https://github.com/gfx-rs/wgpu;3b3506ea31154edc04de64debda0e780cba2639c;wgpu-%commit%/wgpu-core/platform-deps/linux-android-bsd'
-	[wgpu-core-deps-wasm]='https://github.com/gfx-rs/wgpu;3b3506ea31154edc04de64debda0e780cba2639c;wgpu-%commit%/wgpu-core/platform-deps/wasm'
-	[wgpu-core-deps-windows]='https://github.com/gfx-rs/wgpu;3b3506ea31154edc04de64debda0e780cba2639c;wgpu-%commit%/wgpu-core/platform-deps/windows'
-	[wgpu-core]='https://github.com/gfx-rs/wgpu;3b3506ea31154edc04de64debda0e780cba2639c;wgpu-%commit%/wgpu-core'
-	[wgpu-hal]='https://github.com/gfx-rs/wgpu;3b3506ea31154edc04de64debda0e780cba2639c;wgpu-%commit%/wgpu-hal'
-	[wgpu-naga-bridge]='https://github.com/gfx-rs/wgpu;3b3506ea31154edc04de64debda0e780cba2639c;wgpu-%commit%/wgpu-naga-bridge'
-	[wgpu-sync]='https://github.com/gfx-rs/wgpu;3b3506ea31154edc04de64debda0e780cba2639c;wgpu-%commit%/wgpu-sync'
-	[wgpu-types]='https://github.com/gfx-rs/wgpu;3b3506ea31154edc04de64debda0e780cba2639c;wgpu-%commit%/wgpu-types'
-	[wgpu]='https://github.com/gfx-rs/wgpu;3b3506ea31154edc04de64debda0e780cba2639c;wgpu-%commit%/wgpu'
+	[webrtc-sys-build]='https://github.com/zed-industries/livekit-rust-sdks;fbda05eb278b4a7c5be8fc9b2a92e9b62e732236;livekit-rust-sdks-%commit%/webrtc-sys/build'
+	[webrtc-sys]='https://github.com/zed-industries/livekit-rust-sdks;fbda05eb278b4a7c5be8fc9b2a92e9b62e732236;livekit-rust-sdks-%commit%/webrtc-sys'
+	[wgpu-core-deps-apple]='https://github.com/gfx-rs/wgpu;cddb2f5d80dc0009b2ef6767635140cacf90a007;wgpu-%commit%/wgpu-core/platform-deps/apple'
+	[wgpu-core-deps-emscripten]='https://github.com/gfx-rs/wgpu;cddb2f5d80dc0009b2ef6767635140cacf90a007;wgpu-%commit%/wgpu-core/platform-deps/emscripten'
+	[wgpu-core-deps-linux-android-bsd]='https://github.com/gfx-rs/wgpu;cddb2f5d80dc0009b2ef6767635140cacf90a007;wgpu-%commit%/wgpu-core/platform-deps/linux-android-bsd'
+	[wgpu-core-deps-wasm]='https://github.com/gfx-rs/wgpu;cddb2f5d80dc0009b2ef6767635140cacf90a007;wgpu-%commit%/wgpu-core/platform-deps/wasm'
+	[wgpu-core-deps-windows]='https://github.com/gfx-rs/wgpu;cddb2f5d80dc0009b2ef6767635140cacf90a007;wgpu-%commit%/wgpu-core/platform-deps/windows'
+	[wgpu-core]='https://github.com/gfx-rs/wgpu;cddb2f5d80dc0009b2ef6767635140cacf90a007;wgpu-%commit%/wgpu-core'
+	[wgpu-hal]='https://github.com/gfx-rs/wgpu;cddb2f5d80dc0009b2ef6767635140cacf90a007;wgpu-%commit%/wgpu-hal'
+	[wgpu-naga-bridge]='https://github.com/gfx-rs/wgpu;cddb2f5d80dc0009b2ef6767635140cacf90a007;wgpu-%commit%/wgpu-naga-bridge'
+	[wgpu-sync]='https://github.com/gfx-rs/wgpu;cddb2f5d80dc0009b2ef6767635140cacf90a007;wgpu-%commit%/wgpu-sync'
+	[wgpu-types]='https://github.com/gfx-rs/wgpu;cddb2f5d80dc0009b2ef6767635140cacf90a007;wgpu-%commit%/wgpu-types'
+	[wgpu]='https://github.com/gfx-rs/wgpu;cddb2f5d80dc0009b2ef6767635140cacf90a007;wgpu-%commit%/wgpu'
 	[windows-capture]='https://github.com/zed-industries/windows-capture;f0d6c1b6691db75461b732f6d5ff56eed002eeb9;windows-capture-%commit%'
 	[wprcontrol]='https://github.com/zed-industries/wprcontrol;cd811f7d744f65291e13131b1d907fda63ed91a1;wprcontrol-%commit%'
 	[xim-ctext]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%/xim-ctext'
 	[xim-parser]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%/xim-parser'
 	[zed-font-kit]='https://github.com/zed-industries/font-kit;94b0f28166665e8fd2f53ff6d268a14955c82269;font-kit-%commit%'
 	[zed-reqwest]='https://github.com/zed-industries/reqwest;33bc764aa15ff7b200bf7c93bd96e24878d53e14;reqwest-%commit%'
-	[zed-scap]='https://github.com/zed-industries/scap;4afea48c3b002197176fb19cd0f9b180dd36eaac;scap-%commit%'
+	[zed-scap]='https://github.com/zed-industries/scap;b5c86ec58dd4b6b7732bf6ac8be03d6b1f190a82;scap-%commit%'
 	[zed-xim]='https://github.com/zed-industries/xim-rs;16f35a2c881b815a2b6cdfd6687988e84f8447d8;xim-rs-%commit%'
 )
 
@@ -1561,7 +1545,7 @@ declare -A GIT_CRATES=(
 # rewrites the date and EGIT_COMMIT; a second version variable it could not
 # keep current would leave a new tarball under an old, already-manifested name).
 
-EGIT_COMMIT="a5c4ca8bf6c4717a328a4a61b42d6d1d38949bcc"
+EGIT_COMMIT="a4b39c38e0056a5631a6f49f7fb13d4d1c4b6a9c"
 # LLVM 23 only, so it is the default slot: llvm-r1 would always prefer slot 22
 # (its newest stable) whenever 22 is listed. RUST_NEEDS_LLVM ties the Rust slot
 # to it, so this builds with Rust 1.99, one release past upstream's 1.98.1 pin
@@ -2274,7 +2258,7 @@ src_prepare() {
 	KHRONOS_EGL_GIT+=", rev = \"${KHRONOS_EGL_COMMIT}\""
 	local KHRONOS_EGL_PATH="khronos-egl = \\{ path = \"${WORKDIR}/khronos-egl-${KHRONOS_EGL_COMMIT}\""
 
-	local LIVEKIT_COMMIT="0a1c519cfce9b365229026b55de9b9dbdb6fed3c"
+	local LIVEKIT_COMMIT="fbda05eb278b4a7c5be8fc9b2a92e9b62e732236"
 	local LIVEKIT_GIT="livekit = { git = \"https://github.com/zed-industries/livekit-rust-sdks\""
 	LIVEKIT_GIT+=", rev = \"${LIVEKIT_COMMIT}\""
 	local LIVEKIT_PATH="livekit = \\{ path = \"${WORKDIR}/livekit-rust-sdks-${LIVEKIT_COMMIT}/livekit\""
@@ -2297,7 +2281,7 @@ src_prepare() {
 	NOTIFY_GIT+=", rev = \"${NOTIFY_COMMIT}\""
 	local NOTIFY_PATH="notify = \\{ path = \"${WORKDIR}/notify-${NOTIFY_COMMIT}/notify\""
 
-	local TREE_SITTER_COMMIT="43623ec9bf0eaaf7113285c46e8a09018f181b18"
+	local TREE_SITTER_COMMIT="803c6ebaac27d69e1808b45058482e868d073ceb"
 	local TREE_SITTER_GIT="tree-sitter = { git = \"https://github.com/tree-sitter/tree-sitter\""
 	TREE_SITTER_GIT+=", rev = \"${TREE_SITTER_COMMIT}\""
 	local TREE_SITTER_PATH="tree-sitter = \\{ path = \"${WORKDIR}/tree-sitter-${TREE_SITTER_COMMIT}/lib\""
@@ -2310,6 +2294,12 @@ src_prepare() {
 	local NOTIFY_TYPES_GIT="notify-types = { git = \"https://github.com/zed-industries/notify\""
 	NOTIFY_TYPES_GIT+=", rev = \"${NOTIFY_COMMIT}\""
 	local NOTIFY_TYPES_PATH="notify-types = \\{ path = \"${WORKDIR}/notify-${NOTIFY_COMMIT}/notify-types\""
+
+	local CRASH_CONTEXT_COMMIT="911b04e09b79b736cc15cbe712e83e2d3f348bb9"
+	local CRASH_CONTEXT_GIT="crash-context = { git = \"https://github.com/rust-minidump/minidump-writer\""
+	CRASH_CONTEXT_GIT+=", rev = \"${CRASH_CONTEXT_COMMIT}\""
+	local CRASH_CONTEXT_PATH="crash-context = \\{ path = \"${WORKDIR}/minidump-writer-${CRASH_CONTEXT_COMMIT}"
+	CRASH_CONTEXT_PATH+="/crates/crash-context\""
 
 	sed -e "s#${ASYNC_PROCESS_GIT}#${ASYNC_PROCESS_PATH}#" \
 		-e "s#${ASYNC_TASK_GIT}#${ASYNC_TASK_PATH}#" \
@@ -2324,6 +2314,7 @@ src_prepare() {
 		-e "s#${NOTIFY_GIT}#${NOTIFY_PATH}#" \
 		-e "s#${TS_LANGUAGE_GIT}#${TS_LANGUAGE_PATH}#" \
 		-e "s#${TREE_SITTER_GIT}#${TREE_SITTER_PATH}#" \
+		-e "s#${CRASH_CONTEXT_GIT}#${CRASH_CONTEXT_PATH}#" \
 		-i "${S}/Cargo.toml" || die "Cargo fetch workaround failed"
 
 	# Toggle gpui display backend features based on USE flags

@@ -61,7 +61,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/crates/agent_ui/src/conversation_view/elicitation.rs b/crates/agent_ui/src/conversation_view/elicitation.rs
-index b895b63..e56e60b 100644
+index 9945399..928140e 100644
 --- a/crates/agent_ui/src/conversation_view/elicitation.rs
 +++ b/crates/agent_ui/src/conversation_view/elicitation.rs
 @@ -59,6 +59,10 @@ pub(crate) struct ElicitationFormState {
@@ -75,7 +75,7 @@ index b895b63..e56e60b 100644
  }
  
  impl ElicitationFormState {
-@@ -135,7 +139,7 @@ impl ElicitationFormState {
+@@ -156,7 +160,7 @@ impl ElicitationFormState {
              fields.insert(name.clone(), field);
          }
  
@@ -84,7 +84,7 @@ index b895b63..e56e60b 100644
              fields,
              field_errors: HashMap::default(),
              expanded_previews: HashSet::default(),
-@@ -143,7 +147,28 @@ impl ElicitationFormState {
+@@ -164,7 +168,28 @@ impl ElicitationFormState {
              is_submitting: false,
              pages: form_pages(schema),
              page: 0,
@@ -114,7 +114,7 @@ index b895b63..e56e60b 100644
      }
  
      /// The field groups a paginated card steps through. One entry when the
-@@ -2092,6 +2117,15 @@ fn property_meta(property: &acp::ElicitationPropertySchema) -> Option<&acp::Meta
+@@ -2149,6 +2174,15 @@ fn property_meta(property: &acp::ElicitationPropertySchema) -> Option<&acp::Meta
      }
  }
  
@@ -130,7 +130,7 @@ index b895b63..e56e60b 100644
  /// The field this one is the custom-answer companion of, if it is one.
  /// Tolerant in the same way as the option previews above: an absent key, a
  /// non-object entry or a wrong-typed field all yield `None`, never an error.
-@@ -3341,3 +3375,6 @@ impl<'a> ElicitationCard<'a> {
+@@ -3412,3 +3446,6 @@ impl<'a> ElicitationCard<'a> {
              .into_any_element()
      }
  }
@@ -419,10 +419,10 @@ index 0000000..5f74176
 +    );
 +}
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index e7cd37c..a7ddc0a 100644
+index 9bb8ce6..dec3a71 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
-@@ -36,6 +36,7 @@ use crate::unicode_confusables;
+@@ -37,6 +37,7 @@ use crate::unicode_confusables;
  
  use db::kvp::KeyValueStore;
  use gpui::List;
@@ -430,16 +430,16 @@ index e7cd37c..a7ddc0a 100644
  use gpui::Stateful;
  use gpui::TaskExt;
  use heapless::Vec as ArrayVec;
-@@ -57,7 +58,7 @@ use workspace::{OpenOptions, SERIALIZATION_THROTTLE_TIME};
+@@ -58,7 +59,7 @@ use workspace::{OpenOptions, SERIALIZATION_THROTTLE_TIME};
  
  use super::elicitation::{
      ElicitationCard, ElicitationCardHandlers, ElicitationFormState, QuestionQueue,
 -    should_render_elicitation,
 +    is_question_shaped, should_render_elicitation,
  };
- use super::subagent_card::{SubagentCardId, SubagentCardState, SubagentStatus, acp_subagent_card};
- use super::*;
-@@ -818,6 +819,9 @@ pub struct ThreadView {
+ use super::subagent_card::{
+     AcpSubagentCard, SubagentCardId, SubagentCardState, SubagentStatus, acp_subagent_card,
+@@ -793,6 +794,9 @@ pub struct ThreadView {
      pub new_server_version_available: Option<SharedString>,
      pub resumed_without_history: bool,
      elicitation_form_states: HashMap<ElicitationEntryId, ElicitationFormState>,
@@ -449,7 +449,7 @@ index e7cd37c..a7ddc0a 100644
      question_queue: QuestionQueue,
      pub _cancel_task: Option<Task<()>>,
      _save_task: Option<Task<()>>,
-@@ -1346,6 +1350,7 @@ impl ThreadView {
+@@ -1330,6 +1334,7 @@ impl ThreadView {
              is_loading_contents: false,
              new_server_version_available: None,
              elicitation_form_states: HashMap::default(),
@@ -457,7 +457,7 @@ index e7cd37c..a7ddc0a 100644
              question_queue: QuestionQueue::default(),
              _cancel_task: None,
              _save_task: None,
-@@ -3788,12 +3793,113 @@ impl ThreadView {
+@@ -3855,12 +3860,113 @@ impl ThreadView {
          }
      }
  
@@ -572,7 +572,7 @@ index e7cd37c..a7ddc0a 100644
          self.respond_to_elicitation(
              elicitation_id,
              acp_v2::CreateElicitationResponse::new(acp_v2::ElicitationAction::Decline),
-@@ -8020,6 +8126,10 @@ impl ThreadView {
+@@ -8051,6 +8157,10 @@ impl ThreadView {
              AgentThreadEntry::Elicitation(elicitation_id) => {
                  let thread = self.thread.read(cx);
                  if let Some((_, elicitation)) = thread.elicitation(elicitation_id)
@@ -583,7 +583,7 @@ index e7cd37c..a7ddc0a 100644
                      && should_render_elicitation(elicitation)
                      && !Self::renders_elicitation_as_card(elicitation, cx)
                  {
-@@ -8204,6 +8314,43 @@ impl ThreadView {
+@@ -8233,6 +8343,43 @@ impl ThreadView {
          .render(cx)
      }
  
@@ -627,7 +627,7 @@ index e7cd37c..a7ddc0a 100644
      fn elicitation_card_handlers(&self, cx: &Context<Self>) -> ElicitationCardHandlers {
          let view = cx.entity().downgrade();
  
-@@ -15285,6 +15432,14 @@ fn strip_leading_command(text: &str, command_name: &str) -> String {
+@@ -15373,6 +15520,14 @@ fn strip_leading_command(text: &str, command_name: &str) -> String {
  
  #[cfg(test)]
  mod tests {

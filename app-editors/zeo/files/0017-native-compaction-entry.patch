@@ -88,13 +88,21 @@ Tests added 2026-10-09 (0.2.2_p20261009) for the branch nothing reached: a statu
 after the terminal one keeps the entry Completed and adds no tool row, and the
 same frame with no lifecycle before it records nothing at all. Both fail when a
 status-less frame is read as in progress.
+
+a4b39c38 review: (2026-11-01, story 072) Upstream #66215 fixed auto-compaction
+in Zed's native agent (crates/agent/src/thread.rs: once per turn, again later in
+the same turn, the summary placed before an unanswered prompt). This patch does
+not take part: it consumes an adapter-reported compaction on the ACP side, and
+the push_context_compaction constructor it calls is unchanged. No patch in the
+series edits the native compaction code; 0052 and 0058 touch thread.rs only
+inside impl UserMessage.
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 7691765..4d694eb 100644
+index 7ac1031..4db3488 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -1009,6 +1009,30 @@ pub struct ContextCompactionUpdate {
+@@ -1024,6 +1024,30 @@ pub struct ContextCompactionUpdate {
      pub status: Option<ContextCompactionStatus>,
  }
  
@@ -125,7 +133,7 @@ index 7691765..4d694eb 100644
  impl AgentThreadEntry {
      pub fn is_indented(&self) -> bool {
          match self {
-@@ -5064,10 +5088,24 @@ impl AcpThread {
+@@ -5200,10 +5224,24 @@ impl AcpThread {
                  );
              }
              acp_v1::SessionUpdate::ToolCall(tool_call) => {
@@ -152,7 +160,7 @@ index 7691765..4d694eb 100644
              }
              acp_v1::SessionUpdate::CompactionUpdate(compaction_update) => {
                  let mut update =
-@@ -6088,6 +6126,74 @@ impl AcpThread {
+@@ -6291,6 +6329,74 @@ impl AcpThread {
          }
      }
  
@@ -227,7 +235,7 @@ index 7691765..4d694eb 100644
      pub fn can_set_title(&mut self, cx: &mut Context<Self>) -> bool {
          self.connection.set_title(self.session_id(), cx).is_some()
      }
-@@ -23618,6 +23724,582 @@ mod tests {
+@@ -23210,6 +23316,582 @@ mod tests {
              assert_eq!(usage.max_tokens, 10000);
          });
      }

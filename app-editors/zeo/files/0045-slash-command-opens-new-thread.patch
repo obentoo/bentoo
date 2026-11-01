@@ -51,10 +51,19 @@ user messages, the trimmed command lands in the new composer unsent).
 
 Pure Zed and generic ACP: it rides `claude-agent-acp-plus` BY CHOICE, like
 0014 and 0026, and needs no adapter feature.
+
+a4b39c38 review: (2026-11-01, story 072) Upstream #66101 reworked
+render_session_message: the side of a message between sessions now comes from
+SessionMessageSide, and the row gains a participant button. This patch's call
+there, render_message_content(..., false, ...), stays right: a message between
+sessions never offers the slash-command run button. Agent chunks still pass true
+and thinking chunks false. Upstream's markdown path
+(render_output_content_block) did not change, so the agent-chunk bypass loses
+nothing.
 ---
 
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index be5c3b0..992d909 100644
+index 3b46f11..1d98d70 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -2332,6 +2332,72 @@ impl AgentPanel {
@@ -741,7 +750,7 @@ index 9cc6406..87407a8 100644
  mod tests {
      use super::*;
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index bb0ab3a..73ea745 100644
+index 84678af..45c8ff5 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -3,7 +3,7 @@ use crate::{
@@ -753,7 +762,7 @@ index bb0ab3a..73ea745 100644
      thread_metadata_store::{ThreadId, ThreadMetadataStore},
  };
  use agent_client_protocol::schema::v2 as acp_v2;
-@@ -7914,7 +7914,7 @@ impl ThreadView {
+@@ -7945,7 +7945,7 @@ impl ThreadView {
                                      div()
                                          .id(("assistant-message-chunk", chunk_ix))
                                          .child(self.render_message_content(
@@ -762,7 +771,7 @@ index bb0ab3a..73ea745 100644
                                          ))
                                          .into_any_element()
                                  })
-@@ -9381,11 +9381,15 @@ impl ThreadView {
+@@ -9418,11 +9418,15 @@ impl ThreadView {
          cx.notify();
      }
  
@@ -778,7 +787,7 @@ index bb0ab3a..73ea745 100644
          window: &Window,
          cx: &Context<Self>,
      ) -> Div {
-@@ -9395,9 +9399,19 @@ impl ThreadView {
+@@ -9432,9 +9436,19 @@ impl ThreadView {
                  .enumerate()
                  .filter(|(_, block)| block.visible_content(cx))
                  .map(|(block_ix, block)| {
@@ -801,7 +810,7 @@ index bb0ab3a..73ea745 100644
                      div()
                          .id(("message-content-block", block_ix))
                          .debug_selector(move || {
-@@ -9501,11 +9515,9 @@ impl ThreadView {
+@@ -9538,11 +9552,9 @@ impl ThreadView {
                                      this.track_scroll(&scroll_handle)
                                  })
                                  .overflow_hidden()
@@ -816,7 +825,7 @@ index bb0ab3a..73ea745 100644
                          )
                          .when(is_constrained, |this| {
                              this.child(div().absolute().inset_0().size_full().bg(linear_gradient(
-@@ -9788,7 +9800,14 @@ impl ThreadView {
+@@ -9826,7 +9838,14 @@ impl ThreadView {
                      .pl_3()
                      .border_l_2()
                      .border_color(cx.theme().colors().border)
@@ -832,7 +841,7 @@ index bb0ab3a..73ea745 100644
              )
      }
  
-@@ -13724,6 +13743,49 @@ impl ThreadView {
+@@ -13812,6 +13831,49 @@ impl ThreadView {
          })
      }
  
@@ -1406,10 +1415,10 @@ index 0000000..e38ceed
 +    assert_eq!(second.clicked.borrow().len(), 1);
 +}
 diff --git a/crates/markdown/src/markdown.rs b/crates/markdown/src/markdown.rs
-index 44e732c..bddd094 100644
+index ee6817b..659ac84 100644
 --- a/crates/markdown/src/markdown.rs
 +++ b/crates/markdown/src/markdown.rs
-@@ -1771,6 +1771,16 @@ pub enum AutoscrollBehavior {
+@@ -1777,6 +1777,16 @@ pub enum AutoscrollBehavior {
      Controlled(ScrollHandle),
  }
  
@@ -1426,7 +1435,7 @@ index 44e732c..bddd094 100644
  pub struct MarkdownElement {
      markdown: Entity<Markdown>,
      style: MarkdownStyle,
-@@ -1782,6 +1792,7 @@ pub struct MarkdownElement {
+@@ -1788,6 +1798,7 @@ pub struct MarkdownElement {
      on_source_click: Option<SourceClickCallback>,
      on_checkbox_toggle: Option<CheckboxToggleCallback>,
      on_mermaid_zoom: Option<MermaidZoomCallback>,
@@ -1434,7 +1443,7 @@ index 44e732c..bddd094 100644
      image_resolver: Option<Box<dyn Fn(&str, &App) -> Option<ImageSource>>>,
      show_root_block_markers: bool,
      autoscroll: AutoscrollBehavior,
-@@ -1809,6 +1820,7 @@ impl MarkdownElement {
+@@ -1815,6 +1826,7 @@ impl MarkdownElement {
              on_source_click: None,
              on_checkbox_toggle: None,
              on_mermaid_zoom: None,
@@ -1442,7 +1451,7 @@ index 44e732c..bddd094 100644
              image_resolver: None,
              show_root_block_markers: false,
              autoscroll: AutoscrollBehavior::Propagate,
-@@ -1872,6 +1884,16 @@ impl MarkdownElement {
+@@ -1878,6 +1890,16 @@ impl MarkdownElement {
          self
      }
  
@@ -1459,7 +1468,7 @@ index 44e732c..bddd094 100644
      pub fn on_code_span_link(
          mut self,
          callback: impl Fn(&str, &App) -> Option<SharedString> + 'static,
-@@ -3210,6 +3232,13 @@ impl Element for MarkdownElement {
+@@ -3216,6 +3238,13 @@ impl Element for MarkdownElement {
                          {
                              let copy_button_visibility = *copy_button_visibility;
                              let wrap_button_visibility = *wrap_button_visibility;
@@ -1473,7 +1482,7 @@ index 44e732c..bddd094 100644
                              builder.modify_current_div(|el| {
                                  let any_hover = copy_button_visibility
                                      == CopyButtonVisibility::VisibleOnHover
-@@ -3250,6 +3279,14 @@ impl Element for MarkdownElement {
+@@ -3256,6 +3285,14 @@ impl Element for MarkdownElement {
                                              ))
                                          },
                                      )
@@ -1488,7 +1497,7 @@ index 44e732c..bddd094 100644
                                      .when(
                                          copy_button_visibility != CopyButtonVisibility::Hidden,
                                          |this| {
-@@ -3627,6 +3664,24 @@ fn render_wrap_code_block_button(
+@@ -3633,6 +3670,24 @@ fn render_wrap_code_block_button(
          })
  }
  
@@ -1513,7 +1522,7 @@ index 44e732c..bddd094 100644
  fn render_copy_code_block_button(
      id: usize,
      code: String,
-@@ -5276,6 +5331,9 @@ impl InputHandler for MarkdownInputHandler {
+@@ -5282,6 +5337,9 @@ impl InputHandler for MarkdownInputHandler {
      }
  }
  

@@ -57,13 +57,19 @@ Verified: `cargo check -p agent_ui`, `cargo test -p agent_ui --lib` (7 passed),
 (exit 0). The button itself is compile-verified, not render-verified — no test in
 this crate drives `render_entry`, so that it appears and writes to the clipboard
 is checked in a running Zed, not here.
+
+a4b39c38 review: (2026-11-01, story 072) Upstream #65989 removed agent
+checkpoints, and UserMessage lost its checkpoint field. The two test literals
+here (conversation_entries, an_empty_user_message_is_not_copyable) dropped their
+`checkpoint: None,` initialiser. The copy button reads only the message content,
+so nothing it does depended on checkpoints.
 ---
 
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 6bc1bd0..ca90cb4 100644
+index 9d2c96f..7a888bc 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
-@@ -5866,7 +5866,7 @@ impl ThreadView {
+@@ -5921,7 +5921,7 @@ impl ThreadView {
                      .map(|window| {
                          let ratio = window.utilization.unwrap_or(0.0);
                          AccountUsageRow {
@@ -72,7 +78,7 @@ index 6bc1bd0..ca90cb4 100644
                              percentage: window
                                  .utilization
                                  .map(|u| format!("{}%", (u * 100.0).round() as u32))
-@@ -7541,7 +7541,35 @@ impl ThreadView {
+@@ -7572,7 +7572,35 @@ impl ThreadView {
                                      .border_1()
                                      .border_color(cx.theme().colors().border)
                                      .bg(cx.theme().colors().editor_background)
@@ -109,7 +115,7 @@ index 6bc1bd0..ca90cb4 100644
  
                                  let is_loading_contents = self.is_loading_contents;
                                  if is_editable {
-@@ -9024,8 +9052,14 @@ impl ThreadView {
+@@ -9061,8 +9089,14 @@ impl ThreadView {
          cx: &App,
      ) -> Option<String> {
          let entry = entries.get(entry_index)?;
@@ -126,8 +132,8 @@ index 6bc1bd0..ca90cb4 100644
          }
  
          let start_index = (0..entry_index)
-@@ -14596,6 +14630,146 @@ mod tests {
-             acp_thread::CommandCategory::Mcp,
+@@ -14684,6 +14718,144 @@ mod tests {
+             acp_thread::meta_with_command_category(acp_thread::CommandCategory::Mcp),
          ))
      }
 +    fn conversation_entries(cx: &mut App) -> Vec<acp_thread::AgentThreadEntry> {
@@ -143,7 +149,6 @@ index 6bc1bd0..ca90cb4 100644
 +                client_id: None,
 +                is_optimistic: false,
 +                content: acp_thread::MessageContent::new(text.into(), &languages, path_style, cx),
-+                checkpoint: None,
 +                indented: false,
 +            })
 +        };
@@ -258,7 +263,6 @@ index 6bc1bd0..ca90cb4 100644
 +                    client_id: None,
 +                    is_optimistic: false,
 +                    content: acp_thread::MessageContent::default(),
-+                    checkpoint: None,
 +                    indented: false,
 +                },
 +            )];
