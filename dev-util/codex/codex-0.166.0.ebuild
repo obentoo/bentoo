@@ -40,6 +40,13 @@ CRATES="
 # nucleo/nucleo-matcher, hyperium/h3 (h3 + h3-quinn, since 0.156.0) and
 # modelcontextprotocol/rust-sdk (rmcp + rmcp-macros, since 0.161.0).
 #
+# 0.166.0 moved v8 under [patch.crates-io] to a fork (seanh-oai/rusty_v8)
+# whose only change is src/cppgc.rs, so the prebuilt RUSTY_V8_TAG archive and
+# its binding still match. The GitHub tarball lacks the V8 submodules; that is
+# fine because build.rs never reads them when RUSTY_V8_ARCHIVE is set. Without
+# this entry cargo looks for v8 in the crates tarball and dies with "no
+# matching package named `v8` found".
+#
 # microsoft/mxc held eight such members up to 0.163; 0.164.0 replaced all of
 # them with a single mxc-sdk crate (src/mxc-sdk), reached by the new
 # codex-rs/mxc-sandbox workspace member, and moved the commit with it. Keeping
@@ -62,6 +69,7 @@ declare -A GIT_CRATES=(
 	[runfiles]='https://github.com/dzbarsky/rules_rust;b56cbaa8465e74127f1ea216f813cd377295ad81;rules_rust-%commit%/rust/runfiles'
 	[tokio-tungstenite]='https://github.com/openai-oss-forks/tokio-tungstenite;0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186;tokio-tungstenite-%commit%'
 	[tungstenite]='https://github.com/openai-oss-forks/tungstenite-rs;4fffad30fe373adbdcffab9545e9e9bf4f2fc19f;tungstenite-rs-%commit%'
+	[v8]='https://github.com/seanh-oai/rusty_v8;350c5a859a9b3c84ab8701b3ad51e3b7699b30c0;rusty_v8-%commit%'
 )
 
 RUST_MIN_VER="1.95.0"
@@ -181,6 +189,7 @@ src_prepare() {
 	crossterm = { path = "$(gen_git_crate_dir crossterm)" }
 	tokio-tungstenite = { path = "$(gen_git_crate_dir tokio-tungstenite)" }
 	tungstenite = { path = "$(gen_git_crate_dir tungstenite)" }
+	v8 = { path = "$(gen_git_crate_dir v8)" }
 	EOF
 }
 
