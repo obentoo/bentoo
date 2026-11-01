@@ -91,9 +91,6 @@ RDEPEND="
 	>=dev-cpp/tbb-2020.3:=
 	dev-libs/boost:=
 	dev-libs/jemalloc:=
-	blosc? (
-		dev-libs/c-blosc:=
-	)
 	nanovdb? (
 		cuda? (
 			dev-util/nvidia-cuda-toolkit
@@ -135,14 +132,7 @@ RDEPEND+="
 			llvm-core/llvm:${LLVM_SLOT}=
 		')
 	)
-	!ax? (
-		dev-libs/log4cplus:=
-	)
 "
-else
-	RDEPEND+="
-		dev-libs/log4cplus:=
-	"
 fi
 
 DEPEND="${RDEPEND}
@@ -180,12 +170,13 @@ BDEPEND="
 #     if(TARGET OpenEXR::OpenEXR), and also links Imath::Imath.
 #   - openvdb-13.0.0-nanovdb-python-bindings.patch: the bentoo-only backport of
 #     blindDataCount / the 2-arg nanoToOpenVDB landed in 13.1.0 itself.
+# 14.0.0 removed log4cplus (logging.h is now a sink API, USE_LOG4CPLUS has no
+# effect), so openvdb-10.0.1-log4cplus-version.patch is dropped with it, and
+# so is the dev-libs/log4cplus dependency.
 PATCHES=(
 	"${FILESDIR}/${PN}-8.1.0-glfw-libdir.patch"
 
 	"${FILESDIR}/${PN}-9.0.0-fix-atomic.patch"
-
-	"${FILESDIR}/${PN}-10.0.1-log4cplus-version.patch"
 
 	"${FILESDIR}/${PN}-13.0.0-cmake_fixes.patch"
 
@@ -366,8 +357,9 @@ src_configure() {
 		# -DOPENVDB_BUILD_HOUDINI_PLUGIN="no"
 		# -DOPENVDB_BUILD_HOUDINI_ABITESTS="$(usex houdini "$(usex test)"))"
 
-		# for nanovdb
-		-DUSE_BLOSC="$(usex blosc)"
+		# 14.0.0 vendors Blosc into the core library and USE_BLOSC has no
+		# effect; USE=blosc now only drives NanoVDB's private copy
+		# (NANOVDB_USE_BLOSC), so dev-libs/c-blosc is no longer a dependency.
 		-DUSE_TBB="yes"
 		-DUSE_ZLIB="$(usex zlib)"
 
@@ -379,7 +371,6 @@ src_configure() {
 	if [[ "${PV}" == *9999* ]] ; then
 	mycmakeargs+=(
 		-DOPENVDB_BUILD_AX="$(usex ax)"
-		-DUSE_LOG4CPLUS="$(usex !ax)"
 	)
 	if use ax; then
 	# NOTE Certain tests expect bit equality and don't set tolerance violating the C standard
@@ -408,7 +399,6 @@ src_configure() {
 	# https://github.com/AcademySoftwareFoundation/openvdb/issues/1804
 	mycmakeargs+=(
 		-DOPENVDB_BUILD_AX="no"
-		-DUSE_LOG4CPLUS="yes"
 	)
 	fi
 
