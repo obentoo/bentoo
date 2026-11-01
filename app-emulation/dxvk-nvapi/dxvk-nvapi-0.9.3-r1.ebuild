@@ -13,10 +13,10 @@ if [[ ${PV} == 9999 ]]; then
 	EGIT_REPO_URI="https://github.com/jp7677/dxvk-nvapi.git"
 	EGIT_SUBMODULES=( external/{Vulkan-Headers,nvapi,vkroots,DirectX-Headers} )
 else
-	HASH_VULKAN=2cd90f9d20df57eac214c148f3aed885372ddcfe
-	HASH_NVAPI=9b181ea572f680327fe01a14a0f1f41c78034104
-	HASH_VKROOTS=ee76e620798612c52fb8dcc32a1058a0a3538930
-	HASH_DXHEADERS=c94b9b23aaadc2034dd1cad656a5a69f1526f98a
+	HASH_VULKAN=e3b1eec08173d6b825cd3ac88c885a63b621504a
+	HASH_NVAPI=87dca625e83fd89a983e19b904e5f3a580da90d2
+	HASH_VKROOTS=20733b938267dcac60f6ac105dbb757f9cc8df9c
+	HASH_DXHEADERS=ea2799ce66647c69710a81338e828b19973e0370
 	SRC_URI="
 		https://github.com/jp7677/dxvk-nvapi/archive/refs/tags/v${PV}.tar.gz
 			-> ${P}.tar.gz
