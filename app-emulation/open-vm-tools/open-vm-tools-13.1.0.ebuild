@@ -88,8 +88,9 @@ BDEPEND="
 	doc? ( app-text/doxygen )"
 RDEPEND+=" selinux? ( sec-policy/selinux-vmware )"
 
-# BENTOO-DIVERGENCE: PATCHES - ::gentoo carries the first four; the json-c one
-# is overlay-only.  It reorders -I flags so this tree's own debug.h wins over
+# BENTOO-DIVERGENCE: PATCHES - ::gentoo carries the first four; the json-c and
+# xmlsec ones are overlay-only.  The json-c one reorders -I flags so this
+# tree's own debug.h wins over
 # json-c's, which otherwise breaks every LOG() in the dndcp plugin.  That is
 # bug #956496, open since 2025-05-23 and reproduced here identically on
 # ::gentoo's own 13.0.10-r1 -- it is not a 13.1.0 regression.  Drop it once
@@ -103,6 +104,12 @@ PATCHES=(
 	# Makefile.am that upstream has not touched across releases, and the
 	# autoupdate applier never renames files/ on a bump.
 	"${FILESDIR}"/${PN}-json-c-debug-h.patch
+	# xmlsec 1.3.13 dropped dl.h from app.h, which is all crypto.h pulls in
+	# under XMLSEC_CRYPTO_DYNAMIC_LOADING, so VGAuthService fails with an
+	# implicit xmlSecCryptoDLLoadLibrary.  dl.h guards its own declarations, so
+	# including it is a no-op on older xmlsec.  Overlay-only: ::gentoo 13.0.10-r1
+	# carries the same unpatched source.
+	"${FILESDIR}"/${PN}-xmlsec-dl-h.patch
 )
 
 pkg_setup() {
