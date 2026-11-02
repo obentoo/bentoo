@@ -1,0 +1,64 @@
+diff -ru a/intern/cycles/hydra/field.cpp b/intern/cycles/hydra/field.cpp
+--- a/intern/cycles/hydra/field.cpp
++++ b/intern/cycles/hydra/field.cpp
+@@ -27,13 +27,18 @@
+       : VDBImageLoader(gridName)
+   {
+     /* Disable delay loading and file copying, this has poor performance on network drives. */
+-    const bool delay_load = false;
++    [[maybe_unused]] const bool delay_load = false;
+     try {
+       openvdb::io::File file(filePath);
+ #  ifdef OPENVDB_USE_DELAYED_LOADING
+       file.setCopyMaxBytes(0);
+ #  endif
++#  if OPENVDB_LIBRARY_MAJOR_VERSION_NUMBER >= 14
++      /* OpenVDB 14 removed delayed loading along with the open() argument. */
++      if (file.open()) {
++#  else
+       if (file.open(delay_load)) {
++#  endif
+         grid = file.readGrid(gridName);
+       }
+     }
+diff -ru a/source/blender/blenkernel/intern/volume_grid_file_cache.cc b/source/blender/blenkernel/intern/volume_grid_file_cache.cc
+--- a/source/blender/blenkernel/intern/volume_grid_file_cache.cc
++++ b/source/blender/blenkernel/intern/volume_grid_file_cache.cc
+@@ -88,11 +88,16 @@
+   try {
+     /* Disable delay loading and file copying, this has poor performance
+      * on network drives. */
+-    const bool delay_load = false;
++    [[maybe_unused]] const bool delay_load = false;
+ #  ifdef OPENVDB_USE_DELAYED_LOADING
+     file.setCopyMaxBytes(0);
+ #  endif
++#  if OPENVDB_LIBRARY_MAJOR_VERSION_NUMBER >= 14
++    /* OpenVDB 14 removed delayed loading along with the open() argument. */
++    file.open();
++#  else
+     file.open(delay_load);
++#  endif
+     vdb_grids = *(file.readAllGridMetadata());
+     file_cache.meta_data = *file.getMetadata();
+   }
+@@ -185,13 +190,18 @@
+ {
+   /* Disable delay loading and file copying, this has poor performance
+    * on network drivers. */
+-  const bool delay_load = false;
++  [[maybe_unused]] const bool delay_load = false;
+ 
+   openvdb::io::File file(file_path);
+ #  ifdef OPENVDB_USE_DELAYED_LOADING
+   file.setCopyMaxBytes(0);
+ #  endif
++#  if OPENVDB_LIBRARY_MAJOR_VERSION_NUMBER >= 14
++  /* OpenVDB 14 removed delayed loading along with the open() argument. */
++  file.open();
++#  else
+   file.open(delay_load);
++#  endif
+   return file.readGrid(grid_name);
+ }
+ 
