@@ -359,6 +359,9 @@ PATCHES=(
 	"${FILESDIR}/${PN}-4.3.2-system-glog.patch"
 	"${FILESDIR}/${PN}-5.1.0-eigen-3.4-jacobiSvd.patch"
 	"${FILESDIR}/${PN}-5.2.1-cycles-explicit-instantiation.patch"
+	# FFmpeg 9 removed AVCodec::sample_fmts and AVCodec::supported_samplerates;
+	# audaspace now queries them through avcodec_get_supported_config().
+	"${FILESDIR}/${PN}-5.2.3-audaspace-ffmpeg9.patch"
 )
 
 blender_check_requirements() {
