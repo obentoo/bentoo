@@ -22,7 +22,7 @@ LICENSE+=" Apache-2.0 BSD ISC MIT"
 SLOT="0"
 KEYWORDS="~amd64"
 
-BDEPEND=">=dev-lang/go-1.25.8"
+BDEPEND=">=dev-lang/go-1.26.8"
 
 # Upstream release builds embed the schemas of every official and partner
 # provider, produced by `go generate ./internal/schemas`, which downloads
