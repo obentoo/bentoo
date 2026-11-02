@@ -10442,14 +10442,20 @@ releases/download/v${PV}/zeo-browser-firefox-${PV}.xpi. Live=v0.1.0 (2026-10-15)
 """
 # END
 
-["net-im/telegram-desktop"]
+["net-im/telegram-desktop@stable"]
 hold = true
 url = "https://api.github.com/repos/telegramdesktop/tdesktop/releases/latest"
 parser = "json"
 path = "tag_name"
 headers = { "User-Agent" = "bentoo-autoupdate" }
+series = '^[0-9.]+(?:-r[0-9]+)?$'
 version = "7.3.3"
 comments = """
+Stable channel. series matches on the ABSENCE of a suffix, as on
+media-video/shotcut@stable: the overlay carries the beta channel as _pre
+beside this ebuild (net-im/telegram-desktop@beta, below), and without the
+series the scan would resolve the newest ebuild -- the beta -- as "current".
+
 Telegram Desktop — GitHub releases/latest tag "vX.Y.Z" (v stripped). Verified
 2026-07-24: releases/latest correctly skips the beta prereleases upstream also
 publishes on the same repo (v6.9.4 was flagged prerelease and is not returned),
@@ -10503,6 +10509,41 @@ find_package(KF6WindowSystem 6.28 QUIET) in lib_base. Diff every
 find_*/pkg_check_modules call between old and new tarball before bumping.
 The only divergence from ::gentoo is USE=qt-private-api (default on; off sets
 DESKTOP_APP_DISABLE_PRIVATE_QT_API, new in 7.3.3).
+"""
+# END
+
+["net-im/telegram-desktop@beta"]
+hold = true
+url = "https://api.github.com/repos/telegramdesktop/tdesktop/releases?per_page=20"
+parser = "regex"
+pattern = '"tag_name":"v([0-9.]+)","target_commitish":"[^"]*","name":"[^"]*","draft":false,"immutable":[a-z]+,"prerelease":true'
+transform = [['$', "_pre"]]
+select = "max"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+series = '_pre(?:-r[0-9]+)?$'
+version = "7.3.4_pre"
+comments = """
+Telegram Desktop beta channel, carried as _pre (added 2026-11-01 at 7.3.4).
+Upstream tags betas and stable releases IDENTICALLY ("vX.Y.Z"); only the
+GitHub "prerelease" boolean tells them apart, so releases/latest (which skips
+prereleases) cannot see this channel. The pattern reads the flag through the
+release object's fixed field order, exactly as media-video/shotcut@beta does
+-- read that record for why a wildcard span would pair a stable tag with the
+next release's prerelease=true. Verified 2026-11-01: betas 7.3.4, 7.2.10,
+7.2.6; every other release prerelease=false.
+
+transform appends _pre; the ebuild strips it with MY_PV="${PV%_pre}" for
+SRC_URI and MY_P. The beta ships the same tdesktop-X.Y.Z-full.tar.gz asset.
+Once the same X.Y.Z goes stable, X.Y.Z_pre sorts below X.Y.Z: drop the _pre
+ebuild then, or the scan keeps proposing nothing until the next beta.
+
+hold = true for the same reasons as @stable above: every bump re-reads
+tlottieRevision / walletEngineRevision in prepare.py against ::gentoo's
+gui-libs/tlottie and net-libs/wallet-engine-telegram, and diffs every
+find_*/pkg_check_modules call, because src_prepare's global sed makes each
+new QUIET probe REQUIRED. 7.3.4 vs 7.3.3: pins identical (92df98dc20 /
+e59e0d89), no new probe in the build tree (the one new find_package lives in
+.agents/, developer material outside the build), patches apply.
 """
 # END
 
