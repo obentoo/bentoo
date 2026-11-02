@@ -68,17 +68,9 @@ RDEPEND="
 	icu? ( dev-libs/icu:= )
 	resolutionkms? (
 		virtual/libudev
-		|| (
-			(
-				>=media-libs/mesa-25.2[-video_cards_vmware]
-				x11-base/xorg-server[xorg]
-				x11-libs/libdrm[-video_cards_vmware]
-			)
-			(
-				<media-libs/mesa-25.2[video_cards_vmware,xa]
-				x11-libs/libdrm[video_cards_vmware]
-			)
-		)
+		>=media-libs/mesa-25.2[-video_cards_vmware]
+		x11-base/xorg-server[xorg]
+		x11-libs/libdrm[-video_cards_vmware]
 	)"
 DEPEND="${RDEPEND}
 	net-libs/rpcsvc-proto"
@@ -88,7 +80,7 @@ BDEPEND="
 	doc? ( app-text/doxygen )"
 RDEPEND+=" selinux? ( sec-policy/selinux-vmware )"
 
-# BENTOO-DIVERGENCE: PATCHES - ::gentoo carries the first four; the json-c and
+# BENTOO-DIVERGENCE: PATCHES - ::gentoo carries the first five; the json-c and
 # xmlsec ones are overlay-only.  The json-c one reorders -I flags so this
 # tree's own debug.h wins over
 # json-c's, which otherwise breaks every LOG() in the dndcp plugin.  That is
@@ -100,6 +92,7 @@ PATCHES=(
 	"${FILESDIR}"/${PN}-12.4.5-icu.patch
 	"${FILESDIR}"/${PN}-13.0.10-glibc-2.43-c23.patch
 	"${FILESDIR}"/${PN}-13.0.10-glib-with-glibc-2.43-c23.patch
+	"${FILESDIR}"/${PN}-13.1.0-configure-bashism.patch
 	# Deliberately version-agnostic: it only reorders -I flags in a
 	# Makefile.am that upstream has not touched across releases, and the
 	# autoupdate applier never renames files/ on a bump.
