@@ -172,13 +172,15 @@ BDEPEND="
 #     blindDataCount / the 2-arg nanoToOpenVDB landed in 13.1.0 itself.
 # 14.0.0 removed log4cplus (logging.h is now a sink API, USE_LOG4CPLUS has no
 # effect), so openvdb-10.0.1-log4cplus-version.patch is dropped with it, and
-# so is the dev-libs/log4cplus dependency.
+# so is the dev-libs/log4cplus dependency. The cmake_fixes patch is rebased
+# again and renamed to -14.0.0-: the Find*.cmake module list changed and the
+# nanovdb unittest grew from 4 to 9 GTest consumers.
 PATCHES=(
 	"${FILESDIR}/${PN}-8.1.0-glfw-libdir.patch"
 
 	"${FILESDIR}/${PN}-9.0.0-fix-atomic.patch"
 
-	"${FILESDIR}/${PN}-13.0.0-cmake_fixes.patch"
+	"${FILESDIR}/${PN}-14.0.0-cmake_fixes.patch"
 
 	"${FILESDIR}/${PN}-12.0.0-loosen-float-equality-tolerances.patch"
 )

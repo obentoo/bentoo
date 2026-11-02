@@ -5,47 +5,59 @@ use CMake 3.20 GTest targets for nanovdb
 change vdb_ax_test WORKING_DIRECTORY so testfiles can be found
 fix syntax for OpenVDBCXX.cmake
 
-Rebased from openvdb-11.0.0-cmake_fixes.patch onto 13.0.0.  Three of the four
-files needed only new offsets.  The nanovdb unittest hunk had to be re-cut:
-13.0.0 inserted an if(MSVC) block above it and added a third gtest consumer,
-nanovdb_test_mgpu, so the GTest::GTest / GTest::Main rename now covers four
-target_link_libraries calls instead of three.
+Rebased from openvdb-13.0.0-cmake_fixes.patch onto 14.0.0.  The
+OpenVDBCXX.cmake and vdb_ax_test hunks needed only new offsets.  Two hunks
+had to be re-cut:
+- CMakeLists.txt: 14.0.0 dropped FindBlosc/FindLog4cplus from
+  OPENVDB_CMAKE_MODULES and added FindZstd, so the context changed.
+- nanovdb unittest: 14.0.0 inserted a CUDA header-check block above the GTest
+  guard and grew the GTest consumers from 4 to 9 (blosc, cuda_memory_resource,
+  cuda_util, cuda_util_sync, cuda_buffer), all renamed here.
 
-All four changes were re-verified as still needed against the 13.0.0 tarball;
-none of them was fixed upstream.  (The sibling patch
-openvdb-12.0.0-remove-c-style-casts.patch WAS upstreamed and is dropped.)
+All four changes were re-verified as still needed against the 14.0.0 tarball;
+none of them was fixed upstream.
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -321,9 +321,7 @@
-     cmake/FindBlosc.cmake
+@@ -337,9 +337,7 @@
+ if(OPENVDB_INSTALL_CMAKE_MODULES)
+   set(OPENVDB_CMAKE_MODULES
      cmake/FindJemalloc.cmake
-     cmake/FindLog4cplus.cmake
 -    cmake/FindOpenEXR.cmake
      cmake/FindOpenVDB.cmake
 -    cmake/FindTBB.cmake
+     cmake/FindZstd.cmake
      cmake/OpenVDBGLFW3Setup.cmake
      cmake/OpenVDBHoudiniSetup.cmake
-     cmake/OpenVDBMayaSetup.cmake
 --- a/nanovdb/nanovdb/unittest/CMakeLists.txt
 +++ b/nanovdb/nanovdb/unittest/CMakeLists.txt
-@@ -20,7 +20,7 @@
+@@ -66,7 +66,7 @@
+ endif()
  
- ###############################################################################
  # TODO: Benchmark should probably not require gtest.
 -if(NOT TARGET GTest::GTest)
 +if(NOT TARGET GTest::gtest_main)
    message(WARNING " - GTest required to build unittests. Skipping.")
    return()
  endif()
-@@ -42,19 +42,19 @@
+@@ -74,7 +74,7 @@
  # -----------------------------------------------------------------------------
  
  add_executable(nanovdb_test_nanovdb "TestNanoVDB.cc")
 -target_link_libraries(nanovdb_test_nanovdb PRIVATE nanovdb GTest::GTest GTest::Main)
 +target_link_libraries(nanovdb_test_nanovdb PRIVATE nanovdb GTest::gtest GTest::gtest_main)
- add_test(nanovdb_unit_test nanovdb_test_nanovdb)
+ # Layout tests use offsetof on compressed leaf types that are not standard-layout.
+ target_compile_options(nanovdb_test_nanovdb PRIVATE
+   "$<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>:-Wno-invalid-offsetof>")
+@@ -82,7 +82,7 @@
  
- # -----------------------------------------------------------------------------
+ if(NANOVDB_USE_BLOSC)
+   add_executable(nanovdb_test_blosc "TestBlosc.cc")
+-  target_link_libraries(nanovdb_test_blosc PRIVATE nanovdb GTest::GTest GTest::Main)
++  target_link_libraries(nanovdb_test_blosc PRIVATE nanovdb GTest::gtest GTest::gtest_main)
+   add_test(nanovdb_blosc_unit_test nanovdb_test_blosc)
+ endif()
+ 
+@@ -90,22 +90,22 @@
  
  if(NANOVDB_USE_CUDA)
    add_executable(nanovdb_test_cuda "TestNanoVDB.cu")
@@ -59,8 +71,34 @@ openvdb-12.0.0-remove-c-style-casts.patch WAS upstreamed and is dropped.)
 +  target_link_libraries(nanovdb_test_mgpu PRIVATE nanovdb GTest::gtest GTest::gtest_main)
    set_target_properties(nanovdb_test_mgpu PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
    add_test(nanovdb_mgpu_unit_test nanovdb_test_mgpu)
+ 
+   add_executable(nanovdb_test_cuda_memory_resource "TestMemoryResource.cu")
+-  target_link_libraries(nanovdb_test_cuda_memory_resource PRIVATE nanovdb GTest::GTest GTest::Main)
++  target_link_libraries(nanovdb_test_cuda_memory_resource PRIVATE nanovdb GTest::gtest GTest::gtest_main)
+   set_target_properties(nanovdb_test_cuda_memory_resource PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+   add_test(nanovdb_cuda_memory_resource_unit_test nanovdb_test_cuda_memory_resource)
+ 
+   add_executable(nanovdb_test_cuda_util "TestUtilCuda.cu")
+-  target_link_libraries(nanovdb_test_cuda_util PRIVATE nanovdb GTest::GTest GTest::Main)
++  target_link_libraries(nanovdb_test_cuda_util PRIVATE nanovdb GTest::gtest GTest::gtest_main)
+   set_target_properties(nanovdb_test_cuda_util PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+   add_test(nanovdb_cuda_util_unit_test nanovdb_test_cuda_util)
+ 
+@@ -113,11 +113,11 @@
+   # the configuration a pool-less vGPU relies on.
+   add_executable(nanovdb_test_cuda_util_sync "TestUtilCuda.cu")
+   target_compile_definitions(nanovdb_test_cuda_util_sync PRIVATE NANOVDB_USE_SYNC_CUDA_MALLOC)
+-  target_link_libraries(nanovdb_test_cuda_util_sync PRIVATE nanovdb GTest::GTest GTest::Main)
++  target_link_libraries(nanovdb_test_cuda_util_sync PRIVATE nanovdb GTest::gtest GTest::gtest_main)
+   set_target_properties(nanovdb_test_cuda_util_sync PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+   add_test(nanovdb_cuda_util_sync_unit_test nanovdb_test_cuda_util_sync)
+   add_executable(nanovdb_test_cuda_buffer "TestBuffer.cu")
+-  target_link_libraries(nanovdb_test_cuda_buffer PRIVATE nanovdb GTest::GTest GTest::Main)
++  target_link_libraries(nanovdb_test_cuda_buffer PRIVATE nanovdb GTest::gtest GTest::gtest_main)
+   set_target_properties(nanovdb_test_cuda_buffer PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+   add_test(nanovdb_cuda_buffer_unit_test nanovdb_test_cuda_buffer)
  endif()
-@@ -67,5 +67,5 @@
+@@ -130,5 +130,5 @@
  endif()
  
  add_executable(nanovdb_test_openvdb "TestOpenVDB.cc")
@@ -80,7 +118,7 @@ openvdb-12.0.0-remove-c-style-casts.patch WAS upstreamed and is dropped.)
  get_filename_component(PATH_TO_PROJECT_ROOT ${CMAKE_CURRENT_LIST_DIR} DIRECTORY)
 --- a/cmake/config/OpenVDBCXX.cmake
 +++ b/cmake/config/OpenVDBCXX.cmake
-@@ -255,7 +255,7 @@
+@@ -274,7 +274,7 @@
  # DebugNoInfo - An internal build type only used by the OpenVDB CI. no optimizations, no symbols, asserts enabled
  set(CMAKE_CXX_FLAGS_DebugNoInfo "" CACHE STRING "Flags used by the C++ compiler during DebugNoInfo builds.")
  
