@@ -394,6 +394,10 @@ PATCHES=(
 	# .proto itself is reinstated from 4.11.0 in src_prepare below).
 	"${FILESDIR}/${PN}-5.0.0-dnn-regenerate-caffe-proto.patch"
 
+	# FFmpeg 9 removed AVCodec::pix_fmts and AVCodec::supported_framerates;
+	# query them through avcodec_get_supported_config() instead.
+	"${FILESDIR}/${PN}-5.0.0-ffmpeg9.patch"
+
 	# NOTE OpenCV 5: gapi moved from core to opencv_contrib.
 	# The ADE download patch now targets the contrib tree and is applied
 	# in src_prepare inside the `use contrib` block (see below).
