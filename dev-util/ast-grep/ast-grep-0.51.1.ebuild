@@ -18,7 +18,6 @@ CRATES="
 	anyhow@1.0.104
 	arraydeque@0.5.1
 	assert_cmd@2.2.2
-	async-trait@0.1.92
 	autocfg@1.5.1
 	base64@0.23.1
 	bit-set@0.11.1
@@ -73,6 +72,7 @@ CRATES="
 	float-cmp@0.10.0
 	fluent-uri@0.4.1
 	fnv@1.0.7
+	foldhash@0.2.0
 	fs2@0.4.3
 	futures-channel@0.3.34
 	futures-core@0.3.34
@@ -85,18 +85,18 @@ CRATES="
 	futures@0.3.34
 	fuzzy-matcher@0.3.7
 	getrandom@0.4.3
-	globset@0.4.20
+	globset@0.4.21
 	granit-parser@2.0.0
 	hashbrown@0.14.5
 	hashbrown@0.17.1
 	heck@0.5.0
 	httparse@1.10.1
-	ignore@0.4.33
+	ignore@0.4.34
 	indexmap@2.14.0
 	inquire@0.9.4
 	is_terminal_polyfill@1.70.2
 	itoa@1.0.18
-	js-sys@0.3.104
+	js-sys@0.3.107
 	lazy-regex-proc_macros@3.6.1
 	lazy-regex@3.6.1
 	lazy_static@1.5.0
@@ -111,15 +111,15 @@ CRATES="
 	ls-types@0.0.6
 	matchers@0.2.0
 	memchr@2.8.3
-	minicov@0.3.9
+	minicov@0.3.8
 	minimad@0.16.0
 	mio@1.2.2
 	multiversion_no_op@1.0.0
-	napi-build@2.5.0
-	napi-derive-backend@6.1.4
-	napi-derive@3.6.10
-	napi-sys@3.3.2
-	napi@3.13.0
+	napi-build@2.6.0
+	napi-derive-backend@7.0.0
+	napi-derive@3.7.0
+	napi-sys@3.4.1
+	napi@3.16.1
 	nix@0.31.3
 	nohash-hasher@0.2.0
 	normalize-line-endings@0.3.0
@@ -163,8 +163,8 @@ CRATES="
 	same-file@1.0.6
 	schemafy_core@0.6.0
 	schemafy_lib@0.6.0
-	schemars@1.2.2
-	schemars_derive@1.2.2
+	schemars@1.2.3
+	schemars_derive@1.2.3
 	scopeguard@1.2.0
 	semver@1.0.28
 	serde-saphyr@2.0.0
@@ -175,7 +175,7 @@ CRATES="
 	serde_core@1.0.229
 	serde_derive@1.0.229
 	serde_derive_internals@0.30.0
-	serde_json@1.0.151
+	serde_json@1.0.154
 	serde_regex@1.2.0
 	sharded-slab@0.1.7
 	shlex@2.0.1
@@ -183,9 +183,9 @@ CRATES="
 	signal-hook-registry@1.4.8
 	signal-hook@0.3.18
 	simdutf8@0.1.5
-	similar@3.2.0
+	similar@3.2.1
 	slab@0.4.12
-	smallvec@1.16.2
+	smallvec@1.16.4
 	streaming-iterator@0.1.9
 	strict@0.2.0
 	strsim@0.11.1
@@ -196,7 +196,7 @@ CRATES="
 	syn@3.0.3
 	sync_wrapper@1.0.2
 	target-lexicon@0.13.5
-	target-triple@1.0.1
+	target-tuple@1.0.2
 	tempfile@3.27.0
 	termcolor@1.4.1
 	termimad@0.35.5
@@ -209,12 +209,12 @@ CRATES="
 	thread_local@1.1.10
 	tokio-macros@2.7.2
 	tokio-stream@0.1.19
-	tokio-util@0.7.19
-	tokio@1.53.2
-	toml_datetime@1.1.1+spec-1.1.0
-	toml_edit@0.25.15+spec-1.1.0
-	toml_parser@1.1.3+spec-1.1.0
-	toml_writer@1.1.2+spec-1.1.0
+	tokio-util@0.7.20
+	tokio@1.54.1
+	toml_datetime@1.1.2+spec-1.1.0
+	toml_edit@0.25.17+spec-1.1.0
+	toml_parser@1.1.5+spec-1.1.0
+	toml_writer@1.1.3+spec-1.1.0
 	tower-layer@0.3.3
 	tower-lsp-server@0.23.0
 	tower-service@0.3.3
@@ -229,7 +229,7 @@ CRATES="
 	tree-sitter-c@0.24.2
 	tree-sitter-cpp@0.23.4
 	tree-sitter-css@0.25.0
-	tree-sitter-dart@0.2.0
+	tree-sitter-dart@0.3.0
 	tree-sitter-elixir@0.3.5
 	tree-sitter-go@0.25.0
 	tree-sitter-haskell@0.24.1
@@ -239,21 +239,21 @@ CRATES="
 	tree-sitter-javascript@0.25.0
 	tree-sitter-json@0.24.8
 	tree-sitter-kotlin-sg@0.4.1
-	tree-sitter-language@0.1.8
+	tree-sitter-language@0.1.9
 	tree-sitter-lua@0.5.0
-	tree-sitter-md@0.5.3
+	tree-sitter-md@0.5.4
 	tree-sitter-nix@0.3.0
-	tree-sitter-php@0.24.2
+	tree-sitter-php@0.25.1
 	tree-sitter-python@0.25.0
 	tree-sitter-ruby@0.23.1
 	tree-sitter-rust@0.24.2
-	tree-sitter-scala@0.26.2
+	tree-sitter-scala@0.26.4
 	tree-sitter-solidity@1.2.13
-	tree-sitter-swift@0.7.3
+	tree-sitter-swift@0.7.4
 	tree-sitter-typescript@0.23.2
 	tree-sitter-yaml@0.7.2
 	tree-sitter-zig@1.1.2
-	tree-sitter@0.27.0
+	tree-sitter@0.27.1
 	typed-builder-macro@0.21.2
 	typed-builder@0.21.2
 	unicode-ident@1.0.24
@@ -266,14 +266,14 @@ CRATES="
 	wait-timeout@0.2.1
 	walkdir@2.5.0
 	wasi@0.11.1+wasi-snapshot-preview1
-	wasm-bindgen-futures@0.4.77
-	wasm-bindgen-macro-support@0.2.127
-	wasm-bindgen-macro@0.2.127
-	wasm-bindgen-shared@0.2.127
-	wasm-bindgen-test-macro@0.3.77
-	wasm-bindgen-test-shared@0.2.127
-	wasm-bindgen-test@0.3.77
-	wasm-bindgen@0.2.127
+	wasm-bindgen-futures@0.4.80
+	wasm-bindgen-macro-support@0.2.130
+	wasm-bindgen-macro@0.2.130
+	wasm-bindgen-shared@0.2.130
+	wasm-bindgen-test-macro@0.3.80
+	wasm-bindgen-test-shared@0.2.130
+	wasm-bindgen-test@0.3.80
+	wasm-bindgen@0.2.130
 	winapi-i686-pc-windows-gnu@0.4.0
 	winapi-util@0.1.11
 	winapi-x86_64-pc-windows-gnu@0.4.0
@@ -308,7 +308,7 @@ LICENSE="MIT"
 # Dependent crate licenses
 LICENSE+="
 	Apache-2.0 Apache-2.0-with-LLVM-exceptions BSD-2 BSD ISC MIT MIT-0
-	MPL-2.0 Unicode-3.0
+	MPL-2.0 Unicode-3.0 ZLIB
 "
 SLOT="0"
 KEYWORDS="~amd64"
