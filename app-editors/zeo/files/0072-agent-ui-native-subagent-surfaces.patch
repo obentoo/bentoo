@@ -1,0 +1,1678 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Sat, 31 Oct 2026 22:02:10 -0300
+Subject: [PATCH] agent_ui, sidebar: native subagent surfaces cover ACP
+ subagents (RFD children)
+
+Zed a5c4ca8b declared the ACP subagents RFD: an agent announces a child
+session (`subagent_update`), the parent registers it, and the child reports
+its own activity. Zed's own surfaces for subagents were written for its native
+`spawn_agent` tool, and an RFD child fell through three of them. This patch
+extends them in place rather than drawing a second set (story 064).
+
+  - Card status. `SubagentStatus` gains `Waiting` for a child that reports
+    `RequiresAction`, drawn in the warning colour as "Waiting for you".
+    Upstream maps RequiresAction to Running and `can_stop` checks Running;
+    both change here, so a waiting child keeps its Stop.
+  - Awaiting-permission bar. Besides the tool calls that carry
+    `subagent_session_info`, it lists the RFD children whose thread holds a
+    pending permission request, and drops one once it is answered. The count
+    already included them; `collect_subagent_items_for_sessions` was what
+    dropped them.
+  - A card without a session message. An announcement creates no transcript
+    entry, so a child the parent never wrote to had no card at all. A child
+    registered in a turn with no outgoing session message to it by that
+    turn's end gets a card after the turn's last entry; a message that arrives
+    later replaces it, so there is only ever one. A child named by a tool
+    call's `subagent_session_info` is excluded: since upstream #66255 a native
+    `spawn_agent` child is registered with an association and has no session
+    message either, and without the exclusion it would be drawn twice.
+    `unsent_subagents` collects the session ids the thread's tool calls name
+    once and filters on them.
+  - Sidebar. A thread row reads Background while a subagent is Running or
+    Waiting, and waiting-for-answer while one is Waiting, after the permission
+    prompt, the question (0030) and an error, which it never hides; a child
+    that has not reported, or reports Unknown, is no activity. The row follows
+    each child's own StatusChanged, with no event from the parent. Archive is
+    refused while a child is active, and the refusal now says why: "This
+    thread has running subagents", or, for 0029's background tasks, "This
+    thread has running tasks". The rule is one function, `thread_row_status`,
+    with 0029/0030's precedence as a truth-table test.
+
+The sidebar half lives here and not in 0029 because it reads 0030's question
+state and sits beside 0070's sub-thread markers; this is the last patch of
+the claude-agent-acp-plus group, after 0071, so the optional groups after it
+(0002, 0052, 0057, 0058, 0063, 0066, 0067) and the test group are generated on
+top of it. The row source it reads, `acp_thread::subagent_rows` and
+`any_child_active`, is 0034's. Zed's native tool-call children are untouched
+apart from the one-card exclusion.
+
+Touch points in upstream files: subagent_card.rs (the status, the unsent
+cards), thread_view.rs (the bar and the appended cards), sidebar.rs (the row
+status and the archive refusal), and a `watch` dev-dependency for the sidebar
+tests. 18 tests added (GPUI integration and unit).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index a1e7a29..4cec7c7 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -16618,6 +16618,7 @@ dependencies = [
+  "ui",
+  "unicode-segmentation",
+  "util",
++ "watch",
+  "workspace",
+  "zed_actions",
+ ]
+diff --git a/crates/agent_ui/src/conversation_view/subagent_card.rs b/crates/agent_ui/src/conversation_view/subagent_card.rs
+index 60aef71..5825932 100644
+--- a/crates/agent_ui/src/conversation_view/subagent_card.rs
++++ b/crates/agent_ui/src/conversation_view/subagent_card.rs
+@@ -9,6 +9,9 @@ use std::{fmt, ops::Range};
+ 
+ use super::thread_view::subagent_label;
+ 
++/// The label a Waiting card shows (story 064, R5.2).
++pub(crate) const SUBAGENT_WAITING_LABEL: &str = "Waiting for you";
++
+ /// Native subagent tool calls report a user cancellation as output with this text.
+ const USER_CANCELED_OUTPUT: &str = "User canceled";
+ 
+@@ -20,6 +23,10 @@ pub(crate) enum SubagentCardId {
+     ToolCall(acp_v2::ToolCallId),
+     /// An ACP parent's outgoing session message to the subagent.
+     SessionMessage(acp_v2::MessageId),
++    /// An ACP subagent its parent registered in a turn that ended without sending it a
++    /// message: the announcement makes no transcript entry, so the card follows the turn's
++    /// last entry until a message to it arrives (story 064, R5.3).
++    Unsent(acp_v2::SessionId),
+ }
+ 
+ impl fmt::Display for SubagentCardId {
+@@ -27,6 +34,7 @@ impl fmt::Display for SubagentCardId {
+         match self {
+             Self::ToolCall(id) => write!(f, "tool-call-{id}"),
+             Self::SessionMessage(id) => write!(f, "session-message-{id}"),
++            Self::Unsent(id) => write!(f, "unsent-{id}"),
+         }
+     }
+ }
+@@ -106,9 +114,46 @@ pub(crate) fn acp_subagent_card(
+     })
+ }
+ 
++/// The registered children of `thread` that it has sent no message to and that no spawning tool
++/// call names, in registration order: each is drawn as a card after the turn's last entry (R5.3).
++pub(crate) fn unsent_subagents(thread: &AcpThread) -> Vec<Entity<AcpThread>> {
++    let own_session_id = thread.session_id();
++    thread
++        .subagents()
++        .filter(|subagent| {
++            let child = subagent.entity_id();
++            !thread.entries().iter().any(|entry| match entry {
++                AgentThreadEntry::SessionMessage(message) => {
++                    matches!(
++                        message.side(own_session_id),
++                        SessionMessageSide::Outgoing { recipient: Some(recipient) }
++                            if thread.subagent(recipient).map(|known| known.entity_id())
++                                == Some(child)
++                    )
++                }
++                // Since #66255 a native `spawn_agent` child is registered too, and its card is
++                // the spawning tool call's: appending another would draw the child twice.
++                AgentThreadEntry::ToolCall(tool_call) => tool_call
++                    .subagent_session_info
++                    .as_ref()
++                    .is_some_and(|info| {
++                        thread
++                            .subagent(&info.session_id)
++                            .map(|known| known.entity_id())
++                            == Some(child)
++                    }),
++                _ => false,
++            })
++        })
++        .cloned()
++        .collect()
++}
++
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub(crate) enum SubagentStatus {
+     Running,
++    /// An ACP subagent waiting for the user (`requires_action`): live work, not an ending.
++    Waiting,
+     Completed,
+     Failed,
+     Canceled,
+@@ -127,9 +172,10 @@ impl SubagentStatus {
+             return (Self::Unknown, None);
+         };
+         match state {
+-            acp_v2::StateUpdate::Running(_) | acp_v2::StateUpdate::RequiresAction(_) => {
+-                (Self::Running, None)
+-            }
++            acp_v2::StateUpdate::Running(_) => (Self::Running, None),
++            // Upstream reads it as Running; the sidebar, the tray and the card all have to
++            // tell a child waiting for the user apart (story 064, R5.2).
++            acp_v2::StateUpdate::RequiresAction(_) => (Self::Waiting, None),
+             acp_v2::StateUpdate::Idle(idle) => {
+                 let (outcome, error) = acp_thread::subagent_rows::idle_outcome(idle);
+                 let status = match outcome {
+@@ -255,7 +301,8 @@ impl SubagentCardState {
+             label_wins: true,
+             status,
+             error,
+-            can_stop: status == SubagentStatus::Running && can_cancel,
++            can_stop: matches!(status, SubagentStatus::Running | SubagentStatus::Waiting)
++                && can_cancel,
+             entries,
+         }
+     }
+@@ -270,9 +317,10 @@ impl SubagentCardState {
+         title.unwrap_or_else(|| match self.status {
+             SubagentStatus::Canceled => "Subagent Canceled".into(),
+             SubagentStatus::Failed => "Subagent Failed".into(),
+-            SubagentStatus::Running | SubagentStatus::Completed | SubagentStatus::Unknown => {
+-                "Spawning Agent…".into()
+-            }
++            SubagentStatus::Running
++            | SubagentStatus::Waiting
++            | SubagentStatus::Completed
++            | SubagentStatus::Unknown => "Spawning Agent…".into(),
+         })
+     }
+ 
+@@ -402,7 +450,8 @@ mod tests {
+                 Some(acp_v2::StateUpdate::RequiresAction(
+                     acp_v2::RequiresActionStateUpdate::new(),
+                 )),
+-                SubagentStatus::Running,
++                // Story 064, R5.2: waiting for the user is not running.
++                SubagentStatus::Waiting,
+                 None,
+             ),
+             (
+@@ -503,3 +552,11 @@ mod tests {
+         );
+     }
+ }
++
++#[cfg(test)]
++#[path = "subagent_card/rfd_surfaces_tests.rs"]
++mod rfd_surfaces_tests;
++
++#[cfg(test)]
++#[path = "subagent_card/native_child_card_tests.rs"]
++mod native_child_card_tests;
+diff --git a/crates/agent_ui/src/conversation_view/subagent_card/native_child_card_tests.rs b/crates/agent_ui/src/conversation_view/subagent_card/native_child_card_tests.rs
+new file mode 100644
+index 0000000..96af2d5
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/subagent_card/native_child_card_tests.rs
+@@ -0,0 +1,276 @@
++// Story 064, task 10.1 — one card for a child its spawning tool call already draws (R5.3, R5.4).
++// Fixup of `0072-agent-ui-native-subagent-surfaces`. Module path:
++// `conversation_view::subagent_card::native_child_card_tests`; wired at the end of
++// `src/conversation_view/subagent_card.rs`, beside `rfd_surfaces_tests`:
++//
++//     #[cfg(test)]
++//     #[path = "subagent_card/native_child_card_tests.rs"]
++//     mod native_child_card_tests;
++//
++// Validation: `cargo test -p agent_ui native_child_card`.
++//
++// Since upstream #66255 a native `spawn_agent` child is registered with its parent (with an
++// association) and is never sent a `SessionMessage`: its card is the spawning tool call's, whose
++// `subagent_session_info` names the child's session. R5.3's appended card is for a child with
++// NEITHER a message NOR such a tool call. The child is built here as `rfd_surfaces_tests` builds
++// one (agent-owned thread under the parent's session, association, `register_subagent`); the
++// tool call is the parent's, created first and then given the child's session in its meta, the
++// order the native agent reports them in.
++//
++// Contract read: `unsent_subagents(&AcpThread) -> Vec<Entity<AcpThread>>` and the debug selector
++// `subagent-card-unsent-{child session}` the appended card carries (both exist since task 7.1).
++//
++// Hostile halves first:
++//   - wrongly split: a child named by a tool call gets a second, appended card;
++//   - wrongly collapse: a tool call naming ANOTHER session ("alpha" vs "alpha-2"), or a tool call
++//     without `subagent_session_info` whose title happens to be the child's, suppresses the card
++//     of a child it does not name;
++//   - then the benign RFD child without a message, which keeps exactly one appended card.
++
++use std::path::Path;
++use std::rc::Rc;
++
++use acp_thread::{AcpThread, AgentConnection, SUBAGENT_SESSION_INFO_META_KEY, StubAgentConnection};
++use agent_client_protocol::schema::v1 as acp_v1;
++use agent_client_protocol::schema::v2 as acp_v2;
++use fs::FakeFs;
++use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
++use project::Project;
++use serde_json::json;
++use workspace::MultiWorkspace;
++
++use super::unsent_subagents;
++use crate::AgentPanel;
++
++fn unsent_card(child: &str) -> &'static str {
++    Box::leak(format!("subagent-card-unsent-{child}").into_boxed_str())
++}
++
++struct Rig {
++    _panel: Entity<AgentPanel>,
++    connection: StubAgentConnection,
++    parent: Entity<AcpThread>,
++    parent_session: acp_v2::SessionId,
++    cx: VisualTestContext,
++}
++
++/// A visible agent panel on a parent thread whose first turn is still open.
++async fn rig(cx: &mut TestAppContext) -> Rig {
++    crate::conversation_view::tests::init_test(cx);
++    cx.update(|cx| {
++        agent::ThreadStore::init_global(cx);
++        language_model::LanguageModelRegistry::test(cx);
++    });
++    let fs = FakeFs::new(cx.executor());
++    cx.update(|cx| <dyn fs::Fs>::set_global(fs.clone(), cx));
++    fs.insert_tree("/project", json!({ "file.txt": "" })).await;
++    let project = Project::test(fs.clone(), [Path::new("/project")], cx).await;
++    let multi_workspace =
++        cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
++    let workspace = multi_workspace
++        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
++        .unwrap();
++    let mut cx = VisualTestContext::from_window(multi_workspace.into(), cx);
++    cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(1600.)));
++    let panel = workspace.update_in(&mut cx, |workspace, window, cx| {
++        let panel = cx.new(|cx| AgentPanel::new(workspace, window, cx));
++        workspace.add_panel(panel.clone(), window, cx);
++        workspace.focus_panel::<AgentPanel>(window, cx);
++        panel
++    });
++    cx.run_until_parked();
++    let connection = StubAgentConnection::new().with_announced_subagents(true);
++    crate::test_support::open_thread_with_connection(&panel, connection.clone(), &mut cx);
++    crate::test_support::send_message(&panel, &mut cx);
++    let parent = panel.read_with(&cx, |panel, cx| {
++        panel.active_agent_thread(cx).expect("a thread was opened")
++    });
++    let parent_session = parent.read_with(&cx, |thread, _| thread.session_id().clone());
++    Rig {
++        _panel: panel,
++        connection,
++        parent,
++        parent_session,
++        cx,
++    }
++}
++
++impl Rig {
++    /// A child registered with the parent, with its association, and no message to it.
++    fn register_child(&mut self, session: &str, title: &str) -> Entity<AcpThread> {
++        let parent_session = self.parent_session.clone();
++        let shared: Rc<dyn AgentConnection> = Rc::new(self.connection.clone());
++        let parent = self.parent.clone();
++        let child = self.cx.update(|_, cx| {
++            let project = parent.read(cx).project().clone();
++            let action_log = cx.new(|_| action_log::ActionLog::new(project.clone()));
++            cx.new(|cx| {
++                AcpThread::new(
++                    Some(parent_session),
++                    None,
++                    None,
++                    shared,
++                    project,
++                    action_log,
++                    acp_v2::SessionId::new(session.to_string()),
++                    watch::Receiver::constant(acp_v2::PromptCapabilities::new()),
++                    cx,
++                )
++                .agent_owned()
++            })
++        });
++        self.cx
++            .update(|_, cx| self.connection.track_session(&child, cx));
++        let update = acp_v2::SubagentUpdate::new(session.to_string()).title(title.to_string());
++        child
++            .update(&mut self.cx, |child, cx| {
++                child.update_subagent_association(&update, cx)
++            })
++            .expect("an agent-owned thread takes an association");
++        self.parent.update(&mut self.cx, |parent, cx| {
++            parent.register_subagent(child.clone(), cx)
++        });
++        self.cx.run_until_parked();
++        child
++    }
++
++    /// A tool call of the parent, as the native `spawn_agent` reports it: created with no meta,
++    /// then updated with `subagent_session_info` naming `child` (when given).
++    fn spawning_tool_call(&mut self, id: &str, title: &str, child: Option<&str>) {
++        let call = || {
++            acp_v1::ToolCall::new(acp_v1::ToolCallId::new(id.to_string()), title.to_string())
++                .kind(acp_v1::ToolKind::Other)
++                .status(acp_v1::ToolCallStatus::InProgress)
++        };
++        self.parent
++            .update(&mut self.cx, |parent, cx| {
++                parent.upsert_tool_call(call(), cx)
++            })
++            .expect("the tool call is created");
++        if let Some(child) = child {
++            let meta = acp_v1::Meta::from_iter([(
++                SUBAGENT_SESSION_INFO_META_KEY.into(),
++                json!({ "session_id": child, "message_start_index": 0 }),
++            )]);
++            self.parent
++                .update(&mut self.cx, |parent, cx| {
++                    parent.upsert_tool_call(call().meta(meta), cx)
++                })
++                .expect("the tool call names its child");
++        }
++        self.cx.run_until_parked();
++    }
++
++    fn end_turn(&mut self) {
++        self.connection
++            .end_turn(self.parent_session.clone(), acp_v1::StopReason::EndTurn);
++        self.cx.run_until_parked();
++    }
++
++    /// The sessions `unsent_subagents` returns for the parent, sorted (the registry's order is
++    /// not what these tests pin).
++    fn unsent(&mut self) -> Vec<String> {
++        let mut sessions = self.parent.read_with(&self.cx, |parent, cx| {
++            unsent_subagents(parent)
++                .iter()
++                .map(|child| child.read(cx).session_id().to_string())
++                .collect::<Vec<_>>()
++        });
++        sessions.sort();
++        sessions
++    }
++
++    fn painted(&mut self, selector: &'static str) -> bool {
++        self.cx.update(|window, _| window.refresh());
++        self.cx.run_until_parked();
++        self.cx.debug_bounds(selector).is_some()
++    }
++}
++
++// ── R5.4 — a child its tool call names has that card only ──────────────────
++
++/// Hostile (wrongly split): Alpha is a native `spawn_agent` child — registered, no message, its
++/// spawning tool call names it. At the turn's end it has no appended card: the tool call's card
++/// is its one card.
++#[gpui::test]
++async fn test_native_child_card_tool_call_child_gets_no_appended_card(cx: &mut TestAppContext) {
++    let mut rig = rig(cx).await;
++    rig.spawning_tool_call("spawn-alpha", "Spawn Alpha", None);
++    let _alpha = rig.register_child("alpha", "Alpha");
++    rig.spawning_tool_call("spawn-alpha", "Spawn Alpha", Some("alpha"));
++    rig.end_turn();
++
++    assert_eq!(
++        rig.unsent(),
++        Vec::<String>::new(),
++        "R5.4: a child named by a tool call's subagent_session_info is not unsent"
++    );
++    assert!(
++        !rig.painted(unsent_card("alpha")),
++        "R5.4: no second card is appended for the tool call's child"
++    );
++}
++
++/// Hostile (wrongly collapse): the tool call names "alpha"; "alpha-2", registered beside it with
++/// no message and no tool call, keeps its appended card — a session id is matched whole, never
++/// by prefix or by the child being "a" child of some tool call.
++#[gpui::test]
++async fn test_native_child_card_tool_call_spares_only_the_session_it_names(
++    cx: &mut TestAppContext,
++) {
++    let mut rig = rig(cx).await;
++    rig.spawning_tool_call("spawn-alpha", "Spawn Alpha", None);
++    let _alpha = rig.register_child("alpha", "Alpha");
++    rig.spawning_tool_call("spawn-alpha", "Spawn Alpha", Some("alpha"));
++    let _alpha_2 = rig.register_child("alpha-2", "Alpha");
++    rig.end_turn();
++
++    assert_eq!(rig.unsent(), vec!["alpha-2".to_string()]);
++    assert!(
++        rig.painted(unsent_card("alpha-2")),
++        "alpha-2 keeps its card"
++    );
++    assert!(
++        !rig.painted(unsent_card("alpha")),
++        "alpha has only its tool call's"
++    );
++}
++
++/// Hostile (wrongly collapse): a tool call without `subagent_session_info` is not a spawning
++/// tool call, even when its title is the child's — Bravo keeps its appended card.
++#[gpui::test]
++async fn test_native_child_card_tool_call_without_session_info_spares_nothing(
++    cx: &mut TestAppContext,
++) {
++    let mut rig = rig(cx).await;
++    let _bravo = rig.register_child("bravo", "Bravo");
++    rig.spawning_tool_call("bravo", "Bravo", None);
++    rig.end_turn();
++
++    assert_eq!(rig.unsent(), vec!["bravo".to_string()]);
++    assert!(rig.painted(unsent_card("bravo")));
++}
++
++// ── R5.3 — an RFD child without a message keeps exactly one card ───────────
++
++/// Benign: an RFD child with no message and no tool call, beside a native child: exactly one
++/// appended card, the RFD child's.
++#[gpui::test]
++async fn test_native_child_card_rfd_child_without_a_message_keeps_one_card(
++    cx: &mut TestAppContext,
++) {
++    let mut rig = rig(cx).await;
++    let _charlie = rig.register_child("charlie", "Charlie");
++    rig.spawning_tool_call("spawn-alpha", "Spawn Alpha", None);
++    let _alpha = rig.register_child("alpha", "Alpha");
++    rig.spawning_tool_call("spawn-alpha", "Spawn Alpha", Some("alpha"));
++    rig.end_turn();
++
++    assert_eq!(
++        rig.unsent(),
++        vec!["charlie".to_string()],
++        "R5.3: one unsent child, Charlie"
++    );
++    assert!(rig.painted(unsent_card("charlie")), "Charlie's one card");
++    assert!(!rig.painted(unsent_card("alpha")));
++}
+diff --git a/crates/agent_ui/src/conversation_view/subagent_card/rfd_surfaces_tests.rs b/crates/agent_ui/src/conversation_view/subagent_card/rfd_surfaces_tests.rs
+new file mode 100644
+index 0000000..049fdfc
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/subagent_card/rfd_surfaces_tests.rs
+@@ -0,0 +1,417 @@
++// Story 064, task 7.1 — Zed's native subagent surfaces cover ACP (RFD) children: the
++// awaiting-permission bar, a Waiting card, and a card for a child that got no session message
++// (R5.1, R5.2, R5.3). New patch `agent-ui-native-subagent-surfaces`. Module path:
++// `conversation_view::subagent_card::rfd_surfaces_tests`; wired at the end of
++// `src/conversation_view/subagent_card.rs`:
++//
++//     #[cfg(test)]
++//     #[path = "subagent_card/rfd_surfaces_tests.rs"]
++//     mod rfd_surfaces_tests;
++//
++// Validation: `cargo test -p agent_ui subagent_card`.
++//
++// Upstream row this patch changes, on purpose (design.md): `subagent_card.rs`'s own
++// `reported_states_map_to_card_statuses` pins `RequiresAction → Running`; with R5.2 that row
++// reads `Waiting`. Nothing else of it moves.
++//
++// A child is built as `agent_servers::acp::apply_subagent_update` builds one (an `agent_owned`
++// thread under the parent's session, its association, `register_subagent`); the stub keeps the
++// parent's first prompt open until `end_turn`, which is the turn end R5.3 waits for.
++//
++// Contract assumed beyond design.md (one place each, rename here):
++//   - `SubagentStatus::Waiting`, and `SUBAGENT_WAITING_LABEL: &str = "Waiting for you"` in
++//     `subagent_card.rs`, the label the card renders for it;
++//   - the card appended for a child with no outgoing session message carries the debug selector
++//     `subagent-card-unsent-{child session}` (`unsent_card`), beside upstream's
++//     `subagent-card-{entry_ix}` for a message's card;
++//   - each row of the "Subagents Awaiting Permission" bar carries the debug selector
++//     `subagent-permission-{entry_ix}` — its element id today — where `entry_ix` is the entry
++//     of the child's card (`permission_row`).
++//
++// Hostile halves first:
++//   - Waiting is not Running, and Waiting does not lose Stop for a child the agent lets Zed
++//     cancel (the card's `can_stop` reads `status == Running` today);
++//   - exactly one card per child: a child that did get a message has no appended card; the late
++//     message replaces the appended card instead of adding a second; an INCOMING message from
++//     the child is not "a message to it" and removes nothing; nothing is appended before the
++//     turn ends;
++//   - the bar lists the child that waits for permission, not its sibling, and drops it when the
++//     request is answered;
++//   - then the benign Waiting card, appended card and bar row.
++
++use std::path::Path;
++use std::rc::Rc;
++
++use acp_thread::{AcpThread, AgentConnection, PermissionOptions, StubAgentConnection};
++use agent_client_protocol::schema::v1 as acp_v1;
++use agent_client_protocol::schema::v2 as acp_v2;
++use fs::FakeFs;
++use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
++use project::Project;
++use serde_json::json;
++use workspace::MultiWorkspace;
++
++use super::{SUBAGENT_WAITING_LABEL, SubagentCardState, SubagentStatus};
++use crate::AgentPanel;
++
++fn unsent_card(child: &str) -> &'static str {
++    Box::leak(format!("subagent-card-unsent-{child}").into_boxed_str())
++}
++
++fn message_card(entry_ix: usize) -> &'static str {
++    Box::leak(format!("subagent-card-{entry_ix}").into_boxed_str())
++}
++
++fn card_stop(entry_ix: usize) -> &'static str {
++    Box::leak(format!("stop-subagent-{entry_ix}").into_boxed_str())
++}
++
++fn permission_row(entry_ix: usize) -> &'static str {
++    Box::leak(format!("subagent-permission-{entry_ix}").into_boxed_str())
++}
++
++struct Rig {
++    panel: Entity<AgentPanel>,
++    connection: StubAgentConnection,
++    parent: Entity<AcpThread>,
++    parent_session: acp_v2::SessionId,
++    cx: VisualTestContext,
++}
++
++/// A visible agent panel on a parent thread whose first turn is still open.
++async fn rig(cx: &mut TestAppContext) -> Rig {
++    crate::conversation_view::tests::init_test(cx);
++    cx.update(|cx| {
++        agent::ThreadStore::init_global(cx);
++        language_model::LanguageModelRegistry::test(cx);
++    });
++    let fs = FakeFs::new(cx.executor());
++    cx.update(|cx| <dyn fs::Fs>::set_global(fs.clone(), cx));
++    fs.insert_tree("/project", json!({ "file.txt": "" })).await;
++    let project = Project::test(fs.clone(), [Path::new("/project")], cx).await;
++    let multi_workspace =
++        cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
++    let workspace = multi_workspace
++        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
++        .unwrap();
++    let mut cx = VisualTestContext::from_window(multi_workspace.into(), cx);
++    cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(1600.)));
++    let panel = workspace.update_in(&mut cx, |workspace, window, cx| {
++        let panel = cx.new(|cx| AgentPanel::new(workspace, window, cx));
++        workspace.add_panel(panel.clone(), window, cx);
++        workspace.focus_panel::<AgentPanel>(window, cx);
++        panel
++    });
++    cx.run_until_parked();
++    let connection = StubAgentConnection::new().with_announced_subagents(true);
++    crate::test_support::open_thread_with_connection(&panel, connection.clone(), &mut cx);
++    crate::test_support::send_message(&panel, &mut cx);
++    let parent = panel.read_with(&cx, |panel, cx| {
++        panel.active_agent_thread(cx).expect("a thread was opened")
++    });
++    let parent_session = parent.read_with(&cx, |thread, _| thread.session_id().clone());
++    Rig {
++        panel,
++        connection,
++        parent,
++        parent_session,
++        cx,
++    }
++}
++
++impl Rig {
++    fn spawn_child(&mut self, session: &str, title: &str, can_cancel: bool) -> Entity<AcpThread> {
++        let parent_session = self.parent_session.clone();
++        let shared: Rc<dyn AgentConnection> = Rc::new(self.connection.clone());
++        let parent = self.parent.clone();
++        let child = self.cx.update(|_, cx| {
++            let project = parent.read(cx).project().clone();
++            let action_log = cx.new(|_| action_log::ActionLog::new(project.clone()));
++            cx.new(|cx| {
++                AcpThread::new(
++                    Some(parent_session),
++                    None,
++                    None,
++                    shared,
++                    project,
++                    action_log,
++                    acp_v2::SessionId::new(session.to_string()),
++                    watch::Receiver::constant(acp_v2::PromptCapabilities::new()),
++                    cx,
++                )
++                .agent_owned()
++            })
++        });
++        self.cx
++            .update(|_, cx| self.connection.track_session(&child, cx));
++        let mut update = acp_v2::SubagentUpdate::new(session.to_string()).title(title.to_string());
++        if can_cancel {
++            update = update.capabilities(
++                acp_v2::SubagentSessionCapabilities::new()
++                    .cancel(acp_v2::SessionCancelCapabilities::new()),
++            );
++        }
++        child
++            .update(&mut self.cx, |child, cx| {
++                child.update_subagent_association(&update, cx)
++            })
++            .expect("an agent-owned thread takes an association");
++        self.parent.update(&mut self.cx, |parent, cx| {
++            parent.register_subagent(child.clone(), cx)
++        });
++        self.cx.run_until_parked();
++        child
++    }
++
++    fn report(&mut self, child: &Entity<AcpThread>, state: acp_v2::StateUpdate) {
++        child
++            .update(&mut self.cx, |child, cx| {
++                child.update_session_state(state, cx)
++            })
++            .expect("an agent-owned thread reports its state");
++        self.cx.run_until_parked();
++    }
++
++    /// The parent's message to `child` (or, with `incoming`, the child's to the parent); returns
++    /// its entry index in the parent.
++    fn message(&mut self, id: &str, child: &str, incoming: bool) -> usize {
++        let parent_session = self.parent_session.clone();
++        let child_session = acp_v2::SessionId::new(child.to_string());
++        let (sender, recipient) = if incoming {
++            (child_session, parent_session)
++        } else {
++            (parent_session, child_session)
++        };
++        self.parent
++            .update(&mut self.cx, |parent, cx| {
++                parent.upsert_session_message(
++                    acp_v2::SessionMessage::new(id.to_string())
++                        .sender_session_id(sender)
++                        .recipient_session_id(recipient)
++                        .content(vec!["Look into it".into()]),
++                    cx,
++                )
++            })
++            .expect("a session message applies");
++        self.cx.run_until_parked();
++        self.parent
++            .read_with(&self.cx, |parent, _| parent.entries().len() - 1)
++    }
++
++    fn end_turn(&mut self) {
++        self.connection
++            .end_turn(self.parent_session.clone(), acp_v1::StopReason::EndTurn);
++        self.cx.run_until_parked();
++    }
++
++    fn draw(&mut self) {
++        self.cx.update(|window, _| window.refresh());
++        self.cx.run_until_parked();
++    }
++
++    fn painted(&mut self, selector: &'static str) -> bool {
++        self.draw();
++        self.cx.debug_bounds(selector).is_some()
++    }
++
++    /// Every card of the parent's transcript drawn for a message, over its entries.
++    fn message_cards(&mut self) -> Vec<usize> {
++        self.draw();
++        let entries = self
++            .parent
++            .read_with(&self.cx, |parent, _| parent.entries().len());
++        (0..entries)
++            .filter(|ix| self.cx.debug_bounds(message_card(*ix)).is_some())
++            .collect()
++    }
++}
++
++// ── R5.2 — Waiting, distinct from Running ───────────────────────────────────
++
++#[test]
++fn requires_action_reads_waiting_and_running_stays_running() {
++    let waiting = acp_v2::StateUpdate::RequiresAction(acp_v2::RequiresActionStateUpdate::new());
++    let running = acp_v2::StateUpdate::Running(acp_v2::RunningStateUpdate::new());
++    assert_eq!(
++        SubagentStatus::from_reported_state(Some(&waiting)),
++        (SubagentStatus::Waiting, None)
++    );
++    assert_eq!(
++        SubagentStatus::from_reported_state(Some(&running)),
++        (SubagentStatus::Running, None),
++        "Running is untouched by the new status"
++    );
++    assert_ne!(SubagentStatus::Waiting, SubagentStatus::Running);
++    assert!(
++        !SubagentStatus::Waiting.is_failed_or_canceled(),
++        "waiting is live work, not an ending"
++    );
++    assert_eq!(SUBAGENT_WAITING_LABEL, "Waiting for you");
++}
++
++/// Hostile: a Waiting child the agent lets Zed cancel keeps its Stop, on the card's state and
++/// on screen; one without the grant has none.
++#[gpui::test]
++async fn test_rfd_waiting_card_keeps_stop_with_a_cancel_grant(cx: &mut TestAppContext) {
++    let mut rig = rig(cx).await;
++    let alpha = rig.spawn_child("alpha", "Alpha", true);
++    let bravo = rig.spawn_child("bravo", "Bravo", false);
++    let alpha_card = rig.message("to-alpha", "alpha", false);
++    let bravo_card = rig.message("to-bravo", "bravo", false);
++    let waiting = acp_v2::StateUpdate::RequiresAction(acp_v2::RequiresActionStateUpdate::new());
++    rig.report(&alpha, waiting.clone());
++    rig.report(&bravo, waiting);
++
++    let state = alpha.read_with(&rig.cx, |child, _| {
++        SubagentCardState::from_acp_subagent(child, None)
++    });
++    assert_eq!(state.status, SubagentStatus::Waiting, "R5.2");
++    assert!(
++        state.can_stop,
++        "a waiting child with the grant can be stopped"
++    );
++    assert!(rig.painted(message_card(alpha_card)));
++    assert!(
++        rig.painted(card_stop(alpha_card)),
++        "the Waiting card shows Stop"
++    );
++    assert!(
++        !rig.painted(card_stop(bravo_card)),
++        "without the grant, no Stop, waiting or not"
++    );
++
++    // Back to running: the same card reads Running again.
++    rig.report(
++        &alpha,
++        acp_v2::StateUpdate::Running(acp_v2::RunningStateUpdate::new()),
++    );
++    let state = alpha.read_with(&rig.cx, |child, _| {
++        SubagentCardState::from_acp_subagent(child, None)
++    });
++    assert_eq!(state.status, SubagentStatus::Running);
++}
++
++// ── R5.3 — a card for a child that got no session message; never two ───────
++
++/// Hostile: Bravo got its message and keeps exactly that card; Alpha got none and gets one card
++/// at the turn's end — not before.
++#[gpui::test]
++async fn test_rfd_card_for_a_child_without_a_message_appears_at_turn_end(cx: &mut TestAppContext) {
++    let mut rig = rig(cx).await;
++    let _alpha = rig.spawn_child("alpha", "Alpha", true);
++    let _bravo = rig.spawn_child("bravo", "Bravo", true);
++    let bravo_card = rig.message("to-bravo", "bravo", false);
++
++    assert!(
++        !rig.painted(unsent_card("alpha")),
++        "nothing is appended while the turn may still send Alpha its message"
++    );
++
++    rig.end_turn();
++
++    assert!(rig.painted(unsent_card("alpha")), "R5.3: Alpha gets a card");
++    assert!(
++        !rig.painted(unsent_card("bravo")),
++        "Bravo already has its message's card: no second one"
++    );
++    assert_eq!(
++        rig.message_cards(),
++        vec![bravo_card],
++        "one message card, Bravo's"
++    );
++}
++
++/// Hostile: the late message to Alpha replaces its appended card — exactly one card after.
++#[gpui::test]
++async fn test_rfd_late_message_replaces_the_appended_card(cx: &mut TestAppContext) {
++    let mut rig = rig(cx).await;
++    let _alpha = rig.spawn_child("alpha", "Alpha", true);
++    rig.end_turn();
++    assert!(
++        rig.painted(unsent_card("alpha")),
++        "precondition: the appended card"
++    );
++
++    let late = rig.message("late-to-alpha", "alpha", false);
++
++    assert!(
++        rig.painted(message_card(late)),
++        "the message's card is drawn where the message is"
++    );
++    assert!(
++        !rig.painted(unsent_card("alpha")),
++        "the appended card goes: never two cards for one child"
++    );
++    assert_eq!(rig.message_cards(), vec![late]);
++}
++
++/// Hostile: a message FROM Alpha to the parent is not a message to Alpha: its appended card
++/// stays (removing it would leave Alpha with no card at all).
++#[gpui::test]
++async fn test_rfd_incoming_message_keeps_the_appended_card(cx: &mut TestAppContext) {
++    let mut rig = rig(cx).await;
++    let _alpha = rig.spawn_child("alpha", "Alpha", true);
++    rig.end_turn();
++    let _reply = rig.message("from-alpha", "alpha", true);
++    assert!(rig.painted(unsent_card("alpha")));
++    assert!(
++        rig.message_cards().is_empty(),
++        "an incoming message is a row, not a card"
++    );
++}
++
++// ── R5.1 — the awaiting-permission bar lists RFD children ───────────────────
++
++/// Hostile first: of two children, only the one with a pending request is listed, at its card;
++/// answering the request drops it.
++#[gpui::test]
++async fn test_rfd_child_awaiting_permission_is_listed_in_the_bar(cx: &mut TestAppContext) {
++    let mut rig = rig(cx).await;
++    let alpha = rig.spawn_child("alpha", "Alpha", true);
++    let _bravo = rig.spawn_child("bravo", "Bravo", true);
++    let alpha_card = rig.message("to-alpha", "alpha", false);
++    let bravo_card = rig.message("to-bravo", "bravo", false);
++    assert!(
++        !rig.painted(permission_row(alpha_card)),
++        "precondition: nothing awaits permission"
++    );
++
++    let (request_id, _outcome) = rig.cx.update(|_, cx| {
++        alpha.update(cx, |thread, cx| {
++            thread
++                .request_tool_call_authorization_with_id(
++                    acp_v1::ToolCall::new(acp_v1::ToolCallId::new("alpha-call"), "Edit a file")
++                        .kind(acp_v1::ToolKind::Edit)
++                        .into(),
++                    PermissionOptions::Flat(vec![acp_v2::PermissionOption::new(
++                        acp_v2::PermissionOptionId::new("allow"),
++                        "Allow",
++                        acp_v2::PermissionOptionKind::AllowOnce,
++                    )]),
++                    acp_thread::AuthorizationKind::PermissionGrant,
++                    cx,
++                )
++                .expect("the request installs")
++        })
++    });
++    rig.cx.run_until_parked();
++
++    assert!(
++        rig.painted(permission_row(alpha_card)),
++        "R5.1: Alpha is listed in the parent's bar, at its card"
++    );
++    assert!(
++        !rig.painted(permission_row(bravo_card)),
++        "Bravo awaits nothing and is not listed"
++    );
++
++    alpha.update(&mut rig.cx, |thread, cx| {
++        thread.cancel_permission_request(request_id, cx)
++    });
++    rig.cx.run_until_parked();
++    assert!(
++        !rig.painted(permission_row(alpha_card)),
++        "an answered request leaves the bar"
++    );
++    let _ = rig.panel.clone();
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 585c6eb..bba7e89 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -62,7 +62,8 @@ use super::elicitation::{
+     is_question_shaped, should_render_elicitation,
+ };
+ use super::subagent_card::{
+-    AcpSubagentCard, SubagentCardId, SubagentCardState, SubagentStatus, acp_subagent_card,
++    AcpSubagentCard, SUBAGENT_WAITING_LABEL, SubagentCardId, SubagentCardState, SubagentStatus,
++    acp_subagent_card, unsent_subagents,
+ };
+ use super::*;
+ 
+@@ -4684,6 +4685,7 @@ impl ThreadView {
+ 
+     fn collect_subagent_items_for_sessions(
+         entries: &[AgentThreadEntry],
++        parent: Option<&AcpThread>,
+         awaiting_session_ids: &[acp_v2::SessionId],
+         cx: &App,
+     ) -> Vec<(SharedString, usize)> {
+@@ -4704,6 +4706,23 @@ impl ThreadView {
+                 Some((info.session_id.clone(), (subagent_summary, entry_ix)))
+             })
+             .collect();
++        // An ACP (RFD) child has no spawning tool call: its card is the parent's first message
++        // to it, so that is the row's entry (story 064, R5.1).
++        let mut tool_calls_by_session = tool_calls_by_session;
++        if let Some(parent) = parent {
++            for (entry_ix, entry) in entries.iter().enumerate() {
++                let AgentThreadEntry::SessionMessage(message) = entry else {
++                    continue;
++                };
++                let Some(card) = acp_subagent_card(parent, entry_ix, message, cx) else {
++                    continue;
++                };
++                let subagent = card.subagent.read(cx);
++                tool_calls_by_session
++                    .entry(subagent.session_id().clone())
++                    .or_insert_with(|| (subagent_label(subagent), entry_ix));
++            }
++        }
+ 
+         awaiting_session_ids
+             .iter()
+@@ -4956,8 +4975,12 @@ impl ThreadView {
+ 
+         let thread = self.thread.read(cx);
+         let entries = thread.entries();
+-        let subagent_items =
+-            Self::collect_subagent_items_for_sessions(entries, &awaiting_session_ids, cx);
++        let subagent_items = Self::collect_subagent_items_for_sessions(
++            entries,
++            Some(thread),
++            &awaiting_session_ids,
++            cx,
++        );
+ 
+         if subagent_items.is_empty() {
+             return None;
+@@ -4991,6 +5014,7 @@ impl ThreadView {
+                             h_flex()
+                                 .cursor_pointer()
+                                 .id(format!("subagent-permission-{}", entry_ix))
++                                .debug_selector(move || format!("subagent-permission-{entry_ix}"))
+                                 .group(&group)
+                                 .p_1()
+                                 .pl_2()
+@@ -8325,10 +8349,15 @@ impl ThreadView {
+ 
+         let comments_editor = self.thread_feedback.comments_editor.clone();
+ 
++        let unsent_cards = (entry_ix + 1 == total_entries && !is_generating)
++            .then(|| self.render_unsent_subagent_cards(total_entries, window, cx))
++            .unwrap_or_default();
++
+         let primary = if entry_ix + 1 == total_entries {
+             v_flex()
+                 .w_full()
+                 .child(primary)
++                .children(unsent_cards)
+                 .when(!is_assistant, |this| {
+                     this.child(self.render_thread_controls(true, cx))
+                 })
+@@ -10130,6 +10159,32 @@ impl ThreadView {
+         }
+     }
+ 
++    /// Cards for the children this thread registered and never sent a message to, drawn after
++    /// its last entry once the turn has ended (R5.3). Their element ids count on from
++    /// `total_entries`, so they never collide with an entry's own card.
++    fn render_unsent_subagent_cards(
++        &self,
++        total_entries: usize,
++        window: &Window,
++        cx: &Context<Self>,
++    ) -> Vec<AnyElement> {
++        unsent_subagents(self.thread.read(cx))
++            .into_iter()
++            .enumerate()
++            .map(|(ix, subagent)| {
++                let child = subagent.read(cx).session_id().clone();
++                let card = AcpSubagentCard {
++                    id: SubagentCardId::Unsent(child.clone()),
++                    subagent,
++                    entries: None,
++                };
++                self.render_acp_subagent_card(total_entries + ix, &card, window, cx)
++                    .debug_selector(move || format!("subagent-card-unsent-{child}"))
++                    .into_any_element()
++            })
++            .collect()
++    }
++
+     /// How this conversation names another of its sessions, or `None` when it has no thread
+     /// for that session.
+     pub(super) fn session_participant_label(
+@@ -13154,6 +13209,15 @@ impl ThreadView {
+                 SubagentStatus::Running => SpinnerLabel::new()
+                     .size(LabelSize::Small)
+                     .into_any_element(),
++                SubagentStatus::Waiting => div()
++                    .id(status_icon)
++                    .child(
++                        Icon::new(IconName::Circle)
++                            .size(IconSize::Small)
++                            .color(Color::Warning),
++                    )
++                    .tooltip(Tooltip::text(SUBAGENT_WAITING_LABEL))
++                    .into_any_element(),
+                 SubagentStatus::Canceled => {
+                     div()
+                         .id(status_icon)
+@@ -13444,6 +13508,9 @@ impl ThreadView {
+         match card_id {
+             SubagentCardId::ToolCall(id) => state.is_tool_call_expanded(id),
+             SubagentCardId::SessionMessage(id) => state.is_session_message_card_expanded(id),
++            SubagentCardId::Unsent(child) => {
++                state.is_session_message_card_expanded(&unsent_card_key(child))
++            }
+         }
+     }
+ 
+@@ -13456,6 +13523,9 @@ impl ThreadView {
+         self.entry_view_state.update(cx, |state, _| match card_id {
+             SubagentCardId::ToolCall(id) => state.toggle_tool_call_expansion(id),
+             SubagentCardId::SessionMessage(id) => state.toggle_session_message_card_expansion(id),
++            SubagentCardId::Unsent(child) => {
++                state.toggle_session_message_card_expansion(&unsent_card_key(child))
++            }
+         });
+         self.is_subagent_card_expanded(card_id, cx)
+     }
+@@ -17004,3 +17074,9 @@ pub(crate) fn reset_fast_mode_warnings(cx: &mut App) {
+     })
+     .detach();
+ }
++
++/// The expansion key of an unsent subagent card. Kept beside the session-message cards'
++/// keys; the prefix keeps it from equalling a real message id.
++fn unsent_card_key(child: &acp_v2::SessionId) -> acp_v2::MessageId {
++    acp_v2::MessageId::new(format!("zeo-unsent-subagent:{child}"))
++}
+diff --git a/crates/sidebar/Cargo.toml b/crates/sidebar/Cargo.toml
+index 6d4b5b8..7d9a92a 100644
+--- a/crates/sidebar/Cargo.toml
++++ b/crates/sidebar/Cargo.toml
+@@ -81,3 +81,4 @@ remote_connection = { workspace = true, features = ["test-support"] }
+ remote_server = { workspace = true, features = ["test-support"] }
+ settings = { workspace = true, features = ["test-support"] }
+ workspace = { workspace = true, features = ["test-support"] }
++watch.workspace = true
+diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
+index b903b5b..b1fb5b5 100644
+--- a/crates/sidebar/src/sidebar.rs
++++ b/crates/sidebar/src/sidebar.rs
+@@ -2,6 +2,7 @@ mod pinned_section;
+ mod thread_switcher;
+ 
+ use acp_thread::ThreadStatus;
++use acp_thread::subagent_rows::{ChildActivity, any_child_active};
+ use action_log::DiffStats;
+ use agent::{ThreadStore, ZED_AGENT_ID};
+ use agent_client_protocol::schema::v2 as acp;
+@@ -87,6 +88,8 @@ use crate::thread_switcher::{
+ #[cfg(test)]
+ mod sidebar_tests;
+ 
++#[cfg(test)]
++mod sidebar_child_background_tests;
+ #[cfg(test)]
+ mod sidebar_pinned_tests;
+ #[cfg(test)]
+@@ -6183,6 +6186,23 @@ impl Sidebar {
+                     | AgentThreadStatus::Unconfirmed
+                     | AgentThreadStatus::Background
+                     | AgentThreadStatus::WaitingForAnswer => {
++                        // A refusal for work the row does not show as the root's own says
++                        // why, or the thread would seem idle and still refuse (R4.3).
++                        if let (ThreadEntryWorkspace::Open(workspace), Some(session_id)) =
++                            (&thread.workspace, thread.metadata.session_id.as_ref())
++                            && let Some(reason) = archive_refusal_reason(workspace, session_id, cx)
++                        {
++                            log::info!(
++                                "sidebar: archive of session {session_id} refused: {reason}"
++                            );
++                            workspace.update(cx, |workspace, cx| {
++                                workspace.show_toast(
++                                    Toast::new(NotificationId::named(reason.into()), reason)
++                                        .autohide(),
++                                    cx,
++                                );
++                            });
++                        }
+                         return;
+                     }
+                     AgentThreadStatus::Completed | AgentThreadStatus::Error => {}
+@@ -8697,6 +8717,10 @@ impl Render for Sidebar {
+     }
+ }
+ 
++/// R4.3's reasons, shown as the toast's text and its id.
++pub(crate) const ARCHIVE_REFUSED_SUBAGENTS: &str = "This thread has running subagents";
++pub(crate) const ARCHIVE_REFUSED_TASKS: &str = "This thread has running tasks";
++
+ fn all_thread_infos_for_workspace(
+     workspace: &Entity<Workspace>,
+     cx: &App,
+@@ -8737,6 +8761,7 @@ fn all_thread_infos_for_workspace(
+                 thread.had_error(),
+                 thread.status(),
+                 thread.background_task_count(),
++                any_child_active(thread, cx),
+             );
+ 
+             let diff_stats = thread.action_log().read(cx).diff_stats(cx);
+@@ -9004,18 +9029,21 @@ fn dump_single_workspace(workspace: &Workspace, output: &mut String, cx: &gpui::
+ }
+ 
+ /// The status a thread's sidebar row shows. The order is the point: a permission prompt
+-/// outranks a question (0030), both outrank an error, and background work (0029) marks
+-/// only a thread that is otherwise idle -- it never hides a prompt, a question or an error.
++/// outranks a question (0030) -- a subagent waiting for the user is one (story 064, R4.2) --,
++/// both outrank an error, and background work (0029's tasks, or a running subagent, R4.1)
++/// marks only a thread that is otherwise idle -- it never hides a prompt, a question or an
++/// error. A subagent that has not reported, or reports Unknown, is not activity (R4.4).
+ fn thread_row_status(
+     pending_tool_call: bool,
+     pending_elicitation: bool,
+     had_error: bool,
+     status: ThreadStatus,
+     background_task_count: usize,
++    child_activity: ChildActivity,
+ ) -> AgentThreadStatus {
+     if pending_tool_call {
+         AgentThreadStatus::WaitingForConfirmation
+-    } else if pending_elicitation {
++    } else if pending_elicitation || child_activity == ChildActivity::Waiting {
+         AgentThreadStatus::WaitingForAnswer
+     } else if had_error {
+         AgentThreadStatus::Error
+@@ -9023,8 +9051,37 @@ fn thread_row_status(
+         match status {
+             ThreadStatus::Unconfirmed => AgentThreadStatus::Unconfirmed,
+             ThreadStatus::Generating => AgentThreadStatus::Running,
+-            ThreadStatus::Idle if background_task_count > 0 => AgentThreadStatus::Background,
++            ThreadStatus::Idle
++                if background_task_count > 0 || child_activity == ChildActivity::Running =>
++            {
++                AgentThreadStatus::Background
++            }
+             ThreadStatus::Idle => AgentThreadStatus::Completed,
+         }
+     }
+ }
++
++/// Why archiving a thread with work in progress is refused, when the work is a subagent's or
++/// a background task's (R4.3); `None` for the root's own work, refused silently as before.
++fn archive_refusal_reason(
++    workspace: &Entity<Workspace>,
++    session_id: &acp::SessionId,
++    cx: &App,
++) -> Option<&'static str> {
++    let agent_panel = workspace.read(cx).panel::<AgentPanel>(cx)?;
++    let thread = agent_panel
++        .read(cx)
++        .conversation_views()
++        .into_iter()
++        .filter_map(|view| view.read(cx).root_thread_view())
++        .map(|thread_view| thread_view.read(cx).thread.clone())
++        .find(|thread| thread.read(cx).session_id() == session_id)?;
++    let thread = thread.read(cx);
++    if any_child_active(thread, cx) != ChildActivity::None {
++        Some(ARCHIVE_REFUSED_SUBAGENTS)
++    } else if thread.background_task_count() > 0 {
++        Some(ARCHIVE_REFUSED_TASKS)
++    } else {
++        None
++    }
++}
+diff --git a/crates/sidebar/src/sidebar_child_background_tests.rs b/crates/sidebar/src/sidebar_child_background_tests.rs
+new file mode 100644
+index 0000000..ac478cc
+--- /dev/null
++++ b/crates/sidebar/src/sidebar_child_background_tests.rs
+@@ -0,0 +1,437 @@
++// Story 064, task 6.1 — the thread row combines its ACP children's activity (R4.1–R4.4).
++// Patches `0029`/`0030` (fixups). Materialize in `crates/sidebar/src/sidebar.rs`, beside
++// `mod sidebar_sub_thread_tests;`:
++//
++//     #[cfg(test)]
++//     mod sidebar_child_background_tests;
++//
++// Filter: `cargo test -p sidebar background` (paths `sidebar_child_background_tests::…`).
++// Dev-dependency this file adds to `crates/sidebar/Cargo.toml`: `watch.workspace = true` (the
++// child thread's prompt-capabilities receiver; already in the workspace lockfile).
++//
++// A child is built as `agent_servers::acp::apply_subagent_update` builds one: an `agent_owned`
++// `AcpThread` under the parent's session, its association, then `register_subagent` on the
++// parent. Its activity is set with `update_session_state` on the CHILD only — no parent event
++// follows, so a row that recomputes only on the root's events stays stale (R4 "without a
++// parent event").
++//
++// Reuses `sidebar_tests.rs`'s `pub(super)` helpers; statuses are read from `contents.entries`,
++// as 0029's and upstream's subagent tests read them.
++//
++// R4.3's refusal is SHOWN (operator, 2026-10-29): a workspace toast with the reason — "This
++// thread has running subagents" for a Running or Waiting child, and "This thread has running
++// tasks" for 0029's background tasks (same mechanism). Observed through
++// `Workspace::notification_ids()` (test-support), the route agent_ui's sandbox tests use for
++// their toasts. Contract assumed (rename HERE): the toast is shown on the thread's workspace
++// with id `NotificationId::named(<reason text>)`, so the id carries the exact text; the two
++// texts are `crate::ARCHIVE_REFUSED_SUBAGENTS` and `crate::ARCHIVE_REFUSED_TASKS`.
++//
++// Hostile halves first:
++//   - a registered child that has reported NOTHING (unconfirmed) or is Unknown is not activity:
++//     the row keeps the root's own status — a rule written as "any child" would wrongly mark it;
++//   - a child's pending permission keeps the row WaitingForConfirmation: a child's Waiting must
++//     not downgrade it to WaitingForAnswer;
++//   - a running root still reads Running with a running child (Background marks only an
++//     otherwise idle thread, 0029's order);
++//   - archive is refused while a child runs, WITH the subagents reason (never the tasks one), and
++//     the converse: allowed once it is idle, with no refusal shown;
++//   - 0029's background-task refusal shows the tasks reason, never the subagents one;
++//   - then the benign Background and WaitingForAnswer.
++
++use super::*;
++use crate::sidebar_tests::{
++    focus_sidebar, init_test_project_with_agent_panel, save_test_thread_metadata,
++    setup_sidebar_with_agent_panel,
++};
++use acp_thread::{AcpThread, AgentConnection, PermissionOptions, StubAgentConnection};
++use agent_client_protocol::schema::{v1 as acp_v1, v2 as acp_v2};
++use agent_ui::test_support::{active_session_id, open_thread_with_connection, send_message};
++use gpui::{TestAppContext, VisualTestContext};
++use pretty_assertions::assert_eq;
++use std::rc::Rc;
++use workspace::notifications::NotificationId;
++
++/// R4.3's two reasons, byte for byte.
++const SUBAGENTS_REASON: &str = "This thread has running subagents";
++const TASKS_REASON: &str = "This thread has running tasks";
++
++struct Rig {
++    sidebar: Entity<Sidebar>,
++    workspace: Entity<Workspace>,
++    connection: StubAgentConnection,
++    parent: Entity<AcpThread>,
++    parent_session: acp_v2::SessionId,
++}
++
++/// A sidebar over one project whose agent panel holds a persisted parent thread on a stub that
++/// follows the subagents RFD. With `end_turn`, the parent's first turn has ended (root Idle);
++/// without, it is still generating.
++async fn rig(end_turn: bool, cx: &mut TestAppContext) -> (Rig, &mut VisualTestContext) {
++    let project = init_test_project_with_agent_panel("/project-a", cx).await;
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
++    let (sidebar, panel) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
++    let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
++    let connection = StubAgentConnection::new().with_announced_subagents(true);
++    open_thread_with_connection(&panel, connection.clone(), cx);
++    send_message(&panel, cx);
++    let parent_session = active_session_id(&panel, cx);
++    save_test_thread_metadata(&parent_session, &project, cx).await;
++    if end_turn {
++        connection.end_turn(parent_session.clone(), acp_v1::StopReason::EndTurn);
++    }
++    cx.run_until_parked();
++    let parent = panel.read_with(cx, |panel, cx| {
++        panel.active_agent_thread(cx).expect("the parent thread")
++    });
++    (
++        Rig {
++            sidebar,
++            workspace,
++            connection,
++            parent,
++            parent_session,
++        },
++        cx,
++    )
++}
++
++impl Rig {
++    /// The refusal reasons shown on the thread's workspace, in the order of `notification_ids`.
++    fn refusals(&self, cx: &mut VisualTestContext) -> Vec<String> {
++        self.workspace.read_with(cx, |workspace, _| {
++            workspace
++                .notification_ids()
++                .into_iter()
++                .filter_map(|id| match id {
++                    NotificationId::Named(text)
++                        if text.as_ref() == SUBAGENTS_REASON || text.as_ref() == TASKS_REASON =>
++                    {
++                        Some(text.to_string())
++                    }
++                    _ => None,
++                })
++                .collect()
++        })
++    }
++
++    fn spawn_child(&self, session: &str, cx: &mut VisualTestContext) -> Entity<AcpThread> {
++        let parent_session = self.parent_session.clone();
++        let shared: Rc<dyn AgentConnection> = Rc::new(self.connection.clone());
++        let parent = self.parent.clone();
++        let child = cx.update(|_, cx| {
++            let project = parent.read(cx).project().clone();
++            let action_log = cx.new(|_| action_log::ActionLog::new(project.clone()));
++            cx.new(|cx| {
++                AcpThread::new(
++                    Some(parent_session),
++                    None,
++                    None,
++                    shared,
++                    project,
++                    action_log,
++                    acp_v2::SessionId::new(session.to_string()),
++                    watch::Receiver::constant(acp_v2::PromptCapabilities::new()),
++                    cx,
++                )
++                .agent_owned()
++            })
++        });
++        cx.update(|_, cx| self.connection.track_session(&child, cx));
++        child
++            .update(cx, |child, cx| {
++                child.update_subagent_association(
++                    &acp_v2::SubagentUpdate::new(session.to_string()).title("Worker"),
++                    cx,
++                )
++            })
++            .expect("an agent-owned thread takes an association");
++        self.parent
++            .update(cx, |parent, cx| parent.register_subagent(child.clone(), cx));
++        cx.run_until_parked();
++        child
++    }
++
++    fn status(&self, cx: &mut VisualTestContext) -> AgentThreadStatus {
++        let session = self.parent_session.clone();
++        self.sidebar.read_with(cx, |sidebar, _cx| {
++            sidebar
++                .contents
++                .entries
++                .iter()
++                .find_map(|entry| match entry {
++                    ListEntry::Thread(thread)
++                        if thread.metadata.session_id.as_ref() == Some(&session) =>
++                    {
++                        Some(thread.status)
++                    }
++                    _ => None,
++                })
++                .expect("the parent thread is listed")
++        })
++    }
++
++    fn is_listed(&self, cx: &mut VisualTestContext) -> bool {
++        let session = self.parent_session.clone();
++        self.sidebar.read_with(cx, |sidebar, _cx| {
++            sidebar.contents.entries.iter().any(|entry| {
++                matches!(
++                    entry,
++                    ListEntry::Thread(thread)
++                        if thread.metadata.session_id.as_ref() == Some(&session)
++                            && !thread.metadata.archived
++                )
++            })
++        })
++    }
++
++    fn archive(&self, cx: &mut VisualTestContext) {
++        let session = self.parent_session.clone();
++        let index = self.sidebar.read_with(cx, |sidebar, _cx| {
++            sidebar
++                .contents
++                .entries
++                .iter()
++                .position(|entry| {
++                    matches!(
++                        entry,
++                        ListEntry::Thread(thread)
++                            if thread.metadata.session_id.as_ref() == Some(&session)
++                    )
++                })
++                .expect("the parent thread is listed")
++        });
++        focus_sidebar(&self.sidebar, cx);
++        self.sidebar.update_in(cx, |sidebar, _window, _cx| {
++            sidebar.selection = Some(index);
++        });
++        cx.dispatch_action(ArchiveSelectedThread);
++        cx.run_until_parked();
++    }
++}
++
++/// The child reports a state; no parent event follows.
++fn report(child: &Entity<AcpThread>, state: acp_v2::StateUpdate, cx: &mut VisualTestContext) {
++    child
++        .update(cx, |child, cx| child.update_session_state(state, cx))
++        .expect("an agent-owned thread reports its state");
++    cx.run_until_parked();
++}
++
++fn running() -> acp_v2::StateUpdate {
++    acp_v2::StateUpdate::Running(acp_v2::RunningStateUpdate::new())
++}
++
++fn waiting() -> acp_v2::StateUpdate {
++    acp_v2::StateUpdate::RequiresAction(acp_v2::RequiresActionStateUpdate::new())
++}
++
++fn idle() -> acp_v2::StateUpdate {
++    acp_v2::StateUpdate::Idle(
++        acp_v2::IdleStateUpdate::new().stop_reason(acp_v2::StopReason::EndTurn),
++    )
++}
++
++// ── Hostile: what is NOT child activity ─────────────────────────────────────
++
++/// A child that has reported nothing yet (unconfirmed), then one that reports Unknown, is not
++/// Running or Waiting: the idle root's own status stands (R4.4).
++#[gpui::test]
++async fn test_child_background_unconfirmed_or_unknown_child_keeps_the_root_status(
++    cx: &mut TestAppContext,
++) {
++    let (rig, cx) = rig(true, cx).await;
++    let root_status = rig.status(cx);
++    assert_ne!(
++        root_status,
++        AgentThreadStatus::Background,
++        "precondition: the idle root reads its own status"
++    );
++
++    let child = rig.spawn_child("child", cx);
++    assert_eq!(
++        rig.status(cx),
++        root_status,
++        "an unconfirmed child is not activity"
++    );
++    report(
++        &child,
++        acp_v2::StateUpdate::Unknown(acp_v2::UnknownStateUpdate::new()),
++        cx,
++    );
++    assert_eq!(
++        rig.status(cx),
++        root_status,
++        "an Unknown child is not activity"
++    );
++}
++
++/// A child's pending permission keeps the row WaitingForConfirmation (upstream's own rule),
++/// even when the child also reports Waiting.
++#[gpui::test]
++async fn test_child_background_child_permission_outranks_child_waiting(cx: &mut TestAppContext) {
++    let (rig, cx) = rig(true, cx).await;
++    let child = rig.spawn_child("child", cx);
++    report(&child, waiting(), cx);
++    let _authorization = cx.update(|_, cx| {
++        child.update(cx, |thread, cx| {
++            thread
++                .request_tool_call_authorization(
++                    acp_v1::ToolCall::new(acp_v1::ToolCallId::new("child-call"), "Edit a file")
++                        .kind(acp_v1::ToolKind::Edit)
++                        .into(),
++                    PermissionOptions::Flat(vec![acp_v2::PermissionOption::new(
++                        acp_v2::PermissionOptionId::new("allow"),
++                        "Allow",
++                        acp_v2::PermissionOptionKind::AllowOnce,
++                    )]),
++                    acp_thread::AuthorizationKind::PermissionGrant,
++                    cx,
++                )
++                .expect("the request installs")
++        })
++    });
++    cx.run_until_parked();
++
++    assert_eq!(
++        rig.status(cx),
++        AgentThreadStatus::WaitingForConfirmation,
++        "a permission outranks a question"
++    );
++}
++
++/// A running root stays Running beside a running child: Background marks only a thread that is
++/// otherwise idle.
++#[gpui::test]
++async fn test_child_background_running_root_stays_running(cx: &mut TestAppContext) {
++    let (rig, cx) = rig(false, cx).await;
++    assert_eq!(rig.status(cx), AgentThreadStatus::Running, "precondition");
++    let child = rig.spawn_child("child", cx);
++    report(&child, running(), cx);
++    assert_eq!(rig.status(cx), AgentThreadStatus::Running);
++}
++
++// ── R4.3 — archive refused while a child runs; allowed once it is idle ──────
++
++#[gpui::test]
++async fn test_child_background_archive_is_refused_while_a_child_runs(cx: &mut TestAppContext) {
++    let (rig, cx) = rig(true, cx).await;
++    let child = rig.spawn_child("child", cx);
++    report(&child, running(), cx);
++
++    assert!(
++        rig.refusals(cx).is_empty(),
++        "precondition: no refusal shown"
++    );
++    rig.archive(cx);
++    assert!(
++        rig.is_listed(cx),
++        "archiving is refused while a child runs, as 0029 refuses it for background work"
++    );
++    assert_eq!(rig.status(cx), AgentThreadStatus::Background);
++    assert_eq!(
++        rig.refusals(cx),
++        vec![SUBAGENTS_REASON.to_string()],
++        "the refusal says why: running subagents, not running tasks"
++    );
++    assert_eq!(crate::ARCHIVE_REFUSED_SUBAGENTS, SUBAGENTS_REASON);
++
++    // Converse: the child ends, and the same action archives the thread, refusing nothing.
++    report(&child, idle(), cx);
++    assert_ne!(rig.status(cx), AgentThreadStatus::Background);
++    let shown_before = rig.refusals(cx).len();
++    rig.archive(cx);
++    assert!(
++        !rig.is_listed(cx),
++        "with no child running, archive is allowed again"
++    );
++    assert!(
++        rig.refusals(cx).len() <= shown_before,
++        "an allowed archive shows no new refusal"
++    );
++}
++
++/// A Waiting child refuses archive too.
++#[gpui::test]
++async fn test_child_background_archive_is_refused_while_a_child_waits(cx: &mut TestAppContext) {
++    let (rig, cx) = rig(true, cx).await;
++    let child = rig.spawn_child("child", cx);
++    report(&child, waiting(), cx);
++    rig.archive(cx);
++    assert!(rig.is_listed(cx), "a waiting child refuses archive");
++    assert_eq!(rig.refusals(cx), vec![SUBAGENTS_REASON.to_string()]);
++}
++
++/// 0029's refusal for background tasks (no child at all) shows the TASKS reason, through the
++/// same mechanism, never the subagents one.
++#[gpui::test]
++async fn test_child_background_archive_refused_for_background_tasks_says_tasks(
++    cx: &mut TestAppContext,
++) {
++    let (rig, cx) = rig(true, cx).await;
++    let mut meta = serde_json::Map::new();
++    meta.insert(
++        "_claude/backgroundTasks".to_string(),
++        serde_json::json!({ "count": 1, "tasks": [] }),
++    );
++    cx.update(|_, cx| {
++        rig.connection.send_update(
++            rig.parent_session.clone(),
++            acp_v1::SessionUpdate::SessionInfoUpdate(acp_v1::SessionInfoUpdate::new().meta(meta)),
++            cx,
++        )
++    });
++    cx.run_until_parked();
++    assert_eq!(
++        rig.status(cx),
++        AgentThreadStatus::Background,
++        "precondition"
++    );
++
++    rig.archive(cx);
++    assert!(rig.is_listed(cx), "0029 still refuses it");
++    assert_eq!(
++        rig.refusals(cx),
++        vec![TASKS_REASON.to_string()],
++        "the refusal says why: running tasks"
++    );
++    assert_eq!(crate::ARCHIVE_REFUSED_TASKS, TASKS_REASON);
++}
++
++// ── R4.1, R4.2, R4.4 — the benign states, on the child's event alone ────────
++
++/// Idle root, zero background tasks: a running child marks the row Background on the child's
++/// own state change; its end returns the row to the root's status.
++#[gpui::test]
++async fn test_child_background_running_child_under_an_idle_root_reads_background(
++    cx: &mut TestAppContext,
++) {
++    let (rig, cx) = rig(true, cx).await;
++    let root_status = rig.status(cx);
++    let child = rig.spawn_child("child", cx);
++
++    report(&child, running(), cx);
++    assert_eq!(rig.status(cx), AgentThreadStatus::Background, "R4.1");
++
++    report(&child, idle(), cx);
++    assert_eq!(
++        rig.status(cx),
++        root_status,
++        "R4.4: back to the root's own status"
++    );
++}
++
++/// One child waiting for the user makes the row wait for an answer, like 0030's question does
++/// for the root; a second, running child does not hide it.
++#[gpui::test]
++async fn test_child_background_waiting_child_reads_waiting_for_answer(cx: &mut TestAppContext) {
++    let (rig, cx) = rig(true, cx).await;
++    let first = rig.spawn_child("first", cx);
++    let second = rig.spawn_child("second", cx);
++    report(&second, running(), cx);
++    report(&first, waiting(), cx);
++    assert_eq!(rig.status(cx), AgentThreadStatus::WaitingForAnswer, "R4.2");
++
++    report(&first, running(), cx);
++    assert_eq!(rig.status(cx), AgentThreadStatus::Background);
++}
+diff --git a/crates/sidebar/src/sidebar_tests.rs b/crates/sidebar/src/sidebar_tests.rs
+index 427f1e4..35af9bd 100644
+--- a/crates/sidebar/src/sidebar_tests.rs
++++ b/crates/sidebar/src/sidebar_tests.rs
+@@ -16329,7 +16329,14 @@ fn test_thread_row_status_precedence() {
+             "tool call {tool_call}, question {question}, error {error}, {thread:?}, {background} background"
+         );
+         assert_eq!(
+-            status(tool_call, question, error, thread, background),
++            status(
++                tool_call,
++                question,
++                error,
++                thread,
++                background,
++                ChildActivity::None
++            ),
+             expected,
+             "{case}"
+         );

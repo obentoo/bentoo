@@ -69,6 +69,14 @@ the agent controls can outgrow the daemon's 64 KiB buffer. An empty or relative
 XDG_RUNTIME_DIR is tested as a no-op, and the old "nothing under /tmp" check --
 which could not fail -- now asserts no socket path is chosen at all.
 
+Story 064 (2026-11-02): a native subagent row's terminal transition out of
+view sends the same datagram, once; datagram_for and should_notify take the
+merged TaskRow instead of an AgentTask, so both sources go through one path.
+A reopened thread whose child restores an outcome (upstream #66255) announces
+no ending: a child whose first observed status is already terminal is history,
+not news, while a live Running -> Done still notifies. 10 tests
+(tray/subagent_tests.rs, restored_outcome_tests.rs, declared from tray.rs).
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -294,6 +302,345 @@ index a955b5d..4e41c41 100644
          self.schedule_expiry(cx);
      }
  }
+diff --git a/crates/agent_ui/src/tasks_card/restored_outcome_tests.rs b/crates/agent_ui/src/tasks_card/restored_outcome_tests.rs
+new file mode 100644
+index 0000000..4a00fbb
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/restored_outcome_tests.rs
+@@ -0,0 +1,333 @@
++// Story 064, task 10.2 — an outcome Zed restores on load is history, not an ending (R1.7, R2.5).
++// Fixup of the last patch touching `tasks_card.rs` (`0071`). Wired in `src/tasks_card/tray.rs`,
++// beside `mod subagent;`, so the tests can hold the send tests' `ENV_LOCK` (private to `tray`;
++// `XDG_RUNTIME_DIR` is process-wide):
++//
++//     #[cfg(test)]
++//     #[path = "restored_outcome_tests.rs"]
++//     mod restored_outcome;
++//
++// (a `#[path]` in `tasks_card/tray.rs` resolves against `src/tasks_card/`). Module path
++// `tasks_card::tray::restored_outcome`. Validation: `cargo test -p agent_ui restored_outcome`.
++// Fixtures: `native_subagent_support.rs` (the rig, `row_of`, `report_*`).
++//
++// How a restored outcome reaches the card, as Zed does it since #66255: a native child's session
++// is LOADED first — its replay, then `AcpThread::restore_subagent_outcomes` with the last outcome,
++// which calls `update_session_state` — and only then registered with its parent
++// (`ConversationView::load_subagent_session`). So the first status the card sees for that child
++// is already terminal. `load_restored_child` below does exactly that, in that order.
++//
++// What is observed, where it lands:
++//   - a history write is the card's `TaskActivity` for the child — `Ended` is what the store turns
++//     into `record_subagent`, `Started` what it turns into a history entry; a restored child gets
++//     neither;
++//   - a tray datagram is what arrives on a socket bound where zeo-systray binds it, with the
++//     parent's view closed (out of view) and the outcome Failed — the one unwatched outcome 0038
++//     sends, so "no datagram" can fail; a Done would send nothing either way;
++//   - the row is the card's row for the child (`row_of`), found by its native source.
++//
++// Hostile halves first:
++//   - wrongly an ending: a restored Done/Failed records history or sends a datagram;
++//   - wrongly swallowed: a fix that silences every child ever restored also silences that child's
++//     NEXT, live ending once it resumes — that ending is news, exactly once;
++//   - wrongly dropped: the restored child is shown, with its restored outcome (R1.7), not hidden;
++//   - then the benign live Running -> Done / Running -> Failed: one history write, one datagram.
++
++use std::{cell::RefCell, io, os::unix::net::UnixDatagram, path::Path, rc::Rc, time::Duration};
++
++use acp_thread::{AcpThread, AgentConnection};
++use agent_client_protocol::schema::v2 as acp_v2;
++use gpui::{AppContext as _, Entity, Subscription, TestAppContext};
++
++use super::send::ENV_LOCK;
++use crate::AgentPanel;
++use crate::tasks_card::native_subagent_support::*;
++use crate::tasks_card::{TaskActivity, TaskRowStatus};
++
++fn set_runtime_dir(dir: Option<&Path>) {
++    // SAFETY: serialised by ENV_LOCK; no other thread of these tests reads it meanwhile.
++    unsafe {
++        match dir {
++            Some(dir) => std::env::set_var("XDG_RUNTIME_DIR", dir),
++            None => std::env::remove_var("XDG_RUNTIME_DIR"),
++        }
++    }
++}
++
++fn bound_socket() -> (tempfile::TempDir, UnixDatagram) {
++    let dir = tempfile::tempdir().expect("tempdir");
++    let socket = UnixDatagram::bind(dir.path().join("zeo-systray.sock")).expect("bind");
++    socket.set_nonblocking(true).expect("nonblocking");
++    (dir, socket)
++}
++
++/// Lets the background send land, then reads everything that arrived.
++fn arrived(rig: &mut SubagentRig, socket: &UnixDatagram) -> Vec<serde_json::Value> {
++    rig.wait(Duration::from_millis(50));
++    rig.cx.executor().run_until_parked();
++    let mut out = Vec::new();
++    let mut buffer = vec![0u8; 64 * 1024];
++    loop {
++        match socket.recv(&mut buffer) {
++            Ok(n) => out.push(serde_json::from_slice(&buffer[..n]).expect("a JSON datagram")),
++            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return out,
++            Err(error) => panic!("recv failed: {error}"),
++        }
++    }
++}
++
++fn activate(rig: &mut SubagentRig) {
++    rig.cx.update(|window, _| window.activate_window());
++    rig.cx.run_until_parked();
++}
++
++fn close_agent_panel(rig: &mut SubagentRig) {
++    let workspace = rig.workspace.clone();
++    workspace.update_in(&mut rig.cx, |workspace, window, cx| {
++        workspace.close_panel::<AgentPanel>(window, cx)
++    });
++    rig.cx.run_until_parked();
++}
++
++fn error_stop() -> acp_v2::StopReason {
++    acp_v2::StopReason::Error(acp_v2::ErrorStopReason::new())
++}
++
++/// What the card told the history, per child session: ("started" | "ended", child).
++type Heard = Rc<RefCell<Vec<(&'static str, String)>>>;
++
++fn listen(rig: &mut SubagentRig) -> (Heard, Subscription) {
++    let heard: Heard = Rc::new(RefCell::new(Vec::new()));
++    let sink = heard.clone();
++    let card = rig.card.clone();
++    let subscription = rig.cx.update(|_, cx| {
++        cx.subscribe(&card, move |_, event: &TaskActivity, _| {
++            let (kind, record) = match event {
++                TaskActivity::Started(record) => ("started", record),
++                TaskActivity::Ended(record) => ("ended", record),
++            };
++            let child = record
++                .child_session_id
++                .as_ref()
++                .map(|child| child.to_string())
++                .unwrap_or_else(|| record.task_id.to_string());
++            sink.borrow_mut().push((kind, child));
++        })
++    });
++    (heard, subscription)
++}
++
++fn heard_for(heard: &Heard, kind: &str, child: &str) -> usize {
++    heard
++        .borrow()
++        .iter()
++        .filter(|(seen, session)| *seen == kind && session.contains(child))
++        .count()
++}
++
++/// A native child as a reopened parent gets it: its session loaded, its last outcome restored
++/// (`restore_subagent_outcomes`), and only then registered with the parent.
++fn load_restored_child(
++    rig: &mut SubagentRig,
++    session: &str,
++    title: &str,
++    stop: acp_v2::StopReason,
++) -> Entity<AcpThread> {
++    let parent_session = rig.parent_session.clone();
++    let connection: Rc<dyn AgentConnection> = Rc::new(rig.connection.clone());
++    let parent = rig.parent.clone();
++    let child = rig.cx.update(|_, cx| {
++        let project = parent.read(cx).project().clone();
++        let action_log = cx.new(|_| action_log::ActionLog::new(project.clone()));
++        cx.new(|cx| {
++            AcpThread::new(
++                Some(parent_session),
++                None,
++                None,
++                connection,
++                project,
++                action_log,
++                acp_v2::SessionId::new(session.to_string()),
++                watch::Receiver::constant(acp_v2::PromptCapabilities::new()),
++                cx,
++            )
++            .agent_owned()
++        })
++    });
++    rig.cx
++        .update(|_, cx| rig.connection.track_session(&child, cx));
++    let update = acp_v2::SubagentUpdate::new(session.to_string())
++        .title(title.to_string())
++        .capabilities(
++            acp_v2::SubagentSessionCapabilities::new()
++                .cancel(acp_v2::SessionCancelCapabilities::new()),
++        );
++    child
++        .update(&mut rig.cx, |child, cx| {
++            child.update_subagent_association(&update, cx)
++        })
++        .expect("an agent-owned thread takes an association");
++    child
++        .update(&mut rig.cx, |child, cx| {
++            child.restore_subagent_outcomes(
++                vec![(
++                    0,
++                    acp_v2::StateUpdate::Idle(acp_v2::IdleStateUpdate::new().stop_reason(stop)),
++                )],
++                cx,
++            )
++        })
++        .expect("a subagent's outcomes restore");
++    rig.cx.run_until_parked();
++    rig.parent.update(&mut rig.cx, |parent, cx| {
++        parent.register_subagent(child.clone(), cx)
++    });
++    rig.cx.run_until_parked();
++    child
++}
++
++// ── R2.5 / R1.7 — a restored outcome is shown, and is not an ending ────────
++
++/// Hostile (wrongly an ending): a child restored Done shows a Done row and writes no history.
++#[gpui::test]
++async fn test_restored_outcome_done_is_shown_and_writes_no_history(cx: &mut TestAppContext) {
++    let mut rig = subagent_rig(cx).await;
++    let (heard, _subscription) = listen(&mut rig);
++
++    let alpha = load_restored_child(&mut rig, "alpha", "Alpha", acp_v2::StopReason::EndTurn);
++
++    assert_eq!(
++        heard_for(&heard, "ended", "alpha"),
++        0,
++        "R2.5: a restored outcome is not recorded (no record_subagent): {:?}",
++        heard.borrow()
++    );
++    assert_eq!(
++        heard_for(&heard, "started", "alpha"),
++        0,
++        "R2.5: a restored child adds no history entry either: {:?}",
++        heard.borrow()
++    );
++    assert_eq!(
++        rig.row_of(&alpha).map(|row| row.status),
++        Some(TaskRowStatus::Done),
++        "R1.7: the row reads the restored outcome"
++    );
++}
++
++/// Hostile (wrongly an ending): a child restored Failed while its thread is out of view sends no
++/// tray datagram — the one outcome 0038 would send unwatched — and writes no history.
++#[gpui::test]
++#[allow(
++    clippy::await_holding_lock,
++    reason = "the gpui test executor is single-threaded; the lock only serialises XDG_RUNTIME_DIR against the other tests"
++)]
++async fn test_restored_outcome_failure_sends_no_datagram(cx: &mut TestAppContext) {
++    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    let (dir, socket) = bound_socket();
++    set_runtime_dir(Some(dir.path()));
++
++    let mut rig = subagent_rig(cx).await;
++    activate(&mut rig);
++    close_agent_panel(&mut rig);
++    let (heard, _subscription) = listen(&mut rig);
++
++    let bravo = load_restored_child(&mut rig, "bravo", "Bravo", error_stop());
++
++    let datagrams = arrived(&mut rig, &socket);
++    set_runtime_dir(None);
++    assert!(
++        datagrams.is_empty(),
++        "R2.5: a restored failure is no tray news: {datagrams:?}"
++    );
++    assert_eq!(
++        heard_for(&heard, "ended", "bravo"),
++        0,
++        "R2.5: no record_subagent for a restored failure: {:?}",
++        heard.borrow()
++    );
++    assert_eq!(
++        rig.row_of(&bravo).map(|row| row.status),
++        Some(TaskRowStatus::Failed),
++        "R1.7: the restored failure is shown"
++    );
++}
++
++/// Hostile (wrongly swallowed): the restored child resumes and ends again, live. That ending is
++/// news — once — and the restored one still is not: exactly one `Ended` over the whole run.
++#[gpui::test]
++async fn test_restored_outcome_then_live_ending_is_recorded_once(cx: &mut TestAppContext) {
++    let mut rig = subagent_rig(cx).await;
++    let (heard, _subscription) = listen(&mut rig);
++    let alpha = load_restored_child(&mut rig, "alpha", "Alpha", acp_v2::StopReason::EndTurn);
++
++    rig.report_running(&alpha);
++    assert_eq!(
++        rig.row_of(&alpha).map(|row| row.status),
++        Some(TaskRowStatus::Running)
++    );
++    rig.report_idle(&alpha, acp_v2::StopReason::EndTurn);
++
++    assert_eq!(
++        heard_for(&heard, "ended", "alpha"),
++        1,
++        "the live ending after the resume is recorded, the restored one is not: {:?}",
++        heard.borrow()
++    );
++}
++
++// ── R2.1 / R6.1 — a live ending still records and notifies ─────────────────
++
++/// Benign: a live Running -> Done is one history write.
++#[gpui::test]
++async fn test_restored_outcome_live_done_writes_history_once(cx: &mut TestAppContext) {
++    let mut rig = subagent_rig(cx).await;
++    let (heard, _subscription) = listen(&mut rig);
++    let alpha = rig.spawn_child("alpha", Some("Alpha"), true);
++    rig.cx.run_until_parked();
++    rig.report_running(&alpha);
++    rig.report_idle(&alpha, acp_v2::StopReason::EndTurn);
++
++    assert_eq!(
++        heard_for(&heard, "ended", "alpha"),
++        1,
++        "R2.1: one record_subagent for one live ending: {:?}",
++        heard.borrow()
++    );
++    assert_eq!(
++        rig.row_of(&alpha).map(|row| row.status),
++        Some(TaskRowStatus::Done)
++    );
++}
++
++/// Benign: a live Running -> Failed out of view is one datagram and one history write.
++#[gpui::test]
++#[allow(
++    clippy::await_holding_lock,
++    reason = "the gpui test executor is single-threaded; the lock only serialises XDG_RUNTIME_DIR against the other tests"
++)]
++async fn test_restored_outcome_live_failure_sends_one_datagram(cx: &mut TestAppContext) {
++    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    let (dir, socket) = bound_socket();
++    set_runtime_dir(Some(dir.path()));
++
++    let mut rig = subagent_rig(cx).await;
++    activate(&mut rig);
++    let (heard, _subscription) = listen(&mut rig);
++    let bravo = rig.spawn_child("bravo", Some("Bravo"), true);
++    rig.cx.run_until_parked();
++    rig.report_running(&bravo);
++    close_agent_panel(&mut rig);
++    rig.report_idle(&bravo, error_stop());
++
++    let datagrams = arrived(&mut rig, &socket);
++    set_runtime_dir(None);
++    assert_eq!(datagrams.len(), 1, "R6.1: one datagram: {datagrams:?}");
++    assert_eq!(datagrams[0]["task_outcome"], "failed");
++    assert_eq!(
++        heard_for(&heard, "ended", "bravo"),
++        1,
++        "R2.1: one record_subagent: {:?}",
++        heard.borrow()
++    );
++}
 diff --git a/crates/agent_ui/src/tasks_card/test_data/task_outcome.json b/crates/agent_ui/src/tasks_card/test_data/task_outcome.json
 new file mode 100644
 index 0000000..f863c60
@@ -312,10 +659,10 @@ index 0000000..f863c60
 +}
 diff --git a/crates/agent_ui/src/tasks_card/tray.rs b/crates/agent_ui/src/tasks_card/tray.rs
 new file mode 100644
-index 0000000..3f3888f
+index 0000000..5968ccd
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/tray.rs
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,217 @@
 +//! The tray sender: when a task ends out of view, tell `zeo-systray` over its
 +//! datagram socket (story 013, patch `0038`).
 +//!
@@ -337,7 +684,7 @@ index 0000000..3f3888f
 +use gpui::{App, AppContext as _};
 +use serde::Serialize;
 +
-+use super::ended_duration;
++use super::{TaskRow, TaskRowStatus, ended_duration};
 +
 +#[cfg(test)]
 +#[path = "tray/decision_tests.rs"]
@@ -354,6 +701,14 @@ index 0000000..3f3888f
 +#[cfg(test)]
 +#[path = "tray/dedupe_tests.rs"]
 +mod dedupe;
++
++#[cfg(test)]
++#[path = "tray/subagent_tests.rs"]
++mod subagent;
++
++#[cfg(test)]
++#[path = "restored_outcome_tests.rs"]
++mod restored_outcome;
 +
 +/// What `project` reads when the thread has no work directory.
 +const NO_PROJECT: &str = "Zeo";
@@ -374,6 +729,29 @@ index 0000000..3f3888f
 +/// looking at it (R5.3), otherwise when it is watched (R5.1) or it failed (R5.2).
 +pub(crate) fn should_notify(watched: bool, status: AgentTaskStatus, in_view: bool) -> bool {
 +    !in_view && (watched || status == AgentTaskStatus::Failed)
++}
++
++/// `should_notify` over a row's own status: a native subagent's Failed is news like a
++/// feed task's (story 064, R6.1).
++pub(crate) fn should_notify_row(watched: bool, status: TaskRowStatus, in_view: bool) -> bool {
++    should_notify(watched, status.to_task_status(), in_view)
++}
++
++/// The datagram of an ended row. Waiting and Unknown are live, so they have no outcome; a
++/// native row's outcome is its registry status, not the feed's word for it.
++pub(crate) fn datagram_for_row(
++    row: &TaskRow,
++    session_id: &acp_v2::SessionId,
++    work_dir: Option<&Path>,
++    thread_title: Option<&str>,
++    now: SystemTime,
++) -> Option<TaskOutcomeDatagram> {
++    if !row.status.is_terminal() {
++        return None;
++    }
++    let mut task = row.task.clone();
++    task.status = row.status.to_task_status();
++    datagram_for(&task, session_id, work_dir, thread_title, now)
 +}
 +
 +/// One task-outcome datagram, serialised as one JSON object. The fields are exactly
@@ -1383,6 +1761,277 @@ index 0000000..8b72c4a
 +    assert_eq!(received["project"], "Zeo");
 +    assert_eq!(received["session_id"], session_of(&a, &cx).to_string());
 +    set_runtime_dir(None);
++}
+diff --git a/crates/agent_ui/src/tasks_card/tray/subagent_tests.rs b/crates/agent_ui/src/tasks_card/tray/subagent_tests.rs
+new file mode 100644
+index 0000000..1b4434d
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/tray/subagent_tests.rs
+@@ -0,0 +1,265 @@
++// Story 064, task 4.1 — a native subagent's terminal transition reaches zeo-systray as 0038's
++// task-outcome datagram, under 0038's own rule (R6.1; story 013 R5.1–R5.3). Patch `0038`
++// (fixup). Module path: `tasks_card::tray::subagent`; wired in `src/tasks_card/tray.rs` as
++//
++//     #[cfg(test)]
++//     #[path = "tray/subagent_tests.rs"]
++//     mod subagent;
++//
++// Validation: `cargo test -p agent_ui tasks_card`. Fixtures: `native_subagent_support.rs`.
++//
++// The datagram is read off a socket bound where zeo-systray binds it, under `send.rs`'s
++// `ENV_LOCK` (XDG_RUNTIME_DIR is process-wide). "Out of view" is the agent panel closed through
++// the workspace's dock path, as `wiring_tests.rs` closes it; the window stays active.
++//
++// Contract assumed: the same datagram fields 0038 sends (no new field), `session_id` the
++// PARENT's (the thread the tray opens), `task_id` the native row's key, which names the child;
++// a native Failed is 0038's `failed`, a native Canceled is `stopped`.
++// Revision 1 (operator, 2026-10-29): `TaskRow` carries its own `status: TaskRowStatus` (Running,
++// Waiting, Done, Failed, Canceled, Unknown) and the tray takes a row. Entry points assumed (rename
++// HERE): `tray::datagram_for_row(row: &TaskRow, session_id: &acp_v2::SessionId, work_dir:
++// Option<&Path>, thread_title: Option<&str>, now: SystemTime) -> Option<TaskOutcomeDatagram>` and
++// `tray::should_notify_row(watched: bool, status: TaskRowStatus, in_view: bool) -> bool`.
++//
++// Hostile halves first: in view, nothing is sent; one ending reported twice is one datagram;
++// an unwatched Done is not news (0038's rule, unchanged); then the benign Failed out of view.
++
++use std::{
++    io,
++    os::unix::net::UnixDatagram,
++    path::Path,
++    time::{Duration, SystemTime},
++};
++
++use agent_client_protocol::schema::v2 as acp_v2;
++use gpui::TestAppContext;
++
++use super::send::ENV_LOCK;
++use super::{datagram_for_row, should_notify_row};
++use crate::AgentPanel;
++use crate::tasks_card::TaskRowStatus;
++use crate::tasks_card::native_subagent_support::*;
++
++fn set_runtime_dir(dir: Option<&Path>) {
++    // SAFETY: serialised by ENV_LOCK; no other thread of these tests reads it meanwhile.
++    unsafe {
++        match dir {
++            Some(dir) => std::env::set_var("XDG_RUNTIME_DIR", dir),
++            None => std::env::remove_var("XDG_RUNTIME_DIR"),
++        }
++    }
++}
++
++fn bound_socket() -> (tempfile::TempDir, UnixDatagram) {
++    let dir = tempfile::tempdir().expect("tempdir");
++    let socket = UnixDatagram::bind(dir.path().join("zeo-systray.sock")).expect("bind");
++    socket.set_nonblocking(true).expect("nonblocking");
++    (dir, socket)
++}
++
++fn drain(socket: &UnixDatagram) -> Vec<serde_json::Value> {
++    let mut out = Vec::new();
++    let mut buffer = vec![0u8; 64 * 1024];
++    loop {
++        match socket.recv(&mut buffer) {
++            Ok(n) => out.push(serde_json::from_slice(&buffer[..n]).expect("a JSON datagram")),
++            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return out,
++            Err(error) => panic!("recv failed: {error}"),
++        }
++    }
++}
++
++/// Lets the background send land, then reads everything that arrived.
++fn arrived(rig: &mut SubagentRig, socket: &UnixDatagram) -> Vec<serde_json::Value> {
++    rig.wait(Duration::from_millis(50));
++    rig.cx.executor().run_until_parked();
++    drain(socket)
++}
++
++fn activate(rig: &mut SubagentRig) {
++    rig.cx.update(|window, _| window.activate_window());
++    rig.cx.run_until_parked();
++}
++
++fn close_agent_panel(rig: &mut SubagentRig) {
++    let workspace = rig.workspace.clone();
++    workspace.update_in(&mut rig.cx, |workspace, window, cx| {
++        workspace.close_panel::<AgentPanel>(window, cx)
++    });
++    rig.cx.run_until_parked();
++}
++
++fn error_stop() -> acp_v2::StopReason {
++    acp_v2::StopReason::Error(acp_v2::ErrorStopReason::new())
++}
++
++/// Hostile: the parent is in front of the user. A failed child is not tray news.
++#[gpui::test]
++#[allow(
++    clippy::await_holding_lock,
++    reason = "the gpui test executor is single-threaded; the lock only serialises XDG_RUNTIME_DIR against the other tests"
++)]
++async fn test_tray_subagent_failure_in_view_sends_nothing(cx: &mut TestAppContext) {
++    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    let (dir, socket) = bound_socket();
++    set_runtime_dir(Some(dir.path()));
++
++    let mut rig = subagent_rig(cx).await;
++    activate(&mut rig);
++    let alpha = rig.spawn_child("alpha", Some("Alpha"), true);
++    rig.report_running(&alpha);
++    rig.report_idle(&alpha, error_stop());
++
++    assert!(
++        arrived(&mut rig, &socket).is_empty(),
++        "nothing while the thread is in view"
++    );
++    set_runtime_dir(None);
++}
++
++/// Hostile: one ending, reported twice by the agent, is one datagram.
++#[gpui::test]
++#[allow(
++    clippy::await_holding_lock,
++    reason = "the gpui test executor is single-threaded; the lock only serialises XDG_RUNTIME_DIR against the other tests"
++)]
++async fn test_tray_subagent_one_ending_is_one_datagram(cx: &mut TestAppContext) {
++    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    let (dir, socket) = bound_socket();
++    set_runtime_dir(Some(dir.path()));
++
++    let mut rig = subagent_rig(cx).await;
++    activate(&mut rig);
++    let alpha = rig.spawn_child("alpha", Some("Alpha"), true);
++    rig.report_running(&alpha);
++    close_agent_panel(&mut rig);
++    rig.report_idle(&alpha, error_stop());
++    rig.report_idle(&alpha, error_stop());
++
++    let datagrams = arrived(&mut rig, &socket);
++    assert_eq!(
++        datagrams.len(),
++        1,
++        "one ending, one datagram: {datagrams:?}"
++    );
++    set_runtime_dir(None);
++}
++
++/// Hostile: 0038 tells the tray about an unwatched ending only when it failed; a child that
++/// finished normally is not news either.
++#[gpui::test]
++#[allow(
++    clippy::await_holding_lock,
++    reason = "the gpui test executor is single-threaded; the lock only serialises XDG_RUNTIME_DIR against the other tests"
++)]
++async fn test_tray_subagent_unwatched_completion_sends_nothing(cx: &mut TestAppContext) {
++    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    let (dir, socket) = bound_socket();
++    set_runtime_dir(Some(dir.path()));
++
++    let mut rig = subagent_rig(cx).await;
++    activate(&mut rig);
++    let alpha = rig.spawn_child("alpha", Some("Alpha"), true);
++    rig.report_running(&alpha);
++    close_agent_panel(&mut rig);
++    rig.report_idle(&alpha, acp_v2::StopReason::EndTurn);
++
++    assert!(arrived(&mut rig, &socket).is_empty());
++    set_runtime_dir(None);
++}
++
++/// A child fails while its thread is out of view: one datagram, 0038's shape, for the parent's
++/// session and naming the child. Its sibling, still running, sends nothing.
++#[gpui::test]
++#[allow(
++    clippy::await_holding_lock,
++    reason = "the gpui test executor is single-threaded; the lock only serialises XDG_RUNTIME_DIR against the other tests"
++)]
++async fn test_tray_subagent_failure_out_of_view_sends_the_outcome(cx: &mut TestAppContext) {
++    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    let (dir, socket) = bound_socket();
++    set_runtime_dir(Some(dir.path()));
++
++    let mut rig = subagent_rig(cx).await;
++    activate(&mut rig);
++    let alpha = rig.spawn_child("alpha", Some("Alpha"), true);
++    let bravo = rig.spawn_child("bravo", Some("Bravo"), true);
++    rig.report_running(&alpha);
++    rig.report_running(&bravo);
++    close_agent_panel(&mut rig);
++    rig.report_idle(&alpha, error_stop());
++
++    let datagrams = arrived(&mut rig, &socket);
++    assert_eq!(datagrams.len(), 1, "one datagram: {datagrams:?}");
++    let datagram = &datagrams[0];
++    assert_eq!(datagram["task_outcome"], "failed");
++    assert_eq!(
++        datagram["session_id"],
++        rig.parent_session.to_string(),
++        "the tray opens the parent thread"
++    );
++    let task_id = datagram["task_id"].as_str().expect("a task id");
++    assert!(
++        task_id.contains("alpha") && !task_id.contains("bravo"),
++        "the datagram names the child that failed: {task_id:?}"
++    );
++    let keys: Vec<&String> = datagram.as_object().expect("an object").keys().collect();
++    assert_eq!(
++        keys.len(),
++        8,
++        "0038's eight fields, nothing more (no description leaves Zeo): {keys:?}"
++    );
++    set_runtime_dir(None);
++}
++
++/// The row entry points, without a socket: a native row's outcome words and 0038's rule over
++/// the row statuses. Live states (Running, Waiting, Unknown) have no outcome to send.
++#[gpui::test]
++async fn test_tray_subagent_row_entry_points(cx: &mut TestAppContext) {
++    let mut rig = subagent_rig(cx).await;
++    let alpha = rig.spawn_child("alpha", Some("Alpha"), true);
++    let bravo = rig.spawn_child("bravo", Some("Bravo"), true);
++    rig.report_running(&alpha);
++    rig.report(
++        &bravo,
++        acp_v2::StateUpdate::RequiresAction(acp_v2::RequiresActionStateUpdate::new()),
++    );
++    let parent = rig.parent_session.clone();
++    let now = SystemTime::now();
++
++    let running = rig.row_of(&alpha).expect("Alpha's row");
++    assert_eq!(running.status, TaskRowStatus::Running);
++    assert!(datagram_for_row(&running, &parent, None, Some("Parent"), now).is_none());
++    let waiting = rig.row_of(&bravo).expect("Bravo's row");
++    assert_eq!(waiting.status, TaskRowStatus::Waiting);
++    assert!(
++        datagram_for_row(&waiting, &parent, None, Some("Parent"), now).is_none(),
++        "waiting is not an ending"
++    );
++
++    rig.report_idle(&alpha, acp_v2::StopReason::Cancelled);
++    let canceled = rig.row_of(&alpha).expect("the ended row is on show");
++    assert_eq!(canceled.status, TaskRowStatus::Canceled);
++    let datagram = serde_json::to_value(
++        datagram_for_row(&canceled, &parent, None, Some("Parent"), now)
++            .expect("an ended row has an outcome"),
++    )
++    .expect("serialises");
++    assert_eq!(datagram["task_outcome"], "stopped");
++    assert_eq!(datagram["session_id"], parent.to_string());
++
++    for (watched, status, in_view, expected) in [
++        (false, TaskRowStatus::Failed, false, true),
++        (false, TaskRowStatus::Done, false, false),
++        (true, TaskRowStatus::Done, false, true),
++        (true, TaskRowStatus::Canceled, false, true),
++        (false, TaskRowStatus::Canceled, false, false),
++        (false, TaskRowStatus::Failed, true, false),
++    ] {
++        assert_eq!(
++            should_notify_row(watched, status, in_view),
++            expected,
++            "watched {watched}, {status:?}, in view {in_view}"
++        );
++    }
 +}
 diff --git a/crates/agent_ui/src/tasks_card/tray/wiring_tests.rs b/crates/agent_ui/src/tasks_card/tray/wiring_tests.rs
 new file mode 100644

@@ -118,9 +118,8 @@ Zeo speak v2 to any agent that offers it. Claude Agent (Plus) answers protocol
 1, so each Plus connection starts the adapter twice: the v2 attempt is
 spawned, refused and dropped, and v1 spawns a fresh process -- a second
 adapter process, and its startup time, per connection. 0057 makes both
-attempts start a jailed command the same way. The selection tests' flag-off
-rows cannot be set up while the flag is forced, so the hunks below drop them
-and say so.
+attempts start a jailed command the same way. (The selection tests' flag-off
+rows this paragraph once dropped are upstream's again since story 064, below.)
 
 a5c4ca8b review (2026-10-25, story 061): acp-beta now gates a third thing. v1's
 AcpConnection::stdio offers `clientCapabilities.subagents` only with the flag
@@ -130,9 +129,8 @@ notifications are dropped with a warning. Forced on, every Zeo build advertises
 the capability to every v1 agent and renders the subagent sessions they announce.
 Claude Agent (Plus) emits no SubagentUpdate, so nothing changes for it; upstream's
 claude-agent-acp does, and its subagents appear natively. The flag-off row of
-upstream's stdio_offers_subagents_only_behind_acp_beta cannot be set up, so this
-patch drops it like the selection tests' rows. A setting to switch the forcing
-off is story 064's.
+upstream's stdio_offers_subagents_only_behind_acp_beta was dropped here for the
+same reason, until story 064 made the forcing switchable (below).
 
 a4b39c38 review: (2026-11-01, story 072) ACP moved from agent-client-protocol
 3.5.0 (schema 1.12.0) to 3.6.0 (schema 1.13.0). The flag this patch forces is
@@ -141,62 +139,511 @@ uses in crates/ are the same set (15 at both bases). It still gates the
 subagents capability: v1.rs:571 reads has_flag::<AcpBetaFeatureFlag>() into
 offer_subagents, so the forcing keeps offering clientCapabilities.subagents to
 every v1 agent, as the a5c4ca8b paragraph above describes.
+
+SWITCHABLE OFF FROM SETTINGS (story 064, 2026-11-02)
+
+The flag is still forced on, but the operator can now turn it off without a
+rebuild: `"feature_flags": { "acp-beta": "off" }` in the settings reads off in
+every build. Upstream honours that map only when `overrides_enabled()` (debug
+or staff), and `enabled_for_all` wins over it even then, so before this the
+forcing had no way back. FeatureFlagStore::try_flag_value now reads the
+override for this one flag, OPERATOR_SWITCHABLE_FLAG = AcpBetaFeatureFlag::NAME,
+ahead of `enabled_for_all`; resolved_key, which the settings UI shows, reads it
+the same way so the UI shows the variant in effect. `overrides_enabled()` is
+untouched and every other flag keeps upstream's gate. The flag is read when a
+connection is made (agent_servers/src/acp.rs), so the switch applies to the
+next connection; off, Zeo speaks ACP v1 and offers no `subagents` capability.
+
+Because the flag can be off again, the test adaptations the paragraphs above
+describe are gone: the selection tests and v1's subagents loop are upstream's
+own flag-off rows again, so this patch no longer touches acp/v1.rs. Its tests:
+feature_flags acp_beta_switch_tests.rs (on by default; off in a debug and a
+non-staff process, ZED_DISABLE_STAFF=1; no other flag opened) and agent_servers
+acp_beta_connect_tests.rs (the next connection takes the switch; v1 without
+the subagents offer). The latter calls `connect` without a StdioLaunch, which
+0057 adds to every caller, so it builds with USE=-ai-jail.
 ---
 
 diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
-index 6fce82c..c5f3196 100644
+index 6fce82c..c3fd9e2 100644
 --- a/crates/agent_servers/src/acp.rs
 +++ b/crates/agent_servers/src/acp.rs
-@@ -1164,7 +1164,9 @@ mod selection_tests {
-                     .insert("acp-beta".into(), if enabled { "on" } else { "off" }.into());
-             });
-         });
--        assert_eq!(cx.has_flag::<AcpBetaFeatureFlag>(), enabled);
-+        // Zeo forces acp-beta on (0001): `enabled_for_all` wins over the override above, so
-+        // turning it off is a no-op and the flag reads on either way.
-+        assert!(cx.has_flag::<AcpBetaFeatureFlag>());
+@@ -1475,3 +1475,7 @@ done
+         }
      }
- 
-     #[gpui::test]
-@@ -1182,8 +1184,9 @@ mod selection_tests {
-         let project = Project::example([directory.path()], &mut cx.to_async()).await;
-         let v1 = r#""result":{"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"selected-v1","version":"1"}}"#;
-         let v2 = r#""result":{"protocolVersion":2,"info":{"name":"selected-v2","version":"1"},"capabilities":{"session":{}}}"#;
-+        // Zeo forces acp-beta on (0001), so the flag-off row upstream starts with cannot be
-+        // set up here: `enabled_for_all` wins over the settings override.
-         for (beta, response, exit_after_response, expected, requests) in [
--            (false, v2, false, Some(false), "1"),
-             (true, v2, false, Some(true), "2"),
-             (true, v1, false, Some(false), "2 1"),
-             (
-@@ -1411,11 +1414,8 @@ done
-         let config = directory.path().join("claude-config");
-         std::fs::create_dir(&config).expect("isolated Claude configuration");
-         let project = Project::example([directory.path()], &mut cx.to_async()).await;
--        for (beta, adapter_v2, expected_v2) in [
--            (false, true, false),
--            (true, true, true),
--            (true, false, false),
--        ] {
-+        // Zeo forces acp-beta on (0001): the flag-off row cannot be set up here.
-+        for (beta, adapter_v2, expected_v2) in [(true, true, true), (true, false, false)] {
-             cx.update(|cx| set_beta(beta, cx));
-             let command = AgentServerCommand {
-                 path: "npx".into(),
-diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
-index c91c90f..aa0f6ba 100644
---- a/crates/agent_servers/src/acp/v1.rs
-+++ b/crates/agent_servers/src/acp/v1.rs
-@@ -7195,7 +7195,8 @@ exec cat >/dev/null
- "#,
-         );
- 
--        for enabled in [false, true] {
-+        // Zeo forces acp-beta on (0001): the flag-off row cannot be set up here.
-+        for enabled in [true] {
-             cx.update(|cx| crate::acp::selection_tests::set_beta(enabled, cx));
-             let command = AgentServerCommand {
-                 path: "/bin/sh".into(),
+ }
++
++#[cfg(all(test, unix))]
++#[path = "acp/acp_beta_connect_tests.rs"]
++mod acp_beta_connect;
+diff --git a/crates/agent_servers/src/acp/acp_beta_connect_tests.rs b/crates/agent_servers/src/acp/acp_beta_connect_tests.rs
+new file mode 100644
+index 0000000..4d596de
+--- /dev/null
++++ b/crates/agent_servers/src/acp/acp_beta_connect_tests.rs
+@@ -0,0 +1,223 @@
++// Story 064, task 8.1 (connection half) — with `acp-beta` switched off in the settings'
++// `feature_flags` map, the next agent connection is ACP v1 without the subagents capability, as
++// upstream connects a non-staff user (R7.2, R7.3); with it on (the default, R7.1) Zed negotiates v2
++// first. Module path: `acp::acp_beta_connect`. Wired at the end of
++// `crates/agent_servers/src/acp.rs`, after `mod selection_tests`, as
++//
++//     #[cfg(all(test, unix))]
++//     #[path = "acp/acp_beta_connect_tests.rs"]
++//     mod acp_beta_connect;
++//
++// Validation filter: `cargo test -p agent_servers connect` (names start `connect_`).
++//
++// Contract: `connect` (acp.rs) reads `cx.has_flag::<AcpBetaFeatureFlag>()` once per connection
++// and tries v2 only when it is on; `v1::connect` offers `clientCapabilities.subagents` only when
++// it is on (`client_capabilities_for_agent`). design.md §Feature flag switch: the flag reads the
++// settings map for `acp-beta`, so the switch applies to the next connection.
++// Note for task 8.1: `selection_tests::set_beta` asserts the flag is on whatever it is asked
++// (0001's comment); once the switch works that helper must assert `enabled` again, as upstream.
++// This file does not call it.
++//
++// The agent is a `/bin/sh` script, as in `selection_tests`, that traces each start, each
++// initialize's protocol version and whether a v1 initialize offered subagents. Hostile first:
++// off must give exactly one v1 initialize and no subagents offer; the converse — the default
++// with a v1-only agent — must show the offer on its v1 retry, which proves the trace can see an
++// offer at all (an offer the detector cannot see would make the first test pass vacuously); then
++// the switch between two connections, and the default's v2.
++
++use super::*;
++use gpui::{TestAppContext, UpdateGlobal as _};
++
++const AGENT_SCRIPT: &str = r#"
++printf 'start %s\n' "$$" >> "$ACP_BETA_TRACE"
++while IFS= read -r request; do
++    case "$request" in
++        *'"method":"initialize"'*)
++            id=${request#*\"id\":}; id=${id%%,*}
++            case "$request" in
++                *'"protocolVersion":2'*)
++                    printf 'initialize 2\n' >> "$ACP_BETA_TRACE"
++                    if [ "$ACP_BETA_ACCEPT_V2" = 1 ]; then
++                        printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":2,"info":{"name":"beta-v2","version":"1"},"capabilities":{"session":{}}}}\n' "$id"
++                    else
++                        printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"beta-v1","version":"1"}}}\n' "$id"
++                    fi
++                    ;;
++                *)
++                    printf 'initialize 1\n' >> "$ACP_BETA_TRACE"
++                    case "$request" in
++                        *'"subagents"'*) printf 'subagents offered\n' >> "$ACP_BETA_TRACE" ;;
++                    esac
++                    printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"beta-v1","version":"1"}}}\n' "$id"
++                    ;;
++            esac
++            ;;
++    esac
++done
++"#;
++
++fn connect_beta_init(cx: &mut TestAppContext) {
++    cx.update(|cx| {
++        let mut store = settings::SettingsStore::test(cx);
++        store.register_setting::<feature_flags::FeatureFlagsSettings>();
++        cx.set_global(store);
++        release_channel::init("0.0.0".parse().expect("version"), cx);
++        // The store global the connection reads; no server flag and no staff.
++        cx.update_flags(false, Vec::new());
++    });
++    cx.executor().allow_parking();
++}
++
++/// Sets (`Some`) or removes (`None`) the `acp-beta` entry of the user's `feature_flags` map.
++fn connect_beta_setting(value: Option<&str>, cx: &mut TestAppContext) {
++    let value = value.map(str::to_string);
++    cx.update(|cx| {
++        settings::SettingsStore::update_global(cx, |store, cx| {
++            store.update_user_settings(cx, |settings| {
++                let map = settings.feature_flags.get_or_insert_default();
++                match value {
++                    Some(value) => {
++                        map.insert("acp-beta".into(), value);
++                    }
++                    None => {
++                        map.remove("acp-beta");
++                    }
++                }
++            });
++        });
++    });
++}
++
++/// One connection through `connect`; returns it and the agent's trace lines.
++async fn connect_beta_once(
++    project: &Entity<Project>,
++    trace: &std::path::Path,
++    accept_v2: bool,
++    cx: &mut TestAppContext,
++) -> (Rc<dyn acp_thread::AgentConnection>, Vec<String>) {
++    std::fs::write(trace, "").expect("clear trace");
++    let command = AgentServerCommand {
++        path: "/bin/sh".into(),
++        args: vec!["-c".into(), AGENT_SCRIPT.into()],
++        env: Some(HashMap::from_iter([
++            (
++                "ACP_BETA_TRACE".into(),
++                trace.to_string_lossy().into_owned(),
++            ),
++            (
++                "ACP_BETA_ACCEPT_V2".into(),
++                if accept_v2 { "1" } else { "0" }.into(),
++            ),
++        ])),
++    };
++    let connecting = cx.spawn({
++        let project = project.clone();
++        async move |mut cx| {
++            connect(
++                AgentId::new("acp-beta-switch"),
++                project,
++                command,
++                WeakEntity::new_invalid(),
++                None,
++                HashMap::default(),
++                &mut cx,
++            )
++            .await
++        }
++    });
++    let timeout = cx
++        .background_executor
++        .timer(std::time::Duration::from_secs(10));
++    futures::pin_mut!(connecting, timeout);
++    let connection = match futures::future::select(connecting, timeout).await {
++        futures::future::Either::Left((result, _)) => result.expect("the scripted agent connects"),
++        _ => panic!("connect timed out"),
++    };
++    let lines = std::fs::read_to_string(trace)
++        .expect("connection trace")
++        .lines()
++        .filter(|line| !line.starts_with("start "))
++        .map(str::to_string)
++        .collect();
++    (connection, lines)
++}
++
++fn connect_beta_is_v2(connection: &Rc<dyn acp_thread::AgentConnection>) -> bool {
++    connection.clone().downcast::<AcpV2Connection>().is_some()
++}
++
++// ── Hostile: off is v1, and no subagents are offered ───────────────────────
++
++#[gpui::test]
++async fn connect_with_acp_beta_off_offers_v1_without_subagents(cx: &mut TestAppContext) {
++    connect_beta_init(cx);
++    let directory = tempfile::tempdir().expect("working directory");
++    let project = Project::example([directory.path()], &mut cx.to_async()).await;
++    let trace = directory.path().join("trace");
++    connect_beta_setting(Some("off"), cx);
++
++    // An agent that would accept v2: only the flag can keep Zed on v1.
++    let (connection, lines) = connect_beta_once(&project, &trace, true, cx).await;
++
++    assert_eq!(
++        lines,
++        ["initialize 1"],
++        "one v1 initialize, no v2 attempt and no subagents offer"
++    );
++    assert!(!connect_beta_is_v2(&connection), "a v1 connection");
++    connection.shutdown();
++}
++
++// Converse, and the detector's own check: with the default, a v1-only agent is retried on v1 and
++// that initialize DOES offer subagents.
++#[gpui::test]
++async fn connect_with_acp_beta_default_offers_subagents_on_the_v1_retry(cx: &mut TestAppContext) {
++    connect_beta_init(cx);
++    let directory = tempfile::tempdir().expect("working directory");
++    let project = Project::example([directory.path()], &mut cx.to_async()).await;
++    let trace = directory.path().join("trace");
++
++    let (connection, lines) = connect_beta_once(&project, &trace, false, cx).await;
++
++    assert_eq!(
++        lines,
++        ["initialize 2", "initialize 1", "subagents offered"],
++        "v2 first, then the v1 retry offering subagents"
++    );
++    assert!(!connect_beta_is_v2(&connection));
++    connection.shutdown();
++}
++
++// ── The switch between connections (R7.2: "for the next agent connection") ──
++
++#[gpui::test]
++async fn connect_after_switching_acp_beta_off_uses_v1_for_the_next_connection(
++    cx: &mut TestAppContext,
++) {
++    connect_beta_init(cx);
++    let directory = tempfile::tempdir().expect("working directory");
++    let project = Project::example([directory.path()], &mut cx.to_async()).await;
++    let trace = directory.path().join("trace");
++
++    let (first, lines) = connect_beta_once(&project, &trace, true, cx).await;
++    assert_eq!(lines, ["initialize 2"], "precondition: the default is v2");
++    assert!(connect_beta_is_v2(&first));
++
++    connect_beta_setting(Some("off"), cx);
++    assert!(
++        connect_beta_is_v2(&first),
++        "a live connection is not renegotiated by the switch"
++    );
++    let (second, lines) = connect_beta_once(&project, &trace, true, cx).await;
++    assert_eq!(lines, ["initialize 1"], "the next connection is v1");
++    assert!(!connect_beta_is_v2(&second));
++
++    connect_beta_setting(None, cx);
++    let (third, lines) = connect_beta_once(&project, &trace, true, cx).await;
++    assert_eq!(lines, ["initialize 2"], "removing the entry restores v2");
++    assert!(connect_beta_is_v2(&third));
++
++    for connection in [first, second, third] {
++        connection.shutdown();
++    }
++}
+diff --git a/crates/feature_flags/src/acp_beta_switch_tests.rs b/crates/feature_flags/src/acp_beta_switch_tests.rs
+new file mode 100644
+index 0000000..8886175
+--- /dev/null
++++ b/crates/feature_flags/src/acp_beta_switch_tests.rs
+@@ -0,0 +1,233 @@
++// Story 064, task 8.1 (flag half) — the operator's off switch for the forced `acp-beta` (R7.1,
++// R7.2, R7.4). Module path: `store::acp_beta_switch`. Wired at the end of
++// `crates/feature_flags/src/store.rs`, after its `mod tests`, as
++//
++//     #[cfg(test)]
++//     #[path = "acp_beta_switch_tests.rs"]
++//     mod acp_beta_switch;
++//
++// Validation filter: `cargo test -p feature_flags acp_beta`.
++//
++// Contract (design.md §Feature flag switch; story.md R7): `AcpBetaFeatureFlag` stays
++// `enabled_for_all` (0001), but `has_flag::<AcpBetaFeatureFlag>()` first reads the settings'
++// `feature_flags` map for `acp-beta`, even when `overrides_enabled()` is false; every other flag
++// keeps upstream's gate (honoured only in debug or staff builds; `enabled_for_all` still wins).
++// The connection reads the flag through `FeatureFlagAppExt::has_flag` (`agent_servers/src/acp.rs`
++// `connect`), so that reader is exercised too.
++// Assumed beyond design.md: `flag_value::<AcpBetaFeatureFlag>()` agrees with `has_flag` (both are
++// built on `try_flag_value`); a reader that says on while the other says off would be two answers
++// to one switch.
++//
++// A release build cannot be compiled into a debug test, so the non-staff rows run in a CHILD
++// PROCESS of this test binary with `ZED_DISABLE_STAFF=1`: there `overrides_enabled()` is false, as
++// for a non-staff user of a release build (`store.rs`: `(cfg!(debug_assertions) || staff) &&
++// !ZED_DISABLE_STAFF`). `ZED_DISABLE_STAFF` is a `LazyLock` read once per process, which is why a
++// process and not an env var set mid-test. The child is the same `#[test]`, selected with
++// `--exact`, and the parent fails unless the child reports exactly one passed test.
++//
++// Hostile halves first:
++//   - `acp-beta: off` must read off — in a debug build, and in a non-staff build where no other
++//     override is honoured (today `enabled_for_all` wins over it in both);
++//   - converse, the switch must not open other flags: in a non-staff build `diff-review: on` stays
++//     off, and `sandboxing: off` stays on in every build (another `enabled_for_all` flag);
++//   - then the default (on, R7.1), the switch taking effect for the next read, and the readers
++//     agreeing.
++
++use gpui::{App, UpdateGlobal as _};
++use settings::SettingsStore;
++
++use crate::{
++    AcpBetaFeatureFlag, DiffReviewFeatureFlag, FeatureFlag, FeatureFlagAppExt as _,
++    FeatureFlagStore, FeatureFlagsSettings, PresenceFlag, SandboxingFeatureFlag, ZED_DISABLE_STAFF,
++};
++
++const ACP_BETA_NON_STAFF_CHILD: &str = "ZEO_064_ACP_BETA_NON_STAFF_CHILD";
++
++fn acp_beta_settings(cx: &mut App) {
++    let mut store = SettingsStore::test(cx);
++    store.register_setting::<FeatureFlagsSettings>();
++    cx.set_global(store);
++    FeatureFlagStore::init(cx);
++}
++
++fn acp_beta_set(name: &str, value: Option<&str>, cx: &mut App) {
++    SettingsStore::update_global(cx, |store: &mut SettingsStore, cx| {
++        store.update_user_settings(cx, |content| {
++            let map = content.feature_flags.get_or_insert_default();
++            match value {
++                Some(value) => {
++                    map.insert(name.to_string(), value.to_string());
++                }
++                None => {
++                    map.remove(name);
++                }
++            }
++        });
++    });
++}
++
++/// `true` in the non-staff child, where the caller runs its body; in the parent it runs the
++/// child, asserts it passed, and returns `false`.
++// A blocking wait is the point here: the test cannot go on until its child process has answered.
++#[allow(clippy::disallowed_methods)]
++fn acp_beta_in_non_staff_process(test_name: &str) -> bool {
++    if std::env::var_os(ACP_BETA_NON_STAFF_CHILD).is_some() {
++        assert!(
++            *ZED_DISABLE_STAFF,
++            "the child runs with ZED_DISABLE_STAFF=1"
++        );
++        return true;
++    }
++    let module = module_path!().split_once("::").map_or("", |(_, rest)| rest);
++    let exact = format!("{module}::{test_name}");
++    let binary = std::env::current_exe().expect("the test binary's path");
++    let output = std::process::Command::new(binary)
++        .args([exact.as_str(), "--exact", "--nocapture", "--test-threads=1"])
++        .env(ACP_BETA_NON_STAFF_CHILD, "1")
++        .env("ZED_DISABLE_STAFF", "1")
++        .output()
++        .expect("the test binary runs again as a child");
++    let stdout = String::from_utf8_lossy(&output.stdout);
++    let stderr = String::from_utf8_lossy(&output.stderr);
++    assert!(
++        output.status.success(),
++        "non-staff run of {exact} failed:\n{stdout}\n{stderr}"
++    );
++    assert!(
++        stdout.contains("1 passed"),
++        "the child ran exactly {exact}, not zero tests:\n{stdout}"
++    );
++    false
++}
++
++// ── Hostile: off reads off ─────────────────────────────────────────────────
++
++#[gpui::test]
++fn acp_beta_off_in_settings_reads_off_in_a_debug_build(cx: &mut App) {
++    acp_beta_settings(cx);
++    let store = FeatureFlagStore::default();
++    assert!(
++        store.has_flag::<AcpBetaFeatureFlag>(cx),
++        "precondition: forced on"
++    );
++
++    acp_beta_set(AcpBetaFeatureFlag::NAME, Some("off"), cx);
++
++    assert!(
++        !store.has_flag::<AcpBetaFeatureFlag>(cx),
++        "the operator's off wins over the forced default"
++    );
++    assert!(
++        !cx.has_flag::<AcpBetaFeatureFlag>(),
++        "and through the reader the connection uses"
++    );
++}
++
++#[gpui::test]
++fn acp_beta_off_in_settings_reads_off_without_overrides_enabled(cx: &mut App) {
++    if !acp_beta_in_non_staff_process(
++        "acp_beta_off_in_settings_reads_off_without_overrides_enabled",
++    ) {
++        return;
++    }
++    acp_beta_settings(cx);
++    let store = FeatureFlagStore::default();
++    assert!(
++        !store.overrides_enabled(),
++        "precondition: a non-staff build honours no override"
++    );
++    assert!(store.has_flag::<AcpBetaFeatureFlag>(cx), "precondition: on");
++
++    acp_beta_set(AcpBetaFeatureFlag::NAME, Some("off"), cx);
++
++    assert!(
++        !store.has_flag::<AcpBetaFeatureFlag>(cx),
++        "acp-beta's off is honoured where no other override is"
++    );
++    assert!(!cx.has_flag::<AcpBetaFeatureFlag>());
++}
++
++// ── Hostile converse: no other flag is opened (R7.4) ───────────────────────
++
++#[gpui::test]
++fn acp_beta_switch_opens_no_other_flag_in_a_non_staff_build(cx: &mut App) {
++    if !acp_beta_in_non_staff_process("acp_beta_switch_opens_no_other_flag_in_a_non_staff_build") {
++        return;
++    }
++    acp_beta_settings(cx);
++    let store = FeatureFlagStore::default();
++    acp_beta_set(AcpBetaFeatureFlag::NAME, Some("off"), cx);
++    acp_beta_set(DiffReviewFeatureFlag::NAME, Some("on"), cx);
++    acp_beta_set(SandboxingFeatureFlag::NAME, Some("off"), cx);
++
++    assert!(
++        !store.has_flag::<DiffReviewFeatureFlag>(cx),
++        "another flag's override stays a staff-only affordance"
++    );
++    assert!(
++        store.has_flag::<SandboxingFeatureFlag>(cx),
++        "another forced flag cannot be switched off from settings"
++    );
++}
++
++#[gpui::test]
++fn acp_beta_switch_leaves_other_flags_on_upstream_rules_in_a_debug_build(cx: &mut App) {
++    acp_beta_settings(cx);
++    let store = FeatureFlagStore::default();
++    acp_beta_set(AcpBetaFeatureFlag::NAME, Some("off"), cx);
++    acp_beta_set(DiffReviewFeatureFlag::NAME, Some("on"), cx);
++    acp_beta_set(SandboxingFeatureFlag::NAME, Some("off"), cx);
++
++    assert!(
++        store.has_flag::<DiffReviewFeatureFlag>(cx),
++        "a debug build honours another flag's override, as upstream"
++    );
++    assert!(
++        store.has_flag::<SandboxingFeatureFlag>(cx),
++        "enabled_for_all still wins for every other flag"
++    );
++}
++
++// ── Benign: the default, the next read, the readers ────────────────────────
++
++#[gpui::test]
++fn acp_beta_stays_on_by_default_and_when_set_on(cx: &mut App) {
++    acp_beta_settings(cx);
++    let store = FeatureFlagStore::default();
++    assert!(store.has_flag::<AcpBetaFeatureFlag>(cx), "on with no entry");
++    acp_beta_set(AcpBetaFeatureFlag::NAME, Some("on"), cx);
++    assert!(store.has_flag::<AcpBetaFeatureFlag>(cx), "on when set on");
++}
++
++#[gpui::test]
++fn acp_beta_stays_on_by_default_in_a_non_staff_build(cx: &mut App) {
++    if !acp_beta_in_non_staff_process("acp_beta_stays_on_by_default_in_a_non_staff_build") {
++        return;
++    }
++    acp_beta_settings(cx);
++    assert!(FeatureFlagStore::default().has_flag::<AcpBetaFeatureFlag>(cx));
++    assert!(cx.has_flag::<AcpBetaFeatureFlag>());
++}
++
++// No restart: the next read after the settings change answers off, and on again once the entry
++// is gone. The connection reads it once per connection, so this is "the next connection".
++#[gpui::test]
++fn acp_beta_switch_applies_to_the_next_read_and_reverts(cx: &mut App) {
++    acp_beta_settings(cx);
++    assert!(cx.has_flag::<AcpBetaFeatureFlag>());
++
++    acp_beta_set(AcpBetaFeatureFlag::NAME, Some("off"), cx);
++    assert!(!cx.has_flag::<AcpBetaFeatureFlag>(), "off at the next read");
++    assert_eq!(
++        cx.flag_value::<AcpBetaFeatureFlag>(),
++        PresenceFlag::Off,
++        "every reader of the flag gives the same answer"
++    );
++
++    acp_beta_set(AcpBetaFeatureFlag::NAME, None, cx);
++    assert!(
++        cx.has_flag::<AcpBetaFeatureFlag>(),
++        "removing the entry restores the forced default"
++    );
++    assert_eq!(cx.flag_value::<AcpBetaFeatureFlag>(), PresenceFlag::On);
++}
 diff --git a/crates/feature_flags/src/flags.rs b/crates/feature_flags/src/flags.rs
 index 6a10534..3375676 100644
 --- a/crates/feature_flags/src/flags.rs
@@ -212,3 +659,66 @@ index 6a10534..3375676 100644
  }
  register_feature_flag!(AcpBetaFeatureFlag);
  
+diff --git a/crates/feature_flags/src/store.rs b/crates/feature_flags/src/store.rs
+index 552d025..55f1e4a 100644
+--- a/crates/feature_flags/src/store.rs
++++ b/crates/feature_flags/src/store.rs
+@@ -163,6 +163,18 @@ impl FeatureFlagStore {
+     /// order of precedence. Overrides are read directly from
+     /// [`FeatureFlagsSettings`].
+     pub fn try_flag_value<T: FeatureFlag>(&self, cx: &App) -> Option<T::Value> {
++        // Zeo forces `acp-beta` on for everyone, so the operator needs a way back to the stable
++        // ACP path without a rebuild: its override is honoured in every build, ahead of
++        // `enabled_for_all`. Every other flag keeps upstream's staff-only gate below.
++        if T::NAME == OPERATOR_SWITCHABLE_FLAG {
++            if let Some(override_key) = FeatureFlagsSettings::get_global(cx).overrides.get(T::NAME)
++            {
++                if let Some(variant) = variant_from_key::<T::Value>(override_key) {
++                    return Some(variant);
++                }
++            }
++        }
++
+         // `enabled_for_all` always wins, including over user overrides.
+         if T::enabled_for_all() {
+             return Some(T::Value::on_variant());
+@@ -204,6 +216,20 @@ impl FeatureFlagStore {
+     pub fn resolved_key(&self, descriptor: &FeatureFlagDescriptor, cx: &App) -> &'static str {
+         let on_variant_key = (descriptor.on_variant_key)();
+ 
++        if descriptor.name == OPERATOR_SWITCHABLE_FLAG {
++            if let Some(requested) = FeatureFlagsSettings::get_global(cx)
++                .overrides
++                .get(descriptor.name)
++            {
++                if let Some(variant) = (descriptor.variants)()
++                    .into_iter()
++                    .find(|v| v.override_key == requested.as_str())
++                {
++                    return variant.override_key;
++                }
++            }
++        }
++
+         if (descriptor.enabled_for_all)() {
+             return on_variant_key;
+         }
+@@ -253,6 +279,10 @@ impl FeatureFlagStore {
+     }
+ }
+ 
++/// The one flag whose settings override is honoured outside staff and debug builds — see
++/// [`FeatureFlagStore::try_flag_value`].
++const OPERATOR_SWITCHABLE_FLAG: &str = crate::AcpBetaFeatureFlag::NAME;
++
+ fn variant_from_key<V: FeatureFlagValue>(key: &str) -> Option<V> {
+     V::all_variants()
+         .iter()
+@@ -423,3 +453,7 @@ mod tests {
+         assert!(fired.get());
+     }
+ }
++
++#[cfg(test)]
++#[path = "acp_beta_switch_tests.rs"]
++mod acp_beta_switch;

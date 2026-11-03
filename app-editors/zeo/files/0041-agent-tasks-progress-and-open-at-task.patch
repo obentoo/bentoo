@@ -67,6 +67,13 @@ memory to disk to reload keeps the exact spelling beside case, fold and
 trailing-space decoys; an id known only from disk scrolls to the exact
 entry). Suites: agent_tasks_panel 121, agent_ui tasks_card 104,
 agent_session_router 14.
+
+Story 064 (2026-11-02): open_agent_subagent opens a native subagent through its
+parent, the only route to it -- children are not in the thread metadata store,
+so the child's own id is never looked up there. A child the parent's
+conversation holds is navigated to, as Zed's own subagent card does; otherwise
+the parent stays shown, scrolled to its first message to the child, and the
+caller shows a notice. Covered by 0071's panel tests, which call it.
 ---
 
 diff --git a/crates/agent_tasks_panel/src/history_db.rs b/crates/agent_tasks_panel/src/history_db.rs
@@ -1771,10 +1778,18 @@ index c74b153..0a356d0 100644
  mod tests {
      use super::*;
 diff --git a/crates/agent_ui/src/agent_session_router.rs b/crates/agent_ui/src/agent_session_router.rs
-index 9887094..5fa6989 100644
+index 9887094..c55cf49 100644
 --- a/crates/agent_ui/src/agent_session_router.rs
 +++ b/crates/agent_ui/src/agent_session_router.rs
-@@ -28,6 +28,7 @@ use util::ResultExt as _;
+@@ -21,13 +21,14 @@ use anyhow::{Context as _, Result, anyhow};
+ use fs::Fs;
+ use futures::StreamExt as _;
+ use futures::future::{Either, select};
+-use gpui::{AnyWindowHandle, App, AsyncApp, Entity, Task, WeakEntity, WindowHandle};
++use gpui::{AnyWindowHandle, App, AsyncApp, Entity, Task, WeakEntity, WindowHandle, px};
+ use project::DisableAiSettings;
+ use settings::Settings as _;
+ use util::ResultExt as _;
  use workspace::{AppState, MultiWorkspace, OpenMode, OpenOptions, Workspace, WorkspaceMatching};
  
  use crate::AgentPanel;
@@ -1809,7 +1824,7 @@ index 9887094..5fa6989 100644
          } = options;
  
          // No window has an agent panel while AI is disabled, so refuse before
-@@ -141,18 +147,33 @@ pub fn open_agent_session(
+@@ -141,22 +147,132 @@ pub fn open_agent_session(
              .with_context(|| format!("open agent session {session_id}: the window is gone"))??;
  
          let deadline = cx.background_executor().timer(THREAD_LOAD_TIMEOUT);
@@ -1850,7 +1865,106 @@ index 9887094..5fa6989 100644
          })
      })
  }
-@@ -468,6 +489,47 @@ async fn wait_until_loaded(
+ 
++/// Where a native subagent was opened (story 064).
++#[derive(Clone, Debug)]
++pub struct OpenedAgentSubagent {
++    pub opened: OpenedAgentSession,
++    /// The child's own thread is shown. `false` when the parent's conversation never loaded
++    /// it: the parent is shown instead, at the child's announcement when it has one (R2.4).
++    pub child_shown: bool,
++}
++
++/// Opens a native ACP subagent through its parent, the only route to it: children are not in
++/// the thread metadata store, so the child's own session id is never looked up (R2.4). A child
++/// the parent's conversation holds is navigated to, as Zed's own subagent card does; otherwise
++/// the parent stays shown, scrolled to its first message to the child.
++pub fn open_agent_subagent(
++    parent_session_id: acp_v2::SessionId,
++    child_session_id: acp_v2::SessionId,
++    options: OpenAgentSessionOptions,
++    app_state: Arc<AppState>,
++    cx: &mut App,
++) -> Task<Result<OpenedAgentSubagent>> {
++    let opening = open_agent_session(parent_session_id.clone(), options, app_state, cx);
++    cx.spawn(async move |cx| {
++        let opened = opening.await?;
++        let workspace = opened.workspace.clone();
++        let child_shown = opened
++            .window
++            .update(cx, |_, window, cx| {
++                let panel = workspace
++                    .read(cx)
++                    .panel::<AgentPanel>(cx)
++                    .context("the window has no agent panel")?;
++                let conversation = shown_conversation(panel.read(cx), &parent_session_id, cx)
++                    .context("the agent panel did not keep the parent's thread forward")?;
++                if conversation
++                    .read(cx)
++                    .thread_view(&child_session_id)
++                    .is_some()
++                {
++                    conversation.update(cx, |conversation, cx| {
++                        conversation.navigate_to_thread(child_session_id.clone(), window, cx)
++                    });
++                    return anyhow::Ok(true);
++                }
++                let announcement =
++                    scroll_to_root_announcement(&conversation, &child_session_id, cx);
++                log::info!(
++                    "open agent session {parent_session_id}: subagent {child_session_id} is not \
++                     loaded; showing its parent at {announcement:?}"
++                );
++                anyhow::Ok(false)
++            })
++            .with_context(|| {
++                format!(
++                    "open subagent {child_session_id} of session {parent_session_id}: the window \
++                     is gone"
++                )
++            })??;
++        Ok(OpenedAgentSubagent {
++            opened,
++            child_shown,
++        })
++    })
++}
++
++/// Scrolls the root thread to its first message to `child`, the entry its card is drawn at.
++fn scroll_to_root_announcement(
++    conversation: &Entity<ConversationView>,
++    child: &acp_v2::SessionId,
++    cx: &mut App,
++) -> Option<usize> {
++    let thread_view = conversation.read(cx).root_thread_view()?;
++    let item_ix = thread_view
++        .read(cx)
++        .thread
++        .read(cx)
++        .entries()
++        .iter()
++        .position(|entry| {
++            matches!(
++                entry,
++                acp_thread::AgentThreadEntry::SessionMessage(message)
++                    if message.recipient_session_id.as_ref() == Some(child)
++            )
++        })?;
++    conversation.update(cx, |conversation, cx| conversation.show_root_thread(cx));
++    thread_view.update(cx, |thread_view, cx| {
++        thread_view.list_state.scroll_to(gpui::ListOffset {
++            item_ix,
++            offset_in_item: px(0.),
++        });
++        cx.notify();
++    });
++    Some(item_ix)
++}
++
+ /// The window and workspace the session is opened in.
+ async fn resolve_window(
+     session_id: &acp_v2::SessionId,
+@@ -468,6 +584,47 @@ async fn wait_until_loaded(
      }
  }
  
@@ -1898,7 +2012,7 @@ index 9887094..5fa6989 100644
  #[cfg(test)]
  #[path = "agent_session_router/routing_tests.rs"]
  mod routing;
-@@ -475,3 +537,7 @@ mod routing;
+@@ -475,3 +632,7 @@ mod routing;
  #[cfg(test)]
  #[path = "agent_session_router/review_tests.rs"]
  mod review;

@@ -25,11 +25,14 @@ The protocol this speaks is defined by the CLI and documented nowhere, so two
 clauses are worth naming here -- both were wrong in this patch's first version,
 and both fail silently:
 
-  - The lock file must carry `useWebSocket: true`. The CLI branches on that field
-    alone; `transport: "ws"` is never read, and without the boolean the CLI
-    builds http://host:port/sse and reaches nothing. Note serde's camelCase
-    renders `use_websocket` as `useWebsocket`, with a lowercase `s`, which the
-    CLI also ignores -- hence the explicit #[serde(rename)].
+  - The lock file must carry `transport: "ws"`. The CLI parses
+    `transport === "ws"` and passes the result on as `useWebSocket`, the key of
+    its parser's OUTPUT, which is what the URL branch tests; without `transport`
+    it builds http://host:port/sse and reaches nothing. The `useWebSocket: true`
+    this lock also writes is not read by the CLI (VS Code's lock has none) and
+    stays only as harmless parity with the first fix; serde's camelCase would
+    render it `useWebsocket`, hence the explicit #[serde(rename)]. Corrected
+    2026-11-03 (story 066): this note said the opposite, against CLI 2.1.251.
   - The handshake must echo `Sec-WebSocket-Protocol: mcp`. The CLI offers it on
     every connection and its WebSocket client closes with 1002, "Missing client
     protocol", when the 101 does not name it back.
@@ -75,13 +78,35 @@ More tests (0.2.3_p20261009): the folderless-window withdrawal (`advertise`, spl
 its response, a ping its pong), JSON-RPC other than 2.0 and a tools/call with no
 name are invalid. The terminal environment is one helper,
 `insert_claude_code_ide_env`, called by all three terminal paths and tested.
+
+Protocol alignment with the VS Code extension (story 066, 2026-11-03, CLI 2.1.316):
+- `openDiff` answers `TAB_CLOSED` when the tab is closed without Keep or Reject,
+  and when its sender is dropped; only Reject answers `DIFF_REJECTED`. The CLI
+  then keeps its proposed edit unsaved instead of recording a rejection.
+- `selection_changed` is pushed: at most one per 100 ms per connection, the last
+  state winning, and the current selection replayed 500 ms after a CLI connects,
+  as VS Code does. Positions are 0-based (the CLI adds 1). A terminal or panel
+  taking focus keeps the last selection; an editor with no file -- or nothing
+  open -- clears it with a zero-width 0:0 selection, because the CLI ignores a
+  null one (`if(!Be?.start||!Be?.end)return;`). `getCurrentSelection` and
+  `getLatestSelection` answer from the same state.
+- "Mention Selection in Claude Code" (`claude_code_ide::MentionSelectionInClaudeCode`,
+  editor context menu, palette, ctrl-alt-shift-m / cmd-alt-shift-m -- no default
+  binding used that chord) sends `at_mentioned` with 0-based lines; with no CLI
+  connected it says "No Claude Code session is connected to this workspace".
+  Hidden with the rest of the AI actions under `disable_ai`.
+- Requests now run concurrently with the frame loop: an undecided `openDiff` used
+  to hold back every push and ping on its connection.
+Proven live: a real `claude` 2.1.316 on this build showed "Selected 3 lines from
+sample.rs" and turned the mention into `@sample.rs#L1-3`; on the shipped build it
+received neither notification. The crate is now rustfmt-clean.
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
-index a1e7a29..8053c0e 100644
+index 4cec7c7..dc946ed 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -3041,6 +3041,32 @@ version = "0.7.6"
+@@ -3041,6 +3041,35 @@ version = "0.7.6"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
  
@@ -93,6 +118,7 @@ index a1e7a29..8053c0e 100644
 + "async-tungstenite",
 + "buffer_diff",
 + "collections",
++ "command_palette_hooks",
 + "editor",
 + "futures 0.3.34",
 + "gpui",
@@ -103,18 +129,20 @@ index a1e7a29..8053c0e 100644
 + "release_channel",
 + "serde",
 + "serde_json",
++ "settings",
 + "smol",
 + "text",
 + "ui",
 + "util",
 + "uuid",
 + "workspace",
++ "zed_actions",
 +]
 +
  [[package]]
  name = "cli"
  version = "0.1.0"
-@@ -22435,6 +22461,7 @@ dependencies = [
+@@ -22436,6 +22465,7 @@ dependencies = [
   "channel",
   "chrono",
   "clap",
@@ -142,12 +170,48 @@ index 4d4304f..640b1f3 100644
  cli = { path = "crates/cli", default-features = false }
  client = { path = "crates/client" }
  clock = { path = "crates/clock" }
+diff --git a/assets/keymaps/default-linux.json b/assets/keymaps/default-linux.json
+index 2121900..a170328 100644
+--- a/assets/keymaps/default-linux.json
++++ b/assets/keymaps/default-linux.json
+@@ -141,6 +141,7 @@
+       "ctrl-f": "buffer_search::Deploy",
+       "ctrl-h": "buffer_search::DeployReplace",
+       "ctrl->": "agent::AddSelectionToThread",
++      "ctrl-alt-shift-m": "claude_code_ide::MentionSelectionInClaudeCode",
+       "ctrl-alt-e": "editor::SelectEnclosingSymbol",
+       "ctrl-shift-backspace": "editor::GoToPreviousChange",
+       "ctrl-shift-alt-backspace": "editor::GoToNextChange",
+diff --git a/assets/keymaps/default-macos.json b/assets/keymaps/default-macos.json
+index f0475ea..4907478 100644
+--- a/assets/keymaps/default-macos.json
++++ b/assets/keymaps/default-macos.json
+@@ -164,6 +164,7 @@
+       "cmd-alt-l": ["buffer_search::Deploy", { "selection_search_enabled": true }],
+       "cmd-e": "buffer_search::UseSelectionForFind",
+       "cmd->": "agent::AddSelectionToThread",
++      "cmd-alt-shift-m": "claude_code_ide::MentionSelectionInClaudeCode",
+       "cmd-alt-e": "editor::SelectEnclosingSymbol",
+       "alt-enter": "editor::OpenSelectionsInMultibuffer",
+       "alt-cmd-f": "text_finder::Toggle",
+diff --git a/assets/keymaps/default-windows.json b/assets/keymaps/default-windows.json
+index a7a911e..4da72b0 100644
+--- a/assets/keymaps/default-windows.json
++++ b/assets/keymaps/default-windows.json
+@@ -137,6 +137,7 @@
+       "ctrl-f": "buffer_search::Deploy",
+       "ctrl-h": "buffer_search::DeployReplace",
+       "ctrl-shift-.": "agent::AddSelectionToThread",
++      "ctrl-alt-shift-m": "claude_code_ide::MentionSelectionInClaudeCode",
+       "shift-alt-e": "editor::SelectEnclosingSymbol",
+       "ctrl-shift-backspace": "editor::GoToPreviousChange",
+       "ctrl-shift-alt-backspace": "editor::GoToNextChange",
 diff --git a/crates/claude_code_ide/Cargo.toml b/crates/claude_code_ide/Cargo.toml
 new file mode 100644
-index 0000000..c83d1ac
+index 0000000..2e424c1
 --- /dev/null
 +++ b/crates/claude_code_ide/Cargo.toml
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,39 @@
 +[package]
 +name = "claude_code_ide"
 +version = "0.1.0"
@@ -168,6 +232,7 @@ index 0000000..c83d1ac
 +async-tungstenite.workspace = true
 +buffer_diff.workspace = true
 +collections.workspace = true
++command_palette_hooks.workspace = true
 +editor.workspace = true
 +futures.workspace = true
 +gpui.workspace = true
@@ -178,18 +243,20 @@ index 0000000..c83d1ac
 +release_channel.workspace = true
 +serde.workspace = true
 +serde_json.workspace = true
++settings.workspace = true
 +smol.workspace = true
 +text.workspace = true
 +ui.workspace = true
 +util.workspace = true
 +uuid.workspace = true
 +workspace.workspace = true
++zed_actions.workspace = true
 diff --git a/crates/claude_code_ide/README.md b/crates/claude_code_ide/README.md
 new file mode 100644
-index 0000000..8481e58
+index 0000000..ebb1e4f
 --- /dev/null
 +++ b/crates/claude_code_ide/README.md
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,79 @@
 +# claude_code_ide
 +
 +Native [Claude Code](https://docs.claude.com/en/docs/claude-code) IDE integration
@@ -204,13 +271,23 @@ index 0000000..8481e58
 +## What you get
 +
 +- **Auto-connect** in Zed's integrated terminal — no `/ide` needed.
-+- `@`-mentions of your current selection (`getCurrentSelection`).
++- **Your selection, live**: every selection change is pushed to the CLI as
++  `selection_changed` (at most one per 100 ms per connection, the last state
++  winning, and replayed 500 ms after a CLI connects), so "this function" means
++  what you have selected. A terminal or panel taking focus keeps the last
++  selection; an editor with no file clears it.
++- **Mention Selection in Claude Code** (editor context menu, command palette,
++  `ctrl-alt-shift-m` / `cmd-alt-shift-m`): sends the selected lines to the CLI
++  as `at_mentioned`, which it turns into `@file#L1-3` in its prompt.
 +- Model-visible **diagnostics** (`getDiagnostics`).
 +- Open editors / open file / save / dirty checks
 +  (`getOpenEditors`, `openFile`, `saveDocument`, `checkDocumentDirty`).
 +- **Blocking accept/reject diffs** (`openDiff`): Claude's proposed change opens
 +  as a side-by-side diff tab, the view centers on the first change, and the CLI
-+  blocks until you click **Keep** (green) or **Reject** (red).
++  blocks until you click **Keep** (green) or **Reject** (red). It answers
++  `FILE_SAVED` with the final contents on Keep, `DIFF_REJECTED` on Reject, and
++  `TAB_CLOSED` when you close the tab without deciding -- the CLI then keeps its
++  edit unsaved instead of recording a rejection, as with VS Code.
 +
 +## How it works
 +
@@ -223,7 +300,9 @@ index 0000000..8481e58
 +2. The transport is a WebSocket authenticated by the
 +   `x-claude-code-ide-authorization` header (which must equal `authToken`),
 +   speaking JSON-RPC 2.0 / MCP (`initialize`, `tools/list`, `tools/call`),
-+   protocol version `2024-11-05`.
++   protocol version `2024-11-05`. The server also pushes the notifications
++   `selection_changed` and `at_mentioned` on the same socket; positions are
++   0-based, and requests run concurrently, so an open diff holds back nothing.
 +3. Auto-connect: the workspace publishes the server port onto `Project`, and
 +   `crates/project/src/terminals.rs` injects `CLAUDE_CODE_SSE_PORT` and
 +   `ENABLE_IDE_INTEGRATION=true` into the integrated terminal, so `claude`
@@ -242,7 +321,7 @@ index 0000000..8481e58
 +| `getDiagnostics` | Language diagnostics, all buffers or one uri. |
 +| `openFile` | Open a path, optionally selecting a line range. |
 +| `saveDocument` / `checkDocumentDirty` | Save a buffer / query its dirty state. |
-+| `openDiff` | Blocking side-by-side diff with Keep/Reject. |
++| `openDiff` | Blocking side-by-side diff: `FILE_SAVED`, `DIFF_REJECTED` or `TAB_CLOSED`. |
 +
 +## Try it
 +
@@ -259,10 +338,10 @@ index 0000000..8481e58
 +
 diff --git a/crates/claude_code_ide/src/claude_code_ide.rs b/crates/claude_code_ide/src/claude_code_ide.rs
 new file mode 100644
-index 0000000..df60afe
+index 0000000..79434d6
 --- /dev/null
 +++ b/crates/claude_code_ide/src/claude_code_ide.rs
-@@ -0,0 +1,294 @@
+@@ -0,0 +1,488 @@
 +//! IDE-side implementation of the Claude Code editor integration protocol.
 +//!
 +//! This lets the Claude Code CLI connect to Zed the same way it connects to the
@@ -277,6 +356,8 @@ index 0000000..df60afe
 +
 +mod lockfile;
 +mod open_diff;
++mod selection;
++mod selection_watch;
 +mod server;
 +mod tools;
 +
@@ -284,16 +365,25 @@ index 0000000..df60afe
 +
 +use anyhow::{Context as _, Result};
 +use collections::HashMap;
++use command_palette_hooks::CommandPaletteFilter;
++use editor::{Editor, EditorEvent};
++use futures::channel::mpsc;
 +use gpui::{
 +    AnyWindowHandle, App, AppContext as _, AsyncApp, Context, Entity, EntityId, Subscription, Task,
 +    WeakEntity,
 +};
-+use project::Project;
++use project::{DisableAiSettings, Project};
 +use release_channel::ReleaseChannel;
++use selection_watch::{Connection, SelectionHub};
++use settings::{Settings as _, SettingsStore};
 +use util::ResultExt as _;
-+use workspace::Workspace;
++use workspace::{Toast, Workspace, notifications::NotificationId};
++use zed_actions::claude_code_ide::MentionSelectionInClaudeCode;
 +
 +pub use lockfile::generate_auth_token;
++pub use selection::{
++    EditorSelection, SelectionFeed, SelectionPoint, selection_changed_notification,
++};
 +pub use server::{Dispatcher, ProtocolError, ToolDescriptor, bind, serve_connection};
 +pub use tools::WorkspaceDispatcher;
 +
@@ -303,6 +393,12 @@ index 0000000..df60afe
 +/// entity, kept alive in `servers` for the window's lifetime and dropped (which
 +/// removes its lock file) when the workspace is released.
 +pub fn init(cx: &mut App) {
++    // The mention action talks to an AI tool, so it leaves the palette with the
++    // rest of them when AI is disabled; the editor's menu checks the same flag.
++    update_command_palette_filter(cx);
++    cx.observe_global::<SettingsStore>(update_command_palette_filter)
++        .detach();
++
 +    let servers: Rc<RefCell<HashMap<EntityId, Entity<ClaudeCodeIdeServer>>>> = Rc::default();
 +    cx.observe_new({
 +        let servers = servers.clone();
@@ -311,9 +407,30 @@ index 0000000..df60afe
 +            let workspace_handle = cx.entity().downgrade();
 +            let project = workspace.project().clone();
 +            let window_handle = window.map(|window| window.window_handle());
-+            let server = cx
-+                .new(|cx| ClaudeCodeIdeServer::new(workspace_handle, project, window_handle, cx));
++            let server =
++                cx.new(|cx| ClaudeCodeIdeServer::new(workspace_handle, project, window_handle, cx));
++            let mention_server = server.downgrade();
 +            servers.borrow_mut().insert(workspace_id, server);
++
++            // The handler runs inside this workspace's update, so the selection is
++            // read here, from the `&mut Workspace` it is given, and never through
++            // the server's workspace handle, which is leased at this point.
++            workspace.register_action(
++                move |workspace, _: &MentionSelectionInClaudeCode, _window, cx| {
++                    let Some(server) = mention_server.upgrade() else {
++                        return;
++                    };
++                    let item = workspace.active_item(cx);
++                    let observed = selection_watch::observe_active_item(item, cx);
++                    let outcome = server.update(cx, |server, _| server.mention(observed));
++                    if let Some(message) = outcome.message() {
++                        workspace.show_toast(
++                            Toast::new(NotificationId::unique::<ClaudeCodeMention>(), message),
++                            cx,
++                        );
++                    }
++                },
++            );
 +
 +            cx.on_release({
 +                let servers = servers.clone();
@@ -338,6 +455,38 @@ index 0000000..df60afe
 +    .detach();
 +}
 +
++fn update_command_palette_filter(cx: &mut App) {
++    let disable_ai = DisableAiSettings::get_global(cx).disable_ai;
++    CommandPaletteFilter::update_global(cx, |filter, _| {
++        if disable_ai {
++            filter.hide_namespace("claude_code_ide");
++        } else {
++            filter.show_namespace("claude_code_ide");
++        }
++    });
++}
++
++/// Distinguishes the mention toast from others in the notification registry.
++struct ClaudeCodeMention;
++
++/// What a mention came to, as far as the user must be told.
++#[derive(Debug, PartialEq, Eq)]
++enum MentionOutcome {
++    Sent,
++    NoSession,
++    NoFile,
++}
++
++impl MentionOutcome {
++    fn message(&self) -> Option<&'static str> {
++        match self {
++            Self::Sent => None,
++            Self::NoSession => Some("No Claude Code session is connected to this workspace"),
++            Self::NoFile => Some("The active editor has no file to mention"),
++        }
++    }
++}
++
 +/// One running WebSocket server, bound to a single workspace window.
 +struct ClaudeCodeIdeServer {
 +    /// Set once the listener is bound; read by `Drop` to remove the lock file.
@@ -353,6 +502,12 @@ index 0000000..df60afe
 +    _server_task: Task<()>,
 +    /// Keeps us subscribed to the project's worktree changes.
 +    _worktrees_subscription: Subscription,
++    /// What the selection tools answer and `selection_changed` carries, with
++    /// every live connection of this workspace's CLI sessions.
++    selection: Rc<RefCell<SelectionHub>>,
++    _workspace_subscription: Option<Subscription>,
++    /// The active editor's selection changes; replaced when the active item is.
++    _editor_subscription: Option<Subscription>,
 +}
 +
 +impl ClaudeCodeIdeServer {
@@ -364,12 +519,19 @@ index 0000000..df60afe
 +    ) -> Self {
 +        let port = Rc::new(Cell::new(None));
 +        let auth_token = Rc::new(RefCell::new(None));
++        let selection = Rc::new(RefCell::new(SelectionHub::default()));
 +        let server_task = cx.spawn({
 +            let port = port.clone();
 +            let auth_token = auth_token.clone();
 +            let workspace = workspace.clone();
++            let selection = selection.clone();
 +            async move |_this, cx| {
-+                if let Err(error) = Self::run(workspace, window, port, auth_token, cx).await {
++                let shared = Shared {
++                    port,
++                    auth_token,
++                    selection,
++                };
++                if let Err(error) = Self::run(workspace, window, shared, cx).await {
 +                    log::error!("Claude Code IDE server stopped: {error:#}");
 +                }
 +            }
@@ -393,13 +555,69 @@ index 0000000..df60afe
 +                }
 +            });
 +
++        let workspace_subscription = workspace.upgrade().map(|workspace| {
++            cx.subscribe(
++                &workspace,
++                |this, workspace, event: &workspace::Event, cx| {
++                    if matches!(event, workspace::Event::ActiveItemChanged) {
++                        this.watch_active_editor(&workspace, cx);
++                        this.selection_changed(cx);
++                    }
++                },
++            )
++        });
++
 +        Self {
 +            port,
 +            auth_token,
 +            workspace,
 +            _server_task: server_task,
 +            _worktrees_subscription: worktrees_subscription,
++            selection,
++            _workspace_subscription: workspace_subscription,
++            _editor_subscription: None,
 +        }
++    }
++
++    fn watch_active_editor(&mut self, workspace: &Entity<Workspace>, cx: &mut Context<Self>) {
++        let editor = workspace
++            .read(cx)
++            .active_item(cx)
++            .and_then(|item| item.act_as::<Editor>(cx));
++        self._editor_subscription = editor.map(|editor| {
++            cx.subscribe(&editor, |this, _editor, event: &EditorEvent, cx| {
++                if matches!(event, EditorEvent::SelectionsChanged { .. }) {
++                    this.selection_changed(cx);
++                }
++            })
++        });
++    }
++
++    fn mention(&mut self, observed: selection::ObservedSelection) -> MentionOutcome {
++        let mut hub = self.selection.borrow_mut();
++        hub.observe(observed);
++        let Some(selection) = hub.state().current().cloned() else {
++            return if hub.send_now_count() == 0 {
++                MentionOutcome::NoSession
++            } else {
++                MentionOutcome::NoFile
++            };
++        };
++        if hub.send_now(selection::at_mentioned_notification(&selection)) == 0 {
++            MentionOutcome::NoSession
++        } else {
++            MentionOutcome::Sent
++        }
++    }
++
++    /// Re-reads the active item; the hub pushes it when the selection moved.
++    fn selection_changed(&mut self, cx: &mut Context<Self>) {
++        let Some(workspace) = self.workspace.upgrade() else {
++            return;
++        };
++        let item = workspace.read(cx).active_item(cx);
++        let observed = selection_watch::observe_active_item(item, cx);
++        self.selection.borrow_mut().observe(observed);
 +    }
 +
 +    /// Re-publishes this server's lock file for the workspace's current folders.
@@ -416,27 +634,40 @@ index 0000000..df60afe
 +        };
 +        let folders = workspace_folders_of(workspace.read(cx), cx);
 +        let project = workspace.read(cx).project().clone();
-+        publish(port, &auth_token, &folders, &project, &lockfile::lock_dir(), cx);
++        publish(
++            port,
++            &auth_token,
++            &folders,
++            &project,
++            &lockfile::lock_dir(),
++            cx,
++        );
 +    }
 +
 +    async fn run(
 +        workspace: WeakEntity<Workspace>,
 +        window: Option<AnyWindowHandle>,
-+        port_cell: Rc<Cell<Option<u16>>>,
-+        auth_token_cell: Rc<RefCell<Option<String>>>,
++        shared: Shared,
 +        cx: &mut AsyncApp,
 +    ) -> Result<()> {
 +        let (listener, port) = bind().await?;
 +        let auth_token = generate_auth_token();
 +
-+        port_cell.set(Some(port));
-+        *auth_token_cell.borrow_mut() = Some(auth_token.clone());
++        shared.port.set(Some(port));
++        *shared.auth_token.borrow_mut() = Some(auth_token.clone());
 +
 +        workspace
 +            .update(cx, |workspace, cx| {
 +                let folders = workspace_folders_of(workspace, cx);
 +                let project = workspace.project().clone();
-+                publish(port, &auth_token, &folders, &project, &lockfile::lock_dir(), cx);
++                publish(
++                    port,
++                    &auth_token,
++                    &folders,
++                    &project,
++                    &lockfile::lock_dir(),
++                    cx,
++                );
 +            })
 +            .context("publishing the IDE lock file")?;
 +
@@ -445,11 +676,46 @@ index 0000000..df60afe
 +        // Each accepted connection is served on the foreground executor so its
 +        // tool handlers can touch workspace entities; the async I/O still yields,
 +        // so it never blocks the UI.
++        let mut next_id = 0;
 +        while let Ok((stream, _addr)) = listener.accept().await {
-+            let dispatcher = WorkspaceDispatcher::new(workspace.clone(), window, cx.clone());
-+            let auth_token = auth_token.clone();
++            let id = next_id;
++            next_id += 1;
++            let current = workspace
++                .update(cx, |workspace, cx| {
++                    let item = workspace.active_item(cx);
++                    let observed = selection_watch::observe_active_item(item, cx);
++                    let mut selection = shared.selection.borrow_mut();
++                    selection.observe(observed);
++                    selection.state().notification()
++                })
++                .unwrap_or_else(|_| selection::selection_changed_notification(None));
++            let (selection_updates, updates) = mpsc::unbounded();
++            let (notify, notifications) = mpsc::unbounded();
++            shared.selection.borrow_mut().connect(Connection {
++                id,
++                selection_updates,
++                notifications: notify.clone(),
++            });
++            let executor = cx.background_executor().clone();
 +            cx.spawn(async move |_cx| {
-+                serve_connection(stream, auth_token, dispatcher).await.log_err();
++                selection_watch::pump_selection(current, updates, notify, executor).await;
++            })
++            .detach();
++
++            let dispatcher = WorkspaceDispatcher::new(
++                workspace.clone(),
++                window,
++                shared.selection.clone(),
++                cx.clone(),
++            );
++            let auth_token = auth_token.clone();
++            let selection = shared.selection.clone();
++            cx.spawn(async move |_cx| {
++                serve_connection(stream, auth_token, dispatcher, notifications)
++                    .await
++                    .log_err();
++                // Dropping the schedule's sender ends its pump too.
++                selection.borrow_mut().disconnect(id);
 +            })
 +            .detach();
 +        }
@@ -463,6 +729,13 @@ index 0000000..df60afe
 +            lockfile::remove(port).log_err();
 +        }
 +    }
++}
++
++/// What the accept loop shares with the server entity.
++struct Shared {
++    port: Rc<Cell<Option<u16>>>,
++    auth_token: Rc<RefCell<Option<String>>>,
++    selection: Rc<RefCell<SelectionHub>>,
 +}
 +
 +impl Drop for ClaudeCodeIdeServer {
@@ -559,10 +832,10 @@ index 0000000..df60afe
 +}
 diff --git a/crates/claude_code_ide/src/lockfile.rs b/crates/claude_code_ide/src/lockfile.rs
 new file mode 100644
-index 0000000..3977ebc
+index 0000000..b1f01e1
 --- /dev/null
 +++ b/crates/claude_code_ide/src/lockfile.rs
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,248 @@
 +//! Discovery lock files for the Claude Code IDE integration.
 +//!
 +//! The Claude Code CLI finds a running IDE WebSocket server by scanning
@@ -777,7 +1050,8 @@ index 0000000..3977ebc
 +
 +        let path = create_in(&dir, 4243, "Zeo", "the-token", &[]).unwrap();
 +
-+        let mode = |path: &std::path::Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
++        let mode =
++            |path: &std::path::Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
 +        assert_eq!(mode(&dir), 0o700, "the lock directory must be owner-only");
 +        assert_eq!(mode(&path), 0o600, "the lock file must be owner-only");
 +        assert!(
@@ -812,17 +1086,20 @@ index 0000000..3977ebc
 +}
 diff --git a/crates/claude_code_ide/src/open_diff.rs b/crates/claude_code_ide/src/open_diff.rs
 new file mode 100644
-index 0000000..14a3c79
+index 0000000..bba215e
 --- /dev/null
 +++ b/crates/claude_code_ide/src/open_diff.rs
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,319 @@
 +//! The blocking `openDiff` tool.
 +//!
 +//! Shows Claude's proposed change as a side-by-side diff tab in Zed plus a
 +//! Keep/Reject notification, then blocks until the user decides. On Keep we
 +//! return `FILE_SAVED` together with the final buffer contents and let the
 +//! Claude CLI perform the actual write (matching the official IDE protocol);
-+//! on Reject we return `DIFF_REJECTED` and discard the change. The IDE
++//! on Reject we return `DIFF_REJECTED` and discard the change. Closing the
++//! tab without deciding returns `TAB_CLOSED`, as the VS Code extension does:
++//! the CLI then keeps its proposed edit unsaved instead of recording a
++//! rejection the user never made. The IDE
 +//! deliberately does *not* write the file itself, which would race the CLI's
 +//! own save.
 +
@@ -833,8 +1110,8 @@ index 0000000..14a3c79
 +use gpui::{AnyWindowHandle, AppContext as _, AsyncApp, DismissEvent, WeakEntity};
 +use language::Buffer;
 +use serde_json::{Value, json};
-+use ui::{Color, IconName};
 +use std::{cell::RefCell, rc::Rc};
++use ui::{Color, IconName};
 +use workspace::{
 +    SaveIntent, SplitDirection, Workspace,
 +    notifications::{NotificationId, simple_message_notification::MessageNotification},
@@ -849,7 +1126,12 @@ index 0000000..14a3c79
 +    arguments: Value,
 +    cx: &mut AsyncApp,
 +) -> Result<Value, ProtocolError> {
-+    let string_arg = |key: &str| arguments.get(key).and_then(Value::as_str).map(str::to_owned);
++    let string_arg = |key: &str| {
++        arguments
++            .get(key)
++            .and_then(Value::as_str)
++            .map(str::to_owned)
++    };
 +
 +    let old_file_path = string_arg("old_file_path")
 +        .ok_or_else(|| ProtocolError::new(error_codes::INVALID_REQUEST, "missing old_file_path"))?;
@@ -867,7 +1149,7 @@ index 0000000..14a3c79
 +        smol::unblock(move || std::fs::read_to_string(&path).unwrap_or_default()).await
 +    };
 +
-+    let (decision_tx, decision_rx) = oneshot::channel::<bool>();
++    let (decision_tx, decision_rx) = oneshot::channel::<DiffDecision>();
 +    let decision_tx = Rc::new(RefCell::new(Some(decision_tx)));
 +
 +    let message = format!("Claude proposes changes to {old_file_path}");
@@ -916,6 +1198,29 @@ index 0000000..14a3c79
 +                )
 +            });
 +            let editor_id = diff_editor.entity_id();
++            let notification_id =
++                NotificationId::composite::<ClaudeDiffNotification>(tab_name.clone());
++
++            // Closing the tab drops the last strong handle to the diff editor;
++            // a Keep or Reject that came first has already taken the sender, so
++            // this only answers for a tab closed without a decision. The
++            // notification is dismissed on the next cycle because the release
++            // can fire while the workspace is still being updated.
++            let tx_closed = decision_tx.clone();
++            let workspace_on_close = workspace.clone();
++            let id_on_close = notification_id.clone();
++            cx.observe_release(&diff_editor, move |_, cx| {
++                if send_decision(&tx_closed, DiffDecision::Closed) {
++                    cx.defer(move |cx| {
++                        workspace_on_close
++                            .update(cx, |workspace, cx| {
++                                workspace.dismiss_notification(&id_on_close, cx)
++                            })
++                            .ok();
++                    });
++                }
++            })
++            .detach();
 +
 +            workspace_entity.update(cx, |workspace, cx| {
 +                // The active pane holds Claude's integrated terminal: the CLI has
@@ -949,33 +1254,25 @@ index 0000000..14a3c79
 +
 +                let tx_keep = decision_tx.clone();
 +                let tx_reject = decision_tx.clone();
-+                workspace.show_notification(
-+                    NotificationId::composite::<ClaudeDiffNotification>(tab_name),
-+                    cx,
-+                    move |cx| {
-+                        cx.new(|cx| {
-+                            MessageNotification::new(message, cx)
-+                                .primary_message("Keep")
-+                                .primary_icon(IconName::Check)
-+                                .primary_icon_color(Color::Success)
-+                                .primary_on_click(move |_window, cx| {
-+                                    if let Some(tx) = tx_keep.borrow_mut().take() {
-+                                        let _ = tx.send(true);
-+                                    }
-+                                    cx.emit(DismissEvent);
-+                                })
-+                                .secondary_message("Reject")
-+                                .secondary_icon(IconName::Close)
-+                                .secondary_icon_color(Color::Error)
-+                                .secondary_on_click(move |_window, cx| {
-+                                    if let Some(tx) = tx_reject.borrow_mut().take() {
-+                                        let _ = tx.send(false);
-+                                    }
-+                                    cx.emit(DismissEvent);
-+                                })
-+                        })
-+                    },
-+                );
++                workspace.show_notification(notification_id, cx, move |cx| {
++                    cx.new(|cx| {
++                        MessageNotification::new(message, cx)
++                            .primary_message("Keep")
++                            .primary_icon(IconName::Check)
++                            .primary_icon_color(Color::Success)
++                            .primary_on_click(move |_window, cx| {
++                                send_decision(&tx_keep, DiffDecision::Accepted);
++                                cx.emit(DismissEvent);
++                            })
++                            .secondary_message("Reject")
++                            .secondary_icon(IconName::Close)
++                            .secondary_icon_color(Color::Error)
++                            .secondary_on_click(move |_window, cx| {
++                                send_decision(&tx_reject, DiffDecision::Rejected);
++                                cx.emit(DismissEvent);
++                            })
++                    })
++                });
 +            });
 +
 +            // Center the view on the first change so the user lands on the diff
@@ -999,9 +1296,9 @@ index 0000000..14a3c79
 +        })
 +        .map_err(|error| ProtocolError::internal(error.to_string()))?;
 +
-+    // Block until the user clicks Keep/Reject. A dropped sender (e.g. window
-+    // closed) resolves to `false`, i.e. rejected.
-+    let accepted = decision_rx.await.unwrap_or(false);
++    // Block until the user decides or closes the tab. A dropped sender (the
++    // window closed under us) is a close too, never a rejection.
++    let decision = decision_rx.await;
 +
 +    // Read the final buffer contents (the user may have edited the proposed
 +    // side) and close the diff tab now that the decision is made.
@@ -1024,23 +1321,706 @@ index 0000000..14a3c79
 +        })
 +        .map_err(|error| ProtocolError::internal(error.to_string()))?;
 +
-+    // The official IDE protocol has the IDE return the accepted contents and the
-+    // CLI perform the write, so we must not write the file here ourselves.
-+    if accepted {
-+        Ok(json!({ "content": [
++    Ok(diff_outcome(decision, final_contents))
++}
++
++/// What ended a pending `openDiff`. The protocol answer for each lives in
++/// [`diff_outcome`], so the mapping can be tested without a window.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum DiffDecision {
++    Accepted,
++    Rejected,
++    Closed,
++}
++
++type DecisionSlot = Rc<RefCell<Option<oneshot::Sender<DiffDecision>>>>;
++
++/// Sends the first decision only; returns whether this call was the one that
++/// decided.
++fn send_decision(slot: &DecisionSlot, decision: DiffDecision) -> bool {
++    let Some(sender) = slot.borrow_mut().take() else {
++        return false;
++    };
++    if sender.send(decision).is_err() {
++        log::debug!(
++            "claude_code_ide: openDiff decision {decision:?} arrived after the request ended"
++        );
++    }
++    true
++}
++
++// The official IDE protocol has the IDE return the accepted contents and the
++// CLI perform the write, so the file is never written here.
++fn diff_outcome(
++    decision: Result<DiffDecision, oneshot::Canceled>,
++    final_contents: String,
++) -> Value {
++    match decision {
++        Ok(DiffDecision::Accepted) => json!({ "content": [
 +            { "type": "text", "text": "FILE_SAVED" },
 +            { "type": "text", "text": final_contents },
-+        ] }))
++        ] }),
++        Ok(DiffDecision::Rejected) => {
++            json!({ "content": [{ "type": "text", "text": "DIFF_REJECTED" }] })
++        }
++        Ok(DiffDecision::Closed) | Err(oneshot::Canceled) => {
++            json!({ "content": [{ "type": "text", "text": "TAB_CLOSED" }] })
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn texts(value: &Value) -> Vec<&str> {
++        value["content"]
++            .as_array()
++            .map(|items| {
++                items
++                    .iter()
++                    .filter_map(|item| item["text"].as_str())
++                    .collect()
++            })
++            .unwrap_or_default()
++    }
++
++    #[test]
++    fn open_diff_closed_tab_answers_tab_closed() {
++        let value = diff_outcome(Ok(DiffDecision::Closed), "proposed".to_owned());
++        assert_eq!(texts(&value), ["TAB_CLOSED"]);
++    }
++
++    #[test]
++    fn open_diff_dropped_sender_answers_tab_closed() {
++        let value = diff_outcome(Err(oneshot::Canceled), "proposed".to_owned());
++        assert_eq!(texts(&value), ["TAB_CLOSED"]);
++    }
++
++    #[test]
++    fn open_diff_reject_still_answers_diff_rejected() {
++        let value = diff_outcome(Ok(DiffDecision::Rejected), "proposed".to_owned());
++        assert_eq!(texts(&value), ["DIFF_REJECTED"]);
++    }
++
++    #[test]
++    fn open_diff_keep_still_answers_file_saved_with_the_contents() {
++        let value = diff_outcome(Ok(DiffDecision::Accepted), "edited by the user".to_owned());
++        assert_eq!(texts(&value), ["FILE_SAVED", "edited by the user"]);
++    }
++}
+diff --git a/crates/claude_code_ide/src/selection.rs b/crates/claude_code_ide/src/selection.rs
+new file mode 100644
+index 0000000..d995e1c
+--- /dev/null
++++ b/crates/claude_code_ide/src/selection.rs
+@@ -0,0 +1,325 @@
++//! The editor selection as the Claude Code CLI sees it: the `selection_changed`
++//! notification pushed on every change, and the state `getCurrentSelection` and
++//! `getLatestSelection` answer from, so the tools and the notification can never
++//! disagree.
++//!
++//! Positions are 0-based on the wire: CLI 2.1.316's handler adds 1 to `line`
++//! itself (`lineStart: start.line + 1`).
++
++use std::time::{Duration, Instant};
++
++use serde_json::{Value, json};
++
++/// A position as the CLI's schema names it: `{line, character}`, both 0-based.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct SelectionPoint {
++    pub line: u32,
++    pub character: u32,
++}
++
++/// The selection of a file-backed editor.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct EditorSelection {
++    pub file_path: String,
++    pub text: String,
++    pub start: SelectionPoint,
++    pub end: SelectionPoint,
++}
++
++/// The `params` both the notification and the selection tools carry.
++pub fn selection_params(selection: &EditorSelection) -> Value {
++    let point = |point: SelectionPoint| json!({ "line": point.line, "character": point.character });
++    json!({
++        "text": selection.text,
++        "filePath": selection.file_path,
++        "fileUrl": format!("file://{}", selection.file_path),
++        "selection": {
++            "start": point(selection.start),
++            "end": point(selection.end),
++            "isEmpty": selection.start == selection.end,
++        },
++    })
++}
++
++/// The `selection_changed` notification; `None` is an editor with no file
++/// behind it. CLI 2.1.316 ignores a null selection (`if(!Be?.start||!Be?.end)
++/// return;`) and would keep the previous file attached, so the clear is a
++/// zero-width selection at 0:0 with no text and no file path.
++pub fn selection_changed_notification(selection: Option<&EditorSelection>) -> Value {
++    let params = match selection {
++        Some(selection) => selection_params(selection),
++        None => json!({
++            "text": "",
++            "selection": {
++                "start": { "line": 0, "character": 0 },
++                "end": { "line": 0, "character": 0 },
++                "isEmpty": true,
++            },
++        }),
++    };
++    json!({ "jsonrpc": "2.0", "method": "selection_changed", "params": params })
++}
++
++/// The `at_mentioned` notification for the selected lines.
++pub fn at_mentioned_notification(selection: &EditorSelection) -> Value {
++    // A selection of whole lines ends at column 0 of the line after the last;
++    // that line is not part of it. The CLI counts its own selections the same way.
++    let line_end = if selection.end.character == 0 && selection.end.line > selection.start.line {
++        selection.end.line - 1
 +    } else {
-+        Ok(json!({ "content": [{ "type": "text", "text": "DIFF_REJECTED" }] }))
++        selection.end.line
++    };
++    json!({
++        "jsonrpc": "2.0",
++        "method": "at_mentioned",
++        "params": {
++            "filePath": selection.file_path,
++            "lineStart": selection.start.line,
++            "lineEnd": line_end,
++        },
++    })
++}
++
++/// What the active item says about the selection when it changes.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum ObservedSelection {
++    /// The active item is not an editor -- a terminal, a panel. VS Code keeps
++    /// the last editor selection when its terminal takes focus, and so does
++    /// this: the CLI usually runs in that terminal.
++    NotAnEditor,
++    /// An editor; `None` when no local file backs it.
++    Editor(Option<EditorSelection>),
++}
++
++/// The selection the tools answer from and the notification is built from.
++#[derive(Debug, Default)]
++pub struct SelectionState {
++    current: Option<EditorSelection>,
++    latest: Option<EditorSelection>,
++}
++
++impl SelectionState {
++    /// Applies what the active item showed; returns whether the state moved.
++    pub fn observe(&mut self, observed: ObservedSelection) -> bool {
++        let ObservedSelection::Editor(current) = observed else {
++            return false;
++        };
++        if current == self.current {
++            return false;
++        }
++        if current.is_some() {
++            self.latest.clone_from(&current);
++        }
++        self.current = current;
++        true
++    }
++
++    pub fn current(&self) -> Option<&EditorSelection> {
++        self.current.as_ref()
++    }
++
++    /// The last selection seen in a file, even after the editor lost it.
++    pub fn latest(&self) -> Option<&EditorSelection> {
++        self.latest.as_ref()
++    }
++
++    pub fn notification(&self) -> Value {
++        selection_changed_notification(self.current())
++    }
++}
++
++/// VS Code's extension waits this long after a connection before replaying the
++/// selection, so the CLI's handlers are registered when it arrives.
++const REPLAY_AFTER: Duration = Duration::from_millis(500);
++/// At most one `selection_changed` per connection in this window.
++const THROTTLE: Duration = Duration::from_millis(100);
++
++/// One connection's `selection_changed` schedule, driven by explicit instants
++/// so it is testable without a clock. The caller sleeps until [`next_due`] and
++/// calls [`poll_due`], and calls [`offer`] on every selection change.
++///
++/// [`next_due`]: SelectionFeed::next_due
++/// [`poll_due`]: SelectionFeed::poll_due
++/// [`offer`]: SelectionFeed::offer
++#[derive(Debug)]
++pub struct SelectionFeed<T> {
++    pending: Option<T>,
++    due: Option<Instant>,
++    replay_at: Instant,
++    last_sent: Option<Instant>,
++}
++
++impl<T: Clone> SelectionFeed<T> {
++    pub fn connected(now: Instant, current: T) -> Self {
++        Self {
++            pending: Some(current),
++            due: None,
++            replay_at: now + REPLAY_AFTER,
++            last_sent: None,
++        }
++    }
++
++    /// Returns the item when it should be sent now, or holds it as the latest.
++    pub fn offer(&mut self, now: Instant, item: T) -> Option<T> {
++        // Before the replay, the replay itself carries the newest state.
++        if now < self.replay_at && self.last_sent.is_none() {
++            self.pending = Some(item);
++            return None;
++        }
++        match self.last_sent {
++            Some(sent) if now < sent + THROTTLE => {
++                self.pending = Some(item);
++                self.due = Some(sent + THROTTLE);
++                None
++            }
++            _ => {
++                self.pending = None;
++                self.due = None;
++                self.last_sent = Some(now);
++                Some(item)
++            }
++        }
++    }
++
++    pub fn poll_due(&mut self, now: Instant) -> Option<T> {
++        let due = self.next_due()?;
++        if now < due {
++            return None;
++        }
++        self.due = None;
++        self.last_sent = Some(now);
++        self.pending.take()
++    }
++
++    pub fn next_due(&self) -> Option<Instant> {
++        self.pending.as_ref()?;
++        Some(if self.last_sent.is_none() {
++            self.replay_at
++        } else {
++            self.due.unwrap_or(self.replay_at)
++        })
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn file_selection(path: &str, text: &str) -> EditorSelection {
++        EditorSelection {
++            file_path: path.to_owned(),
++            text: text.to_owned(),
++            start: SelectionPoint {
++                line: 2,
++                character: 0,
++            },
++            end: SelectionPoint {
++                line: 2,
++                character: 4,
++            },
++        }
++    }
++
++    #[test]
++    fn selection_state_keeps_the_last_selection_when_a_terminal_takes_focus() {
++        let mut state = SelectionState::default();
++        let selected = file_selection("/work/a.rs", "main");
++        assert!(state.observe(ObservedSelection::Editor(Some(selected.clone()))));
++        assert!(!state.observe(ObservedSelection::NotAnEditor));
++        assert_eq!(state.current(), Some(&selected));
++        assert_eq!(state.notification()["params"]["filePath"], "/work/a.rs");
++    }
++
++    #[test]
++    fn selection_state_clears_current_but_keeps_latest_for_an_editor_without_a_file() {
++        let mut state = SelectionState::default();
++        let selected = file_selection("/work/a.rs", "main");
++        state.observe(ObservedSelection::Editor(Some(selected.clone())));
++        assert!(state.observe(ObservedSelection::Editor(None)));
++        assert_eq!(state.current(), None);
++        assert_eq!(state.latest(), Some(&selected));
++        assert_eq!(state.notification()["params"]["selection"]["isEmpty"], true);
++    }
++
++    #[test]
++    fn selection_without_a_file_clears_with_a_zero_width_selection() {
++        let params = &selection_changed_notification(None)["params"];
++        assert_eq!(
++            params["selection"],
++            json!({
++                "start": { "line": 0, "character": 0 },
++                "end": { "line": 0, "character": 0 },
++                "isEmpty": true,
++            })
++        );
++        assert_eq!(params["text"], "");
++        assert!(params.get("filePath").is_none());
++    }
++
++    #[test]
++    fn selection_state_sends_nothing_for_a_terminal_even_before_any_editor() {
++        let mut state = SelectionState::default();
++        assert!(!state.observe(ObservedSelection::NotAnEditor));
++        assert_eq!(state.current(), None);
++    }
++
++    #[test]
++    fn selection_state_reports_no_move_for_the_same_selection() {
++        let mut state = SelectionState::default();
++        let selected = file_selection("/work/a.rs", "main");
++        assert!(state.observe(ObservedSelection::Editor(Some(selected.clone()))));
++        assert!(!state.observe(ObservedSelection::Editor(Some(selected))));
++    }
++
++    #[test]
++    fn mention_sends_the_path_and_0_based_lines() {
++        let mut selected = file_selection("/work/a.rs", "main");
++        selected.start.line = 0;
++        selected.end.line = 3;
++        let notification = at_mentioned_notification(&selected);
++        assert_eq!(notification["jsonrpc"], "2.0");
++        assert_eq!(notification["method"], "at_mentioned");
++        assert!(notification.get("id").is_none());
++        assert_eq!(
++            notification["params"],
++            json!({ "filePath": "/work/a.rs", "lineStart": 0, "lineEnd": 3 })
++        );
++    }
++
++    #[test]
++    fn mention_of_whole_lines_stops_before_the_line_the_selection_ends_on() {
++        let mut selected = file_selection("/work/a.rs", "fn a() {}\n");
++        selected.start = SelectionPoint {
++            line: 4,
++            character: 0,
++        };
++        selected.end = SelectionPoint {
++            line: 5,
++            character: 0,
++        };
++        let params = &at_mentioned_notification(&selected)["params"];
++        assert_eq!(params["lineStart"], 4);
++        assert_eq!(params["lineEnd"], 4);
++    }
++
++    #[test]
++    fn mention_of_a_cursor_names_its_line() {
++        let mut selected = file_selection("/work/a.rs", "");
++        selected.start = SelectionPoint {
++            line: 7,
++            character: 0,
++        };
++        selected.end = selected.start;
++        let params = &at_mentioned_notification(&selected)["params"];
++        assert_eq!(params["lineStart"], 7);
++        assert_eq!(params["lineEnd"], 7);
++    }
++
++    #[test]
++    fn selection_tool_and_notification_share_the_params() {
++        let selected = file_selection("/work/a.rs", "main");
++        let notification = selection_changed_notification(Some(&selected));
++        assert_eq!(notification["params"], selection_params(&selected));
++        assert_eq!(selection_params(&selected)["fileUrl"], "file:///work/a.rs");
++    }
++}
+diff --git a/crates/claude_code_ide/src/selection_watch.rs b/crates/claude_code_ide/src/selection_watch.rs
+new file mode 100644
+index 0000000..f687f87
+--- /dev/null
++++ b/crates/claude_code_ide/src/selection_watch.rs
+@@ -0,0 +1,269 @@
++//! Where Zed's editor meets [`crate::selection`]: reading the active item's
++//! selection, and running one connection's `selection_changed` schedule.
++
++use editor::Editor;
++use futures::{FutureExt as _, StreamExt as _, channel::mpsc};
++use gpui::{App, BackgroundExecutor, Entity};
++use serde_json::Value;
++use text::Point;
++use workspace::ItemHandle;
++
++use crate::selection::{
++    EditorSelection, ObservedSelection, SelectionFeed, SelectionPoint, SelectionState,
++};
++
++/// One connected CLI, as the server reaches it.
++pub(crate) struct Connection {
++    pub(crate) id: u64,
++    /// Into the connection's `selection_changed` schedule.
++    pub(crate) selection_updates: mpsc::UnboundedSender<Value>,
++    /// Straight onto the socket, for what must not wait for the schedule.
++    pub(crate) notifications: mpsc::UnboundedSender<Value>,
++}
++
++/// The selection state together with everyone who must hear when it moves, so
++/// no path can change one without the other: an editor event, a tool call and
++/// a new connection all go through [`SelectionHub::observe`].
++#[derive(Default)]
++pub(crate) struct SelectionHub {
++    state: SelectionState,
++    connections: Vec<Connection>,
++}
++
++impl SelectionHub {
++    pub(crate) fn state(&self) -> &SelectionState {
++        &self.state
++    }
++
++    pub(crate) fn observe(&mut self, observed: ObservedSelection) {
++        if !self.state.observe(observed) {
++            return;
++        }
++        let notification = self.state.notification();
++        self.connections.retain(|connection| {
++            let open = connection
++                .selection_updates
++                .unbounded_send(notification.clone())
++                .is_ok();
++            if !open {
++                log::debug!(
++                    "claude_code_ide: dropping closed connection {}",
++                    connection.id
++                );
++            }
++            open
++        });
++    }
++
++    /// Sends `notification` to every open connection now; returns how many took
++    /// it, so a caller can tell the user nobody is listening.
++    pub(crate) fn send_now(&mut self, notification: Value) -> usize {
++        self.connections.retain(|connection| {
++            let open = connection
++                .notifications
++                .unbounded_send(notification.clone())
++                .is_ok();
++            if !open {
++                log::debug!(
++                    "claude_code_ide: dropping closed connection {}",
++                    connection.id
++                );
++            }
++            open
++        });
++        self.connections.len()
++    }
++
++    /// How many connections a [`SelectionHub::send_now`] would reach.
++    pub(crate) fn send_now_count(&self) -> usize {
++        self.connections.len()
++    }
++
++    pub(crate) fn connect(&mut self, connection: Connection) {
++        self.connections.push(connection);
++    }
++
++    pub(crate) fn disconnect(&mut self, id: u64) {
++        self.connections.retain(|connection| connection.id != id);
++    }
++}
++
++pub(crate) fn observe_active_item(
++    item: Option<Box<dyn ItemHandle>>,
++    cx: &mut App,
++) -> ObservedSelection {
++    // Nothing open is an editor with no file, as VS Code and `getCurrentSelection`
++    // always had it; only an open item that is not an editor keeps the selection.
++    let Some(item) = item else {
++        return ObservedSelection::Editor(None);
++    };
++    let Some(editor) = item.act_as::<Editor>(cx) else {
++        return ObservedSelection::NotAnEditor;
++    };
++    ObservedSelection::Editor(editor_selection(&editor, cx))
++}
++
++/// `None` unless a local file backs the editor: a diff view, a multibuffer and an
++/// untitled buffer have no path the CLI could act on.
++fn editor_selection(editor: &Entity<Editor>, cx: &mut App) -> Option<EditorSelection> {
++    editor.update(cx, |editor, cx| {
++        let path = editor
++            .buffer()
++            .read(cx)
++            .as_singleton()?
++            .read(cx)
++            .file()?
++            .as_local()?
++            .abs_path(cx);
++        let display_snapshot = editor.display_snapshot(cx);
++        let cursor = editor.selections.newest::<Point>(&display_snapshot);
++        let text = editor
++            .buffer()
++            .read(cx)
++            .snapshot(cx)
++            .text_for_range(cursor.start..cursor.end)
++            .collect();
++        // `Point::column` counts bytes, where VS Code counts UTF-16 units; the two
++        // agree on ASCII lines, which is what `getCurrentSelection` always sent.
++        Some(EditorSelection {
++            file_path: path.to_string_lossy().into_owned(),
++            text,
++            start: SelectionPoint {
++                line: cursor.start.row,
++                character: cursor.start.column,
++            },
++            end: SelectionPoint {
++                line: cursor.end.row,
++                character: cursor.end.column,
++            },
++        })
++    })
++}
++
++/// Feeds one connection: `updates` carries every new `selection_changed`, and
++/// what the schedule lets through goes to `out`, which the connection writes.
++/// Ends when either side is gone.
++pub(crate) async fn pump_selection(
++    current: Value,
++    mut updates: mpsc::UnboundedReceiver<Value>,
++    out: mpsc::UnboundedSender<Value>,
++    executor: BackgroundExecutor,
++) {
++    // The executor's clock, not `Instant::now`, so a test scheduler can drive it.
++    let mut feed = SelectionFeed::connected(executor.now(), current);
++    loop {
++        let mut timer = match feed.next_due() {
++            Some(due) => executor
++                .timer(due.saturating_duration_since(executor.now()))
++                .left_future(),
++            None => futures::future::pending().right_future(),
++        }
++        .fuse();
++        let ready = futures::select_biased! {
++            update = updates.next() => match update {
++                Some(update) => feed.offer(executor.now(), update),
++                None => break,
++            },
++            () = timer => feed.poll_due(executor.now()),
++        };
++        if let Some(notification) = ready
++            && out.unbounded_send(notification).is_err()
++        {
++            log::debug!("claude_code_ide: selection feed stopped, its connection closed");
++            break;
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn observed(path: &str) -> ObservedSelection {
++        ObservedSelection::Editor(Some(EditorSelection {
++            file_path: path.to_owned(),
++            text: String::new(),
++            start: SelectionPoint {
++                line: 1,
++                character: 0,
++            },
++            end: SelectionPoint {
++                line: 1,
++                character: 0,
++            },
++        }))
++    }
++
++    #[test]
++    fn selection_hub_pushes_a_change_whichever_path_observed_it() {
++        let mut hub = SelectionHub::default();
++        let (selection_updates, mut updates) = mpsc::unbounded();
++        let (notifications, _socket) = mpsc::unbounded();
++        hub.connect(Connection {
++            id: 0,
++            selection_updates,
++            notifications,
++        });
++        hub.observe(observed("/work/a.rs"));
++        hub.observe(observed("/work/a.rs"));
++        let pushed = updates.try_recv().ok();
++        assert_eq!(
++            pushed.map(|notification| notification["params"]["filePath"].clone()),
++            Some(Value::from("/work/a.rs"))
++        );
++        assert!(
++            updates.try_recv().is_err(),
++            "an unchanged selection is not pushed twice"
++        );
++    }
++
++    #[test]
++    fn selection_hub_drops_a_closed_connection_and_keeps_the_open_one() {
++        let mut hub = SelectionHub::default();
++        let (closed, closed_updates) = mpsc::unbounded();
++        let (open, mut open_updates) = mpsc::unbounded();
++        drop(closed_updates);
++        let (closed_socket, _closed_socket_rx) = mpsc::unbounded();
++        let (open_socket, _open_socket_rx) = mpsc::unbounded();
++        hub.connect(Connection {
++            id: 0,
++            selection_updates: closed,
++            notifications: closed_socket,
++        });
++        hub.connect(Connection {
++            id: 1,
++            selection_updates: open,
++            notifications: open_socket,
++        });
++        hub.observe(observed("/work/b.rs"));
++        assert_eq!(hub.connections.len(), 1);
++        assert_eq!(hub.connections[0].id, 1);
++        assert!(open_updates.try_recv().ok().is_some());
++    }
++
++    #[test]
++    fn mention_reaches_every_open_connection_and_counts_them() {
++        let mut hub = SelectionHub::default();
++        assert_eq!(hub.send_now(Value::from("nobody")), 0);
++
++        let (selection_updates, _updates) = mpsc::unbounded();
++        let (notifications, mut socket) = mpsc::unbounded();
++        hub.connect(Connection {
++            id: 0,
++            selection_updates,
++            notifications,
++        });
++        let (gone_updates, _gone_updates_rx) = mpsc::unbounded();
++        let (gone, gone_socket) = mpsc::unbounded();
++        drop(gone_socket);
++        hub.connect(Connection {
++            id: 1,
++            selection_updates: gone_updates,
++            notifications: gone,
++        });
++
++        assert_eq!(hub.send_now(Value::from("mention")), 1);
++        assert_eq!(socket.try_recv().ok(), Some(Value::from("mention")));
++        assert_eq!(hub.connections.len(), 1, "the closed connection is dropped");
 +    }
 +}
 diff --git a/crates/claude_code_ide/src/server.rs b/crates/claude_code_ide/src/server.rs
 new file mode 100644
-index 0000000..36ee71a
+index 0000000..427d33c
 --- /dev/null
 +++ b/crates/claude_code_ide/src/server.rs
-@@ -0,0 +1,631 @@
+@@ -0,0 +1,734 @@
 +//! WebSocket transport and JSON-RPC/MCP message routing for the Claude Code IDE
 +//! integration.
 +//!
@@ -1057,7 +2037,7 @@ index 0000000..36ee71a
 +    handshake::server::{ErrorResponse, Request, Response},
 +    http,
 +};
-+use futures::{AsyncRead, AsyncWrite, StreamExt as _};
++use futures::{AsyncRead, AsyncWrite, StreamExt as _, stream::FuturesUnordered};
 +use serde::Serialize;
 +use serde_json::{Value, json};
 +
@@ -1115,11 +2095,18 @@ index 0000000..36ee71a
 +
 +impl ProtocolError {
 +    pub fn new(code: i32, message: impl Into<String>) -> Self {
-+        Self { code, message: message.into(), data: None }
++        Self {
++            code,
++            message: message.into(),
++            data: None,
++        }
 +    }
 +
 +    pub fn method_not_found(method: &str) -> Self {
-+        Self::new(error_codes::METHOD_NOT_FOUND, format!("Method not found: {method}"))
++        Self::new(
++            error_codes::METHOD_NOT_FOUND,
++            format!("Method not found: {method}"),
++        )
 +    }
 +
 +    pub fn internal(message: impl Into<String>) -> Self {
@@ -1167,58 +2154,102 @@ index 0000000..36ee71a
 +
 +/// Performs the WebSocket handshake (validating the auth header against
 +/// `auth_token`), then serves JSON-RPC requests until the client disconnects.
-+pub async fn serve_connection<S, D>(stream: S, auth_token: String, dispatcher: D) -> Result<()>
++///
++/// `notifications` are ready JSON-RPC notifications (`selection_changed`,
++/// `at_mentioned`) written to the client as they arrive, each in its own text
++/// frame on the same socket. The connection ends with the client, never with
++/// the stream: a stream that ends only stops the pushes.
++pub async fn serve_connection<S, D, N>(
++    stream: S,
++    auth_token: String,
++    dispatcher: D,
++    notifications: N,
++) -> Result<()>
 +where
 +    S: AsyncRead + AsyncWrite + Unpin,
 +    D: Dispatcher,
++    N: futures::Stream<Item = Value> + Unpin,
 +{
 +    // The handshake callback runs during the HTTP upgrade. We reject the
 +    // connection unless it presents the exact token we wrote into the lock file,
 +    // so only the CLI that read our lock file (same user) can connect.
-+    let authorize = move |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
-+        let presented = request.headers().get(AUTH_HEADER).map(|value| value.as_bytes());
-+        if presented == Some(auth_token.as_bytes()) {
-+            let offered = request
++    let authorize =
++        move |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
++            let presented = request
 +                .headers()
-+                .get_all(http::header::SEC_WEBSOCKET_PROTOCOL)
-+                .iter()
-+                .filter_map(|value| value.to_str().ok());
-+            let mut response = response;
-+            if let Some(protocol) = negotiate_subprotocol(offered) {
-+                response.headers_mut().insert(
-+                    http::header::SEC_WEBSOCKET_PROTOCOL,
-+                    http::HeaderValue::from_static(protocol),
-+                );
++                .get(AUTH_HEADER)
++                .map(|value| value.as_bytes());
++            if presented == Some(auth_token.as_bytes()) {
++                let offered = request
++                    .headers()
++                    .get_all(http::header::SEC_WEBSOCKET_PROTOCOL)
++                    .iter()
++                    .filter_map(|value| value.to_str().ok());
++                let mut response = response;
++                if let Some(protocol) = negotiate_subprotocol(offered) {
++                    response.headers_mut().insert(
++                        http::header::SEC_WEBSOCKET_PROTOCOL,
++                        http::HeaderValue::from_static(protocol),
++                    );
++                }
++                Ok(response)
++            } else {
++                let denied = http::Response::builder()
++                    .status(http::StatusCode::UNAUTHORIZED)
++                    .body(Some("invalid or missing authorization token".to_string()))
++                    .expect("static unauthorized response is valid");
++                Err(denied)
 +            }
-+            Ok(response)
-+        } else {
-+            let denied = http::Response::builder()
-+                .status(http::StatusCode::UNAUTHORIZED)
-+                .body(Some("invalid or missing authorization token".to_string()))
-+                .expect("static unauthorized response is valid");
-+            Err(denied)
-+        }
-+    };
++        };
 +
 +    let websocket = async_tungstenite::accept_hdr_async(stream, authorize)
 +        .await
 +        .context("websocket handshake failed")?;
 +
-+    let (mut outgoing, mut incoming) = websocket.split();
++    let (mut outgoing, incoming) = websocket.split();
++    let mut incoming = incoming.fuse();
++    let mut notifications = notifications.fuse();
++    // Requests run concurrently with the frame loop: `openDiff` holds its
++    // request until the user decides, and pushes and pings must not wait for it.
++    let mut in_flight = FuturesUnordered::new();
 +
-+    while let Some(message) = incoming.next().await {
-+        match message.context("reading websocket frame")? {
-+            Message::Text(text) => {
-+                if let Some(response) = handle_message(text.as_str(), &dispatcher).await {
++    loop {
++        let message = futures::select_biased! {
++            message = incoming.next() => message,
++            response = in_flight.select_next_some() => {
++                if let Some(response) = response {
 +                    outgoing
-+                        .send(Message::Text(response.into()))
++                        .send(Message::Text(String::into(response)))
 +                        .await
 +                        .context("sending response")?;
 +                }
++                continue;
++            }
++            notification = notifications.next() => {
++                if let Some(notification) = notification
++                    && let Err(error) = outgoing
++                        .send(Message::Text(notification.to_string().into()))
++                        .await
++                {
++                    // The client went away between two frames; nothing to report.
++                    log::debug!("claude_code_ide: notification not delivered, connection closed: {error}");
++                    break;
++                }
++                continue;
++            }
++        };
++        let Some(message) = message else { break };
++        match message.context("reading websocket frame")? {
++            Message::Text(text) => {
++                let dispatcher = &dispatcher;
++                in_flight.push(async move { handle_message(text.as_str(), dispatcher).await });
 +            }
 +            // Reply to keepalive pings so the CLI doesn't consider us dead.
 +            Message::Ping(payload) => {
-+                outgoing.send(Message::Pong(payload)).await.context("sending pong")?;
++                outgoing
++                    .send(Message::Pong(payload))
++                    .await
++                    .context("sending pong")?;
 +            }
 +            Message::Close(_) => break,
 +            _ => {}
@@ -1248,10 +2279,17 @@ index 0000000..36ee71a
 +
 +    if parsed.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
 +        let id = parsed.get("id").cloned().unwrap_or(Value::Null);
-+        return Some(error_response(id, error_codes::INVALID_REQUEST, "Invalid Request"));
++        return Some(error_response(
++            id,
++            error_codes::INVALID_REQUEST,
++            "Invalid Request",
++        ));
 +    }
 +
-+    let method = parsed.get("method").and_then(Value::as_str).unwrap_or_default();
++    let method = parsed
++        .get("method")
++        .and_then(Value::as_str)
++        .unwrap_or_default();
 +    let params = parsed.get("params").cloned().unwrap_or(Value::Null);
 +    let id = parsed.get("id").cloned();
 +
@@ -1259,9 +2297,7 @@ index 0000000..36ee71a
 +        // A request: the client expects a response carrying the same `id`.
 +        Some(id) => Some(match route_request(method, params, dispatcher).await {
 +            Ok(result) => success_response(id, result),
-+            Err(error) => {
-+                error_response_with_data(id, error.code, &error.message, error.data)
-+            }
++            Err(error) => error_response_with_data(id, error.code, &error.message, error.data),
 +        }),
 +        // A notification: fire-and-forget, no response.
 +        None => {
@@ -1291,10 +2327,9 @@ index 0000000..36ee71a
 +        "resources/list" => Ok(json!({ "resources": [] })),
 +        "tools/list" => Ok(json!({ "tools": dispatcher.tools() })),
 +        "tools/call" => {
-+            let name = params
-+                .get("name")
-+                .and_then(Value::as_str)
-+                .ok_or_else(|| ProtocolError::new(error_codes::INVALID_REQUEST, "missing tool name"))?;
++            let name = params.get("name").and_then(Value::as_str).ok_or_else(|| {
++                ProtocolError::new(error_codes::INVALID_REQUEST, "missing tool name")
++            })?;
 +            let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 +            dispatcher.call_tool(name, arguments).await
 +        }
@@ -1365,7 +2400,13 @@ index 0000000..36ee71a
 +            let (listener, port) = bind().await.expect("binding the test listener");
 +            let server = smol::spawn(async move {
 +                let (stream, _) = listener.accept().await.expect("accepting the test client");
-+                serve_connection(stream, "the-token".to_owned(), MockDispatcher).await
++                serve_connection(
++                    stream,
++                    "the-token".to_owned(),
++                    MockDispatcher,
++                    futures::stream::pending::<Value>(),
++                )
++                .await
 +            });
 +
 +            let mut client = smol::net::TcpStream::connect(("127.0.0.1", port))
@@ -1387,7 +2428,10 @@ index 0000000..36ee71a
 +                .expect("sending the upgrade request");
 +
 +            let mut buffer = [0u8; 512];
-+            let read = client.read(&mut buffer).await.expect("reading the response");
++            let read = client
++                .read(&mut buffer)
++                .await
++                .expect("reading the response");
 +            let response = String::from_utf8_lossy(&buffer[..read]).to_lowercase();
 +
 +            assert!(
@@ -1414,7 +2458,13 @@ index 0000000..36ee71a
 +            let (listener, port) = bind().await.expect("binding the test listener");
 +            let server = smol::spawn(async move {
 +                let (stream, _) = listener.accept().await.expect("accepting the test client");
-+                serve_connection(stream, "the-token".to_owned(), MockDispatcher).await
++                serve_connection(
++                    stream,
++                    "the-token".to_owned(),
++                    MockDispatcher,
++                    futures::stream::pending::<Value>(),
++                )
++                .await
 +            });
 +
 +            let mut client = smol::net::TcpStream::connect(("127.0.0.1", port))
@@ -1439,7 +2489,10 @@ index 0000000..36ee71a
 +                .expect("sending the upgrade request");
 +
 +            let mut buffer = [0u8; 512];
-+            let read = client.read(&mut buffer).await.expect("reading the response");
++            let read = client
++                .read(&mut buffer)
++                .await
++                .expect("reading the response");
 +            let response = String::from_utf8_lossy(&buffer[..read]).to_lowercase();
 +            drop(client);
 +            server.cancel().await;
@@ -1477,7 +2530,13 @@ index 0000000..36ee71a
 +            let (listener, port) = bind().await.expect("binding the test listener");
 +            let server = smol::spawn(async move {
 +                let (stream, _) = listener.accept().await.expect("accepting the test client");
-+                serve_connection(stream, "the-token".to_owned(), MockDispatcher).await
++                serve_connection(
++                    stream,
++                    "the-token".to_owned(),
++                    MockDispatcher,
++                    futures::stream::pending::<Value>(),
++                )
++                .await
 +            });
 +
 +            let mut client = smol::net::TcpStream::connect(("127.0.0.1", port))
@@ -1498,7 +2557,10 @@ index 0000000..36ee71a
 +                .expect("sending the upgrade request");
 +
 +            let mut buffer = [0u8; 512];
-+            let read = client.read(&mut buffer).await.expect("reading the response");
++            let read = client
++                .read(&mut buffer)
++                .await
++                .expect("reading the response");
 +            let response = String::from_utf8_lossy(&buffer[..read]).to_lowercase();
 +
 +            assert!(
@@ -1581,7 +2643,11 @@ index 0000000..36ee71a
 +            r#"{"id":7,"method":"initialize"}"#,
 +        ] {
 +            let value = response(raw);
-+            assert_eq!(value["error"]["code"], error_codes::INVALID_REQUEST, "{raw}");
++            assert_eq!(
++                value["error"]["code"],
++                error_codes::INVALID_REQUEST,
++                "{raw}"
++            );
 +        }
 +    }
 +
@@ -1589,7 +2655,8 @@ index 0000000..36ee71a
 +    /// default tool.
 +    #[test]
 +    fn tools_call_without_a_name_is_invalid() {
-+        let value = response(r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"arguments":{}}}"#);
++        let value =
++            response(r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"arguments":{}}}"#);
 +        assert_eq!(value["error"]["code"], error_codes::INVALID_REQUEST);
 +    }
 +
@@ -1604,7 +2671,13 @@ index 0000000..36ee71a
 +            let (listener, port) = bind().await.expect("binding the test listener");
 +            let server = smol::spawn(async move {
 +                let (stream, _) = listener.accept().await.expect("accepting the test client");
-+                serve_connection(stream, "the-token".to_owned(), MockDispatcher).await
++                serve_connection(
++                    stream,
++                    "the-token".to_owned(),
++                    MockDispatcher,
++                    futures::stream::pending::<Value>(),
++                )
++                .await
 +            });
 +
 +            let stream = smol::net::TcpStream::connect(("127.0.0.1", port))
@@ -1630,7 +2703,12 @@ index 0000000..36ee71a
 +                .await
 +                .expect("sending a request frame");
 +            let reply = loop {
-+                match socket.next().await.expect("a frame").expect("a valid frame") {
++                match socket
++                    .next()
++                    .await
++                    .expect("a frame")
++                    .expect("a valid frame")
++                {
 +                    Message::Text(text) => break text.to_string(),
 +                    _ => continue,
 +                }
@@ -1644,7 +2722,12 @@ index 0000000..36ee71a
 +                .await
 +                .expect("sending a ping");
 +            let pong = loop {
-+                match socket.next().await.expect("a frame").expect("a valid frame") {
++                match socket
++                    .next()
++                    .await
++                    .expect("a frame")
++                    .expect("a valid frame")
++                {
 +                    Message::Pong(payload) => break payload,
 +                    _ => continue,
 +                }
@@ -1674,21 +2757,23 @@ index 0000000..36ee71a
 +}
 diff --git a/crates/claude_code_ide/src/tools.rs b/crates/claude_code_ide/src/tools.rs
 new file mode 100644
-index 0000000..25f28f3
+index 0000000..f20733b
 --- /dev/null
 +++ b/crates/claude_code_ide/src/tools.rs
-@@ -0,0 +1,592 @@
+@@ -0,0 +1,582 @@
 +//! The GPUI-backed [`Dispatcher`] implementation: this is where the wire
 +//! protocol meets Zed's editor state. Each `tools/call` is satisfied by reading
 +//! the active workspace, editor, and buffers and shaping the result into the
 +//! JSON the Claude Code CLI expects (mirroring the official extensions).
 +
++use crate::selection::selection_params;
++use crate::selection_watch::SelectionHub;
 +use crate::server::{Dispatcher, ProtocolError, ToolDescriptor, error_codes};
 +use editor::{Editor, SplittableEditor};
 +use gpui::{AnyWindowHandle, AsyncApp, Entity, WeakEntity};
 +use language::{Buffer, DiagnosticSeverity};
 +use serde_json::{Value, json};
-+use std::path::PathBuf;
++use std::{cell::RefCell, path::PathBuf, rc::Rc};
 +use text::Point;
 +use workspace::{OpenOptions, SaveIntent, Workspace};
 +
@@ -1700,67 +2785,55 @@ index 0000000..25f28f3
 +pub struct WorkspaceDispatcher {
 +    workspace: WeakEntity<Workspace>,
 +    window: Option<AnyWindowHandle>,
++    /// Shared with the server, which keeps it current for `selection_changed`.
++    selection: Rc<RefCell<SelectionHub>>,
 +    cx: AsyncApp,
 +}
 +
 +impl WorkspaceDispatcher {
-+    pub fn new(
++    pub(crate) fn new(
 +        workspace: WeakEntity<Workspace>,
 +        window: Option<AnyWindowHandle>,
++        selection: Rc<RefCell<SelectionHub>>,
 +        cx: AsyncApp,
 +    ) -> Self {
 +        Self {
 +            workspace,
 +            window,
++            selection,
 +            cx,
 +        }
 +    }
 +
-+    fn get_current_selection(&self, cx: &mut AsyncApp) -> Result<Value, ProtocolError> {
++    /// Answers from the state `selection_changed` is built from, refreshed
++    /// first so a tool call never sees a selection older than the last event.
++    fn get_current_selection(
++        &self,
++        latest: bool,
++        cx: &mut AsyncApp,
++    ) -> Result<Value, ProtocolError> {
++        let selection = self.selection.clone();
 +        let payload = self
 +            .workspace
 +            .update(cx, |workspace, cx| {
-+                let Some(editor) = workspace.active_item_as::<Editor>(cx) else {
-+                    return json!({ "success": false, "message": "No active editor found" });
++                let item = workspace.active_item(cx);
++                let observed = crate::selection_watch::observe_active_item(item, cx);
++                let mut selection = selection.borrow_mut();
++                selection.observe(observed);
++                let selection = selection.state();
++                let answer = if latest {
++                    selection.latest().or(selection.current())
++                } else {
++                    selection.current()
 +                };
-+
-+                editor.update(cx, |editor, cx| {
-+                    let display_snapshot = editor.display_snapshot(cx);
-+                    let cursor = editor.selections.newest::<Point>(&display_snapshot);
-+
-+                    let path = editor
-+                        .buffer()
-+                        .read(cx)
-+                        .as_singleton()
-+                        .and_then(|buffer| {
-+                            buffer
-+                                .read(cx)
-+                                .file()
-+                                .and_then(|file| file.as_local())
-+                                .map(|file| file.abs_path(cx))
-+                        })
-+                        .map(|path| path.to_string_lossy().into_owned())
-+                        .unwrap_or_default();
-+
-+                    let text: String = editor
-+                        .buffer()
-+                        .read(cx)
-+                        .snapshot(cx)
-+                        .text_for_range(cursor.start..cursor.end)
-+                        .collect();
-+
-+                    json!({
-+                        "success": true,
-+                        "text": text,
-+                        "filePath": path,
-+                        "fileUrl": format!("file://{path}"),
-+                        "selection": {
-+                            "start": { "line": cursor.start.row, "character": cursor.start.column },
-+                            "end": { "line": cursor.end.row, "character": cursor.end.column },
-+                            "isEmpty": cursor.start == cursor.end,
-+                        }
-+                    })
-+                })
++                match answer {
++                    Some(answer) => {
++                        let mut payload = selection_params(answer);
++                        payload["success"] = Value::Bool(true);
++                        payload
++                    }
++                    None => json!({ "success": false, "message": "No active editor found" }),
++                }
 +            })
 +            .map_err(|error| ProtocolError::internal(error.to_string()))?;
 +
@@ -2218,8 +3291,8 @@ index 0000000..25f28f3
 +        // `AsyncApp` lets `WeakEntity::update` marshal us there.
 +        let mut cx = self.cx.clone();
 +        match name {
-+            "getCurrentSelection" => self.get_current_selection(&mut cx),
-+            "getLatestSelection" => self.get_current_selection(&mut cx),
++            "getCurrentSelection" => self.get_current_selection(false, &mut cx),
++            "getLatestSelection" => self.get_current_selection(true, &mut cx),
 +            "getWorkspaceFolders" => self.get_workspace_folders(&mut cx),
 +            "getOpenEditors" => self.get_open_editors(&mut cx),
 +            "getDiagnostics" => self.get_diagnostics(&arguments, &mut cx),
@@ -2270,6 +3343,750 @@ index 0000000..25f28f3
 +        );
 +    }
 +}
+diff --git a/crates/claude_code_ide/tests/selection_changed.rs b/crates/claude_code_ide/tests/selection_changed.rs
+new file mode 100644
+index 0000000..79f0a27
+--- /dev/null
++++ b/crates/claude_code_ide/tests/selection_changed.rs
+@@ -0,0 +1,396 @@
++//! Story 066, sub-task 3.1 (R3.1-R3.5): the server PUSHES `selection_changed` to the
++//! Claude Code CLI.
++//!
++//! The wire shape is what CLI 2.1.316 parses (read with `strings /opt/bin/claude`):
++//!
++//! ```text
++//! method:T("selection_changed"),params:u({selection:u({start:u({line:E(),character:E()}),
++//! end:u({line:E(),character:E()})}).nullable().optional(),text:o().optional(),
++//! filePath:o().optional()})
++//! ```
++//!
++//! and its handler turns `start.line` into `lineStart: start.line + 1`, so positions on the
++//! wire are 0-based. `fileUrl` and `selection.isEmpty` are what `getCurrentSelection`
++//! already answers (R3.6: one state for the tool and the notification); the CLI's schema is
++//! not strict, so it ignores them.
++//!
++//! The seam under test keeps the wire layer free of GPUI and of any clock:
++//! - `serve_connection` takes a fourth argument, a stream of ready JSON-RPC notifications,
++//!   and writes each one as its own text frame on the same socket that answers requests;
++//! - `selection_changed_notification` builds that notification from an `EditorSelection`;
++//! - `SelectionFeed` (tested in `selection_feed.rs`) is the per-connection schedule.
++
++use std::{future::Future, time::Duration};
++
++use async_tungstenite::{
++    WebSocketStream,
++    tungstenite::{Message, client::IntoClientRequest as _},
++};
++use claude_code_ide::{
++    Dispatcher, EditorSelection, ProtocolError, SelectionPoint, ToolDescriptor, bind,
++    selection_changed_notification, serve_connection,
++};
++use futures::{StreamExt as _, channel::mpsc, executor::block_on};
++use serde_json::{Value, json};
++
++/// The header literal the CLI sends (`X-Claude-Code-Ide-Authorization`); spelled out here
++/// because it is the wire contract, not a crate detail.
++const AUTH_HEADER: &str = "x-claude-code-ide-authorization";
++const TOKEN: &str = "the-token";
++
++/// Stands in for `WorkspaceDispatcher`: the push path must not depend on any tool.
++struct FakeWorkspaceDispatcher;
++
++impl Dispatcher for FakeWorkspaceDispatcher {
++    fn tools(&self) -> Vec<ToolDescriptor> {
++        Vec::new()
++    }
++
++    async fn call_tool(&self, name: &str, _arguments: Value) -> Result<Value, ProtocolError> {
++        Err(ProtocolError::method_not_found(name))
++    }
++}
++
++fn point(line: u32, character: u32) -> SelectionPoint {
++    SelectionPoint { line, character }
++}
++
++fn selection(
++    path: &str,
++    text: &str,
++    start: SelectionPoint,
++    end: SelectionPoint,
++) -> EditorSelection {
++    EditorSelection {
++        file_path: path.to_owned(),
++        text: text.to_owned(),
++        start,
++        end,
++    }
++}
++
++// ---- the notification's shape -------------------------------------------------------
++
++/// R3.1. Line 0 and character 0 are the hostile values: a 1-based conversion turns them
++/// into 1, which the CLI would then shift once more.
++#[test]
++fn selection_changed_carries_path_text_and_0_based_positions() {
++    let notification = selection_changed_notification(Some(&selection(
++        "/work/app/src/main.rs",
++        "fn main() {\n    run();\n}\n// end",
++        point(0, 0),
++        point(3, 7),
++    )));
++
++    assert_eq!(notification["jsonrpc"], "2.0", "{notification}");
++    assert_eq!(
++        notification["method"], "selection_changed",
++        "{notification}"
++    );
++    assert!(
++        notification.get("id").is_none(),
++        "a notification carries no id: {notification}"
++    );
++
++    let params = &notification["params"];
++    assert_eq!(
++        params["filePath"], "/work/app/src/main.rs",
++        "{notification}"
++    );
++    assert_eq!(
++        params["fileUrl"], "file:///work/app/src/main.rs",
++        "{notification}"
++    );
++    assert_eq!(
++        params["text"], "fn main() {\n    run();\n}\n// end",
++        "{notification}"
++    );
++    assert_eq!(
++        params["selection"]["start"],
++        json!({ "line": 0, "character": 0 })
++    );
++    assert_eq!(
++        params["selection"]["end"],
++        json!({ "line": 3, "character": 7 })
++    );
++    assert_eq!(params["selection"]["isEmpty"], false, "{notification}");
++}
++
++/// R3.2. The hostile case comes first: start and end on the same line but at different
++/// characters is NOT empty, whatever a line-only comparison would say.
++#[test]
++fn selection_changed_is_empty_only_when_start_and_end_coincide() {
++    let same_line = selection_changed_notification(Some(&selection(
++        "/work/app/src/lib.rs",
++        "let x",
++        point(4, 2),
++        point(4, 7),
++    )));
++    assert_eq!(
++        same_line["params"]["selection"]["isEmpty"], false,
++        "{same_line}"
++    );
++
++    let line_break = selection_changed_notification(Some(&selection(
++        "/work/app/src/lib.rs",
++        "\n",
++        point(1, 5),
++        point(2, 0),
++    )));
++    assert_eq!(
++        line_break["params"]["selection"]["isEmpty"], false,
++        "{line_break}"
++    );
++
++    let cursor = selection_changed_notification(Some(&selection(
++        "/work/app/src/lib.rs",
++        "",
++        point(4, 9),
++        point(4, 9),
++    )));
++    let params = &cursor["params"];
++    assert_eq!(params["selection"]["isEmpty"], true, "{cursor}");
++    assert_eq!(
++        params["selection"]["start"],
++        json!({ "line": 4, "character": 9 })
++    );
++    assert_eq!(
++        params["selection"]["end"],
++        json!({ "line": 4, "character": 9 })
++    );
++    assert_eq!(
++        params["text"], "",
++        "an empty selection sends empty text, not none: {cursor}"
++    );
++    assert_eq!(params["filePath"], "/work/app/src/lib.rs", "{cursor}");
++}
++
++/// R3.5 (refine v2, 2026-11-03). An editor with no file: CLI 2.1.316 ignores a null selection
++/// (`if(!Be?.start||!Be?.end)return;`) and keeps the previous file attached, so the clear is a
++/// zero-width selection at 0:0 with empty text and no `filePath`.
++#[test]
++fn selection_changed_without_a_file_backed_editor_sends_a_null_selection() {
++    let notification = selection_changed_notification(None);
++
++    assert_eq!(notification["jsonrpc"], "2.0", "{notification}");
++    assert_eq!(
++        notification["method"], "selection_changed",
++        "{notification}"
++    );
++    assert!(notification.get("id").is_none(), "{notification}");
++    let params = &notification["params"];
++    assert_eq!(
++        params["selection"]["start"],
++        json!({ "line": 0, "character": 0 }),
++        "{notification}"
++    );
++    assert_eq!(
++        params["selection"]["end"],
++        json!({ "line": 0, "character": 0 }),
++        "{notification}"
++    );
++    assert_eq!(params["selection"]["isEmpty"], true, "{notification}");
++    for field in ["text", "filePath"] {
++        let value = params.get(field).unwrap_or(&Value::Null);
++        assert!(
++            value.is_null() || value == "",
++            "{field} must be absent or empty without a file: {notification}"
++        );
++    }
++}
++
++// ---- the push path over a real loopback WebSocket -----------------------------------
++
++type Socket = WebSocketStream<smol::net::TcpStream>;
++
++/// A deadline that only turns a hang into a failed assertion; it never decides a pass.
++/// A thread sleep rather than `smol::Timer::after`, which the workspace's clippy config
++/// forbids for timing-dependent tests -- this one depends on no timing.
++async fn within<T>(limit: Duration, future: impl Future<Output = T>) -> Option<T> {
++    smol::future::or(async { Some(future.await) }, async {
++        smol::unblock(move || std::thread::sleep(limit)).await;
++        None
++    })
++    .await
++}
++
++async fn start_server() -> (
++    u16,
++    mpsc::UnboundedSender<Value>,
++    smol::Task<anyhow::Result<()>>,
++) {
++    let (listener, port) = bind().await.expect("binding the test listener");
++    let (notify, notifications) = mpsc::unbounded::<Value>();
++    let server = smol::spawn(async move {
++        let (stream, _) = listener.accept().await.expect("accepting the test client");
++        serve_connection(
++            stream,
++            TOKEN.to_owned(),
++            FakeWorkspaceDispatcher,
++            notifications,
++        )
++        .await
++    });
++    (port, notify, server)
++}
++
++async fn connect(port: u16) -> Socket {
++    let stream = smol::net::TcpStream::connect(("127.0.0.1", port))
++        .await
++        .expect("connecting to the test listener");
++    let mut request = format!("ws://127.0.0.1:{port}/")
++        .into_client_request()
++        .expect("a valid request");
++    request
++        .headers_mut()
++        .insert(AUTH_HEADER, TOKEN.parse().expect("a header value"));
++    request.headers_mut().insert(
++        "Sec-WebSocket-Protocol",
++        "mcp".parse().expect("a header value"),
++    );
++    let (socket, _) = async_tungstenite::client_async(request, stream)
++        .await
++        .expect("the upgrade succeeds");
++    socket
++}
++
++/// Reads text frames until `count` of them arrived or `limit` passed. Every text frame
++/// must be exactly one JSON object -- two messages in one frame are unreadable to the CLI.
++async fn read_frames(socket: &mut Socket, count: usize, limit: Duration) -> Vec<Value> {
++    let mut frames = Vec::new();
++    within(limit, async {
++        while frames.len() < count {
++            match socket.next().await {
++                Some(Ok(Message::Text(text))) => {
++                    let value: Value =
++                        serde_json::from_str(text.as_str()).unwrap_or_else(|error| {
++                            panic!("a frame that is not one JSON value ({error}): {text}")
++                        });
++                    frames.push(value);
++                }
++                Some(Ok(_)) => continue,
++                _ => break,
++            }
++        }
++    })
++    .await;
++    frames
++}
++
++/// R3.1 over the wire. Two pushes arrive as two frames, unchanged and in order -- the CLI
++/// keeps the last one it reads, so a reorder would leave it on the stale selection.
++#[test]
++fn selection_changed_is_pushed_to_the_client_unchanged_and_in_order() {
++    block_on(async {
++        let (port, notify, server) = start_server().await;
++        let mut socket = connect(port).await;
++
++        let first = selection_changed_notification(Some(&selection(
++            "/work/app/src/main.rs",
++            "run",
++            point(1, 4),
++            point(1, 7),
++        )));
++        let second = selection_changed_notification(None);
++        notify
++            .unbounded_send(first.clone())
++            .expect("the server holds the receiver");
++        notify
++            .unbounded_send(second.clone())
++            .expect("the server holds the receiver");
++
++        let frames = read_frames(&mut socket, 2, Duration::from_secs(3)).await;
++        assert_eq!(
++            frames,
++            vec![first, second],
++            "the pushed notifications, in order"
++        );
++
++        drop(socket);
++        server.cancel().await;
++    });
++}
++
++/// R3.1 beside R3.6: pushing does not take the socket away from request/response. A request
++/// sent while notifications flow still gets its own response, and both arrive.
++#[test]
++fn selection_pushes_and_request_responses_share_the_socket() {
++    block_on(async {
++        let (port, notify, server) = start_server().await;
++        let mut socket = connect(port).await;
++
++        let pushed = selection_changed_notification(Some(&selection(
++            "/work/app/src/lib.rs",
++            "",
++            point(8, 0),
++            point(8, 0),
++        )));
++        socket
++            .send(Message::text(
++                r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
++            ))
++            .await
++            .expect("sending a request frame");
++        notify
++            .unbounded_send(pushed.clone())
++            .expect("the server holds the receiver");
++
++        let frames = read_frames(&mut socket, 2, Duration::from_secs(3)).await;
++        assert!(
++            frames.contains(&pushed),
++            "the pushed notification is missing: {frames:?}"
++        );
++        assert!(
++            frames
++                .iter()
++                .any(|frame| frame["id"] == 1 && frame["result"]["protocolVersion"].is_string()),
++            "the initialize response is missing: {frames:?}"
++        );
++
++        drop(socket);
++        server.cancel().await;
++    });
++}
++
++/// The push path must not keep a dead connection open: when the CLI closes, the server
++/// returns even though the notification sender is still alive.
++#[test]
++fn selection_push_does_not_keep_a_closed_connection_alive() {
++    block_on(async {
++        let (port, notify, server) = start_server().await;
++        let mut socket = connect(port).await;
++
++        socket
++            .close(None)
++            .await
++            .expect("closing from the client side");
++        drop(socket);
++        let finished = within(Duration::from_secs(3), server).await;
++
++        assert!(
++            matches!(finished, Some(Ok(()))),
++            "serve_connection did not return Ok after the client closed: {finished:?}"
++        );
++        drop(notify);
++    });
++}
++
++/// The hostile half of the test above: a CLI killed without a close frame. A push loop that
++/// waits on the notification stream after the socket is gone would keep this task, and the
++/// connection's sender, alive for the life of the window.
++#[test]
++fn selection_push_does_not_keep_a_dropped_connection_alive() {
++    block_on(async {
++        let (port, notify, server) = start_server().await;
++        let socket = connect(port).await;
++
++        drop(socket);
++        let finished = within(Duration::from_secs(3), server).await;
++
++        assert!(
++            finished.is_some(),
++            "serve_connection still runs after the client vanished without a close frame"
++        );
++        drop(notify);
++    });
++}
+diff --git a/crates/claude_code_ide/tests/selection_feed.rs b/crates/claude_code_ide/tests/selection_feed.rs
+new file mode 100644
+index 0000000..64f0e4c
+--- /dev/null
++++ b/crates/claude_code_ide/tests/selection_feed.rs
+@@ -0,0 +1,181 @@
++//! Story 066, sub-task 3.1 (R3.3, R3.4): the per-connection schedule of
++//! `selection_changed` -- at most one send per 100 ms with the last state winning, and the
++//! current selection replayed 500 ms after the CLI connects (VS Code's extension replays
++//! the last selection the same way; docs/PARITY-REPORT.md section 23.6).
++//!
++//! `SelectionFeed` is driven by explicit `Instant`s, never a real clock, so the 100 ms and
++//! 500 ms below are exact. The GPUI layer owns the timer: it sleeps until `next_due()` and
++//! calls `poll_due()`, and calls `offer()` on every editor selection change.
++
++use std::time::{Duration, Instant};
++
++use claude_code_ide::SelectionFeed;
++use serde_json::{Value, json};
++
++// ---- the per-connection schedule (explicit clock) -----------------------------------
++
++/// Runs the feed's own timer to exhaustion, returning each emission with its offset from
++/// `t0` in milliseconds. Bounded, so a feed that is always due fails instead of spinning.
++fn drain(feed: &mut SelectionFeed<Value>, t0: Instant) -> Vec<(u128, Value)> {
++    let mut sent = Vec::new();
++    for _ in 0..16 {
++        let Some(due) = feed.next_due() else { break };
++        if let Some(item) = feed.poll_due(due) {
++            sent.push(((due - t0).as_millis(), item));
++        }
++    }
++    sent
++}
++
++fn at(t0: Instant, ms: u64) -> Instant {
++    t0 + Duration::from_millis(ms)
++}
++
++/// R3.4. Nothing before 500 ms, the current selection at 500 ms.
++#[test]
++fn selection_feed_replays_the_current_selection_500_ms_after_connecting() {
++    let t0 = Instant::now();
++    let current = json!({ "state": "current" });
++    let mut feed = SelectionFeed::connected(t0, current.clone());
++
++    assert_eq!(
++        feed.poll_due(at(t0, 0)),
++        None,
++        "the CLI is not listening yet at 0 ms"
++    );
++    assert_eq!(feed.poll_due(at(t0, 499)), None, "nothing before 500 ms");
++    assert_eq!(
++        feed.poll_due(at(t0, 500)),
++        Some(current),
++        "the replay is due at 500 ms"
++    );
++    assert_eq!(
++        feed.next_due(),
++        None,
++        "and nothing is left to send after it"
++    );
++}
++
++/// R3.4 with a change before the replay: the replay carries the LATEST state, never the
++/// one the connection started with.
++#[test]
++fn selection_feed_replay_carries_the_latest_state() {
++    let t0 = Instant::now();
++    let stale = json!({ "state": "at-connect" });
++    let latest = json!({ "state": "changed-at-200ms" });
++    let mut feed = SelectionFeed::connected(t0, stale.clone());
++
++    let mut sent = Vec::new();
++    if let Some(item) = feed.offer(at(t0, 200), latest.clone()) {
++        sent.push((200, item));
++    }
++    sent.extend(drain(&mut feed, t0));
++
++    assert!(
++        sent.iter()
++            .any(|(ms, item)| (500..=600).contains(ms) && *item == latest),
++        "the 500 ms replay must carry the latest state, sent: {sent:?}"
++    );
++    assert!(
++        !sent.iter().any(|(_, item)| *item == stale),
++        "the state superseded before the replay is never sent: {sent:?}"
++    );
++}
++
++/// R3.3. Three changes inside one window: never two sends closer than 100 ms, the middle
++/// state is superseded, and the last one is what the CLI ends up with.
++#[test]
++fn selection_feed_sends_at_most_one_per_100_ms_and_the_last_state_wins() {
++    let t0 = Instant::now();
++    let mut feed = SelectionFeed::connected(t0, json!({ "state": "initial" }));
++    let mut sent = drain(&mut feed, t0);
++
++    let (a, b, c) = (
++        json!({ "state": "a" }),
++        json!({ "state": "b" }),
++        json!({ "state": "c" }),
++    );
++    for (ms, item) in [(1000, a), (1010, b.clone()), (1020, c.clone())] {
++        if let Some(out) = feed.offer(at(t0, ms), item) {
++            sent.push((u128::from(ms), out));
++        }
++    }
++    assert_eq!(
++        feed.poll_due(at(t0, 1050)),
++        None,
++        "inside the window nothing more goes out"
++    );
++    sent.extend(drain(&mut feed, t0));
++
++    for pair in sent.windows(2) {
++        assert!(
++            pair[1].0 >= pair[0].0 + 100,
++            "two sends within 100 ms: {sent:?}"
++        );
++    }
++    let after_changes: Vec<_> = sent.iter().filter(|(ms, _)| *ms >= 1000).collect();
++    assert!(
++        after_changes.len() <= 2,
++        "three changes in 20 ms flooded the socket: {sent:?}"
++    );
++    assert_eq!(
++        after_changes.last().map(|(_, item)| item),
++        Some(&c),
++        "last wins: {sent:?}"
++    );
++    assert!(
++        !sent.iter().any(|(_, item)| *item == b),
++        "b was superseded: {sent:?}"
++    );
++}
++
++/// R3.3. A change after a quiet period is not held back past one window, and once the
++/// latest state is out nothing is sent again.
++#[test]
++fn selection_feed_sends_a_lone_change_within_one_window_and_never_resends() {
++    let t0 = Instant::now();
++    let mut feed = SelectionFeed::connected(t0, json!({ "state": "initial" }));
++    drain(&mut feed, t0);
++
++    let lone = json!({ "state": "lone" });
++    let mut sent = Vec::new();
++    if let Some(item) = feed.offer(at(t0, 5000), lone.clone()) {
++        sent.push((5000, item));
++    }
++    sent.extend(drain(&mut feed, t0));
++
++    assert_eq!(sent.len(), 1, "exactly one send for one change: {sent:?}");
++    assert_eq!(sent[0].1, lone);
++    assert!(
++        (5000..=5100).contains(&sent[0].0),
++        "held past one window: {sent:?}"
++    );
++    assert_eq!(feed.next_due(), None);
++    assert_eq!(feed.poll_due(at(t0, 60_000)), None, "nothing is resent");
++}
++
++/// R3.3 is per connection: a send on one connection holds nothing back on another.
++#[test]
++fn selection_feed_throttles_each_connection_on_its_own() {
++    let t0 = Instant::now();
++    let mut first = SelectionFeed::connected(t0, json!({ "conn": 1 }));
++    let mut second = SelectionFeed::connected(t0, json!({ "conn": 2 }));
++    drain(&mut first, t0);
++    drain(&mut second, t0);
++
++    // The first connection sends now and is inside its window until 1100 ms.
++    let _first_sent = first.offer(at(t0, 1000), json!({ "conn": 1, "state": "x" }));
++    let mine = json!({ "conn": 2, "state": "y" });
++    let mut sent = Vec::new();
++    if let Some(item) = second.offer(at(t0, 1001), mine.clone()) {
++        sent.push((1001, item));
++    }
++    sent.extend(drain(&mut second, t0));
++
++    assert_eq!(sent.len(), 1, "{sent:?}");
++    assert_eq!(sent[0].1, mine);
++    assert!(
++        sent[0].0 <= 1101,
++        "held back by the other connection: {sent:?}"
++    );
++}
+diff --git a/crates/claude_code_ide/tests/serve_concurrency.rs b/crates/claude_code_ide/tests/serve_concurrency.rs
+new file mode 100644
+index 0000000..1ee6003
+--- /dev/null
++++ b/crates/claude_code_ide/tests/serve_concurrency.rs
+@@ -0,0 +1,132 @@
++//! Story 066 (tech review of 3.1): a request the user has not answered yet -- `openDiff`
++//! waits for Keep or Reject -- must not hold back the pushes or the other requests on the
++//! same connection. Before the frame loop ran requests concurrently, no `selection_changed`
++//! left the socket while a diff was open.
++
++use std::{future::Future, time::Duration};
++
++use async_tungstenite::{
++    WebSocketStream,
++    tungstenite::{Message, client::IntoClientRequest as _},
++};
++use claude_code_ide::{
++    Dispatcher, ProtocolError, ToolDescriptor, bind, selection_changed_notification,
++    serve_connection,
++};
++use futures::{StreamExt as _, channel::mpsc, executor::block_on};
++use serde_json::{Value, json};
++
++const TOKEN: &str = "the-token";
++
++/// Stands in for `WorkspaceDispatcher` with one tool that never answers, like an
++/// `openDiff` the user is still looking at.
++struct FakeUndecidedDiffDispatcher;
++
++impl Dispatcher for FakeUndecidedDiffDispatcher {
++    fn tools(&self) -> Vec<ToolDescriptor> {
++        Vec::new()
++    }
++
++    async fn call_tool(&self, name: &str, _arguments: Value) -> Result<Value, ProtocolError> {
++        if name == "openDiff" {
++            futures::future::pending::<()>().await;
++        }
++        Ok(json!({ "answered": name }))
++    }
++}
++
++async fn within<T>(limit: Duration, future: impl Future<Output = T>) -> Option<T> {
++    smol::future::or(async { Some(future.await) }, async {
++        smol::unblock(move || std::thread::sleep(limit)).await;
++        None
++    })
++    .await
++}
++
++async fn connect(port: u16) -> WebSocketStream<smol::net::TcpStream> {
++    let stream = smol::net::TcpStream::connect(("127.0.0.1", port))
++        .await
++        .expect("connecting to the test listener");
++    let mut request = format!("ws://127.0.0.1:{port}/")
++        .into_client_request()
++        .expect("a valid request");
++    let headers = request.headers_mut();
++    headers.insert(
++        "x-claude-code-ide-authorization",
++        TOKEN.parse().expect("a header value"),
++    );
++    headers.insert(
++        "Sec-WebSocket-Protocol",
++        "mcp".parse().expect("a header value"),
++    );
++    async_tungstenite::client_async(request, stream)
++        .await
++        .expect("the upgrade succeeds")
++        .0
++}
++
++#[test]
++fn an_undecided_diff_does_not_hold_back_pushes_or_other_requests() {
++    block_on(async {
++        let (listener, port) = bind().await.expect("binding the test listener");
++        let (notify, notifications) = mpsc::unbounded::<Value>();
++        let server = smol::spawn(async move {
++            let (stream, _) = listener.accept().await.expect("accepting the test client");
++            serve_connection(
++                stream,
++                TOKEN.to_owned(),
++                FakeUndecidedDiffDispatcher,
++                notifications,
++            )
++            .await
++        });
++        let mut socket = connect(port).await;
++
++        socket
++            .send(Message::text(
++                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"openDiff","arguments":{}}}"#,
++            ))
++            .await
++            .expect("sending the diff request");
++        let pushed = selection_changed_notification(None);
++        notify
++            .unbounded_send(pushed.clone())
++            .expect("the server holds the receiver");
++        socket
++            .send(Message::text(
++                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"getOpenEditors","arguments":{}}}"#,
++            ))
++            .await
++            .expect("sending a second request");
++
++        let mut frames = Vec::new();
++        within(Duration::from_secs(3), async {
++            while frames.len() < 2 {
++                match socket.next().await {
++                    Some(Ok(Message::Text(text))) => frames.push(
++                        serde_json::from_str::<Value>(text.as_str()).expect("one JSON value"),
++                    ),
++                    Some(Ok(_)) => continue,
++                    _ => break,
++                }
++            }
++        })
++        .await;
++
++        assert!(
++            frames.contains(&pushed),
++            "the push waited for the diff: {frames:?}"
++        );
++        assert!(
++            frames.iter().any(|frame| frame["id"] == 2),
++            "the second request waited for the diff: {frames:?}"
++        );
++        assert!(
++            !frames.iter().any(|frame| frame["id"] == 1),
++            "the undecided diff must still be pending: {frames:?}"
++        );
++
++        drop(socket);
++        server.cancel().await;
++    });
++}
+diff --git a/crates/editor/src/mouse_context_menu.rs b/crates/editor/src/mouse_context_menu.rs
+index fbd7e5e..141d05e 100644
+--- a/crates/editor/src/mouse_context_menu.rs
++++ b/crates/editor/src/mouse_context_menu.rs
+@@ -294,6 +294,12 @@ pub fn deploy_context_menu(
+                 .when(!disable_ai && has_selections, |this| {
+                     this.action("Add to Agent Thread", Box::new(AddSelectionToThread))
+                 })
++                .when(!disable_ai, |this| {
++                    this.action(
++                        "Mention Selection in Claude Code",
++                        Box::new(zed_actions::claude_code_ide::MentionSelectionInClaudeCode),
++                    )
++                })
+                 .separator()
+                 .action("Cut", Box::new(Cut))
+                 .action("Copy", Box::new(Copy))
 diff --git a/crates/project/src/project.rs b/crates/project/src/project.rs
 index 42a6bfe..2f19b3d 100644
 --- a/crates/project/src/project.rs
@@ -2428,3 +4245,39 @@ index f9fa130..1403ec2 100644
          edit_prediction_ui::init(cx);
          web_search::init(cx);
          web_search_providers::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+diff --git a/crates/zed/src/zed.rs b/crates/zed/src/zed.rs
+index ed63cec..a5ef076 100644
+--- a/crates/zed/src/zed.rs
++++ b/crates/zed/src/zed.rs
+@@ -6301,6 +6301,7 @@ mod tests {
+                 "buffer_search",
+                 "call_hierarchy",
+                 "channel_modal",
++                "claude_code_ide",
+                 "cli",
+                 "client",
+                 "collab",
+diff --git a/crates/zed_actions/src/lib.rs b/crates/zed_actions/src/lib.rs
+index 149991a..addeb54 100644
+--- a/crates/zed_actions/src/lib.rs
++++ b/crates/zed_actions/src/lib.rs
+@@ -571,6 +571,19 @@ pub mod settings_profile_selector {
+     pub struct Toggle;
+ }
+ 
++pub mod claude_code_ide {
++    use gpui::actions;
++
++    actions!(
++        claude_code_ide,
++        [
++            /// Mentions the selected lines in the Claude Code session running in
++            /// this workspace's terminal.
++            MentionSelectionInClaudeCode,
++        ]
++    );
++}
++
+ pub mod agent {
+     use gpui::{Action, SharedString, actions};
+     use schemars::JsonSchema;

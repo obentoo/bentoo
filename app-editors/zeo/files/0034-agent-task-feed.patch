@@ -81,13 +81,34 @@ handle_session_update's arms. The _claude/tasks snapshot this patch reads stays
 in its arm and does not overlap. Claude Agent (Plus) emits no SubagentUpdate, so
 for it this feed is still the only task channel. Moving Zeo's tasks onto the
 native subagent surfaces is story 064's work, not this bump's.
+
+Story 064 (2026-11-02): the row source for Zed's own subagent registry
+lives here, in acp_thread::subagent_rows, because every Zeo task surface reads
+it and this is the patch that gave acp_thread a task model. subagent_rows()
+turns a parent thread's registered children into SubagentRows: label from the
+child's title, else the announcement, else the session id; status from the
+child's ForegroundActivity, with RequiresAction read as Waiting and never
+Running; a child replayed on load with no live report reads Unknown, its title
+kept and its Stop withdrawn. any_child_active() answers None, Running or
+Waiting, Waiting first. Zed's subagent card now takes its idle-reason table
+(idle_outcome) from here instead of keeping a second copy. Two children with
+the same title stay two rows: identity is the child session id. 13 tests
+(subagent_rows_tests.rs, subagent_rows_identity_tests.rs).
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 0572aee..c5ce6a6 100644
+index 0572aee..f2f2fa5 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -47,7 +47,7 @@ use std::fmt::{Formatter, Write};
+@@ -9,6 +9,7 @@ pub mod elicitation;
+ mod mention;
+ pub mod notices;
+ pub mod prompt_capabilities;
++pub mod subagent_rows;
+ pub mod subagents;
+ mod submission;
+ mod terminal;
+@@ -47,7 +48,7 @@ use std::fmt::{Formatter, Write};
  use std::ops::Range;
  use std::process::ExitStatus;
  use std::rc::Rc;
@@ -96,7 +117,7 @@ index 0572aee..c5ce6a6 100644
  use std::{fmt::Display, mem, path::PathBuf, sync::Arc};
  pub use submission::*;
  use task::{Shell, ShellBuilder};
-@@ -3839,6 +3839,134 @@ const CLAUDE_RATE_LIMIT_META_KEY: &str = "_claude/rateLimit";
+@@ -3839,6 +3840,134 @@ const CLAUDE_RATE_LIMIT_META_KEY: &str = "_claude/rateLimit";
  /// `background_tasks_changed` level here, as `{ "count": n, "tasks": [...] }`.
  const CLAUDE_BACKGROUND_TASKS_META_KEY: &str = "_claude/backgroundTasks";
  
@@ -231,7 +252,7 @@ index 0572aee..c5ce6a6 100644
  pub const TOKEN_USAGE_WARNING_THRESHOLD: f32 = 0.8;
  
  impl TokenUsage {
-@@ -3945,6 +4073,10 @@ pub struct AcpThread {
+@@ -3945,6 +4074,10 @@ pub struct AcpThread {
      token_usage: Option<TokenUsage>,
      account_usage: AccountUsage,
      background_task_count: usize,
@@ -242,7 +263,7 @@ index 0572aee..c5ce6a6 100644
      cost: Option<SessionCost>,
      prompt_capabilities: acp_v2::PromptCapabilities,
      available_commands: Vec<acp_v2::AvailableCommand>,
-@@ -4101,6 +4233,11 @@ pub enum AcpThreadEvent {
+@@ -4101,6 +4234,11 @@ pub enum AcpThreadEvent {
      TokenUsageUpdated(OutputTokensUpdate),
      AccountUsageUpdated,
      BackgroundTasksUpdated,
@@ -254,7 +275,7 @@ index 0572aee..c5ce6a6 100644
      EntryUpdated(usize),
      EntriesRemoved(Range<usize>),
      ToolAuthorizationRequested(PermissionRequestId),
-@@ -4259,6 +4396,8 @@ impl AcpThread {
+@@ -4259,6 +4397,8 @@ impl AcpThread {
                  | AcpThreadEvent::TokenUsageUpdated(_)
                  | AcpThreadEvent::AccountUsageUpdated
                  | AcpThreadEvent::BackgroundTasksUpdated
@@ -263,7 +284,7 @@ index 0572aee..c5ce6a6 100644
                  | AcpThreadEvent::EntryUpdated(_)
                  | AcpThreadEvent::Retry(_)
                  | AcpThreadEvent::SubagentSpawned(_)
-@@ -4314,6 +4453,8 @@ impl AcpThread {
+@@ -4314,6 +4454,8 @@ impl AcpThread {
              token_usage: None,
              account_usage: AccountUsage::default(),
              background_task_count: 0,
@@ -272,7 +293,7 @@ index 0572aee..c5ce6a6 100644
              cost: None,
              prompt_capabilities,
              available_commands: Vec::new(),
-@@ -4782,6 +4923,9 @@ impl AcpThread {
+@@ -4782,6 +4924,9 @@ impl AcpThread {
                  }
                  _ => false,
              })
@@ -282,7 +303,7 @@ index 0572aee..c5ce6a6 100644
      }
  
      pub fn forget_submission(&mut self, id: SubmissionId, cx: &mut Context<Self>) {
-@@ -5113,6 +5257,89 @@ impl AcpThread {
+@@ -5113,6 +5258,89 @@ impl AcpThread {
          self.background_task_count
      }
  
@@ -372,7 +393,7 @@ index 0572aee..c5ce6a6 100644
      pub fn cost(&self) -> Option<&SessionCost> {
          self.cost.as_ref()
      }
-@@ -5297,6 +5524,22 @@ impl AcpThread {
+@@ -5297,6 +5525,22 @@ impl AcpThread {
                      self.background_task_count = count;
                      cx.emit(AcpThreadEvent::BackgroundTasksUpdated);
                  }
@@ -395,7 +416,7 @@ index 0572aee..c5ce6a6 100644
                  self.update_session_info(info_update, cx);
              }
              acp_v1::SessionUpdate::AvailableCommandsUpdate(acp_v1::AvailableCommandsUpdate {
-@@ -8609,6 +8852,9 @@ impl AcpThread {
+@@ -8609,6 +8853,9 @@ impl AcpThread {
      }
  
      pub fn emit_load_error(&mut self, error: LoadError, cx: &mut Context<Self>) {
@@ -405,7 +426,7 @@ index 0572aee..c5ce6a6 100644
          cx.emit(AcpThreadEvent::LoadError(error));
      }
  
-@@ -27270,4 +27516,7 @@ mod tests {
+@@ -27270,4 +27517,7 @@ mod tests {
          request.await.expect("turn should complete");
          assert_eq!(cx.active_idle_sleep_preventions(), 0);
      }
@@ -1296,6 +1317,799 @@ index faa6e23..c85cd5d 100644
      /// Whether this agent supports resuming existing sessions without loading history.
      fn supports_resume_session(&self) -> bool {
          false
+diff --git a/crates/acp_thread/src/subagent_rows.rs b/crates/acp_thread/src/subagent_rows.rs
+new file mode 100644
+index 0000000..26b653a
+--- /dev/null
++++ b/crates/acp_thread/src/subagent_rows.rs
+@@ -0,0 +1,155 @@
++//! Zeo's task surfaces read ACP subagents from Zed's own registry (`AcpThread::subagents()`),
++//! so a child is listed whichever adapter spawned it. Story 064; the rows replace nothing
++//! upstream draws — the inline card keeps reading the child directly.
++
++use std::time::{Instant, SystemTime};
++
++use agent_client_protocol::schema::v2 as acp_v2;
++use gpui::{App, SharedString};
++
++use crate::{AcpThread, ForegroundActivity};
++
++/// Six outcomes, because the card's four (`Running`, `Completed`, `Failed`, `Canceled`) fold
++/// `RequiresAction` into Running and an unconfirmed state into the idle default — and both
++/// the sidebar and the tray have to tell those apart (R1.3).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum SubagentRowStatus {
++    Running,
++    Waiting,
++    Done,
++    Failed,
++    Canceled,
++    Unknown,
++}
++
++impl SubagentRowStatus {
++    pub fn is_active(self) -> bool {
++        matches!(self, Self::Running | Self::Waiting)
++    }
++
++    pub fn is_terminal(self) -> bool {
++        matches!(self, Self::Done | Self::Failed | Self::Canceled)
++    }
++}
++
++#[derive(Clone, Debug)]
++pub struct SubagentRow {
++    pub child_session_id: acp_v2::SessionId,
++    pub label: SharedString,
++    pub status: SubagentRowStatus,
++    /// The agent's own cancel grant (`capabilities.cancel`); Zed never forces a stop.
++    pub can_cancel: bool,
++    pub error: Option<SharedString>,
++    /// Wall-clock, like `AgentTask::started_at`, so merged rows sort and persist alike.
++    pub started_at: Option<SystemTime>,
++}
++
++/// What a thread's children add to its own state in the sidebar. Waiting outranks Running:
++/// the thread waits for an answer while any child does (R4.2).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum ChildActivity {
++    None,
++    Running,
++    Waiting,
++}
++
++/// One row per registered child, in registration order. Forks and sub-threads name a parent
++/// too, but are never registered, so they never appear here.
++pub fn subagent_rows(parent: &AcpThread, cx: &App) -> Vec<SubagentRow> {
++    parent
++        .subagents()
++        .map(|child| subagent_row(child.read(cx)))
++        .collect()
++}
++
++pub fn any_child_active(parent: &AcpThread, cx: &App) -> ChildActivity {
++    let mut activity = ChildActivity::None;
++    for child in parent.subagents() {
++        match subagent_row_status(child.read(cx)).0 {
++            SubagentRowStatus::Waiting => return ChildActivity::Waiting,
++            SubagentRowStatus::Running => activity = ChildActivity::Running,
++            _ => {}
++        }
++    }
++    activity
++}
++
++fn subagent_row(child: &AcpThread) -> SubagentRow {
++    let association = child.subagent_association();
++    // The parent's label describes the child in the parent's view, so it wins (R1.2).
++    let label = association
++        .and_then(|association| association.title.clone())
++        .or_else(|| child.title())
++        .unwrap_or_else(|| SharedString::new_static("Subagent"));
++    let (status, error) = subagent_row_status(child);
++    SubagentRow {
++        child_session_id: child.session_id().clone(),
++        label,
++        status,
++        can_cancel: association.is_some_and(|association| association.can_cancel),
++        error,
++        started_at: child.activity_started_at().map(wall_clock),
++    }
++}
++
++fn subagent_row_status(child: &AcpThread) -> (SubagentRowStatus, Option<SharedString>) {
++    match child.foreground_activity() {
++        ForegroundActivity::Running => (SubagentRowStatus::Running, None),
++        ForegroundActivity::RequiresAction => (SubagentRowStatus::Waiting, None),
++        // A replayed or not-yet-reported state is history, not the child's current one (R1.7).
++        ForegroundActivity::Unconfirmed | ForegroundActivity::Unknown => {
++            (SubagentRowStatus::Unknown, None)
++        }
++        ForegroundActivity::Idle => match child.foreground_state() {
++            Some(acp_v2::StateUpdate::Idle(idle)) => idle_outcome(idle),
++            _ => (SubagentRowStatus::Unknown, None),
++        },
++    }
++}
++
++fn wall_clock(instant: Instant) -> SystemTime {
++    SystemTime::now()
++        .checked_sub(instant.elapsed())
++        .unwrap_or(SystemTime::UNIX_EPOCH)
++}
++
++/// How an ACP subagent's work ended, with the error to show for a failure. Shared with the
++/// inline subagent card so the two never disagree about an outcome. Idle with no stop reason,
++/// or with one this version does not know, is a normal end, as it is for any ACP session.
++pub fn idle_outcome(idle: &acp_v2::IdleStateUpdate) -> (SubagentRowStatus, Option<SharedString>) {
++    match &idle.stop_reason {
++        Some(acp_v2::StopReason::Cancelled) => (SubagentRowStatus::Canceled, None),
++        Some(acp_v2::StopReason::Error(error)) => (
++            SubagentRowStatus::Failed,
++            error
++                .error
++                .as_ref()
++                .map(|error| error.message.trim())
++                .filter(|message| !message.is_empty())
++                .map(|message| message.to_string().into()),
++        ),
++        Some(acp_v2::StopReason::MaxTokens) => (
++            SubagentRowStatus::Failed,
++            Some("The subagent reached its token limit.".into()),
++        ),
++        Some(acp_v2::StopReason::MaxTurnRequests) => (
++            SubagentRowStatus::Failed,
++            Some("The subagent reached its limit of model requests.".into()),
++        ),
++        Some(acp_v2::StopReason::Refusal) => (
++            SubagentRowStatus::Failed,
++            Some("The subagent's model refused to continue.".into()),
++        ),
++        _ => (SubagentRowStatus::Done, None),
++    }
++}
++
++#[cfg(test)]
++#[path = "subagent_rows_identity_tests.rs"]
++mod identity_tests;
++#[cfg(test)]
++#[path = "subagent_rows_test_support.rs"]
++mod test_support;
++#[cfg(test)]
++#[path = "subagent_rows_tests.rs"]
++mod tests;
+diff --git a/crates/acp_thread/src/subagent_rows_identity_tests.rs b/crates/acp_thread/src/subagent_rows_identity_tests.rs
+new file mode 100644
+index 0000000..46e906b
+--- /dev/null
++++ b/crates/acp_thread/src/subagent_rows_identity_tests.rs
+@@ -0,0 +1,259 @@
++// Story 064, task 1.1 (second half) — labels and identity (R1.2), replay (R1.7) and the
++// children's combined activity (`any_child_active`, read by R4.1/R4.2). Contract, assumptions and
++// wiring: see the header of `subagent_rows_tests.rs`. Filter: `cargo test -p acp_thread
++// subagent_rows`.
++
++use action_log::ActionLog;
++use agent_client_protocol::schema::v2 as acp_v2;
++use gpui::{AppContext as _, TestAppContext};
++
++use super::test_support::*;
++use super::{ChildActivity, SubagentRowStatus};
++use crate::AcpThread;
++
++// ── R1.2: labels and identity ──────────────────────────────────────────────
++
++// The parent's label for the child describes it in the parent's view and wins over the
++// child's own title.
++#[gpui::test]
++async fn subagent_rows_association_title_wins_over_the_childs_own_title(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    let child = subagent_rows_child(&rig, "c-1", Some("Child's own title"), cx);
++    subagent_rows_associate(
++        &child,
++        serde_json::json!({ "title": "Explore the parser" }),
++        cx,
++    );
++
++    let row = subagent_rows_find(&subagent_rows_of(&rig, cx), "c-1");
++    assert_eq!(row.label.as_ref(), "Explore the parser");
++}
++
++// Two distinct children that share a title are two rows, each named by its own session.
++#[gpui::test]
++async fn subagent_rows_two_children_with_one_title_are_two_rows(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    let first = subagent_rows_child(&rig, "c-a", Some("Same"), cx);
++    let second = subagent_rows_child(&rig, "c-b", Some("Same"), cx);
++    for child in [&first, &second] {
++        subagent_rows_associate(child, serde_json::json!({ "title": "Explore" }), cx);
++    }
++    subagent_rows_report(&first, subagent_rows_running(), cx);
++    subagent_rows_report(&second, subagent_rows_requires_action(), cx);
++
++    let rows = subagent_rows_of(&rig, cx);
++    let ids: Vec<String> = rows
++        .iter()
++        .map(|row| row.child_session_id.to_string())
++        .collect();
++    assert_eq!(
++        ids,
++        ["c-a", "c-b"],
++        "one row per child, in registration order"
++    );
++    assert!(rows.iter().all(|row| row.label.as_ref() == "Explore"));
++    assert_eq!(
++        subagent_rows_find(&rows, "c-a").status,
++        SubagentRowStatus::Running
++    );
++    assert_eq!(
++        subagent_rows_find(&rows, "c-b").status,
++        SubagentRowStatus::Waiting,
++        "each row reads its own child, never its namesake's"
++    );
++}
++
++// Fallbacks: a cleared association title gives the child's title; neither gives "Subagent".
++#[gpui::test]
++async fn subagent_rows_label_falls_back_to_child_title_then_subagent(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    let titled = subagent_rows_child(&rig, "c-titled", Some("Child's own title"), cx);
++    subagent_rows_associate(
++        &titled,
++        serde_json::json!({ "title": "Parent's label" }),
++        cx,
++    );
++    subagent_rows_associate(&titled, serde_json::json!({ "title": null }), cx);
++    let _bare = subagent_rows_child(&rig, "c-bare", None, cx);
++
++    let rows = subagent_rows_of(&rig, cx);
++    assert_eq!(
++        subagent_rows_find(&rows, "c-titled").label.as_ref(),
++        "Child's own title",
++        "a cleared association title falls back to the child's title"
++    );
++    assert_eq!(
++        subagent_rows_find(&rows, "c-bare").label.as_ref(),
++        "Subagent"
++    );
++}
++
++// The Stop grant is the association's `can_cancel`, never assumed.
++#[gpui::test]
++async fn subagent_rows_can_cancel_follows_the_association(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    let granted = subagent_rows_child(&rig, "c-granted", None, cx);
++    let _refused = subagent_rows_child(&rig, "c-refused", None, cx);
++    subagent_rows_associate(
++        &granted,
++        serde_json::json!({ "capabilities": { "cancel": {} } }),
++        cx,
++    );
++
++    let rows = subagent_rows_of(&rig, cx);
++    assert!(subagent_rows_find(&rows, "c-granted").can_cancel);
++    assert!(!subagent_rows_find(&rows, "c-refused").can_cancel);
++}
++
++// Only registered children are rows: a thread that names the parent but was never registered
++// (a fork, 0070, or a sub-thread) is not a subagent.
++#[gpui::test]
++async fn subagent_rows_unregistered_threads_are_not_rows(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    assert!(
++        subagent_rows_of(&rig, cx).is_empty(),
++        "no children, no rows"
++    );
++    assert_eq!(subagent_rows_activity(&rig, cx), ChildActivity::None);
++
++    let (parent_session_id, project) = rig.parent.read_with(cx, |thread, _| {
++        (thread.session_id().clone(), thread.project().clone())
++    });
++    let connection = rig.connection.clone();
++    let _stray = cx.update(|cx| {
++        let action_log = cx.new(|_| ActionLog::new(project.clone()));
++        cx.new(|cx| {
++            AcpThread::new(
++                Some(parent_session_id),
++                Some("Not registered".into()),
++                None,
++                connection,
++                project,
++                action_log,
++                acp_v2::SessionId::new("c-stray"),
++                watch::Receiver::constant(acp_v2::PromptCapabilities::new()),
++                cx,
++            )
++        })
++    });
++    let registered = subagent_rows_child(&rig, "c-registered", None, cx);
++    subagent_rows_report(&registered, subagent_rows_running(), cx);
++
++    let ids: Vec<String> = subagent_rows_of(&rig, cx)
++        .iter()
++        .map(|row| row.child_session_id.to_string())
++        .collect();
++    assert_eq!(ids, ["c-registered"]);
++}
++
++// ── R1.7: replay ───────────────────────────────────────────────────────────
++
++// A load replays the children's states as history: afterwards a child the replay left Done or
++// Running reads Unknown, keeps its title, and cannot be stopped until the agent reports again.
++#[gpui::test]
++async fn subagent_rows_replayed_children_read_unknown_never_done_or_running(
++    cx: &mut TestAppContext,
++) {
++    let rig = subagent_rows_rig(cx).await;
++    let done = subagent_rows_child(&rig, "c-done", None, cx);
++    let running = subagent_rows_child(&rig, "c-running", None, cx);
++    for (child, title) in [(&done, "Replayed done"), (&running, "Replayed running")] {
++        subagent_rows_associate(
++            child,
++            serde_json::json!({ "title": title, "capabilities": { "cancel": {} } }),
++            cx,
++        );
++        subagent_rows_report(child, subagent_rows_running(), cx);
++    }
++    subagent_rows_report(&done, subagent_rows_idle(None), cx);
++    let before = subagent_rows_of(&rig, cx);
++    assert_eq!(
++        subagent_rows_find(&before, "c-done").status,
++        SubagentRowStatus::Done,
++        "precondition: the replay left one child Done"
++    );
++    assert_eq!(
++        subagent_rows_find(&before, "c-running").status,
++        SubagentRowStatus::Running,
++        "precondition: and one Running"
++    );
++
++    rig.parent.update(cx, |parent, cx| {
++        parent.invalidate_replayed_subagent_state(cx)
++    });
++
++    let after = subagent_rows_of(&rig, cx);
++    for (session_id, title) in [
++        ("c-done", "Replayed done"),
++        ("c-running", "Replayed running"),
++    ] {
++        let row = subagent_rows_find(&after, session_id);
++        assert_eq!(
++            row.status,
++            SubagentRowStatus::Unknown,
++            "{session_id}: a replayed state is history, not the child's current state"
++        );
++        assert_eq!(row.label.as_ref(), title, "{session_id}: the title stays");
++        assert!(
++            !row.can_cancel,
++            "{session_id}: a replayed cancel grant is withdrawn"
++        );
++    }
++    assert_eq!(
++        subagent_rows_activity(&rig, cx),
++        ChildActivity::None,
++        "replayed children never keep the thread in Background"
++    );
++}
++
++// ── any_child_active (feeds R4.1, R4.2) ───────────────────────────────────
++
++// Waiting must not collapse into Running when both are present: the thread is waiting for an
++// answer while any child is.
++#[gpui::test]
++async fn subagent_rows_any_child_active_waiting_wins_over_running(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    let runner = subagent_rows_child(&rig, "c-run", None, cx);
++    let waiter = subagent_rows_child(&rig, "c-wait", None, cx);
++    subagent_rows_report(&runner, subagent_rows_running(), cx);
++    subagent_rows_report(&waiter, subagent_rows_running(), cx);
++    subagent_rows_report(&waiter, subagent_rows_requires_action(), cx);
++
++    assert_eq!(subagent_rows_activity(&rig, cx), ChildActivity::Waiting);
++}
++
++// Only Running and Waiting children count: Done, Failed, Canceled and Unknown ones do not, so an
++// idle parent with only those reads None (R4.4).
++#[gpui::test]
++async fn subagent_rows_any_child_active_ignores_ended_and_unknown_children(
++    cx: &mut TestAppContext,
++) {
++    let rig = subagent_rows_rig(cx).await;
++    let done = subagent_rows_child(&rig, "c-done", None, cx);
++    let failed = subagent_rows_child(&rig, "c-failed", None, cx);
++    let canceled = subagent_rows_child(&rig, "c-canceled", None, cx);
++    let _unknown = subagent_rows_child(&rig, "c-unknown", None, cx);
++    for child in [&done, &failed, &canceled] {
++        subagent_rows_report(child, subagent_rows_running(), cx);
++    }
++    subagent_rows_report(&done, subagent_rows_idle(None), cx);
++    subagent_rows_report(
++        &failed,
++        subagent_rows_idle(Some(subagent_rows_error("boom"))),
++        cx,
++    );
++    subagent_rows_report(
++        &canceled,
++        subagent_rows_idle(Some(acp_v2::StopReason::Cancelled)),
++        cx,
++    );
++    assert_eq!(subagent_rows_activity(&rig, cx), ChildActivity::None);
++
++    let late = subagent_rows_child(&rig, "c-late", None, cx);
++    subagent_rows_report(&late, subagent_rows_running(), cx);
++    assert_eq!(
++        subagent_rows_activity(&rig, cx),
++        ChildActivity::Running,
++        "one running child is enough, however many have ended"
++    );
++}
+diff --git a/crates/acp_thread/src/subagent_rows_test_support.rs b/crates/acp_thread/src/subagent_rows_test_support.rs
+new file mode 100644
+index 0000000..63bf936
+--- /dev/null
++++ b/crates/acp_thread/src/subagent_rows_test_support.rs
+@@ -0,0 +1,165 @@
++// Story 064, task 1.1 — shared rig of the `subagent_rows` tests (see `subagent_rows_tests.rs` for
++// the contract). Wired at the end of `crates/acp_thread/src/subagent_rows.rs` as
++//
++//     #[cfg(test)]
++//     #[path = "subagent_rows_test_support.rs"]
++//     mod test_support;
++//
++// Every item is `pub(super)`, so the two test modules beside it reach it as
++// `super::test_support::*`.
++
++use std::{path::Path, rc::Rc};
++
++use action_log::ActionLog;
++use agent_client_protocol::schema::v2 as acp_v2;
++use gpui::{AppContext as _, Entity, SharedString, TestAppContext};
++use project::{FakeFs, Project};
++use settings::SettingsStore;
++use util::path;
++use util::path_list::PathList;
++
++use super::{ChildActivity, SubagentRow, SubagentRowStatus, any_child_active, subagent_rows};
++use crate::{AcpThread, AgentConnection as _, StubAgentConnection};
++
++// ── Rig ─────────────────────────────────────────────────────────────────────
++
++pub(super) struct SubagentRowsRig {
++    pub(super) parent: Entity<AcpThread>,
++    pub(super) connection: Rc<StubAgentConnection>,
++}
++
++pub(super) async fn subagent_rows_rig(cx: &mut TestAppContext) -> SubagentRowsRig {
++    cx.update(|cx| {
++        let mut settings_store = SettingsStore::test(cx);
++        settings_store.register_setting::<feature_flags::FeatureFlagsSettings>();
++        cx.set_global(settings_store);
++    });
++    let project = Project::test(FakeFs::new(cx.executor()), [], cx).await;
++    let connection = Rc::new(StubAgentConnection::new());
++    let parent = cx
++        .update(|cx| {
++            connection
++                .clone()
++                .new_session(project, PathList::new(&[Path::new(path!("/test"))]), cx)
++        })
++        .await
++        .expect("the parent session should be created");
++    SubagentRowsRig { parent, connection }
++}
++
++/// An ACP subagent of the rig's parent, registered as the parent's `subagent_update` does:
++/// agent-owned, so its activity comes only from the agent's reports (Unconfirmed until one).
++pub(super) fn subagent_rows_child(
++    rig: &SubagentRowsRig,
++    session_id: &str,
++    own_title: Option<&str>,
++    cx: &mut TestAppContext,
++) -> Entity<AcpThread> {
++    let (parent_session_id, project) = rig.parent.read_with(cx, |thread, _| {
++        (thread.session_id().clone(), thread.project().clone())
++    });
++    let connection = rig.connection.clone();
++    let session_id = acp_v2::SessionId::new(session_id);
++    let own_title = own_title.map(|title| SharedString::from(title.to_string()));
++    let child = cx.update(|cx| {
++        let action_log = cx.new(|_| ActionLog::new(project.clone()));
++        cx.new(|cx| {
++            AcpThread::new(
++                Some(parent_session_id),
++                own_title,
++                None,
++                connection,
++                project,
++                action_log,
++                session_id,
++                watch::Receiver::constant(acp_v2::PromptCapabilities::new()),
++                cx,
++            )
++            .agent_owned()
++        })
++    });
++    cx.update(|cx| rig.connection.track_session(&child, cx));
++    rig.parent
++        .update(cx, |parent, cx| parent.register_subagent(child.clone(), cx));
++    child
++}
++
++/// What the parent's `subagent_update` reports about the child, as the wire carries it.
++pub(super) fn subagent_rows_associate(
++    child: &Entity<AcpThread>,
++    association: serde_json::Value,
++    cx: &mut TestAppContext,
++) {
++    let session_id = child.read_with(cx, |thread, _| thread.session_id().to_string());
++    let mut update = association;
++    update["sessionId"] = serde_json::json!(session_id);
++    let update: acp_v2::SubagentUpdate =
++        serde_json::from_value(update).expect("a well-formed subagent update");
++    child.update(cx, |thread, cx| {
++        thread
++            .update_subagent_association(&update, cx)
++            .expect("the child is an ACP subagent")
++    });
++}
++
++pub(super) fn subagent_rows_report(
++    child: &Entity<AcpThread>,
++    state: acp_v2::StateUpdate,
++    cx: &mut TestAppContext,
++) {
++    child.update(cx, |thread, cx| {
++        thread
++            .update_session_state(state, cx)
++            .expect("an agent-owned child reports its state")
++    });
++}
++
++pub(super) fn subagent_rows_running() -> acp_v2::StateUpdate {
++    acp_v2::StateUpdate::Running(acp_v2::RunningStateUpdate::new())
++}
++
++pub(super) fn subagent_rows_requires_action() -> acp_v2::StateUpdate {
++    acp_v2::StateUpdate::RequiresAction(acp_v2::RequiresActionStateUpdate::new())
++}
++
++pub(super) fn subagent_rows_idle(stop_reason: Option<acp_v2::StopReason>) -> acp_v2::StateUpdate {
++    let idle = acp_v2::IdleStateUpdate::new();
++    acp_v2::StateUpdate::Idle(match stop_reason {
++        Some(stop_reason) => idle.stop_reason(stop_reason),
++        None => idle,
++    })
++}
++
++pub(super) fn subagent_rows_error(message: &str) -> acp_v2::StopReason {
++    let mut error = acp_v2::Error::internal_error();
++    error.message = message.to_string();
++    acp_v2::StopReason::Error(acp_v2::ErrorStopReason::new().error(error))
++}
++
++pub(super) fn subagent_rows_of(rig: &SubagentRowsRig, cx: &mut TestAppContext) -> Vec<SubagentRow> {
++    rig.parent
++        .read_with(cx, |parent, cx| subagent_rows(parent, cx))
++}
++
++pub(super) fn subagent_rows_activity(
++    rig: &SubagentRowsRig,
++    cx: &mut TestAppContext,
++) -> ChildActivity {
++    rig.parent
++        .read_with(cx, |parent, cx| any_child_active(parent, cx))
++}
++
++pub(super) fn subagent_rows_find(rows: &[SubagentRow], session_id: &str) -> SubagentRow {
++    rows.iter()
++        .find(|row| row.child_session_id.to_string() == session_id)
++        .unwrap_or_else(|| panic!("child {session_id} has a row: {rows:?}"))
++        .clone()
++}
++
++pub(super) fn subagent_rows_status(
++    rig: &SubagentRowsRig,
++    session_id: &str,
++    cx: &mut TestAppContext,
++) -> SubagentRowStatus {
++    subagent_rows_find(&subagent_rows_of(rig, cx), session_id).status
++}
+diff --git a/crates/acp_thread/src/subagent_rows_tests.rs b/crates/acp_thread/src/subagent_rows_tests.rs
+new file mode 100644
+index 0000000..32ddc81
+--- /dev/null
++++ b/crates/acp_thread/src/subagent_rows_tests.rs
+@@ -0,0 +1,190 @@
++// Story 064, task 1.1 — native subagent rows: labels, status mapping, replay (R1.2, R1.3, R1.7)
++// and the children's combined activity the sidebar reads (R4.1, R4.2 via `any_child_active`).
++//
++// Wired at the end of `crates/acp_thread/src/subagent_rows.rs` (new, fixup of 0034) as
++//
++//     #[cfg(test)]
++//     #[path = "subagent_rows_test_support.rs"]
++//     mod test_support;
++//     #[cfg(test)]
++//     #[path = "subagent_rows_tests.rs"]
++//     mod tests;
++//     #[cfg(test)]
++//     #[path = "subagent_rows_identity_tests.rs"]
++//     mod identity_tests;
++//
++// This file holds the status mapping (R1.3); `subagent_rows_identity_tests.rs` holds labels and
++// identity (R1.2), replay (R1.7) and `any_child_active`.
++//
++// Validation filter: `cargo test -p acp_thread subagent_rows`.
++//
++// Contract (design.md §SubagentRowSource, §Data Models):
++//   - `pub fn subagent_rows(parent: &AcpThread, cx: &App) -> Vec<SubagentRow>`, one row per
++//     registered child (`AcpThread::subagents()`), in registration order;
++//   - `pub fn any_child_active(parent: &AcpThread, cx: &App) -> ChildActivity`,
++//     `ChildActivity::{None, Running, Waiting}`;
++//   - `SubagentRow { child_session_id, label, status, can_cancel, error, started_at }`.
++// Assumed beyond design.md (adjust HERE, not in each test):
++//   - design.md types `status` as `TaskActivity`, a name `agent_ui` already uses for its
++//     history event (and which `acp_thread` cannot reach). This file names the status enum
++//     `SubagentRowStatus { Running, Waiting, Done, Failed, Canceled, Unknown }` — R1.3's words —
++//     declared in `subagent_rows.rs`, deriving `Clone, Copy, Debug, PartialEq, Eq`;
++//   - `ChildActivity` derives `Debug, PartialEq, Eq`; `SubagentRow` derives `Clone, Debug`;
++//   - field types: `child_session_id: acp_v2::SessionId`, `label: SharedString`,
++//     `can_cancel: bool`, `error: Option<SharedString>`. `started_at` is not read here.
++//   - When `ChildActivity` has both a Running and a Waiting child, it reads Waiting: R4.2 shows
++//     the thread as waiting for an answer while ANY child is Waiting.
++//   - An `Unknown` child counts as neither Running nor Waiting (R4.1 and R4.4 name only those
++//     two).
++//
++// Hostile halves first, per requirement:
++//   - R1.3: RequiresAction must not collapse into Running (Zed's own card does exactly that),
++//     Idle-with-error / limit / refusal must not collapse into Done, Idle-cancelled must not
++//     collapse into Failed or Done, Unconfirmed / Unknown must not read Done (the idle default)
++//     nor Running; only then the plain Running and Done rows.
++//   - R1.2: the association title wins over the child's own title; two children sharing a
++//     title stay two rows, each with its own session id; then the fallbacks.
++//   - R1.7: a child the replay left Done or Running reads Unknown afterwards, never Done or
++//     Running, and loses its Stop grant; its title stays.
++//   - a thread that names the parent but is not registered (a fork, 0070) is never a row.
++
++use agent_client_protocol::schema::v2 as acp_v2;
++use gpui::TestAppContext;
++
++use super::SubagentRowStatus;
++use super::test_support::*;
++
++// ── R1.3: status mapping, hostile halves first ─────────────────────────────
++
++// Zed's inline card reads RequiresAction as Running (subagent_card.rs `from_reported_state`):
++// the row must not.
++#[gpui::test]
++async fn subagent_rows_requires_action_reads_waiting_never_running(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    let child = subagent_rows_child(&rig, "c-wait", None, cx);
++    subagent_rows_report(&child, subagent_rows_running(), cx);
++    assert_eq!(
++        subagent_rows_status(&rig, "c-wait", cx),
++        SubagentRowStatus::Running,
++        "precondition: a running child reads Running"
++    );
++
++    subagent_rows_report(&child, subagent_rows_requires_action(), cx);
++    assert_eq!(
++        subagent_rows_status(&rig, "c-wait", cx),
++        SubagentRowStatus::Waiting,
++        "requires_action is Waiting, distinct from Running"
++    );
++}
++
++// Idle is not one outcome: an error, a limit or a refusal is Failed, never Done.
++#[gpui::test]
++async fn subagent_rows_idle_with_error_limit_or_refusal_reads_failed(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    let cases = [
++        ("c-error", subagent_rows_error("Authentication required")),
++        ("c-max-tokens", acp_v2::StopReason::MaxTokens),
++        ("c-max-turns", acp_v2::StopReason::MaxTurnRequests),
++        ("c-refusal", acp_v2::StopReason::Refusal),
++    ];
++    for (session_id, stop_reason) in cases.clone() {
++        let child = subagent_rows_child(&rig, session_id, None, cx);
++        subagent_rows_report(&child, subagent_rows_running(), cx);
++        subagent_rows_report(&child, subagent_rows_idle(Some(stop_reason)), cx);
++    }
++
++    let rows = subagent_rows_of(&rig, cx);
++    for (session_id, _) in cases {
++        let row = subagent_rows_find(&rows, session_id);
++        assert_eq!(
++            row.status,
++            SubagentRowStatus::Failed,
++            "{session_id}: idle with an error, a limit or a refusal is Failed"
++        );
++        assert!(
++            row.error.is_some(),
++            "{session_id}: a Failed row says why: {row:?}"
++        );
++    }
++    let error = subagent_rows_find(&rows, "c-error").error;
++    assert!(
++        error
++            .as_ref()
++            .is_some_and(|message| message.contains("Authentication required")),
++        "the agent's own error message is the row's error: {error:?}"
++    );
++}
++
++// Cancelled is its own outcome: neither Failed nor Done, and it carries no error.
++#[gpui::test]
++async fn subagent_rows_idle_cancelled_reads_canceled_not_failed_or_done(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    let child = subagent_rows_child(&rig, "c-cancel", None, cx);
++    subagent_rows_report(&child, subagent_rows_running(), cx);
++    subagent_rows_report(
++        &child,
++        subagent_rows_idle(Some(acp_v2::StopReason::Cancelled)),
++        cx,
++    );
++
++    let row = subagent_rows_find(&subagent_rows_of(&rig, cx), "c-cancel");
++    assert_eq!(row.status, SubagentRowStatus::Canceled);
++    assert_eq!(row.error, None, "a cancellation is not an error");
++}
++
++// A child that has reported nothing (Unconfirmed), or reported that it cannot tell (Unknown),
++// is Unknown: not Done (the session's idle default) and not Running.
++#[gpui::test]
++async fn subagent_rows_unconfirmed_and_unknown_read_unknown(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    let _silent = subagent_rows_child(&rig, "c-silent", None, cx);
++    let unsure = subagent_rows_child(&rig, "c-unsure", None, cx);
++    subagent_rows_report(&unsure, subagent_rows_running(), cx);
++    subagent_rows_report(
++        &unsure,
++        acp_v2::StateUpdate::Unknown(acp_v2::UnknownStateUpdate::new()),
++        cx,
++    );
++
++    let rows = subagent_rows_of(&rig, cx);
++    assert_eq!(
++        subagent_rows_find(&rows, "c-silent").status,
++        SubagentRowStatus::Unknown,
++        "no report yet: Unknown, not the idle default"
++    );
++    assert_eq!(
++        subagent_rows_find(&rows, "c-unsure").status,
++        SubagentRowStatus::Unknown,
++        "reported unknown after running: Unknown, not still Running"
++    );
++}
++
++// Benign half: Running, and Idle with no stop reason or `end_turn`, which is Done.
++#[gpui::test]
++async fn subagent_rows_running_and_plain_idle_read_running_and_done(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    let running = subagent_rows_child(&rig, "c-run", None, cx);
++    let bare = subagent_rows_child(&rig, "c-bare", None, cx);
++    let ended = subagent_rows_child(&rig, "c-end", None, cx);
++    subagent_rows_report(&running, subagent_rows_running(), cx);
++    for child in [&bare, &ended] {
++        subagent_rows_report(child, subagent_rows_running(), cx);
++    }
++    subagent_rows_report(&bare, subagent_rows_idle(None), cx);
++    subagent_rows_report(
++        &ended,
++        subagent_rows_idle(Some(acp_v2::StopReason::EndTurn)),
++        cx,
++    );
++
++    let rows = subagent_rows_of(&rig, cx);
++    assert_eq!(
++        subagent_rows_find(&rows, "c-run").status,
++        SubagentRowStatus::Running
++    );
++    for session_id in ["c-bare", "c-end"] {
++        let row = subagent_rows_find(&rows, session_id);
++        assert_eq!(row.status, SubagentRowStatus::Done, "{session_id}");
++        assert_eq!(row.error, None, "{session_id}: Done carries no error");
++    }
++}
 diff --git a/crates/acp_thread/src/test_data/claude_tasks_snapshot.json b/crates/acp_thread/src/test_data/claude_tasks_snapshot.json
 new file mode 100644
 index 0000000..3b4d6ad
@@ -1353,7 +2167,7 @@ index 0000000..3b4d6ad
 +  ]
 +}
 diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
-index fad105e..df7c120 100644
+index ad81a82..3cdc564 100644
 --- a/crates/agent_servers/src/acp/v1.rs
 +++ b/crates/agent_servers/src/acp/v1.rs
 @@ -19,11 +19,11 @@ use agent_client_protocol::schema::{
@@ -1617,7 +2431,7 @@ index fad105e..df7c120 100644
          fn request_elicitations(&self) -> Option<Entity<ElicitationStore>> {
              self.inner.request_elicitations()
          }
-@@ -10164,6 +10348,8 @@ exit 7
+@@ -10163,6 +10347,8 @@ exit 7
          cx.update(|_| ());
          cx.run_until_parked();
      }
@@ -2218,3 +3032,53 @@ index 77c1205..50c6d72 100644
              AcpThreadEvent::AccountUsageUpdated => {
                  // A redraw is all this needs: the account section is built from the thread
                  // when the tooltip opens, so there is no per-turn state to recompute.
+diff --git a/crates/agent_ui/src/conversation_view/subagent_card.rs b/crates/agent_ui/src/conversation_view/subagent_card.rs
+index d52704b..60aef71 100644
+--- a/crates/agent_ui/src/conversation_view/subagent_card.rs
++++ b/crates/agent_ui/src/conversation_view/subagent_card.rs
+@@ -1,3 +1,4 @@
++use acp_thread::subagent_rows::SubagentRowStatus;
+ use acp_thread::{
+     AcpThread, AgentThreadEntry, MessageIdentity, SessionMessage, SessionMessageSide, ToolCall,
+     ToolCallContent, ToolCallStatus,
+@@ -129,31 +130,15 @@ impl SubagentStatus {
+             acp_v2::StateUpdate::Running(_) | acp_v2::StateUpdate::RequiresAction(_) => {
+                 (Self::Running, None)
+             }
+-            acp_v2::StateUpdate::Idle(idle) => match &idle.stop_reason {
+-                Some(acp_v2::StopReason::Cancelled) => (Self::Canceled, None),
+-                Some(acp_v2::StopReason::Error(error)) => (
+-                    Self::Failed,
+-                    error
+-                        .error
+-                        .as_ref()
+-                        .map(|error| error.message.trim())
+-                        .filter(|message| !message.is_empty())
+-                        .map(|message| message.to_string().into()),
+-                ),
+-                Some(acp_v2::StopReason::MaxTokens) => (
+-                    Self::Failed,
+-                    Some("The subagent reached its token limit.".into()),
+-                ),
+-                Some(acp_v2::StopReason::MaxTurnRequests) => (
+-                    Self::Failed,
+-                    Some("The subagent reached its limit of model requests.".into()),
+-                ),
+-                Some(acp_v2::StopReason::Refusal) => (
+-                    Self::Failed,
+-                    Some("The subagent's model refused to continue.".into()),
+-                ),
+-                _ => (Self::Completed, None),
+-            },
++            acp_v2::StateUpdate::Idle(idle) => {
++                let (outcome, error) = acp_thread::subagent_rows::idle_outcome(idle);
++                let status = match outcome {
++                    SubagentRowStatus::Canceled => Self::Canceled,
++                    SubagentRowStatus::Failed => Self::Failed,
++                    _ => Self::Completed,
++                };
++                (status, error)
++            }
+             _ => (Self::Unknown, None),
+         }
+     }

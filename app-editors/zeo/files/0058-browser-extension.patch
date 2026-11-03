@@ -80,10 +80,17 @@ USE browser-extension (default on) needs devtools-bridge. Applies on top of
 0052 with or without 0057; 0050/0051 apply on top of it unchanged.
 
 Story 045 (zed/.epic/stories/045-browser-extension), branch dev-045.
+
+Story 064 (2026-11-02): a thread snapshot carries `subagents: [{title,
+status}]`, one entry per registered child in registration order, omitted when
+the thread has none; same-titled children stay two entries. zeo-browser 0.1.x
+parses the server schema strictly and drops a snapshot carrying the field;
+0.2.0 accepts it. 7 tests (browser_wire/subagents_tests.rs,
+browser_channel_tests/browser_wire_subagents.rs).
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
-index e967a09..1a7f353 100644
+index 8977d3d..8894601 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -565,6 +565,7 @@ dependencies = [
@@ -102,7 +109,7 @@ index e967a09..1a7f353 100644
   "streaming_diff",
   "task",
   "telemetry",
-@@ -22881,6 +22883,18 @@ version = "0.3.3"
+@@ -22885,6 +22887,18 @@ version = "0.3.3"
  source = "registry+https://github.com/rust-lang/crates.io-index"
  checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
  
@@ -134,7 +141,7 @@ index f70d1e2..be8e7ce 100644
      "crates/zlog",
      "crates/zlog_settings",
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index a6df210..2858b19 100644
+index b1fb11e..8ec5c56 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
 @@ -8,6 +8,8 @@ mod diff;
@@ -605,7 +612,7 @@ index b3c9b39..66b9f67 100644
  
  [dev-dependencies]
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index 6b43e4b..46dd209 100644
+index 9dd7614..9e2dd18 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
 @@ -7,6 +7,8 @@ mod agent_panel;
@@ -617,8 +624,8 @@ index 6b43e4b..46dd209 100644
  mod buffer_codegen;
  mod completion_provider;
  mod config_options;
-@@ -99,7 +101,10 @@ pub use crate::agent_session_router::{
-     OpenAgentSessionOptions, OpenedAgentSession, open_agent_session,
+@@ -100,7 +102,10 @@ pub use crate::agent_session_router::{
+     open_agent_subagent,
  };
  pub use crate::inline_assistant::InlineAssistant;
 -pub use crate::mention_set::{DomRect, DomSummary};
@@ -629,7 +636,7 @@ index 6b43e4b..46dd209 100644
  pub use crate::message_editor::MessageEditorEvent;
  pub use crate::sub_thread_reporter::{SubThreadActivity, SubThreadRecord};
  pub use crate::task_label::{
-@@ -1118,6 +1123,8 @@ pub(crate) fn slash_command_in_code_block(code: &str) -> Option<&str> {
+@@ -1120,6 +1125,8 @@ pub(crate) fn slash_command_in_code_block(code: &str) -> Option<&str> {
  #[cfg(test)]
  mod slash_command_in_code_block_tests;
  
@@ -640,10 +647,10 @@ index 6b43e4b..46dd209 100644
  
 diff --git a/crates/agent_ui/src/browser_channel.rs b/crates/agent_ui/src/browser_channel.rs
 new file mode 100644
-index 0000000..15ca383
+index 0000000..473c806
 --- /dev/null
 +++ b/crates/agent_ui/src/browser_channel.rs
-@@ -0,0 +1,2524 @@
+@@ -0,0 +1,2551 @@
 +//! Answers browser sessions: what a `zeo-browser` sidebar, through `zeo-browser-host` and the
 +//! devtools bridge, may do to agent threads (story 045, design.md §B2).
 +//!
@@ -692,7 +699,7 @@ index 0000000..15ca383
 +    Attachment, Browser, ChannelError, ClientInfo, ClientMsg, Entry, EntryRole, EntryTool,
 +    ImageAttachment, ImageMime, MAX_SERVER_LINE_BYTES, PROTOCOL_VERSION, Permission,
 +    PermissionOption, PermissionOptionKind, SendRequest, SentImages, ServerMsg, Status,
-+    SubscribeTarget, ThreadInfo, ThreadState, ToolStatus, V2,
++    SubagentInfo, SubagentState, SubscribeTarget, ThreadInfo, ThreadState, ToolStatus, V2,
 +};
 +use crate::conversation_view::{
 +    AcpServerViewEvent, ConversationView, PermissionSelection, ThreadView,
@@ -1798,6 +1805,7 @@ index 0000000..15ca383
 +                message: None,
 +            },
 +            permissions: Vec::new(),
++            subagents: Vec::new(),
 +        };
 +    };
 +    let followed = followed_thread(cx).map(|followed| followed.thread_id);
@@ -1814,6 +1822,14 @@ index 0000000..15ca383
 +        .pending_permission_requests()
 +        .filter_map(|request| wire_permission(thread, request.id, cx))
 +        .collect();
++    // The same rows the tasks card reads, so the sidebar and Zeo agree on a child's status.
++    let subagents: Vec<SubagentInfo> = acp_thread::subagent_rows::subagent_rows(thread, cx)
++        .into_iter()
++        .map(|row| SubagentInfo {
++            title: row.label.to_string(),
++            status: wire_subagent_state(row.status),
++        })
++        .collect();
 +
 +    // An upper bound of the line: the envelope with the widest `earlier`, plus each entry and
 +    // its comma. Dropping the oldest until it fits keeps the line under the cap.
@@ -1825,6 +1841,7 @@ index 0000000..15ca383
 +        entries: Vec::new(),
 +        status: status.clone(),
 +        permissions: permissions.clone(),
++        subagents: subagents.clone(),
 +    };
 +    let sizes: Vec<usize> = entries.iter().map(|entry| encoded_len(entry) + 1).collect();
 +    let mut line = encoded_len(&envelope) + sizes.iter().sum::<usize>();
@@ -1842,6 +1859,19 @@ index 0000000..15ca383
 +        entries,
 +        status,
 +        permissions,
++        subagents,
++    }
++}
++
++fn wire_subagent_state(status: acp_thread::subagent_rows::SubagentRowStatus) -> SubagentState {
++    use acp_thread::subagent_rows::SubagentRowStatus;
++    match status {
++        SubagentRowStatus::Running => SubagentState::Running,
++        SubagentRowStatus::Waiting => SubagentState::Waiting,
++        SubagentRowStatus::Done => SubagentState::Done,
++        SubagentRowStatus::Failed => SubagentState::Failed,
++        SubagentRowStatus::Canceled => SubagentState::Canceled,
++        SubagentRowStatus::Unknown => SubagentState::Unknown,
 +    }
 +}
 +
@@ -3165,6 +3195,10 @@ index 0000000..15ca383
 +#[cfg(test)]
 +#[path = "browser_channel_tests/stream.rs"]
 +mod stream;
++
++#[cfg(test)]
++#[path = "browser_channel_tests/browser_wire_subagents.rs"]
++mod browser_wire_subagents;
 +#[cfg(test)]
 +#[path = "browser_channel_tests/support.rs"]
 +mod test_support;
@@ -3695,6 +3729,210 @@ index 0000000..18a6e2b
 +        ["approval_pending"],
 +        "closing the prompt is not a Deny"
 +    );
++}
+diff --git a/crates/agent_ui/src/browser_channel_tests/browser_wire_subagents.rs b/crates/agent_ui/src/browser_channel_tests/browser_wire_subagents.rs
+new file mode 100644
+index 0000000..62281b4
+--- /dev/null
++++ b/crates/agent_ui/src/browser_channel_tests/browser_wire_subagents.rs
+@@ -0,0 +1,198 @@
++// Story 064, task 7.2 — the browser sidebar's thread snapshot carries the thread's ACP children
++// (R6.2). Patch `0058` (fixup). Wired INSIDE `src/browser_channel.rs`, beside `mod stream;`:
++//
++//     #[cfg(test)]
++//     #[path = "browser_channel_tests/browser_wire_subagents.rs"]
++//     mod browser_wire_subagents;
++//
++// so the path `browser_channel::browser_wire_subagents::…` matches the Validation filter
++// `cargo test -p agent_ui browser_wire`. Fixtures and seams: `test_support` (story 045).
++//
++// Carrier settled (Revision 1, 2026-10-29): the snapshot's optional `subagents` field, omitted
++// when the thread has no child; zeo-browser 0.2.0 reads it (task 7.3).
++//
++// A child is built as `agent_servers::acp::apply_subagent_update` builds one (an `agent_owned`
++// thread under the parent's session, its association, `register_subagent`).
++//
++// Contract assumed: the wire statuses of `browser_wire/subagents_tests.rs`; the entry's title is
++// R1.2's (the association's title, else the child's own, else "Subagent").
++//
++// Hostile halves first: a thread with no child sends no `subagents` key (0.1.x keeps working for
++// it); two children with one title are two entries; a child's own title never beats the
++// parent's label for it; then the benign two children with their statuses.
++
++use std::rc::Rc;
++
++use acp_thread::{AcpThread, AgentConnection, StubAgentConnection};
++use agent_client_protocol::schema::v2 as acp_v2;
++use gpui::{AppContext as _, Entity, TestAppContext};
++use serde_json::{Value, json};
++
++use super::test_support::*;
++
++fn spawn_child(
++    win: &mut Win,
++    connection: &StubAgentConnection,
++    session: &str,
++    title: Option<&str>,
++) -> Entity<AcpThread> {
++    let parent = win.thread();
++    let parent_session = parent.read_with(&win.cx, |thread, _| thread.session_id().clone());
++    let shared: Rc<dyn AgentConnection> = Rc::new(connection.clone());
++    let child = win.cx.update(|_, cx| {
++        let project = parent.read(cx).project().clone();
++        let action_log = cx.new(|_| action_log::ActionLog::new(project.clone()));
++        cx.new(|cx| {
++            AcpThread::new(
++                Some(parent_session),
++                None,
++                None,
++                shared,
++                project,
++                action_log,
++                acp_v2::SessionId::new(session.to_string()),
++                watch::Receiver::constant(acp_v2::PromptCapabilities::new()),
++                cx,
++            )
++            .agent_owned()
++        })
++    });
++    win.cx.update(|_, cx| connection.track_session(&child, cx));
++    let mut update = acp_v2::SubagentUpdate::new(session.to_string());
++    if let Some(title) = title {
++        update = update.title(title.to_string());
++    }
++    child
++        .update(&mut win.cx, |child, cx| {
++            child.update_subagent_association(&update, cx)
++        })
++        .expect("an agent-owned thread takes an association");
++    parent.update(&mut win.cx, |parent, cx| {
++        parent.register_subagent(child.clone(), cx)
++    });
++    win.cx.run_until_parked();
++    child
++}
++
++fn report(win: &mut Win, child: &Entity<AcpThread>, state: acp_v2::StateUpdate) {
++    child
++        .update(&mut win.cx, |child, cx| {
++            child.update_session_state(state, cx)
++        })
++        .expect("an agent-owned thread reports its state");
++    win.cx.run_until_parked();
++}
++
++/// The snapshot a following subscriber receives.
++fn followed_snapshot(win: &Win, cx: &mut TestAppContext) -> Value {
++    let probe = open_session(1);
++    approve(&probe, &win.app_state(), cx);
++    probe.handle(
++        request("subscribe", "s", json!({ "target": { "follow": true } })),
++        &win.app_state(),
++        cx,
++    );
++    let msgs = probe.drain(cx);
++    msgs.iter()
++        .find(|m| m["kind"] == "snapshot")
++        .cloned()
++        .unwrap_or_else(|| panic!("a snapshot: {msgs:?}"))
++}
++
++/// Where the children travel; the one line to change if the operator picks another carrier.
++fn subagents_of(snapshot: &Value) -> Option<&Value> {
++    snapshot.get("subagents")
++}
++
++async fn rfd_window(cx: &mut TestAppContext) -> (Win, StubAgentConnection) {
++    init(cx);
++    let fs = shared_fs(cx).await;
++    let connection = StubAgentConnection::new().with_announced_subagents(true);
++    let mut win = window(&fs, "/p/app", Some(connection.clone()), cx).await;
++    activate(&mut win);
++    (win, connection)
++}
++
++/// Hostile (compatibility): no child, no key.
++#[gpui::test]
++async fn browser_wire_subagents_absent_for_a_thread_without_children(cx: &mut TestAppContext) {
++    let (win, _connection) = rfd_window(cx).await;
++    let snapshot = followed_snapshot(&win, cx);
++    assert!(
++        subagents_of(&snapshot).is_none(),
++        "a thread without children is sent as 0.1.x reads it: {snapshot}"
++    );
++}
++
++/// Hostile (identity): two children titled alike are two entries; a child with no label of its
++/// parent's falls back to its own title, then to "Subagent" — and the parent's label wins over
++/// the child's own title.
++#[gpui::test]
++async fn browser_wire_subagents_lists_each_child_with_its_label(cx: &mut TestAppContext) {
++    let (mut win, connection) = rfd_window(cx).await;
++    let first = spawn_child(&mut win, &connection, "worker-1", Some("Worker"));
++    let second = spawn_child(&mut win, &connection, "worker-2", Some("Worker"));
++    let own = spawn_child(&mut win, &connection, "own-title", None);
++    own.update(&mut win.cx, |thread, cx| {
++        thread.update_session_info(acp_v2::SessionInfoUpdate::new().title("Own title"), cx)
++    });
++    let labelled = spawn_child(&mut win, &connection, "labelled", Some("Parent label"));
++    labelled.update(&mut win.cx, |thread, cx| {
++        thread.update_session_info(acp_v2::SessionInfoUpdate::new().title("Child title"), cx)
++    });
++    let _untitled = spawn_child(&mut win, &connection, "untitled", None);
++    for child in [&first, &second, &own, &labelled] {
++        report(
++            &mut win,
++            child,
++            acp_v2::StateUpdate::Running(acp_v2::RunningStateUpdate::new()),
++        );
++    }
++    win.cx.run_until_parked();
++
++    let snapshot = followed_snapshot(&win, cx);
++    let titles: Vec<&str> = subagents_of(&snapshot)
++        .and_then(Value::as_array)
++        .expect("the snapshot lists the children")
++        .iter()
++        .map(|entry| entry["title"].as_str().expect("a title"))
++        .collect();
++    assert_eq!(
++        titles,
++        vec!["Worker", "Worker", "Own title", "Parent label", "Subagent"],
++        "one entry per child, in registration order, with R1.2's label"
++    );
++}
++
++/// Two children and their statuses as the snapshot reports them; the snapshot's other fields
++/// are untouched.
++#[gpui::test]
++async fn browser_wire_subagents_carry_each_childs_status(cx: &mut TestAppContext) {
++    let (mut win, connection) = rfd_window(cx).await;
++    let alpha = spawn_child(&mut win, &connection, "alpha", Some("Alpha"));
++    let bravo = spawn_child(&mut win, &connection, "bravo", Some("Bravo"));
++    report(
++        &mut win,
++        &alpha,
++        acp_v2::StateUpdate::Running(acp_v2::RunningStateUpdate::new()),
++    );
++    report(
++        &mut win,
++        &bravo,
++        acp_v2::StateUpdate::RequiresAction(acp_v2::RequiresActionStateUpdate::new()),
++    );
++
++    let snapshot = followed_snapshot(&win, cx);
++    assert_eq!(
++        subagents_of(&snapshot),
++        Some(&json!([
++            { "title": "Alpha", "status": "running" },
++            { "title": "Bravo", "status": "waiting" }
++        ]))
++    );
++    assert!(
++        snapshot["thread"].is_object(),
++        "the thread info is still sent"
++    );
++    assert!(snapshot["entries"].is_array());
 +}
 diff --git a/crates/agent_ui/src/browser_channel_tests/drive.rs b/crates/agent_ui/src/browser_channel_tests/drive.rs
 new file mode 100644
@@ -5735,10 +5973,10 @@ index 0000000..9a9f8f4
 +}
 diff --git a/crates/agent_ui/src/browser_wire.rs b/crates/agent_ui/src/browser_wire.rs
 new file mode 100644
-index 0000000..82bee58
+index 0000000..890e188
 --- /dev/null
 +++ b/crates/agent_ui/src/browser_wire.rs
-@@ -0,0 +1,968 @@
+@@ -0,0 +1,996 @@
 +//! The wire types of the v2 browser session protocol between the browser extension (through
 +//! `zeo-browser-host`) and Zeo: one JSON object per line, every message carrying `v: 2` and a
 +//! `kind`.
@@ -6258,6 +6496,10 @@ index 0000000..82bee58
 +        entries: Vec<Entry>,
 +        status: Status,
 +        permissions: Vec<Permission>,
++        /// The thread's ACP children, in registration order (story 064, R6.2). Omitted when it
++        /// has none, so a zeo-browser 0.1.x — whose schema is strict — still reads that thread.
++        #[serde(default, skip_serializing_if = "Vec::is_empty")]
++        subagents: Vec<SubagentInfo>,
 +    },
 +    TargetChanged {
 +        v: V2,
@@ -6359,6 +6601,26 @@ index 0000000..82bee58
 +    pub agent: String,
 +    pub status: ThreadState,
 +    pub followed: bool,
++}
++
++/// One child of the snapshot's thread: its label and status, nothing that names the session.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct SubagentInfo {
++    pub title: String,
++    pub status: SubagentState,
++}
++
++/// R1.3's six row statuses.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum SubagentState {
++    Running,
++    Waiting,
++    Done,
++    Failed,
++    Canceled,
++    Unknown,
 +}
 +
 +#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -6707,6 +6969,183 @@ index 0000000..82bee58
 +        }
 +    }
 +}
++
++#[cfg(test)]
++#[path = "browser_wire/subagents_tests.rs"]
++mod subagents_tests;
+diff --git a/crates/agent_ui/src/browser_wire/subagents_tests.rs b/crates/agent_ui/src/browser_wire/subagents_tests.rs
+new file mode 100644
+index 0000000..fb36f80
+--- /dev/null
++++ b/crates/agent_ui/src/browser_wire/subagents_tests.rs
+@@ -0,0 +1,167 @@
++// Story 064, task 7.2 — the thread snapshot's `subagents` field on the wire (R6.2). Patch `0058`
++// (fixup). Module path: `browser_wire::subagents_tests`; wired at the end of
++// `src/browser_wire.rs`:
++//
++//     #[cfg(test)]
++//     #[path = "browser_wire/subagents_tests.rs"]
++//     mod subagents_tests;
++//
++// Validation: `cargo test -p agent_ui browser_wire` (this file and
++// `browser_channel_tests/browser_wire_subagents.rs`).
++//
++// Operator decision (Revision 1, 2026-10-29): field + zeo-browser 0.2. Zeo OMITS `subagents` for
++// a thread with no children (pinned here, so 0.1.x keeps reading those snapshots), and story 064's
++// task 7.3 makes zeo-browser 0.2.0 accept the optional field and the `unconfirmed` thread state,
++// released with Zeo 0.8.0 (its test: zeo-browser/test/contract.subagents.test.ts).
++//
++// Contract assumed beyond design.md (adjust HERE): `ServerMsg::Snapshot` gains
++// `subagents: Vec<SubagentInfo>` (`#[serde(default, skip_serializing_if = "Vec::is_empty")]`),
++// `SubagentInfo { title: String, status: SubagentState }` (`deny_unknown_fields`), and
++// `SubagentState` written snake_case as R1.3's six row statuses: `running`, `waiting`, `done`,
++// `failed`, `canceled`, `unknown`.
++//
++// Hostile halves first: no children → no key at all (the 0.1.x shape, byte for byte); two
++// children with the same title and status are two entries (a count with no identity is all the
++// shape allows — flagged in the report); an entry carrying anything beyond `{title, status}` is
++// refused; then the benign encode/decode.
++
++use serde_json::{Value, json};
++
++use super::{
++    Entry, EntryRole, ServerMsg, Status, SubagentInfo, SubagentState, ThreadInfo, ThreadState, V2,
++    encode_server,
++};
++
++fn thread() -> ThreadInfo {
++    ThreadInfo {
++        thread_id: "5f0c2a9e-7b1d-4c3a-9e4f-2d8b6a1c0e7f".into(),
++        title: "Fix the header overflow".into(),
++        project: "acme-web".into(),
++        agent: "claude-acp".into(),
++        status: ThreadState::Idle,
++        followed: true,
++    }
++}
++
++fn snapshot(subagents: Vec<SubagentInfo>) -> ServerMsg {
++    ServerMsg::Snapshot {
++        v: V2,
++        id: Some("r2".into()),
++        thread: Some(thread()),
++        earlier: 0,
++        entries: vec![Entry {
++            role: EntryRole::User,
++            markdown: "Why does the header overflow?".into(),
++            truncated: false,
++            tool: None,
++        }],
++        status: Status {
++            state: ThreadState::Idle,
++            message: None,
++        },
++        permissions: Vec::new(),
++        subagents,
++    }
++}
++
++fn encoded(msg: &ServerMsg) -> Value {
++    serde_json::from_str(&encode_server(msg).expect("the snapshot encodes")).expect("JSON")
++}
++
++fn child(title: &str, status: SubagentState) -> SubagentInfo {
++    SubagentInfo {
++        title: title.into(),
++        status,
++    }
++}
++
++/// Hostile (compatibility): a thread with no children encodes exactly the keys zeo-browser
++/// 0.1.x's strict schema accepts — no `subagents`, not even empty.
++#[test]
++fn browser_wire_snapshot_without_children_has_no_subagents_key() {
++    let value = encoded(&snapshot(Vec::new()));
++    let mut keys: Vec<&str> = value
++        .as_object()
++        .expect("an object")
++        .keys()
++        .map(String::as_str)
++        .collect();
++    keys.sort_unstable();
++    assert_eq!(
++        keys,
++        vec![
++            "earlier",
++            "entries",
++            "id",
++            "kind",
++            "permissions",
++            "status",
++            "thread",
++            "v"
++        ],
++        "0.1.x drops a snapshot carrying any other key"
++    );
++}
++
++/// Hostile (distinguishability): two children sharing a title and a status stay two entries,
++/// in the order given.
++#[test]
++fn browser_wire_snapshot_keeps_same_titled_children_apart() {
++    let value = encoded(&snapshot(vec![
++        child("Worker", SubagentState::Running),
++        child("Worker", SubagentState::Running),
++    ]));
++    assert_eq!(
++        value["subagents"],
++        json!([
++            { "title": "Worker", "status": "running" },
++            { "title": "Worker", "status": "running" }
++        ])
++    );
++}
++
++/// Hostile (shape): an entry is exactly `{title, status}`; anything else is refused, and so is
++/// a status outside the six.
++#[test]
++fn browser_wire_snapshot_subagent_entries_are_strict() {
++    let mut value = encoded(&snapshot(vec![child("Alpha", SubagentState::Done)]));
++    value["subagents"][0]["session_id"] = json!("alpha");
++    assert!(
++        serde_json::from_value::<ServerMsg>(value).is_err(),
++        "an extra key in an entry is refused"
++    );
++    let mut value = encoded(&snapshot(vec![child("Alpha", SubagentState::Done)]));
++    value["subagents"][0]["status"] = json!("completed");
++    assert!(
++        serde_json::from_value::<ServerMsg>(value).is_err(),
++        "the row statuses are R1.3's, not the feed's"
++    );
++}
++
++/// Every status, its wire word, and a round trip through the decoder.
++#[test]
++fn browser_wire_snapshot_subagents_round_trip_with_every_status() {
++    let all = [
++        (SubagentState::Running, "running"),
++        (SubagentState::Waiting, "waiting"),
++        (SubagentState::Done, "done"),
++        (SubagentState::Failed, "failed"),
++        (SubagentState::Canceled, "canceled"),
++        (SubagentState::Unknown, "unknown"),
++    ];
++    let msg = snapshot(
++        all.iter()
++            .map(|(status, word)| child(&format!("Child {word}"), *status))
++            .collect(),
++    );
++    let value = encoded(&msg);
++    let words: Vec<&str> = value["subagents"]
++        .as_array()
++        .expect("an array")
++        .iter()
++        .map(|entry| entry["status"].as_str().expect("a word"))
++        .collect();
++    assert_eq!(words, all.iter().map(|(_, word)| *word).collect::<Vec<_>>());
++    let decoded: ServerMsg = serde_json::from_value(value).expect("the snapshot decodes");
++    assert_eq!(decoded, msg);
++}
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
 index ed92ae0..9cafd4a 100644
 --- a/crates/agent_ui/src/conversation_view.rs
@@ -6721,10 +7160,10 @@ index ed92ae0..9cafd4a 100644
      selection: Option<&thread_view::PermissionSelection>,
      is_allow: bool,
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index d02fcdb..a88f2d1 100644
+index 4b52b2e..fa867df 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
-@@ -1530,7 +1530,7 @@ impl ThreadView {
+@@ -1531,7 +1531,7 @@ impl ThreadView {
      /// Resolves the message editor's contents into content blocks. For profiles
      /// that do not enable any tools, directory mentions are expanded to inline
      /// file contents since the agent can't read files on its own.
@@ -6733,7 +7172,7 @@ index d02fcdb..a88f2d1 100644
          &self,
          message_editor: &Entity<MessageEditor>,
          cx: &mut App,
-@@ -2430,6 +2430,89 @@ impl ThreadView {
+@@ -2431,6 +2431,89 @@ impl ThreadView {
          self.send_content(contents_task, false, window, cx);
      }
  
@@ -6823,7 +7262,7 @@ index d02fcdb..a88f2d1 100644
      pub fn send_content(
          &mut self,
          contents_task: Task<
-@@ -2439,6 +2522,23 @@ impl ThreadView {
+@@ -2440,6 +2523,23 @@ impl ThreadView {
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -6847,7 +7286,7 @@ index d02fcdb..a88f2d1 100644
          let session_id = self.thread.read(cx).session_id().clone();
          let parent_session_id = self.thread.read(cx).parent_session_id().cloned();
          let agent_telemetry_id = self.thread.read(cx).connection().telemetry_id();
-@@ -2471,9 +2571,11 @@ impl ThreadView {
+@@ -2472,9 +2572,11 @@ impl ThreadView {
                  (!uses_reported_activity).then(|| this.start_turn(cx))
              })?;
  
@@ -6862,7 +7301,7 @@ index d02fcdb..a88f2d1 100644
  
              let _ = this.update(cx, |this, cx| {
                  this.list_state.scroll_to_end();
-@@ -2540,6 +2642,9 @@ impl ThreadView {
+@@ -2541,6 +2643,9 @@ impl ThreadView {
                  }
              })?;
              let submission_id = send.id;
@@ -6872,7 +7311,7 @@ index d02fcdb..a88f2d1 100644
  
              let _ = this.update(cx, |this, cx| {
                  this.current_submission = Some(submission_id);
-@@ -2663,94 +2768,14 @@ impl ThreadView {
+@@ -2664,94 +2769,14 @@ impl ThreadView {
          cx.notify();
      }
  
@@ -6974,7 +7413,7 @@ index d02fcdb..a88f2d1 100644
  
          let agent_telemetry_id = self.thread.read(cx).connection().telemetry_id();
          let session_id = self.thread.read(cx).session_id().clone();
-@@ -2771,6 +2796,99 @@ impl ThreadView {
+@@ -2772,6 +2797,99 @@ impl ThreadView {
          );
      }
  
@@ -7074,7 +7513,7 @@ index d02fcdb..a88f2d1 100644
      pub fn cancel_generation(&mut self, cx: &mut Context<Self>) {
          self.thread_retry_status.take();
          self.thread_error.take();
-@@ -15473,6 +15591,7 @@ pub(crate) fn open_link(
+@@ -15543,6 +15661,7 @@ pub(crate) fn open_link(
              MentionUri::TerminalSelection { .. } => {}
              MentionUri::GitDiff { .. } => {}
              MentionUri::MergeConflict { .. } => {}
@@ -11856,10 +12295,10 @@ index 796efb7..cff7b56 100644
 +    }
 +}
 diff --git a/crates/zed/src/zed.rs b/crates/zed/src/zed.rs
-index c994135..255af91 100644
+index 44c1d01..3517adf 100644
 --- a/crates/zed/src/zed.rs
 +++ b/crates/zed/src/zed.rs
-@@ -6315,6 +6315,7 @@ mod tests {
+@@ -6316,6 +6316,7 @@ mod tests {
                  "debug_panel",
                  "debugger",
                  "dev",

@@ -1,0 +1,332 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 3 Nov 2026 12:52:39 -0300
+Subject: [PATCH] agent_ui: Claude Agent (Plus)'s Plan updates is a ToDo toggle
+ in the agent menu
+
+The adapter's `plan_updates` session option turns on the CLI's todo tools,
+so the plan view fills on current models. Zed drew it in the composer row
+beside Model, Effort and Mode, as it draws every boolean option. That row
+holds per-turn choices; this one is set once per thread, and its name
+described the mechanism rather than what the user sees, which is the
+agent's todo list.
+
+What changes:
+
+  * The option leaves the composer row (`shows_in_composer_row`). It is
+    matched by its id, `plan_updates` -- the id the adapter keeps so saved
+    defaults still match, whatever name it advertises.
+  * The agent panel's options menu ("Toggle Agent Menu", the ellipsis) gets a
+    checkable "ToDo" entry under "Current Thread". It shows from the first
+    message on, not only once the thread has messages like the entries
+    beside it: the toggle decides whether that first turn already fills the
+    plan view. Disabled when the session's options are read-only; absent
+    when the agent does not offer the option.
+  * The state is read when the menu opens, not when the panel last
+    rendered, so a toggle shows on reopen without a panel repaint. It comes
+    from the root thread: the option belongs to the session, and a subagent
+    thread in focus shares it.
+  * Toggling is thread-local, like the composer switch it replaces and like
+    cycling: no default is saved, because the adapter scopes the option to
+    the session (claude-agent-plus `plan-updates.ts`).
+  * Both shapes are handled: the native boolean, and the "on"/"off" select
+    the adapter sends to a client without boolean options.
+
+The label is fixed here ("ToDo") rather than taken from the adapter, so the
+entry reads the same against an adapter that still advertises "Plan
+updates"; claude-agent-plus renames it to "ToDo" in the same change.
+
+Tests (config_options::tests): the toggle flips both shapes and saves no
+default; an agent without the option gets no entry and no request; the
+option leaves the composer row while other booleans stay.
+
+Packaging: claude-agent-acp-plus group, after 0072. It follows 0010's rule
+that a gesture moves the thread and only Shift-confirm saves a default, and
+the only agent that offers the option is that adapter.
+---
+
+diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
+index ef6546f..38730ed 100644
+--- a/crates/agent_ui/src/agent_panel.rs
++++ b/crates/agent_ui/src/agent_panel.rs
+@@ -39,6 +39,7 @@ use crate::ExpandMessageEditor;
+ use crate::ManageProfiles;
+ use crate::agent_connection_store::AgentConnectionStore;
+ use crate::completion_provider::{AgentContextSelection, AgentContextSource};
++use crate::config_options::TODO_MENU_LABEL;
+ use crate::tasks_card::{TasksCard, TasksCardEvent, TasksCardOverlay};
+ use crate::terminal_thread_metadata_store::{
+     TerminalThreadMetadata, TerminalThreadMetadataStore, compose_terminal_thread_title,
+@@ -6434,6 +6435,13 @@ impl AgentPanel {
+         let workspace = self.workspace.clone();
+         let fs = self.fs.clone();
+ 
++        // The ToDo toggle is read from the root thread: the option belongs to
++        // the session, and a subagent thread in focus shares it.
++        let todo_options_view = conversation_view
++            .as_ref()
++            .and_then(|conversation_view| conversation_view.read(cx).root_thread_view())
++            .and_then(|thread_view| thread_view.read(cx).config_options_view.clone());
++
+         PopoverMenu::new("agent-options-menu")
+             .trigger_with_tooltip(
+                 IconButton::new("agent-options-menu", IconName::Ellipsis)
+@@ -6454,10 +6462,35 @@ impl AgentPanel {
+                     Some(ContextMenu::build(window, cx, |mut menu, _window, cx| {
+                         menu = menu.context(menu_action_context.clone());
+ 
+-                        if has_thread_messages {
++                        // Read when the menu opens, so a toggle shows on reopen
++                        // even if the panel has not re-rendered in between.
++                        let todo_toggle = todo_options_view.as_ref().and_then(|view| {
++                            let options = view.read(cx);
++                            let enabled = options.todo_enabled()?;
++                            Some((view.clone(), enabled, options.is_read_only()))
++                        });
++
++                        // ToDo is offered before the first message: it decides
++                        // whether that first turn already fills the plan view.
++                        if has_thread_messages || todo_toggle.is_some() {
+                             menu = menu.header("Current Thread");
+ 
+-                            if let Some(conversation_view) = conversation_view.as_ref() {
++                            if let Some((view, enabled, read_only)) = todo_toggle {
++                                menu = menu.toggleable_entry_disabled_when(
++                                    TODO_MENU_LABEL,
++                                    enabled,
++                                    read_only,
++                                    IconPosition::Start,
++                                    None,
++                                    move |_, cx| {
++                                        view.update(cx, |view, cx| view.toggle_todo(cx));
++                                    },
++                                );
++                            }
++
++                            if let Some(conversation_view) =
++                                conversation_view.as_ref().filter(|_| has_thread_messages)
++                            {
+                                 if can_regenerate_thread_title {
+                                     menu = menu.entry("Regenerate Thread Title", None, {
+                                         let conversation_view = conversation_view.clone();
+@@ -6490,9 +6523,9 @@ impl AgentPanel {
+                                         }
+                                     });
+                                 }
+-
+-                                menu = menu.separator();
+                             }
++
++                            menu = menu.separator();
+                         }
+ 
+                         if !showing_terminal {
+diff --git a/crates/agent_ui/src/config_options.rs b/crates/agent_ui/src/config_options.rs
+index 6dc7806..4839cfc 100644
+--- a/crates/agent_ui/src/config_options.rs
++++ b/crates/agent_ui/src/config_options.rs
+@@ -33,6 +33,34 @@ use crate::{
+ 
+ const PICKER_THRESHOLD: usize = 5;
+ 
++/// Claude Agent (Plus)'s todo-tools option (`plan-updates.ts`). Zeo shows it as
++/// a toggle in the agent panel's options menu instead of the composer row: it is
++/// set once per thread, and the row is where per-turn choices live.
++pub const TODO_CONFIG_ID: &str = "plan_updates";
++/// The menu label, fixed here rather than taken from the adapter so the entry
++/// reads the same against an adapter that still advertises the old name.
++pub const TODO_MENU_LABEL: &str = "ToDo";
++/// The select fallback an adapter sends to a client without boolean options.
++const TODO_SELECT_ON: &str = "on";
++const TODO_SELECT_OFF: &str = "off";
++
++fn shows_in_composer_row(option: &acp::SessionConfigOption) -> bool {
++    matches!(
++        &option.kind,
++        acp::SessionConfigKind::Select(_) | acp::SessionConfigKind::Boolean(_)
++    ) && option.config_id.0.as_ref() != TODO_CONFIG_ID
++}
++
++fn todo_option_enabled(option: &acp::SessionConfigOption) -> Option<bool> {
++    match &option.kind {
++        acp::SessionConfigKind::Boolean(boolean) => Some(boolean.current_value),
++        acp::SessionConfigKind::Select(select) => {
++            Some(select.current_value.0.as_ref() == TODO_SELECT_ON)
++        }
++        _ => None,
++    }
++}
++
+ pub struct ConfigOptionsView {
+     config_options: Rc<dyn AgentSessionConfigOptions>,
+     selectors: Vec<Entity<ConfigOptionSelector>>,
+@@ -80,6 +108,52 @@ impl ConfigOptionsView {
+         self.config_options.is_read_only()
+     }
+ 
++    /// Whether the session's ToDo option is on; `None` when the agent does not
++    /// offer it, so the menu leaves the entry out.
++    pub fn todo_enabled(&self) -> Option<bool> {
++        self.config_options
++            .config_options()
++            .into_iter()
++            .find(|option| option.config_id.0.as_ref() == TODO_CONFIG_ID)
++            .and_then(|option| todo_option_enabled(&option))
++    }
++
++    pub fn toggle_todo(&mut self, cx: &mut Context<Self>) {
++        if self.config_options.is_read_only() {
++            return;
++        }
++        let Some(option) = self
++            .config_options
++            .config_options()
++            .into_iter()
++            .find(|option| option.config_id.0.as_ref() == TODO_CONFIG_ID)
++        else {
++            return;
++        };
++        let Some(enabled) = todo_option_enabled(&option) else {
++            return;
++        };
++        let value = match &option.kind {
++            acp::SessionConfigKind::Boolean(_) => acp::SessionConfigOptionValue::boolean(!enabled),
++            _ => acp::SessionConfigOptionValue::id(if enabled {
++                TODO_SELECT_OFF
++            } else {
++                TODO_SELECT_ON
++            }),
++        };
++        // Thread-local, like the composer switch it replaces: the adapter
++        // scopes the option to the session, so no default is saved.
++        let task = self
++            .config_options
++            .set_config_option(option.config_id, value, cx);
++        cx.spawn(async move |_, _| {
++            if let Err(err) = task.await {
++                log::error!("Failed to set config option: {:?}", err);
++            }
++        })
++        .detach();
++    }
++
+     pub fn toggle_category_picker(
+         &mut self,
+         category: acp::SessionConfigOptionCategory,
+@@ -258,12 +332,7 @@ impl ConfigOptionsView {
+         config_options
+             .config_options()
+             .into_iter()
+-            .filter(|option| {
+-                matches!(
+-                    &option.kind,
+-                    acp::SessionConfigKind::Select(_) | acp::SessionConfigKind::Boolean(_)
+-                )
+-            })
++            .filter(shows_in_composer_row)
+             .map(|option| {
+                 let config_options = config_options.clone();
+                 let agent_server = agent_server.clone();
+@@ -1849,6 +1918,102 @@ mod tests {
+         );
+     }
+ 
++    fn todo_view(
++        config_options: &Rc<TestSessionConfigOptions>,
++        agent_server: &Rc<TestAgentServer>,
++        fs: &Arc<dyn Fs>,
++        cx: &mut App,
++    ) -> Entity<ConfigOptionsView> {
++        let config_options: Rc<dyn AgentSessionConfigOptions> = config_options.clone();
++        let agent_server: Rc<dyn AgentServer> = agent_server.clone();
++        let fs = fs.clone();
++        cx.new(|_| ConfigOptionsView {
++            config_option_ids: ConfigOptionsView::config_option_ids(&config_options),
++            config_options,
++            selectors: Vec::new(),
++            agent_server,
++            fs,
++            _refresh_task: Task::ready(()),
++        })
++    }
++
++    #[gpui::test]
++    fn todo_toggle_flips_both_shapes_without_saving_a_default(cx: &mut TestAppContext) {
++        let shapes = [
++            (
++                acp::SessionConfigOption::boolean(TODO_CONFIG_ID, "Plan updates", false),
++                acp::SessionConfigOptionValue::boolean(true),
++            ),
++            (
++                acp::SessionConfigOption::select(
++                    TODO_CONFIG_ID,
++                    "Plan updates",
++                    TODO_SELECT_OFF,
++                    vec![
++                        acp::SessionConfigSelectOption::new(TODO_SELECT_ON, "On"),
++                        acp::SessionConfigSelectOption::new(TODO_SELECT_OFF, "Off"),
++                    ],
++                ),
++                acp::SessionConfigOptionValue::id(TODO_SELECT_ON),
++            ),
++        ];
++        for (offered, expected) in shapes {
++            let agent_server = Rc::new(TestAgentServer::default());
++            let config_options = Rc::new(TestSessionConfigOptions::new(vec![offered]));
++            let fs: Arc<dyn Fs> = FakeFs::new(cx.executor());
++            let view = cx.update(|cx| todo_view(&config_options, &agent_server, &fs, cx));
++
++            assert_eq!(
++                view.read_with(cx, |view, _| view.todo_enabled()),
++                Some(false)
++            );
++            view.update(cx, |view, cx| view.toggle_todo(cx));
++            cx.run_until_parked();
++
++            assert_eq!(
++                config_options.set_values.borrow().as_slice(),
++                &[(TODO_CONFIG_ID.to_string(), expected)]
++            );
++            assert_eq!(
++                view.read_with(cx, |view, _| view.todo_enabled()),
++                Some(true)
++            );
++            assert!(
++                agent_server.saved_defaults.lock().is_empty(),
++                "the adapter scopes ToDo to the session"
++            );
++        }
++    }
++
++    #[gpui::test]
++    fn todo_is_absent_when_the_agent_does_not_offer_it(cx: &mut TestAppContext) {
++        let agent_server = Rc::new(TestAgentServer::default());
++        let config_options = Rc::new(TestSessionConfigOptions::new(vec![
++            acp::SessionConfigOption::boolean("fast", "Fast mode", false),
++        ]));
++        let fs: Arc<dyn Fs> = FakeFs::new(cx.executor());
++        let view = cx.update(|cx| todo_view(&config_options, &agent_server, &fs, cx));
++
++        assert_eq!(view.read_with(cx, |view, _| view.todo_enabled()), None);
++        view.update(cx, |view, cx| view.toggle_todo(cx));
++        cx.run_until_parked();
++        assert!(config_options.set_values.borrow().is_empty());
++    }
++
++    #[test]
++    fn todo_leaves_the_composer_row_and_other_options_stay() {
++        assert!(!shows_in_composer_row(&acp::SessionConfigOption::boolean(
++            TODO_CONFIG_ID,
++            "Plan updates",
++            true
++        )));
++        assert!(shows_in_composer_row(&acp::SessionConfigOption::boolean(
++            "fast",
++            "Fast mode",
++            true
++        )));
++    }
++
+     #[derive(Default)]
+     struct TestAgentServer {
+         saved_defaults: Arc<Mutex<Vec<(String, Option<AgentConfigOptionValue>)>>>,

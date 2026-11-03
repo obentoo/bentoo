@@ -166,10 +166,10 @@ index a733f21..11807cb 100644
    // that receives element selections from a dev-server page and hands them to
    // the agent panel. Turning it off stops listening and removes the socket.
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index 41dbfb7..6c6ab73 100644
+index a8ceb69..3e81953 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
-@@ -3830,6 +3830,58 @@ impl AgentPanel {
+@@ -3883,6 +3883,58 @@ impl AgentPanel {
          thread_id
      }
  
@@ -228,7 +228,7 @@ index 41dbfb7..6c6ab73 100644
      pub fn activate_retained_thread(
          &mut self,
          id: ThreadId,
-@@ -4714,6 +4766,19 @@ impl AgentPanel {
+@@ -4767,6 +4819,19 @@ impl AgentPanel {
              .collect()
      }
  
@@ -248,7 +248,7 @@ index 41dbfb7..6c6ab73 100644
      pub fn active_thread_view(&self, cx: &App) -> Option<Entity<ThreadView>> {
          let server_view = self.active_conversation_view()?;
          server_view.read(cx).root_thread_view()
-@@ -5014,13 +5079,17 @@ impl AgentPanel {
+@@ -5067,13 +5132,17 @@ impl AgentPanel {
          let mut potential_removals = self
              .retained_threads
              .iter()
@@ -268,7 +268,7 @@ index 41dbfb7..6c6ab73 100644
                  };
                  let thread = thread_view.read(cx).thread.read(cx);
                  thread.connection().supports_load_session() && thread.is_idle_for_retention()
-@@ -5037,7 +5106,11 @@ impl AgentPanel {
+@@ -5090,7 +5159,11 @@ impl AgentPanel {
              .take(n)
              .collect::<Vec<_>>();
          for id in to_remove {
@@ -282,7 +282,7 @@ index 41dbfb7..6c6ab73 100644
      }
  
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index 46dd209..0475b45 100644
+index 9e2dd18..236bc75 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
 @@ -15,7 +15,11 @@ mod config_options;
@@ -297,7 +297,7 @@ index 46dd209..0475b45 100644
  mod diagnostics;
  pub mod draft_prompt_store;
  mod entry_view_state;
-@@ -312,6 +316,8 @@ pub enum AgentThreadSource {
+@@ -314,6 +318,8 @@ pub enum AgentThreadSource {
      AgentPanel,
      GitPanel,
      Sidebar,
@@ -306,7 +306,7 @@ index 46dd209..0475b45 100644
  }
  
  impl AgentThreadSource {
-@@ -320,6 +326,7 @@ impl AgentThreadSource {
+@@ -322,6 +328,7 @@ impl AgentThreadSource {
              Self::AgentPanel => "agent_panel",
              Self::GitPanel => "git_panel",
              Self::Sidebar => "sidebar",
@@ -314,7 +314,7 @@ index 46dd209..0475b45 100644
          }
      }
  }
-@@ -775,8 +782,13 @@ pub fn init(
+@@ -777,8 +784,13 @@ pub fn init(
      context_server_configuration::init(language_registry, fs.clone(), cx);
      thread_metadata_store::init(cx);
      thread_organization::init(cx);
@@ -329,7 +329,7 @@ index 46dd209..0475b45 100644
      inline_assistant::init(fs.clone(), prompt_builder.clone(), cx);
      terminal_inline_assistant::init(fs.clone(), prompt_builder, cx);
 diff --git a/crates/agent_ui/src/browser_channel.rs b/crates/agent_ui/src/browser_channel.rs
-index 15ca383..84230ad 100644
+index 473c806..d902fae 100644
 --- a/crates/agent_ui/src/browser_channel.rs
 +++ b/crates/agent_ui/src/browser_channel.rs
 @@ -7,13 +7,20 @@
@@ -363,7 +363,7 @@ index 15ca383..84230ad 100644
 -    PermissionOption, PermissionOptionKind, SendRequest, SentImages, ServerMsg, Status,
 +    ExtensionClient, ImageAttachment, ImageMime, MAX_SERVER_LINE_BYTES, PROTOCOL_VERSION,
 +    Permission, PermissionOption, PermissionOptionKind, SendRequest, SentImages, ServerMsg, Status,
-     SubscribeTarget, ThreadInfo, ThreadState, ToolStatus, V2,
+     SubagentInfo, SubagentState, SubscribeTarget, ThreadInfo, ThreadState, ToolStatus, V2,
  };
  use crate::conversation_view::{
 @@ -53,6 +60,8 @@ use crate::conversation_view::{
@@ -1185,7 +1185,7 @@ index 15ca383..84230ad 100644
  /// The thread a session streams. Dropping it drops the thread subscription and every pending
  /// update timer.
  struct Attached {
-@@ -1256,6 +1870,12 @@ fn find_thread(thread_id: &str, cx: &App) -> Option<Located> {
+@@ -1279,6 +1893,12 @@ fn find_thread(thread_id: &str, cx: &App) -> Option<Located> {
          .find(|located| located.thread_id.to_key_string() == thread_id)
  }
  
@@ -1198,7 +1198,7 @@ index 15ca383..84230ad 100644
  fn thread_info(located: &Located, followed: bool, cx: &App) -> ThreadInfo {
      let thread = located.thread.read(cx);
      let project = thread
-@@ -1385,7 +2005,7 @@ fn received_markdown(content: &MessageContent, cx: &App) -> String {
+@@ -1408,7 +2028,7 @@ fn received_markdown(content: &MessageContent, cx: &App) -> String {
  const TITLE_BYTES: usize = 4 * 1024;
  
  /// `text` cut to [`TITLE_BYTES`] on a character boundary, with an ellipsis when cut.
@@ -1207,7 +1207,7 @@ index 15ca383..84230ad 100644
      if text.len() <= TITLE_BYTES {
          return text.to_string();
      }
-@@ -1861,6 +2481,7 @@ fn review_streams(cx: &mut App) {
+@@ -1884,6 +2504,7 @@ fn review_streams(cx: &mut App) {
          .map(|(id, _)| id.clone())
          .collect();
      for id in closed {
@@ -1215,7 +1215,7 @@ index 15ca383..84230ad 100644
          if let Some(stream) = global(cx)
              .sessions
              .get_mut(&id)
-@@ -1868,6 +2489,10 @@ fn review_streams(cx: &mut App) {
+@@ -1891,6 +2512,10 @@ fn review_streams(cx: &mut App) {
          {
              stream.attached = None;
          }
@@ -1226,7 +1226,7 @@ index 15ca383..84230ad 100644
          if stream_send(&id, ServerMsg::ThreadClosed { v: V2 }, cx) {
              log_line(
                  log::Level::Debug,
-@@ -1931,6 +2556,94 @@ fn review_streams(cx: &mut App) {
+@@ -1954,6 +2579,94 @@ fn review_streams(cx: &mut App) {
      }
  }
  
@@ -1321,7 +1321,7 @@ index 15ca383..84230ad 100644
  // ---------------------------------------------------------------------------------------------
  // Driving a thread: send, stop, authorize, open in Zeo (R7, R5.7)
  
-@@ -1947,22 +2660,35 @@ struct Driven {
+@@ -1970,22 +2683,35 @@ struct Driven {
  
  /// The thread session `id` acts on: the one it streams, else the followed one (a session that
  /// never subscribed follows). A pinned thread that closed is `thread_closed`; nothing to follow
@@ -1361,7 +1361,7 @@ index 15ca383..84230ad 100644
      let thread = match attached {
          Some(thread) => thread,
          None if pinned => return Err(ChannelError::ThreadClosed),
-@@ -2004,17 +2730,26 @@ fn holder_of(thread: &Entity<AcpThread>, cx: &App) -> Option<Driven> {
+@@ -2027,17 +2753,26 @@ fn holder_of(thread: &Entity<AcpThread>, cx: &App) -> Option<Driven> {
  /// composer: a detached composer of the thread gets the text, one browser chip per element and
  /// capture, and the images when the agent takes them, then goes through the thread view's
  /// queue-or-send path (R7.1–R7.3, R7.9, R10.5). Answered once the thread has taken the message
@@ -1392,7 +1392,7 @@ index 15ca383..84230ad 100644
      };
      let attachment_count = attachments.len();
      let mut contents = Vec::new();
-@@ -2039,7 +2774,9 @@ fn send_message(id: &SessionId, request: SendRequest, cx: &mut App) -> &'static
+@@ -2062,7 +2797,9 @@ fn send_message(id: &SessionId, request: SendRequest, cx: &mut App) -> &'static
      let images = if sent_images == SentImages::Included {
          match decode_images(&images) {
              Ok(images) => images,
@@ -1403,7 +1403,7 @@ index 15ca383..84230ad 100644
          }
      } else {
          Vec::new()
-@@ -2068,7 +2805,7 @@ fn send_message(id: &SessionId, request: SendRequest, cx: &mut App) -> &'static
+@@ -2091,7 +2828,7 @@ fn send_message(id: &SessionId, request: SendRequest, cx: &mut App) -> &'static
          Ok(composed) => composed,
          Err(error) => {
              let error = error.context("composing the message");
@@ -1412,7 +1412,7 @@ index 15ca383..84230ad 100644
          }
      };
  
-@@ -2125,14 +2862,14 @@ fn send_message(id: &SessionId, request: SendRequest, cx: &mut App) -> &'static
+@@ -2148,14 +2885,14 @@ fn send_message(id: &SessionId, request: SendRequest, cx: &mut App) -> &'static
                  log_line(
                      log::Level::Info,
                      format!(
@@ -1430,7 +1430,7 @@ index 15ca383..84230ad 100644
              }
          });
      })
-@@ -2172,9 +2909,11 @@ fn sent_images_code(images: SentImages) -> &'static str {
+@@ -2195,9 +2932,11 @@ fn sent_images_code(images: SentImages) -> &'static str {
  }
  
  /// Answers `send_failed` with what failed after the contract's message, so the sidebar can say
@@ -1443,7 +1443,7 @@ index 15ca383..84230ad 100644
      request_id: String,
      error: &anyhow::Error,
      reason: &'static str,
-@@ -2194,18 +2933,18 @@ fn send_failed(
+@@ -2217,18 +2956,18 @@ fn send_failed(
      );
      log_line(
          log::Level::Warn,
@@ -1468,7 +1468,7 @@ index 15ca383..84230ad 100644
      };
      driven
          .view
-@@ -2230,14 +2969,17 @@ fn cancel(id: &SessionId, request_id: String, cx: &mut App) -> &'static str {
+@@ -2253,14 +2992,17 @@ fn cancel(id: &SessionId, request_id: String, cx: &mut App) -> &'static str {
  /// changes nothing.
  fn authorize(
      id: &SessionId,
@@ -1488,7 +1488,7 @@ index 15ca383..84230ad 100644
      };
      let found = driven
          .thread
-@@ -2348,7 +3090,7 @@ fn open_in_zeo(
+@@ -2371,7 +3113,7 @@ fn open_in_zeo(
      app_state: Arc<AppState>,
      cx: &mut App,
  ) -> &'static str {
@@ -1497,7 +1497,7 @@ index 15ca383..84230ad 100644
          Ok(driven) => driven,
          Err(error) => return reply_error(id, Some(request_id), error, cx),
      };
-@@ -2470,6 +3212,31 @@ fn send(id: &SessionId, msg: ServerMsg, cx: &mut App) {
+@@ -2493,6 +3235,31 @@ fn send(id: &SessionId, msg: ServerMsg, cx: &mut App) {
      }
  }
  
@@ -1529,7 +1529,7 @@ index 15ca383..84230ad 100644
  /// Answers `request_id` with `error`; returns the error's code for the log line.
  fn reply_error(
      id: &SessionId,
-@@ -2483,7 +3250,7 @@ fn reply_error(
+@@ -2506,7 +3273,7 @@ fn reply_error(
  
  /// Logs one of this module's event lines. Tests read back the lines their own thread logged:
  /// installing a `log` logger is not possible in a test binary that already has one.
@@ -1538,7 +1538,7 @@ index 15ca383..84230ad 100644
      #[cfg(test)]
      LOGGED.with_borrow_mut(|lines| lines.push((level, line.clone())));
      log::log!(level, "{line}");
-@@ -2511,9 +3278,51 @@ fn logged_levels() -> Vec<(log::Level, String)> {
+@@ -2534,9 +3301,51 @@ fn logged_levels() -> Vec<(log::Level, String)> {
  #[path = "browser_channel_tests/approval.rs"]
  mod approval;
  #[cfg(test)]
@@ -7140,7 +7140,7 @@ index b47903e..8e1e946 100644
  }
  
 diff --git a/crates/agent_ui/src/browser_wire.rs b/crates/agent_ui/src/browser_wire.rs
-index 82bee58..edcf6f9 100644
+index 890e188..c473a19 100644
 --- a/crates/agent_ui/src/browser_wire.rs
 +++ b/crates/agent_ui/src/browser_wire.rs
 @@ -50,6 +50,10 @@ pub enum ChannelError {
@@ -7369,7 +7369,7 @@ index 82bee58..edcf6f9 100644
  #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
  #[serde(rename_all = "snake_case")]
  pub enum Browser {
-@@ -589,6 +731,20 @@ pub enum ServerMsg {
+@@ -593,6 +735,20 @@ pub enum ServerMsg {
      BridgeClosed {
          v: V2,
      },
@@ -11639,10 +11639,10 @@ index 0bfc5fb..2951952 100644
              apply_live_row_state(
                  &mut row,
 diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
-index b903b5b..500ec75 100644
+index b1fb5b5..bcb671f 100644
 --- a/crates/sidebar/src/sidebar.rs
 +++ b/crates/sidebar/src/sidebar.rs
-@@ -6,6 +6,7 @@ use action_log::DiffStats;
+@@ -7,6 +7,7 @@ use action_log::DiffStats;
  use agent::{ThreadStore, ZED_AGENT_ID};
  use agent_client_protocol::schema::v2 as acp;
  use agent_settings::{AgentSettings, THREADS_LIST_MAX_WIDTH, THREADS_LIST_MIN_WIDTH};
@@ -11650,7 +11650,7 @@ index b903b5b..500ec75 100644
  use agent_ui::terminal_thread_metadata_store::{
      TerminalThreadMetadata, TerminalThreadMetadataStore, terminal_title_prefix,
  };
-@@ -106,6 +107,9 @@ mod sidebar_tags_notify_tests;
+@@ -109,6 +110,9 @@ mod sidebar_tags_notify_tests;
  mod sidebar_tags_tests;
  mod thread_tags;
  
@@ -11660,7 +11660,7 @@ index b903b5b..500ec75 100644
  mod lists_view;
  #[cfg(test)]
  mod sidebar_lists_tests;
-@@ -398,6 +402,9 @@ struct ThreadEntry {
+@@ -401,6 +405,9 @@ struct ThreadEntry {
      /// `Some` only on a row of the Pinned section, which names the thread's project because it
      /// sits outside its project group.
      pinned_project_label: Option<SharedString>,
@@ -11670,7 +11670,7 @@ index b903b5b..500ec75 100644
  }
  
  #[derive(Clone)]
-@@ -971,6 +978,10 @@ pub struct Sidebar {
+@@ -974,6 +981,10 @@ pub struct Sidebar {
      cross_channel_import_channels: Vec<SharedString>,
      /// Never serialized: the Pinned section's collapsed state lasts for the session.
      pinned_collapsed: bool,
@@ -11681,7 +11681,7 @@ index b903b5b..500ec75 100644
  }
  
  impl Sidebar {
-@@ -1058,6 +1069,20 @@ impl Sidebar {
+@@ -1061,6 +1072,20 @@ impl Sidebar {
          })
          .detach();
  
@@ -11702,7 +11702,7 @@ index b903b5b..500ec75 100644
          cx.observe(
              &TerminalThreadMetadataStore::global(cx),
              |this, _store, cx| {
-@@ -1124,6 +1149,8 @@ impl Sidebar {
+@@ -1127,6 +1152,8 @@ impl Sidebar {
              import_banners_use_verbose_labels: None,
              cross_channel_import_channels: Vec::new(),
              pinned_collapsed: false,
@@ -11711,7 +11711,7 @@ index b903b5b..500ec75 100644
          }
      }
  
-@@ -1627,6 +1654,14 @@ impl Sidebar {
+@@ -1630,6 +1657,14 @@ impl Sidebar {
  
          let query = self.filter_editor.read(cx).text(cx);
          let tag_query = agent_ui::thread_tag_filter::parse_tag_query(&query);
@@ -11726,7 +11726,7 @@ index b903b5b..500ec75 100644
  
          let previous = mem::take(&mut self.contents);
  
-@@ -1816,6 +1851,9 @@ impl Sidebar {
+@@ -1819,6 +1854,9 @@ impl Sidebar {
                      .has_notification
                      .then_some(terminal.metadata.terminal_id)
              }));
@@ -11736,7 +11736,7 @@ index b903b5b..500ec75 100644
              if group_key.path_list().paths().is_empty() {
                  continue;
              }
-@@ -1823,7 +1861,7 @@ impl Sidebar {
+@@ -1826,7 +1864,7 @@ impl Sidebar {
              let label = group_key.display_name(&path_detail_map);
  
              let is_collapsed = self.is_group_collapsed(group_key, cx);
@@ -11745,7 +11745,7 @@ index b903b5b..500ec75 100644
  
              let is_active = active_workspace
                  .as_ref()
-@@ -1859,6 +1897,7 @@ impl Sidebar {
+@@ -1862,6 +1900,7 @@ impl Sidebar {
                          // pass below downgrades them to `Empty` if no draft
                          // label can be derived.
                          let draft = row.is_draft().then_some(DraftKind::WithContent);
@@ -11753,7 +11753,7 @@ index b903b5b..500ec75 100644
                          Arc::new(ThreadEntry {
                              metadata: row,
                              icon,
-@@ -1873,6 +1912,7 @@ impl Sidebar {
+@@ -1876,6 +1915,7 @@ impl Sidebar {
                              worktrees,
                              diff_stats: DiffStats::default(),
                              pinned_project_label: None,
@@ -11761,7 +11761,7 @@ index b903b5b..500ec75 100644
                          })
                      };
  
-@@ -1986,6 +2026,11 @@ impl Sidebar {
+@@ -1989,6 +2029,11 @@ impl Sidebar {
                      if thread.draft != Some(DraftKind::Empty) {
                          return true;
                      }
@@ -11773,7 +11773,7 @@ index b903b5b..500ec75 100644
                      if pending_activation.is_some() {
                          return false;
                      }
-@@ -2028,6 +2073,18 @@ impl Sidebar {
+@@ -2031,6 +2076,18 @@ impl Sidebar {
                      let b_time = Self::thread_display_time(&b.metadata);
                      b_time.cmp(&a_time)
                  });
@@ -11792,7 +11792,7 @@ index b903b5b..500ec75 100644
              } else {
                  for info in live_infos {
                      if info.status == AgentThreadStatus::Running {
-@@ -2160,7 +2217,10 @@ impl Sidebar {
+@@ -2163,7 +2220,10 @@ impl Sidebar {
                  if tag_query.has_keys() && matched_threads.is_empty() {
                      continue;
                  }
@@ -11804,7 +11804,7 @@ index b903b5b..500ec75 100644
                  {
                      continue;
                  }
-@@ -2195,6 +2255,10 @@ impl Sidebar {
+@@ -2198,6 +2258,10 @@ impl Sidebar {
                      cx,
                  );
              } else {
@@ -11815,7 +11815,7 @@ index b903b5b..500ec75 100644
                  let has_terminal_notifications = terminals
                      .iter()
                      .any(|t| notified_terminals.contains(&t.metadata.terminal_id));
-@@ -2236,7 +2300,8 @@ impl Sidebar {
+@@ -2239,7 +2303,8 @@ impl Sidebar {
                      has_threads,
                  });
  
@@ -11825,7 +11825,7 @@ index b903b5b..500ec75 100644
                      continue;
                  }
  
-@@ -2261,6 +2326,7 @@ impl Sidebar {
+@@ -2264,6 +2329,7 @@ impl Sidebar {
                  path_detail_map: &path_detail_map,
                  branch_by_path: &branch_by_path,
                  resolve_agent_icon: &resolve_agent_icon,
@@ -11833,7 +11833,7 @@ index b903b5b..500ec75 100644
                  new_live_statuses: &mut new_live_statuses,
                  notified_threads: &mut notified_threads,
              },
-@@ -2270,7 +2336,16 @@ impl Sidebar {
+@@ -2273,7 +2339,16 @@ impl Sidebar {
              thread_tags::retain_tagged_rows(pinned_rows, &tag_query, &mut current_thread_ids, cx);
          // Like a group's rows, a pinned row the filter drops is not registered below, so the
          // header is decided by, and reports notifications of, only the rows that are shown.
@@ -11851,7 +11851,7 @@ index b903b5b..500ec75 100644
          if !pinned_rows.is_empty() {
              // Registered even while the section is collapsed, so the retains below keep the
              // notifications its header reports.
-@@ -2286,7 +2361,7 @@ impl Sidebar {
+@@ -2289,7 +2364,7 @@ impl Sidebar {
              project_header_indices.push(entries.len());
              entries.push(ListEntry::PinnedHeader { has_notifications });
              // Like a project group, a collapsed section still shows what the filter matches.
@@ -11860,7 +11860,7 @@ index b903b5b..500ec75 100644
                  entries.extend(pinned_rows.into_iter().map(ListEntry::Thread));
              }
          }
-@@ -2302,6 +2377,7 @@ impl Sidebar {
+@@ -2305,6 +2380,7 @@ impl Sidebar {
                          path_detail_map: &path_detail_map,
                          branch_by_path: &branch_by_path,
                          resolve_agent_icon: &resolve_agent_icon,
@@ -11868,7 +11868,7 @@ index b903b5b..500ec75 100644
                          new_live_statuses: &mut new_live_statuses,
                          notified_threads: &mut notified_threads,
                      };
-@@ -2645,7 +2721,7 @@ impl Sidebar {
+@@ -2648,7 +2724,7 @@ impl Sidebar {
      ) -> AnyElement {
          let host = key.host();
  
@@ -11877,7 +11877,7 @@ index b903b5b..500ec75 100644
  
          let id_prefix = if is_sticky { "sticky-" } else { "" };
          let id = SharedString::from(format!("{id_prefix}project-header-{ix}"));
-@@ -2830,7 +2906,7 @@ impl Sidebar {
+@@ -2833,7 +2909,7 @@ impl Sidebar {
                  cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                      if event.modifiers().secondary(cx) {
                          this.activate_or_open_workspace_for_group(&key_for_focus, window, cx);
@@ -11886,7 +11886,7 @@ index b903b5b..500ec75 100644
                          this.toggle_collapse(&key_for_toggle, window, cx);
                      }
                  }),
-@@ -2884,7 +2960,7 @@ impl Sidebar {
+@@ -2887,7 +2963,7 @@ impl Sidebar {
              SharedString::from(format!("{id_prefix}project-header-new-thread-{ix}")),
              IconName::Plus,
          )
@@ -11895,7 +11895,7 @@ index b903b5b..500ec75 100644
              let color = cx.theme().colors();
              button
                  .hover_background(color.element_background)
-@@ -3199,7 +3275,7 @@ impl Sidebar {
+@@ -3202,7 +3278,7 @@ impl Sidebar {
              .with_handle(menu_handle)
              .trigger(
                  IconButton::new(trigger_id, IconName::Ellipsis)
@@ -11904,7 +11904,7 @@ index b903b5b..500ec75 100644
                          let color = cx.theme().colors();
                          button
                              .hover_background(color.element_background)
-@@ -3583,7 +3659,7 @@ impl Sidebar {
+@@ -3586,7 +3662,7 @@ impl Sidebar {
                          .color(Color::Accent),
                  )
              })
@@ -11913,7 +11913,7 @@ index b903b5b..500ec75 100644
                  this.child(
                      Icon::new(disclosure_icon)
                          .size(IconSize::Small)
-@@ -3592,7 +3668,7 @@ impl Sidebar {
+@@ -3595,7 +3671,7 @@ impl Sidebar {
              })
              .cursor_pointer()
              .on_click(cx.listener(|this, _: &gpui::ClickEvent, _window, cx| {
@@ -11922,7 +11922,7 @@ index b903b5b..500ec75 100644
                      this.set_pinned_collapsed(!this.pinned_collapsed, cx);
                  }
              }))
-@@ -3816,6 +3892,28 @@ impl Sidebar {
+@@ -3819,6 +3895,28 @@ impl Sidebar {
          !self.filter_editor.read(cx).text(cx).is_empty()
      }
  
@@ -11951,7 +11951,7 @@ index b903b5b..500ec75 100644
      fn start_renaming_entry(
          &mut self,
          ix: usize,
-@@ -6790,6 +6888,9 @@ impl Sidebar {
+@@ -6810,6 +6908,9 @@ impl Sidebar {
              .when_some(thread.pinned_project_label.clone(), |this, label| {
                  this.project_name(label)
              })
@@ -11961,7 +11961,7 @@ index b903b5b..500ec75 100644
              .map(|item| sub_thread_marker::mark_sub_thread(item, thread.metadata.thread_id, cx))
              .tags(thread_tags::tag_chips_for(thread.metadata.thread_id, cx))
              .timestamp(timestamp)
-@@ -7913,6 +8014,8 @@ impl Sidebar {
+@@ -7933,6 +8034,8 @@ impl Sidebar {
          let has_query = self.has_filter_query(cx);
          let message = if has_query {
              "No threads match your search."
@@ -11970,7 +11970,7 @@ index b903b5b..500ec75 100644
          } else {
              "No threads yet"
          };
-@@ -8019,6 +8122,20 @@ impl Sidebar {
+@@ -8039,6 +8142,20 @@ impl Sidebar {
                                      && !self.filter_editor.focus_handle(cx).is_focused(window),
                                  |this| this.child(KeyBinding::for_action(&FocusSidebarFilter, cx)),
                              )
@@ -12451,7 +12451,7 @@ index 5d35420..243b354 100644
      }
  
 diff --git a/crates/sidebar/src/sidebar_tests.rs b/crates/sidebar/src/sidebar_tests.rs
-index 427f1e4..9f5cc60 100644
+index 35af9bd..21ef9d9 100644
 --- a/crates/sidebar/src/sidebar_tests.rs
 +++ b/crates/sidebar/src/sidebar_tests.rs
 @@ -1547,6 +1547,7 @@ async fn test_neighboring_activatable_entry_stays_within_project(cx: &mut TestAp
@@ -12503,10 +12503,10 @@ index 427f1e4..9f5cc60 100644
              // Collapsed project header
              ListEntry::ProjectHeader {
 diff --git a/crates/zed/src/zed.rs b/crates/zed/src/zed.rs
-index 255af91..458120e 100644
+index 3517adf..dd53675 100644
 --- a/crates/zed/src/zed.rs
 +++ b/crates/zed/src/zed.rs
-@@ -6315,6 +6315,7 @@ mod tests {
+@@ -6316,6 +6316,7 @@ mod tests {
                  "debug_panel",
                  "debugger",
                  "dev",

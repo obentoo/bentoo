@@ -73,13 +73,21 @@ a4b39c38 review: (2026-11-01, story 072) Checked against upstream
 beyond 0034's, and it does not touch the SessionMessage arm or
 subagent_association. The output and log surfaces read the same task entries as
 at a5c4ca8b.
+
+Story 064 (2026-11-02): `_claude/tasks` contract version 3 -- an entry may name
+the ACP session of the subagent it describes (`childSessionId`), parsed into
+AgentTask::child_session_id. It is read as a raw value so a malformed one is
+dropped on its own entry with a debug log, never failing the snapshot the way a
+wrong-typed `tail` does; absent in versions 1 and 2. It sits beside this
+patch's version 2 fields, which is why it is here and not in 0034. 3 tests
+(acp_thread_tasks_child_session_tests.rs).
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index c5ce6a6..a294665 100644
+index f2f2fa5..74e88da 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -3887,6 +3887,20 @@ pub struct AgentTask {
+@@ -3888,6 +3888,23 @@ pub struct AgentTask {
      pub usage: Option<AgentTaskUsage>,
      pub last_tool: Option<SharedString>,
      pub summary: Option<SharedString>,
@@ -89,6 +97,9 @@ index c5ce6a6..a294665 100644
 +    /// `_claude/tasks` version 2: a running shell's last lines, sanitized by the
 +    /// agent. `None` for every other task, and from a version 1 agent.
 +    pub tail: Option<Arc<[SharedString]>>,
++    /// `_claude/tasks` version 3: the ACP session of the subagent this entry describes, so
++    /// the task surfaces show one row per child whichever source names it (story 064).
++    pub child_session_id: Option<acp_v2::SessionId>,
 +}
 +
 +/// The end of a task's output, as `_claude/tasks/output` answers it.
@@ -100,7 +111,7 @@ index c5ce6a6..a294665 100644
  }
  
  #[derive(Deserialize)]
-@@ -3910,6 +3924,12 @@ struct WireTask {
+@@ -3911,6 +3928,16 @@ struct WireTask {
      usage: Option<WireTaskUsage>,
      last_tool: Option<String>,
      summary: Option<String>,
@@ -110,10 +121,36 @@ index c5ce6a6..a294665 100644
 +    has_output: bool,
 +    #[serde(default)]
 +    tail: Option<Vec<String>>,
++    // Version 3. Read as a raw value so a malformed one is dropped on its own entry instead
++    // of failing the whole snapshot, which is what a wrong-typed `tail` does.
++    #[serde(default)]
++    child_session_id: Option<serde_json::Value>,
  }
  
  #[derive(Deserialize)]
-@@ -3963,6 +3983,10 @@ impl From<WireTask> for AgentTask {
+@@ -3940,7 +3967,20 @@ fn system_time_from_millis(millis: u64) -> SystemTime {
+ }
+ 
+ impl From<WireTask> for AgentTask {
+-    fn from(task: WireTask) -> Self {
++    fn from(mut task: WireTask) -> Self {
++        let child_session_id = task.child_session_id.take().and_then(|value| match value {
++            serde_json::Value::String(child) if !child.is_empty() => {
++                Some(acp_v2::SessionId::new(child))
++            }
++            serde_json::Value::Null => None,
++            other => {
++                log::debug!(
++                    "ignoring malformed childSessionId on task {}: {other}",
++                    task.id
++                );
++                None
++            }
++        });
+         AgentTask {
+             id: task.id.into(),
+             tool_call_id: task.tool_call_id.map(acp_v2::ToolCallId::new),
+@@ -3964,6 +4004,11 @@ impl From<WireTask> for AgentTask {
              }),
              last_tool: task.last_tool.map(SharedString::from),
              summary: task.summary.map(SharedString::from),
@@ -121,10 +158,11 @@ index c5ce6a6..a294665 100644
 +            tail: task
 +                .tail
 +                .map(|lines| lines.into_iter().map(SharedString::from).collect()),
++            child_session_id,
          }
      }
  }
-@@ -5269,6 +5293,17 @@ impl AcpThread {
+@@ -5270,6 +5315,17 @@ impl AcpThread {
              .stop_task(self.session_id(), task_id, cx)
      }
  
@@ -142,7 +180,7 @@ index c5ce6a6..a294665 100644
      /// Resolves to `false` when the agent had nothing to move to the background.
      pub fn background_task(&self, tool_call_id: &str, cx: &mut App) -> Task<Result<bool>> {
          self.connection
-@@ -5533,10 +5568,14 @@ impl AcpThread {
+@@ -5534,10 +5590,14 @@ impl AcpThread {
                  {
                      match serde_json::from_value::<WireTasksSnapshot>(payload.clone()) {
                          Ok(snapshot) => self.apply_tasks_snapshot(snapshot, cx),
@@ -159,7 +197,7 @@ index c5ce6a6..a294665 100644
                          ),
                      }
                  }
-@@ -9430,12 +9469,15 @@ mod tests {
+@@ -9431,12 +9491,15 @@ mod tests {
              "utilization": 0.40,
          })));
          for blank in ["", "   ", "\t\n"] {
@@ -181,7 +219,7 @@ index c5ce6a6..a294665 100644
          }
          assert!(
              usage.is_empty(),
-@@ -23898,7 +23940,12 @@ mod tests {
+@@ -23899,7 +23962,12 @@ mod tests {
          });
  
          thread.read_with(cx, |thread, _| {
@@ -195,13 +233,173 @@ index c5ce6a6..a294665 100644
              let compaction = compaction_entries(thread)
                  .pop()
                  .expect("the compaction entry survives the enrichment frame");
-@@ -27519,4 +27566,6 @@ mod tests {
+@@ -27520,4 +27588,7 @@ mod tests {
  
      include!("acp_thread_tasks_tests.rs");
      include!("acp_thread_tasks_review_tests.rs");
 +    include!("acp_thread_tasks_v2_tests.rs");
 +    include!("acp_thread_tasks_contract_v2_tests.rs");
++    include!("acp_thread_tasks_child_session_tests.rs");
  }
+diff --git a/crates/acp_thread/src/acp_thread_tasks_child_session_tests.rs b/crates/acp_thread/src/acp_thread_tasks_child_session_tests.rs
+new file mode 100644
+index 0000000..8e098f2
+--- /dev/null
++++ b/crates/acp_thread/src/acp_thread_tasks_child_session_tests.rs
+@@ -0,0 +1,153 @@
++// Story 064, task 2.1 (feed half) — `childSessionId` on a `_claude/tasks` entry (contract v3, story
++// 065): parsed into `AgentTask::child_session_id` when present, absent from v2 and earlier, and a
++// malformed value is ignored, never an error (R3.1, R3.2).
++//
++// Included at the end of `mod tests` in `acp_thread.rs`, AFTER the contract file:
++//
++//     include!("acp_thread_tasks_v2_tests.rs");
++//     include!("acp_thread_tasks_contract_v2_tests.rs");
++//     include!("acp_thread_tasks_child_session_tests.rs");
++//
++// so it shares story 012's helpers (`tasks_thread`, `tasks_send`, `tasks_snapshot`,
++// `tasks_wire_task`, `tasks_ids`) and `FakeAgentConnection`. Every name carries
++// `tasks_child_session` (filter `cargo test -p acp_thread tasks_child_session`).
++//
++// Contract (design.md §Data Models): `AgentTask` gains `child_session_id: Option<SessionId>`
++// (`acp_v2::SessionId`), parsed from the feed's `childSessionId` when present. Task 2.1's
++// objective: a malformed `childSessionId` is ignored, never an error.
++// Assumed beyond design.md: an empty string names no session and reads `None`, as an empty
++// `toolCallId` names no entry (`TaskRecord::new`).
++//
++// Hostile halves first: a malformed `childSessionId` must neither reject the snapshot (as a
++// malformed `tail` does) nor invent a child; two entries naming two children keep each its own;
++// then the benign v3 entry and the v2 entry without the key.
++
++fn tasks_child_session_entry(id: &str, child: serde_json::Value) -> serde_json::Value {
++    let mut task = tasks_wire_task(id, "running", 1_000);
++    task["type"] = serde_json::json!("subagent");
++    task["childSessionId"] = child;
++    task
++}
++
++fn tasks_child_session_of(
++    thread: &Entity<AcpThread>,
++    id: &str,
++    cx: &mut TestAppContext,
++) -> Option<String> {
++    thread.read_with(cx, |thread, _| {
++        thread
++            .tasks()
++            .iter()
++            .find(|task| task.id.as_ref() == id)
++            .unwrap_or_else(|| panic!("task {id} is listed"))
++            .child_session_id
++            .as_ref()
++            .map(|child| child.to_string())
++    })
++}
++
++// A malformed value is ignored on its own entry: the snapshot is accepted whole, the entry is
++// listed with no child, and the well-formed entry beside it keeps its child.
++#[gpui::test]
++async fn test_tasks_child_session_malformed_value_is_ignored_not_an_error(cx: &mut TestAppContext) {
++    for bad in [
++        serde_json::json!(42),
++        serde_json::json!(true),
++        serde_json::json!({ "id": "c-1" }),
++        serde_json::json!(["c-1"]),
++        serde_json::json!(""),
++    ] {
++        let (thread, events) = tasks_thread(Rc::new(FakeAgentConnection::new()), cx).await;
++        tasks_send(
++            &thread,
++            tasks_snapshot(vec![
++                tasks_child_session_entry("bad", bad.clone()),
++                tasks_child_session_entry("good", serde_json::json!("c-good")),
++            ]),
++            cx,
++        );
++        assert_eq!(
++            tasks_ids(&thread, cx),
++            vec![
++                ("bad".to_string(), "running"),
++                ("good".to_string(), "running")
++            ],
++            "a malformed childSessionId never rejects the snapshot: {bad}"
++        );
++        assert_eq!(
++            events.borrow().updated,
++            1,
++            "the snapshot is applied and notified once: {bad}"
++        );
++        assert_eq!(
++            tasks_child_session_of(&thread, "bad", cx),
++            None,
++            "a malformed childSessionId names no child: {bad}"
++        );
++        assert_eq!(
++            tasks_child_session_of(&thread, "good", cx),
++            Some("c-good".to_string()),
++            "the entry beside it keeps its child: {bad}"
++        );
++    }
++}
++
++// Identity is the child's id, not the entry's shape: two entries with the same description name
++// two children, and an entry whose own id equals another child's id names only its own child.
++#[gpui::test]
++async fn test_tasks_child_session_each_entry_keeps_its_own_child(cx: &mut TestAppContext) {
++    let (thread, _events) = tasks_thread(Rc::new(FakeAgentConnection::new()), cx).await;
++    let mut first = tasks_child_session_entry("t1", serde_json::json!("c-a"));
++    let mut second = tasks_child_session_entry("c-a", serde_json::json!("c-b"));
++    first["description"] = serde_json::json!("Explore");
++    second["description"] = serde_json::json!("Explore");
++    tasks_send(&thread, tasks_snapshot(vec![first, second]), cx);
++
++    assert_eq!(
++        tasks_child_session_of(&thread, "t1", cx),
++        Some("c-a".to_string())
++    );
++    assert_eq!(
++        tasks_child_session_of(&thread, "c-a", cx),
++        Some("c-b".to_string()),
++        "an entry id that looks like a child id is still only an entry id"
++    );
++}
++
++// Benign: a v3 entry carries its child; a v2 entry (no key) and `null` carry none, and the rest of
++// the entry parses as before.
++#[gpui::test]
++async fn test_tasks_child_session_v3_value_parses_and_v2_entry_has_none(cx: &mut TestAppContext) {
++    let (thread, _events) = tasks_thread(Rc::new(FakeAgentConnection::new()), cx).await;
++    let v2_entry = tasks_wire_task("v2", "completed", 2_000);
++    assert!(
++        v2_entry.get("childSessionId").is_none(),
++        "precondition: a version 2 entry has no childSessionId key"
++    );
++    tasks_send(
++        &thread,
++        tasks_snapshot(vec![
++            tasks_child_session_entry("v3", serde_json::json!("c-native")),
++            tasks_child_session_entry("null", serde_json::json!(null)),
++            v2_entry,
++        ]),
++        cx,
++    );
++
++    assert_eq!(
++        tasks_child_session_of(&thread, "v3", cx),
++        Some("c-native".to_string())
++    );
++    assert_eq!(tasks_child_session_of(&thread, "null", cx), None);
++    assert_eq!(tasks_child_session_of(&thread, "v2", cx), None);
++    thread.read_with(cx, |thread, _| {
++        let v3 = thread
++            .tasks()
++            .iter()
++            .find(|task| task.id.as_ref() == "v3")
++            .expect("v3 is listed");
++        assert_eq!(v3.kind.as_ref(), "subagent");
++        assert_eq!(v3.description.as_ref(), "Task v3");
++        assert_eq!(v3.status, AgentTaskStatus::Running);
++    });
++}
 diff --git a/crates/acp_thread/src/acp_thread_tasks_contract_v2_tests.rs b/crates/acp_thread/src/acp_thread_tasks_contract_v2_tests.rs
 new file mode 100644
 index 0000000..b4d0a51
@@ -712,7 +910,7 @@ index 0000000..63eb65f
 +  ]
 +}
 diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
-index df7c120..fcf19f2 100644
+index 3cdc564..b1b3f4c 100644
 --- a/crates/agent_servers/src/acp/v1.rs
 +++ b/crates/agent_servers/src/acp/v1.rs
 @@ -57,6 +57,9 @@ const PARAMETERIZED_MODEL_PICKER_META_KEY: &str = "parameterizedModelPicker";
@@ -838,7 +1036,7 @@ index df7c120..fcf19f2 100644
          fn request_elicitations(&self) -> Option<Entity<ElicitationStore>> {
              self.inner.request_elicitations()
          }
-@@ -10350,6 +10428,7 @@ exit 7
+@@ -10349,6 +10427,7 @@ exit 7
      }
  
      include!("../acp_task_actions_tests.rs");
