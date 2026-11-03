@@ -32,6 +32,14 @@ all_ruby_prepare() {
 		-i ${RUBY_FAKEGEM_GEMSPEC} || die
 }
 
+each_ruby_install() {
+	# dev-lang/ruby:4.0 ships erb as a default gem and installs its
+	# libexec/erb at the very same path: skip it there (bentoo#59).
+	local RUBY_FAKEGEM_EXTRAINSTALL=${RUBY_FAKEGEM_EXTRAINSTALL}
+	[[ ${RUBY##*/} == ruby40 ]] && RUBY_FAKEGEM_EXTRAINSTALL=
+	each_fakegem_install
+}
+
 each_ruby_test() {
 	${RUBY} -Ilib:test:. -rtest/lib/helper -e "Dir['test/**/test_*.rb'].each { require _1 }" || die
 }
