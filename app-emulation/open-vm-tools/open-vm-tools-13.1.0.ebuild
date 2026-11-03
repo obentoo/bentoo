@@ -26,13 +26,6 @@ LICENSE="LGPL-2.1"
 SLOT="0"
 KEYWORDS="~amd64 ~arm64 ~x86"
 IUSE="X +deploypkg +dnet doc +fuse gtkmm +icu multimon pam +resolutionkms selinux +ssl +vgauth"
-# BENTOO-DIVERGENCE: REQUIRED_USE - ::gentoo has "vgauth? ( ssl )"; this adds
-# pam to the same clause.  configure.ac hard-errors on "--enable-vgauth
-# --without-pam" ("Cannot enable vgauth without PAM"), so USE="vgauth -pam"
-# dies mid-configure instead of at dependency resolution -- bug #971859,
-# reproduced on 13.1.0.  Both flags default to on, so this constrains nobody
-# who does not opt out on purpose.  Drop it once ::gentoo carries the same
-# constraint.
 REQUIRED_USE="
 	multimon? ( X )
 	vgauth? ( pam ssl )"
