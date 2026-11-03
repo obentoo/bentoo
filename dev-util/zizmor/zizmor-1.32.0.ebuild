@@ -479,9 +479,12 @@ QA_FLAGS_IGNORED="usr/bin/${PN}"
 src_compile() {
 	cargo_src_compile --package zizmor
 
+	# --completions is clap-exclusive, and clap counts an argument set
+	# through its env var (GH_TOKEN, GITHUB_TOKEN, GH_HOST, ZIZMOR_*) as
+	# given: any of those in the build environment fails the run.
 	local sh
 	for sh in bash fish zsh; do
-		"$(cargo_target_dir)"/${PN} --completions ${sh} > ${PN}.${sh} || die
+		env -i PATH="${PATH}" "$(cargo_target_dir)"/${PN} --completions ${sh} > ${PN}.${sh} || die
 	done
 }
 
