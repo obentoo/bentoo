@@ -43,6 +43,12 @@ Practical consequences, binding on every packaging decision:
 - An upstream that cannot be probed at all gets **no** record. Those are listed
   in `.autoupdate/dead-upstreams.md`, so an unverifiable package is never
   mistaken for a verified one.
+  - Exception: a **declaration-only** record — `enabled = false`, a
+    `disabled_by` that says so, and a `patched` field — for a package with no
+    upstream of its own (`virtual/*`) that diverges from `::gentoo`.
+    `bentoo overlay compare` reads a divergence as declared only from
+    `patched`, never from the ebuild's `BENTOO-DIVERGENCE` tag, so without the
+    record the package stays `Unknown` on every run.
 - An upstream that was assessed and **rejected** goes in
   `.autoupdate/not-packageable.md`, with the evidence and the condition that
   would reopen the decision — otherwise the same investigation is redone on

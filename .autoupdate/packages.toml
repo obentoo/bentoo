@@ -1799,6 +1799,8 @@ libayatana-appindicator-glib — no releases (404); tags[0] is bare "X.Y.Z".
 # END
 
 ["dev-libs/simdjson"]
+enabled = false
+disabled_by = "removed 2026-11-03: ::gentoo reached 5.1.1 with a byte-identical ebuild and files/, so this copy stopped being ahead -- see comments"
 url = "https://api.github.com/repos/simdjson/simdjson/releases/latest"
 parser = "json"
 path = "tag_name"
@@ -1809,6 +1811,10 @@ simdjson - tag "vX.Y.Z". A major bump moves SIMDJSON_LIB_SOVERSION in the top
 CMakeLists.txt (4.x = 33, 5.0 = 34): SLOT's subslot must follow it by hand.
 Also re-check the simdjson-data commit pinned in dependencies/CMakeLists.txt
 against SIMDJSON_DATA_HASH.
+
+Removed 2026-11-03: `bentoo overlay compare` reported 5.1.1 as redundant;
+the ebuild, files/ and DIST line matched ::gentoo's byte for byte. Re-enable
+only if bentoo needs to run ahead of ::gentoo again.
 """
 # END
 
@@ -14893,5 +14899,60 @@ they follow USE=gstreamer / USE=ffmpeg; WITH_RDPEUDP (experimental) and
 WITH_WINPR_I18N (no catalogs shipped) are pinned OFF. Re-check the option diff
 on every bump. Exit: remove the ebuild (record -> enabled = false) once
 ::gentoo carries >=3.33.0.
+"""
+# END
+
+["dev-util/esbuild"]
+hold = true
+url = "https://api.github.com/repos/evanw/esbuild/releases/latest"
+parser = "json"
+path = "tag_name"
+headers = { "User-Agent" = "bentoo-autoupdate" }
+patched = """
+Ahead of ::gentoo (0.27.3) because chromium 155's devtools-frontend pins esbuild 0.28.2 exactly (node_modules/esbuild/lib/main.js refuses any other binary). Reuses ::gentoo's 0.27.3 vendor tarball via VENDOR_PV plus a src_unpack that moves it under ${S}: esbuild's go.mod has one fixed requirement (golang.org/x/sys), so the vendor content is identical. Drop once ::gentoo carries >=0.28.2 and chromium no longer needs it ahead.
+"""
+version = "0.28.2"
+comments = """
+esbuild - GitHub releases, tag "vX.Y.Z". hold = true: the PV is dictated by
+www-client/chromium's devtools-frontend pin, not by upstream's latest; bump it
+together with chromium, never alone. If go.mod ever gains a second requirement,
+VENDOR_PV must become a self-hosted vendor tarball for the new PV.
+"""
+# END
+
+["virtual/dist-kernel"]
+enabled = false
+disabled_by = "declaration-only record: a virtual has no upstream of its own; it is copied by hand per sys-kernel/bentoo-kernel PV -- see comments"
+url = "https://api.github.com/repos/CachyOS/linux/releases?per_page=20"
+parser = "regex"
+pattern = '"tag_name":\s*"cachyos-(7\.3\.[0-9]+)-[0-9]+"'
+headers = { "User-Agent" = "bentoo-autoupdate" }
+patched = """
+Adds ~sys-kernel/bentoo-kernel-${PV} and ~sys-kernel/bentoo-kernel-bin-${PV} to the RDEPEND any-of group, so modules built against virtual/dist-kernel accept bentoo's kernel. Same PVR as ::gentoo on purpose: a revbump would change the 0/${PVR} subslot and rebuild every out-of-tree module for every user. Never prune the version matching the newest bentoo-kernel.
+"""
+comments = """
+Exists only so `bentoo overlay compare` sees the divergence as declared (it
+reads `patched` from this file, not the BENTOO-DIVERGENCE tag in the ebuild).
+The url is the probe of sys-kernel/bentoo-kernel, whose PV this virtual
+follows; it is never polled while enabled = false. A new bentoo-kernel PV
+needs a new dist-kernel-${PV}.ebuild copied from ::gentoo plus the two atoms.
+"""
+# END
+
+["virtual/linux-sources"]
+enabled = false
+disabled_by = "declaration-only record: a virtual has no upstream of its own; it follows ::gentoo's revisions by hand -- see comments"
+url = "https://gitweb.gentoo.org/repo/gentoo.git/atom/virtual/linux-sources?h=master"
+parser = "regex"
+pattern = '<updated>([0-9]{4}-[0-9]{2}-[0-9]{2})'
+patched = """
+Adds sys-kernel/bentoo-kernel and sys-kernel/bentoo-kernel-bin to the RDEPEND any-of group: both install the same module-build tree as gentoo-kernel{,-bin}, and without them linux-mod-r1's DEPEND on this virtual pulls gentoo-sources onto machines already running bentoo-kernel. Same PVR as ::gentoo on purpose.
+"""
+comments = """
+Exists only so `bentoo overlay compare` sees the divergence as declared (it
+reads `patched` from this file, not the BENTOO-DIVERGENCE tag in the ebuild).
+The url is ::gentoo's history for this virtual, never polled while
+enabled = false: when ::gentoo revbumps it, copy the new revision and re-add
+the two atoms.
 """
 # END
