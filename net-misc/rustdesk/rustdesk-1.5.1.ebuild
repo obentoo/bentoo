@@ -25,7 +25,7 @@ declare -A GIT_CRATES=(
 	[evdev]='https://github.com/rustdesk-org/evdev;cec616e37790293d2cd2aa54a96601ed6b1b35a9;evdev-%commit%'
 	[filedescriptor]='https://github.com/rustdesk-org/wezterm;80174f8009f41565f0fa8c66dab90d4f9211ae16;wezterm-%commit%/filedescriptor'
 	[fuser]='https://github.com/rustdesk-org/fuser;a3c0babe4a533f8dbcff5bce59ae7f2424b8d877;fuser-%commit%'
-	[hwcodec]='https://github.com/rustdesk-org/hwcodec;778df1f99597722473b29443bac22ae6c23946fe;hwcodec-%commit%'
+	[hwcodec]='https://github.com/rustdesk-org/hwcodec;ec38ebaf2454269d4c5668a57e3813c6e5541be7;hwcodec-%commit%'
 	[impersonate_system]='https://github.com/rustdesk-org/impersonate-system;2f429010a5a10b1fe5eceb553c6672fd53d20167;impersonate-system-%commit%'
 	[interceptor]='https://github.com/rustdesk-org/webrtc;49c89bd8d30e6e62e4c1a96cee38fdc11f79ef63;webrtc-%commit%/interceptor'
 	[kcp-sys]='https://github.com/rustdesk-org/kcp-sys;938eda3e5e9757a612385503af7a6cb1189b2cdd;kcp-sys-%commit%'
@@ -39,10 +39,10 @@ declare -A GIT_CRATES=(
 	[nokhwa]='https://github.com/rustdesk-org/nokhwa;c2f74662b6ce117f7f94301693fdfadc0b1ec91a;nokhwa-%commit%'
 	[parity-tokio-ipc]='https://github.com/rustdesk-org/parity-tokio-ipc;d0ae39bffe5d5a3e8d82a1b6bcb1ca5a9b2f1c01;parity-tokio-ipc-%commit%'
 	[portable-pty]='https://github.com/rustdesk-org/wezterm;80174f8009f41565f0fa8c66dab90d4f9211ae16;wezterm-%commit%/pty'
-	[rdev]='https://github.com/rustdesk-org/rdev;a361d86a8b0245f3618a9efb375c149530a6b599;rdev-%commit%'
+	[rdev]='https://github.com/rustdesk-org/rdev;0904f23ce496e255461a98848b85c11fa5a62eab;rdev-%commit%'
 	[rtcp]='https://github.com/rustdesk-org/webrtc;49c89bd8d30e6e62e4c1a96cee38fdc11f79ef63;webrtc-%commit%/rtcp'
 	[rtp]='https://github.com/rustdesk-org/webrtc;49c89bd8d30e6e62e4c1a96cee38fdc11f79ef63;webrtc-%commit%/rtp'
-	[rust-pulsectl]='https://github.com/rustdesk-org/pulsectl;aa34dde499aa912a3abc5289cc0b547bd07dd6e2;pulsectl-%commit%'
+	[rust-pulsectl]='https://github.com/rustdesk-org/pulsectl;d2ec086b5770dce934a66956364d09df8cc9484c;pulsectl-%commit%'
 	[sciter-rs]='https://github.com/rustdesk-org/rust-sciter;5322f3a755a0e6bf999fbc60d1efc35246c0f821;rust-sciter-%commit%'
 	[sdp]='https://github.com/rustdesk-org/webrtc;49c89bd8d30e6e62e4c1a96cee38fdc11f79ef63;webrtc-%commit%/sdp'
 	[stun]='https://github.com/rustdesk-org/webrtc;49c89bd8d30e6e62e4c1a96cee38fdc11f79ef63;webrtc-%commit%/stun'
@@ -112,7 +112,7 @@ _HWCODEC_EXTERNALS_COMMIT="8903740a1f47884906a6e347ad3d8d56304d9771"
 # ALWAYS re-derive this against the tag, never carry it over:
 #   git ls-tree ${PV} libs/hbb_common
 #   curl -s "https://api.github.com/repos/rustdesk/rustdesk/contents/libs/hbb_common?ref=${PV}" | jq -r .sha
-_HBB_COMMON_COMMIT="229b904508364c8997aad0fb5af57effac859f60"
+_HBB_COMMON_COMMIT="fae47e024dd83cef6aaecde0aa7d11731df11649"
 # fix: kcp-sys-*/kcp is a empty directory
 # git clone https://github.com/rustdesk-org/kcp-sys
 # git ls-tree HEAD kcp
@@ -128,7 +128,9 @@ _KCP_COMMIT="32da082e529a26730aea3eb19922f80634ee6dea"
 # tungstenite, fuser) and pinning 7 old commits, and cargo died offline with
 # "can't checkout from 'https://github.com/rustdesk-org/tungstenite-rs'".
 # Re-derive the block from the tag's Cargo.lock on every bump: one entry per
-# `source = "git+..."` package, commit = the part after '#'.
+# `source = "git+..."` package, commit = the part after '#'. It happened again
+# at 1.5.1: hwcodec, rdev and pulsectl kept their 1.5.0 commits, and so did
+# _HBB_COMMON_COMMIT below.
 #
 # 2026-08-08: that DIST entry was re-pinned from 141240432 to 141218012 bytes.
 # Do NOT read a mismatch here as "upstream silently regenerated the bundle" --
