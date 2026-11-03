@@ -22,8 +22,8 @@ CRATES="
 	async-trait@0.1.92
 	atomic-waker@1.1.2
 	autocfg@1.5.0
-	aws-lc-rs@1.17.0
-	aws-lc-sys@0.41.0
+	aws-lc-rs@1.18.2
+	aws-lc-sys@0.46.0
 	backtrace@0.3.76
 	base64@0.21.7
 	base64@0.22.1
@@ -149,6 +149,7 @@ CRATES="
 	ignore@0.4.33
 	indexmap@2.14.2
 	indicatif@0.18.6
+	indoc@2.0.8
 	insta@1.49.0
 	ipnet@2.11.0
 	iri-string@0.7.8
@@ -160,9 +161,9 @@ CRATES="
 	jni@0.21.1
 	jobserver@0.1.34
 	js-sys@0.3.85
-	jsonschema-regex@0.58.5
-	jsonschema-value@0.58.5
-	jsonschema@0.58.5
+	jsonschema-regex@0.59.0
+	jsonschema-value@0.59.0
+	jsonschema@0.59.0
 	lazy_static@1.5.0
 	leb128fmt@0.1.0
 	libc@0.2.185
@@ -211,6 +212,7 @@ CRATES="
 	percent-encoding@2.3.2
 	pin-project-lite@0.2.16
 	pin-utils@0.1.0
+	pkg-config@0.3.34
 	portable-atomic@1.13.1
 	postcard@1.1.3
 	potential_utf@0.1.3
@@ -232,7 +234,7 @@ CRATES="
 	redox_syscall@0.5.18
 	ref-cast-impl@1.0.25
 	ref-cast@1.0.25
-	referencing@0.58.5
+	referencing@0.59.0
 	reflink-copy@0.1.30
 	regex-automata@0.4.18
 	regex-syntax@0.8.11
@@ -247,14 +249,14 @@ CRATES="
 	rustls-pki-types@1.12.0
 	rustls-platform-verifier-android@0.1.1
 	rustls-platform-verifier@0.6.1
-	rustls-webpki@0.103.13
+	rustls-webpki@0.103.16
 	rustls@0.23.34
 	rustversion@1.0.22
 	ryu@1.0.20
 	same-file@1.0.6
 	schannel@0.1.27
-	schemars@1.2.2
-	schemars_derive@1.2.2
+	schemars@1.2.3
+	schemars_derive@1.2.3
 	scopeguard@1.2.0
 	security-framework-sys@2.14.0
 	security-framework@3.3.0
@@ -264,7 +266,7 @@ CRATES="
 	serde_core@1.0.229
 	serde_derive@1.0.229
 	serde_derive_internals@0.30.0
-	serde_json@1.0.151
+	serde_json@1.0.154
 	serde_spanned@1.1.1
 	serde_urlencoded@0.7.1
 	sha-1@0.10.1
@@ -314,7 +316,7 @@ CRATES="
 	tokio-rustls@0.26.4
 	tokio-stream@0.1.19
 	tokio-util@0.7.16
-	tokio@1.53.2
+	tokio@1.54.1
 	toml@1.1.1+spec-1.1.0
 	toml_datetime@1.1.1+spec-1.1.0
 	toml_writer@1.1.1+spec-1.1.0
@@ -330,9 +332,9 @@ CRATES="
 	tracing-subscriber@0.3.23
 	tracing@0.1.44
 	tree-sitter-bash@0.25.1
-	tree-sitter-language@0.1.8
+	tree-sitter-language@0.1.9
 	tree-sitter-yaml@0.7.2
-	tree-sitter@0.27.0
+	tree-sitter@0.27.1
 	try-lock@0.2.5
 	typenum@1.20.1
 	typomania@0.2.0
@@ -370,7 +372,7 @@ CRATES="
 	wasmparser@0.244.0
 	web-sys@0.3.85
 	web-time@1.1.0
-	webpki-root-certs@1.0.5
+	webpki-root-certs@1.0.10
 	winapi-i686-pc-windows-gnu@0.4.0
 	winapi-util@0.1.11
 	winapi-x86_64-pc-windows-gnu@0.4.0
