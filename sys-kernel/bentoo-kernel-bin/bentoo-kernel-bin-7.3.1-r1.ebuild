@@ -24,12 +24,12 @@ inherit kernel-install toolchain-funcs unpacker verify-sig
 # The sources below only feed modules_prepare, which out-of-tree modules
 # build against, so they must be the tree the binary was built from, patch
 # for patch: keep CACHY_REL, PATCHSET, BORE_COMMIT, BIGK_COMMIT,
-# INTEL_PATCHES and INTEL_PATCHES_REBASED (and the files/ they name), plus
-# the BORE fix patch, identical to sys-kernel/bentoo-kernel-${PV}.
+# INTEL_PATCHES and INTEL_PATCHES_REBASED (and the files/ they name)
+# identical to sys-kernel/bentoo-kernel-${PV}.
 CACHY_REL=1
 MY_P=cachyos-${PV}-${CACHY_REL}
 PATCHSET=linux-gentoo-patches-7.3.1
-BORE_COMMIT=6847663965a6f8edeca780385148528bdf184963
+BORE_COMMIT=f3770b16d069a1bce8dfa63841042137f8b43434
 BIGK_COMMIT=4c1de6a96a691ceca60fc2c2f61de9710e43e395
 INTEL_PATCHES=(
 	0001-drm-i915-vrr-Check-TRANS_PUSH_SEND-after-DSB-commit.patch
@@ -47,7 +47,7 @@ INTEL_PATCHES_REBASED=(
 # BINPKG is ${PF} of the source ebuild, the directory inside the gpkg;
 # BINPKG_ID is Portage's build id, which only the file name carries. A
 # rebuild of the same ebuild bumps the id, a revbump of it changes BINPKG.
-BINPKG=bentoo-kernel-${PV}
+BINPKG=bentoo-kernel-${PV}-r1
 BINPKG_ID=1
 BINPKG_FILE=${BINPKG}-${BINPKG_ID}.amd64.gpkg.tar
 
@@ -127,8 +127,6 @@ src_prepare() {
 	cd "${MY_P}" || die
 	eapply "${WORKDIR}/${PATCHSET}"
 	eapply "${DISTDIR}/bentoo-kernel-${BORE_COMMIT:0:8}-bore-cachy.patch"
-	# Same fix as sys-kernel/bentoo-kernel-${PV}; see the patch header.
-	eapply "${FILESDIR}/${PV}-bore-update_protect_slice.patch"
 
 	local p
 	for p in "${INTEL_PATCHES[@]}"; do
