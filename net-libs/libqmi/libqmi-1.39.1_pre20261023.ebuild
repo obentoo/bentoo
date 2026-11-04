@@ -13,7 +13,7 @@ else
 	S="${WORKDIR}/libqmi-${GIT_COMMIT}"
 fi
 
-PYTHON_COMPAT=( python3_{11..14} )
+PYTHON_COMPAT=( python3_{11..15} )
 inherit bash-completion-r1 meson python-any-r1 udev
 
 DESCRIPTION="Qualcomm MSM (Mobile Station Modem) Interface (QMI) modem protocol library"

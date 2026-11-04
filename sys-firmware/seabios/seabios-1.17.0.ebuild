@@ -3,12 +3,11 @@
 
 EAPI=8
 
-# BENTOO-DIVERGENCE: BDEPEND - PYTHON_COMPAT widened to 3.14, which the build
-# scripts (scripts/*.py) run fine on; ::gentoo stopping at 3.13 kept
-# dev-lang/python:3.13 installed on 3.14-only systems via app-emulation/qemu.
-# sys-power/iasl is gone because 1.17.0 dropped the built-in DSDT and its
-# "iasl" make target. Drop this package once ::gentoo ships 1.17.0 with 3.14.
-PYTHON_COMPAT=( python3_{12..14} )
+# BENTOO-DIVERGENCE: BDEPEND - PYTHON_COMPAT now matches ::gentoo's 1.16.3
+# ({12..15}); the build scripts (scripts/*.py) run fine on 3.15. What still
+# differs is sys-power/iasl, gone because 1.17.0 dropped the built-in DSDT and
+# its "iasl" make target. Drop this package once ::gentoo ships 1.17.0.
+PYTHON_COMPAT=( python3_{12..15} )
 
 inherit toolchain-funcs python-any-r1
 

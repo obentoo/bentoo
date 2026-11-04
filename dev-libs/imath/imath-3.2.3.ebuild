@@ -3,7 +3,9 @@
 
 EAPI=8
 
-PYTHON_COMPAT=( python3_{13..14} )
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
+PYTHON_COMPAT=( python3_{13..15} )
 
 # BENTOO-DIVERGENCE: PATCHES - none, where ::gentoo carries
 # imath-3.1.11-fix_cmake_module_export.patch. It edits

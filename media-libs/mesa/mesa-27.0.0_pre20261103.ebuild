@@ -9,7 +9,7 @@ EAPI=8
 LLVM_COMPAT=( {18..23} )
 LLVM_OPTIONAL=1
 CARGO_OPTIONAL=1
-PYTHON_COMPAT=( python3_{12..14} )
+PYTHON_COMPAT=( python3_{12..15} )
 
 # BENTOO-DIVERGENCE: INHERIT - no toolchain-funcs, which ::gentoo inherits for
 # tc-check-openmp. Nothing here calls a tc-* function at all: get_libdir comes

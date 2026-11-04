@@ -4,13 +4,13 @@
 EAPI=8
 
 # calibre 9.x sets requires-python = ">=3.14" in pyproject.toml and setup.py
-# aborts on anything older, so this cannot be widened. python3_15 is left out
-# on purpose: dev-lang/python:3.15 is still at _rc in ::gentoo and upstream
-# does not test against it.
-# BENTOO-DIVERGENCE: IUSE_DEFAULTS - python_single_target_python3_14 is the
-# only possible default: calibre 9.x sets requires-python = ">=3.14", so the
-# compat list below cannot be widened and the single target follows it.
-PYTHON_COMPAT=( python3_14 )
+# aborts on anything older, so the list cannot reach below 3.14. python3_15 is
+# in: Fedora rawhide builds this same 9.17.0 against Python 3.15 with no
+# 3.15-specific patch.
+# BENTOO-DIVERGENCE: IUSE_DEFAULTS - the single-target default comes from
+# python3_{14..15} alone: calibre 9.x sets requires-python = ">=3.14", so the
+# compat list below cannot reach down to ::gentoo's 3.12 and 3.13.
+PYTHON_COMPAT=( python3_{14..15} )
 PYTHON_REQ_USE="sqlite,ssl"
 
 inherit edo toolchain-funcs python-single-r1 qmake-utils verify-sig xdg
@@ -64,8 +64,8 @@ IUSE="+font-subsetting ios piper speech +system-mathjax test +udisks unrar"
 
 RESTRICT="!test? ( test )"
 
-# BENTOO-DIVERGENCE: REQUIRED_USE - python3_14 alone, where ::gentoo still
-# accepts 3.12 and 3.13. Not a narrowing taken for its own sake: the calibre 9
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_14 and python3_15, where ::gentoo
+# accepts 3.12 to 3.14. Not a narrowing taken for its own sake: the calibre 9
 # series requires Python 3.14, so the older targets cannot build it at all.
 #
 # arm64? ( !piper ): both onnxruntime ebuilds are ~amd64 only. pkgcheck's

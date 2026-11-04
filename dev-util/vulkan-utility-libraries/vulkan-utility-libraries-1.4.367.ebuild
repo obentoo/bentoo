@@ -4,7 +4,7 @@
 EAPI=8
 
 MY_PN=Vulkan-Utility-Libraries
-PYTHON_COMPAT=( python3_{11..14} )
+PYTHON_COMPAT=( python3_{11..15} )
 PYTHON_REQ_USE="xml(+)"
 inherit cmake-multilib dot-a python-any-r1
 

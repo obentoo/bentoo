@@ -7,7 +7,7 @@ EAPI=8
 # drop OPENVDB_SIMD
 # split out nanovdb
 
-PYTHON_COMPAT=( python3_{12..14} )
+PYTHON_COMPAT=( python3_{12..15} )
 
 inherit cmake cuda flag-o-matic python-single-r1 toolchain-funcs
 

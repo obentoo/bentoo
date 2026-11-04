@@ -3,7 +3,8 @@
 
 EAPI=8
 
-PYTHON_COMPAT=( python3_{11..14} )
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
+PYTHON_COMPAT=( python3_{11..15} )
 
 inherit flag-o-matic multilib multiprocessing toolchain-funcs
 inherit cuda java-pkg-opt-2 cmake-multilib python-r1 virtualx xdg-utils

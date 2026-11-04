@@ -5,7 +5,9 @@
 
 EAPI=8
 
-PYTHON_COMPAT=( python3_{12..14} )
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
+PYTHON_COMPAT=( python3_{12..15} )
 
 inherit gnome2 meson python-single-r1 virtualx
 

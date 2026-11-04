@@ -6,7 +6,9 @@ EAPI=8
 VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/${PN}.asc
 DISTUTILS_SINGLE_IMPL=1
 DISTUTILS_USE_PEP517=setuptools
-PYTHON_COMPAT=( python3_{12..14} )
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
+PYTHON_COMPAT=( python3_{12..15} )
 PYTHON_REQ_USE="sqlite(+)"
 
 # BENTOO-DIVERGENCE: PATCHES - none, where ::gentoo carries

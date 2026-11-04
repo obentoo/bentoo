@@ -4,7 +4,7 @@
 EAPI=8
 
 MY_PN=Vulkan-ValidationLayers
-PYTHON_COMPAT=( python3_{11..14} )
+PYTHON_COMPAT=( python3_{11..15} )
 inherit cmake-multilib python-any-r1
 
 if [[ ${PV} == *9999* ]]; then

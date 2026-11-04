@@ -4,7 +4,7 @@
 # GNOME 51 mirror ahead of ::gentoo; drop each tag below when ::gentoo reaches this version
 EAPI=8
 
-PYTHON_COMPAT=( python3_{12..14} )
+PYTHON_COMPAT=( python3_{12..15} )
 
 CRATES="
 "

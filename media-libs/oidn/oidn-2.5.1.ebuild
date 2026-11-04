@@ -3,14 +3,14 @@
 
 EAPI=8
 
-# BENTOO-DIVERGENCE: BDEPEND - PYTHON_COMPAT widened to 3.14. Python only runs
-# scripts/blob_to_cpp.py at build time, which works on it; ::gentoo stopping
-# at 3.13 kept dev-lang/python:3.13 installed on 3.14-only systems via
-# media-gfx/blender. Drop this copy once ::gentoo lists python3_14.
+# BENTOO-DIVERGENCE: BDEPEND - PYTHON_COMPAT widened to 3.15. Python only runs
+# scripts/blob_to_cpp.py at build time, which works on both; ::gentoo stopping
+# at 3.13 kept dev-lang/python:3.13 installed on newer-only systems via
+# media-gfx/blender. Drop this copy once ::gentoo lists python3_15.
 # BENTOO-DIVERGENCE: PATCHES - amdgpu-targets rebased onto 2.5.1, whose
 # devices/hip target list gained gfx1150-gfx1152; the ::gentoo 2.3.3 copy no
 # longer applies. Same behaviour, new context.
-PYTHON_COMPAT=( python3_{12..14} )
+PYTHON_COMPAT=( python3_{12..15} )
 ROCM_VERSION=6.3
 CUDA_DEVICE_TARGETS=1
 

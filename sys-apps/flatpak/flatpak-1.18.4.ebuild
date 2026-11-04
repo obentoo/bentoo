@@ -2,7 +2,8 @@
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
-PYTHON_COMPAT=( python3_{11..14} )
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+PYTHON_COMPAT=( python3_{11..15} )
 
 inherit linux-info meson python-any-r1 systemd tmpfiles
 

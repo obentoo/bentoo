@@ -89,7 +89,7 @@ CHROMIUM_LANGS="af am ar bg bn ca cs da de el en-GB es es-419 et fa fi fil fr gu
 # "^^ ( llvm_slot_21 )", the same generated pair as the IUSE tag above and
 # from the same single line.
 LLVM_COMPAT=( 22 23 )
-PYTHON_COMPAT=( python3_{11..14} )
+PYTHON_COMPAT=( python3_{11..15} )
 PYTHON_REQ_USE="xml(+)"
 RUST_MIN_VER=1.91.0
 RUST_NEEDS_LLVM="yes please"

@@ -4,7 +4,7 @@
 EAPI=8
 
 CONFIG_CHECK="~ADVISE_SYSCALLS"
-PYTHON_COMPAT=( python3_{11..14} )
+PYTHON_COMPAT=( python3_{11..15} )
 PYTHON_REQ_USE="threads(+)"
 
 # bash-completion-r1 is deliberately absent: its only consumer here was

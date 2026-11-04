@@ -3,7 +3,7 @@
 
 EAPI=8
 
-PYTHON_COMPAT=( python3_{11..14} )
+PYTHON_COMPAT=( python3_{11..15} )
 
 # BENTOO-DIVERGENCE: PATCHES - one, where ::gentoo carries two.
 #

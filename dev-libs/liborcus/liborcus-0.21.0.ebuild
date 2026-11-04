@@ -3,7 +3,9 @@
 
 EAPI=8
 
-PYTHON_COMPAT=( python3_{11..14} )
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
+PYTHON_COMPAT=( python3_{11..15} )
 # BENTOO-DIVERGENCE: PATCHES - none, where ::gentoo carries
 # liborcus-0.19.2-boost-m4.patch. Verified 2026-09-07: it reverse-applies
 # cleanly against the 0.21.0 tarball, so upstream shipped the same change and

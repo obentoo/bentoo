@@ -11,7 +11,7 @@ EAPI=8
 # LLVM_COMPAT below, so the extra slot the IUSE tag records shows up on this
 # axis too. One LLVM_COMPAT edit, two divergent axes.
 LLVM_COMPAT=( {18..23} )
-PYTHON_COMPAT=( python3_{12..14} )
+PYTHON_COMPAT=( python3_{12..15} )
 
 inherit llvm-r2 meson python-any-r1
 

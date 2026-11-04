@@ -9,7 +9,9 @@ VIM_VERSION="9.2"
 VIM_PATCHES_VERSION="9.2.1119"
 
 LUA_COMPAT=( lua5-{1..4} luajit )
-PYTHON_COMPAT=( python3_{12..14} )
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
+PYTHON_COMPAT=( python3_{12..15} )
 PYTHON_REQ_USE="threads(+)"
 # BENTOO-DIVERGENCE: DEPEND - ruby34 and ruby40 added to the ::gentoo set.
 # BENTOO-DIVERGENCE: RDEPEND - the same addition.

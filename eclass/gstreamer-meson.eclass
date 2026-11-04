@@ -56,7 +56,7 @@ case "${EAPI:-0}" in
 		;;
 esac
 
-PYTHON_COMPAT=( python3_{11..14} )
+PYTHON_COMPAT=( python3_{11..15} )
 
 inherit meson multilib python-any-r1 toolchain-funcs xdg-utils
 

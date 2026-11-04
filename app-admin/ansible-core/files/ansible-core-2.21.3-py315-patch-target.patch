@@ -1,0 +1,36 @@
+Backport of ansible/ansible commit 405a6052b0238d5c1bbd956e83e4d12a0f692d51
+("Defer patch target attribute failure until verified needed", PR #86976),
+code hunk only; the changelog fragment and the test are left out.
+
+Without it ansible-core 2.21 dies at import on Python 3.15:
+  AttributeError: module 'dataclasses' has no attribute '_is_type'
+because the patch registry reads every target attribute eagerly, and 3.15
+removed dataclasses._is_type. Upstream ships the fix from 2.22.0 on and
+declined to backport it to 2.21 (https://github.com/ansible/ansible/issues/87677).
+
+diff --git a/lib/ansible/module_utils/_internal/_patches/__init__.py b/lib/ansible/module_utils/_internal/_patches/__init__.py
+index 7e08b04bff3f3b..4365ea9b5c73ec 100644
+--- a/lib/ansible/module_utils/_internal/_patches/__init__.py
++++ b/lib/ansible/module_utils/_internal/_patches/__init__.py
+@@ -42,7 +42,7 @@ def is_patched(cls) -> bool:
+     @classmethod
+     def get_current_implementation(cls) -> t.Any:
+         """Get the current (possibly patched) implementation from the patch target container."""
+-        return getattr(cls.target_container, cls.target_attribute)
++        return getattr(cls.target_container, cls.target_attribute, ...)
+ 
+     @classmethod
+     def patch(cls) -> None:
+@@ -55,6 +55,12 @@ def patch(cls) -> None:
+         if not cls.is_patch_needed():
+             return
+ 
++        if cls.unpatched_implementation is ...:
++            raise RuntimeError(
++                f"Patch {cls.__name__!r} appears to be needed, but implementation to be patched "
++                f"('{cls.target_container.__name__}.{cls.target_attribute}') is not present."
++            )
++
+         # __call__ requires an instance (otherwise it'll be __new__)
+         setattr(cls.target_container, cls.target_attribute, cls())
+ 

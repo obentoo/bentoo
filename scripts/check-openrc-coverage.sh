@@ -162,6 +162,7 @@ declare -A ALLOWLIST=(
 	[gnome-base/gvfs]=$'every user unit is D-Bus activated: gvfs-daemon, gvfs-metadata and\nthe five volume monitors are all Type=dbus with a BusName, each paired with an\norg.gtk.vfs.*.service session bus activation file the package installs. The\nsession bus starts them on demand under OpenRC.\nGNOME 51 mirror (2026-10-03); ::gentoo ships none either.'
 	[gnome-base/gnome-session]=$'its user units are the systemd flavour of the GNOME session\nitself (gnome-session-manager@, -monitor, -signal-init, -restart-dbus). The\nOpenRC flavour is a separate package by design: gnome-base/gnome-session-openrc\n(the session leader plus its user-scope OpenRC scripts), which this ebuild\nRDEPENDs on under !systemd. The counterpart exists; it lives one package over.'
 	[gnome-base/gdm]=$'its system unit is covered by gui-libs/display-manager-init, which\nthis ebuild RDEPENDs on unconditionally (bentoo addition, 2026-10-03):\nDISPLAYMANAGER=gdm in /etc/conf.d/display-manager plus rc-update add\ndisplay-manager starts gdm under OpenRC. KNOWN GAP, kept visible here on\npurpose: the user unit gnome-headless-session@.service (remote headless login,\nsee net-misc/gnome-remote-desktop) has no OpenRC equivalent.'
+	[app-admin/system-config-printer]=$'its unit is a udev-triggered template, not a daemon:\nconfigure-printer@.service runs udev-configure-printer add once per plugged\nUSB printer, started through SYSTEMD_WANTS in 70-printers.rules. An init\nscript cannot stand in for a per-device template. Without systemd the add\ntrigger does not fire (the remove rule uses RUN and still works), exactly as\nin ::gentoo; closing that would take an extra udev rule, not an init script.\nCarried only as a python3_15 mirror (2026-11-04).'
 )
 
 ### command line #####################################################
@@ -1346,9 +1347,12 @@ self_test_assertions() {
 	# activation file and no OpenRC script. gdm's headless-session user unit is
 	# the same gap, recorded in gdm's ALLOWLIST text because the allowlist is
 	# per package. Both are WARN (user scope), so the exit code stays 0.
+	#
+	# 9 since 2026-11-04: app-admin/system-config-printer, a udev-triggered
+	# template unit carried as a python3_15 mirror (reason in its entry).
 	assert_eq A12 \
 		'a run with no system-scope gap exits 0 and prints the allowlist (was R3.5)' \
-		'exit=0 rows=1 findings=1 allowlisted=8' \
+		'exit=0 rows=1 findings=1 allowlisted=9' \
 		"$(full_run "${SELF_TEST_SCRATCH}")"
 
 	# --- exit 2: nothing was compared ---------------------------------

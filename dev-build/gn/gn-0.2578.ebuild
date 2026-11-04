@@ -2,7 +2,7 @@
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
-PYTHON_COMPAT=( python3_{11..14} )
+PYTHON_COMPAT=( python3_{11..15} )
 
 # BENTOO-DIVERGENCE: PATCHES - none, where ::gentoo carries
 # gn-0.2374-test-iwyu.patch. Verified 2026-09-07: it reverse-applies cleanly
