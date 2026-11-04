@@ -3,8 +3,11 @@
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
+# Based on ::gentoo's 3.5.2 ebuild, bumped to 3.5.4; python3_15 added.
+# Upstream 3.5.3/3.5.4 only touch Windows ARM64 and the WASM bindings: no
+# build-system or dependency change for this ebuild.
+# BENTOO-DIVERGENCE: KEYWORDS - no ~arm64 ~x86: a bump past ::gentoo follows
+# the overlay's amd64-only baseline.
 # BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
@@ -27,7 +30,7 @@ else
 		SRC_URI="https://github.com/elalish/manifold/releases/download/v${PV}/${P}.tar.gz"
 	fi
 
-	KEYWORDS="~amd64 ~arm64 ~x86"
+	KEYWORDS="~amd64"
 fi
 
 LICENSE="Apache-2.0"
