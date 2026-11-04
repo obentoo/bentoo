@@ -3,13 +3,17 @@
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
-# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# Based on ::gentoo's 26.9 ebuild, bumped to 26.10; python3_15 added.
+# 26.10's kernel-bootcfg-boot-successful.service now runs
+# /usr/libexec/uki-boot-successful (new upstream wrapper preferring the rust
+# mini-bootcfg), so that script is installed too; no dependency change.
+# Drop this copy once ::gentoo has 26.10 with python3_15.
+# BENTOO-DIVERGENCE: KEYWORDS - overlay baseline (~amd64 only) for a version ::gentoo does not carry.
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT.
 PYTHON_COMPAT=( python3_{11..15} )
 DISTUTILS_USE_PEP517=setuptools
 
@@ -23,7 +27,7 @@ HOMEPAGE="
 
 LICENSE="GPL-2"
 SLOT="0"
-KEYWORDS="~amd64 ~arm ~arm64 ~loong ~riscv ~x86"
+KEYWORDS="~amd64"
 
 RDEPEND="
 	dev-python/cryptography[${PYTHON_USEDEP}]
@@ -61,6 +65,10 @@ python_install_all() {
 
 	doinitd "${FILESDIR}/kernel-bootcfg-boot-successful"
 	systemd_dounit systemd/kernel-bootcfg-boot-successful.service
+	# ExecStart= of the unit since 26.10; /bin/sh also exists on split-usr
+	sed -i -e '1s:^#!/usr/bin/sh:#!/bin/sh:' systemd/uki-boot-successful || die
+	exeinto /usr/libexec
+	doexe systemd/uki-boot-successful
 
 	# Use our own provided by sys-kernel/installkernel[efistub,systemd]
 	#exeinto /usr/lib/kernel/install.d

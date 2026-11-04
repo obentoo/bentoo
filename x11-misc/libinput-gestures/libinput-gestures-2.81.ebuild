@@ -1,13 +1,16 @@
-# Copyright 1999-2025 Gentoo Authors
+# Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
-# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# Based on ::gentoo's 2.80 ebuild, bumped to 2.81; python3_15 added.
+# 2.81 only moves typing imports to collections.abc and updates docs; the
+# USE=experimental zombie patch still applies (same fuzz as on 2.80).
+# Drop this copy once ::gentoo has 2.81 with python3_15.
+# BENTOO-DIVERGENCE: KEYWORDS - overlay baseline (~amd64 only) for a version ::gentoo does not carry.
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT.
 PYTHON_COMPAT=( python3_{10..15} python3_{13..14}t )
 
 inherit python-single-r1 xdg
@@ -18,7 +21,7 @@ SRC_URI="https://github.com/bulletmark/${PN}/archive/${PV}.tar.gz -> ${P}.tar.gz
 
 LICENSE="GPL-3+"
 SLOT="0"
-KEYWORDS="~amd64 ~x86"
+KEYWORDS="~amd64"
 IUSE="experimental"
 REQUIRED_USE="${PYTHON_REQUIRED_USE}"
 RESTRICT="test"
@@ -33,7 +36,7 @@ DEPEND="dev-libs/libinput
 src_prepare() {
 	default
 
-	use experimental && eapply "${FILESDIR}/${PN}"-2.76-zombie.patch
+	use experimental && eapply "${FILESDIR}"/${PN}-2.76-zombie.patch
 
 	# Fix docdir installation path
 	sed -i "/^DOCDIR/s@\$NAME@${PF}@" libinput-gestures-setup \

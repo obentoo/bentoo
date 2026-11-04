@@ -2,12 +2,15 @@
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
-# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# Based on ::gentoo's 1.36.1 ebuild, bumped to 1.37.0; python3_15 added.
+# 1.37.0 only adds the check_runtime_deps meson option (default true, kept) and
+# drops G_GNUC_CONST from get_type(); no dependency change. Needs the overlay's
+# dev-build/gtk-doc-am-1.37.0. Drop this copy once ::gentoo has 1.37.0 with python3_15.
+# BENTOO-DIVERGENCE: KEYWORDS - overlay baseline (~amd64 only) for a version ::gentoo does not carry.
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT.
 PYTHON_COMPAT=( python3_{12..15} )
 
 inherit elisp-common gnome.org meson python-single-r1 readme.gentoo-r1
@@ -17,7 +20,7 @@ HOMEPAGE="https://gitlab.gnome.org/GNOME/gtk-doc"
 
 LICENSE="GPL-2+ FDL-1.1"
 SLOT="0"
-KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~m68k ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86 ~x64-solaris"
+KEYWORDS="~amd64"
 
 IUSE="emacs test"
 REQUIRED_USE="${PYTHON_REQUIRED_USE}"
