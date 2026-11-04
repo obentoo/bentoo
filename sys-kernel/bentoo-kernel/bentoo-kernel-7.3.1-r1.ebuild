@@ -36,7 +36,7 @@ PATCHSET=linux-gentoo-patches-7.3.1
 CONFIG_VER=7.3.1-gentoo
 GENTOO_CONFIG_P=gentoo-kernel-config-g19
 # Last commit touching $(ver_cut 1-2)/sched/0001-bore-cachy.patch.
-BORE_COMMIT=6847663965a6f8edeca780385148528bdf184963
+BORE_COMMIT=f3770b16d069a1bce8dfa63841042137f8b43434
 # big-comm/big-kernel commit the Intel patches are taken from, in the order
 # its PKGBUILD applies them. Drop each one once a kernel release has it: on
 # a bump, a patch that fails forward but applies with -R is already in.
@@ -212,8 +212,6 @@ src_prepare() {
 	eapply "${WORKDIR}/${PATCHSET}"
 	if use bore; then
 		eapply "${DISTDIR}/${PN}-${BORE_COMMIT:0:8}-bore-cachy.patch"
-		# 7.3.1 added a use of a variable BORE hides; see the patch header.
-		eapply "${FILESDIR}/${PV}-bore-update_protect_slice.patch"
 	fi
 
 	local p
