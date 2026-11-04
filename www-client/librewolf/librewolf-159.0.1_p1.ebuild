@@ -11,7 +11,7 @@ LLVM_COMPAT=( 21 22 )
 RUST_NEEDS_LLVM=1
 RUST_MIN_VER=1.90.0
 
-PYTHON_COMPAT=( python3_{12..14} )
+PYTHON_COMPAT=( python3_{12..15} )
 PYTHON_REQ_USE="ncurses,sqlite,ssl"
 
 VIRTUALX_REQUIRED="manual"
@@ -584,6 +584,10 @@ src_prepare() {
 	fi
 
 	eapply "${WORKDIR}/firefox-patches"
+
+	# BENTOO: Python 3.15 rejects capturing groups in re.Scanner, which the test
+	# manifest parser uses (bmo#2083543, fixed in 161).
+	eapply "${FILESDIR}"/${PN}-py315-manifestparser.patch
 
 	# Allow user to apply any additional patches without modifing ebuild
 	eapply_user

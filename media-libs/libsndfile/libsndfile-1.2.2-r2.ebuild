@@ -1,0 +1,84 @@
+# Copyright 1999-2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+
+EAPI=8
+
+# Mirrored from ::gentoo only to add python3_15: no code change is needed
+# for it. Drop this copy once ::gentoo lists python3_15.
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+PYTHON_COMPAT=( python3_{10..15} pypy3 pypy3_11 )
+
+if [[ ${PV} == *9999 ]]; then
+	inherit autotools git-r3
+	EGIT_REPO_URI="https://github.com/libsndfile/libsndfile.git"
+else
+	SRC_URI="https://github.com/libsndfile/libsndfile/releases/download/${PV}/${P}.tar.xz"
+	KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~m68k ~mips ppc ppc64 ~riscv ~sparc x86 ~x64-macos ~x64-solaris"
+fi
+inherit flag-o-matic python-any-r1 multilib-minimal
+
+DESCRIPTION="C library for reading and writing files containing sampled sound"
+HOMEPAGE="https://libsndfile.github.io/libsndfile/"
+
+LICENSE="LGPL-2.1"
+SLOT="0"
+IUSE="alsa minimal sqlite test"
+RESTRICT="!test? ( test )"
+
+RDEPEND="
+	!minimal? (
+		media-libs/flac:=[${MULTILIB_USEDEP}]
+		media-libs/libogg:=[${MULTILIB_USEDEP}]
+		media-libs/libvorbis:=[${MULTILIB_USEDEP}]
+		media-libs/opus:=[${MULTILIB_USEDEP}]
+		media-sound/lame:=[${MULTILIB_USEDEP}]
+		media-sound/mpg123-base:=[${MULTILIB_USEDEP}]
+	)
+	alsa? ( media-libs/alsa-lib:= )
+	sqlite? ( dev-db/sqlite )"
+DEPEND="${RDEPEND}"
+BDEPEND="
+	${PYTHON_DEPS}
+	virtual/pkgconfig"
+if [[ ${PV} == *9999 ]]; then
+	BDEPEND+="
+		sys-devel/autogen
+	"
+fi
+
+src_prepare() {
+	default
+
+	# https://github.com/libsndfile/libsndfile/issues/1107 (bug #946672)
+	sed -i -e '/lossy_comp_test.*ogg_opus/d' tests/test_wrapper.sh.in || die
+
+	[[ ${PV} == *9999 ]] && eautoreconf
+}
+
+src_configure() {
+	# https://github.com/libsndfile/libsndfile/issues/1049 (bug #943864)
+	append-cflags -std=gnu17
+
+	multilib-minimal_src_configure
+}
+
+multilib_src_configure() {
+	# CONFIG_SHELL hack can be dropped >1.2.2 (bug #923921)
+	CONFIG_SHELL="${BROOT}"/bin/bash ECONF_SOURCE="${S}" econf \
+		--disable-octave \
+		--disable-static \
+		--disable-werror \
+		$(use_enable !minimal external-libs) \
+		$(use_enable !minimal mpeg) \
+		$(multilib_native_enable full-suite) \
+		$(multilib_native_use_enable alsa) \
+		$(multilib_native_use_enable sqlite) \
+		PYTHON="${EPYTHON}"
+}
+
+multilib_src_install_all() {
+	einstalldocs
+
+	# no static archives
+	find "${ED}" -name '*.la' -delete || die
+}

@@ -8,7 +8,7 @@ EAPI=8
 # BENTOO-DIVERGENCE: REQUIRED_USE - the same 3.14, arriving here through
 # ${PYTHON_REQUIRED_USE}, which expands to the same target list. One
 # PYTHON_COMPAT edit, two divergent axes.
-PYTHON_COMPAT=( python3_{10..14} )
+PYTHON_COMPAT=( python3_{10..15} )
 inherit python-single-r1 xorg-3
 
 DESCRIPTION="QEMU QXL paravirt video driver"

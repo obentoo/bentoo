@@ -1,0 +1,22 @@
+Backport of mozilla-firefox/firefox commit 9a1535227ce2f95390108747658ad3d0541db259
+("Bug 2083543 - Use a non-capturing string token pattern in manifestparser's
+expression scanner"), fixed upstream in Firefox 161.
+
+Python 3.15 makes re.Scanner reject patterns with capturing groups
+("ValueError: Cannot use capturing groups in re.Scanner"), so every test
+manifest condition (skip-if/run-if) failed to parse. The build itself never
+evaluates them; src_test (mach cppunittest) does.
+
+diff --git a/testing/mozbase/manifestparser/manifestparser/expression.py b/testing/mozbase/manifestparser/manifestparser/expression.py
+index cde2f9ccd697f..e70e9c4f02ad2 100644
+--- a/testing/mozbase/manifestparser/manifestparser/expression.py
++++ b/testing/mozbase/manifestparser/manifestparser/expression.py
+@@ -190,7 +190,7 @@ def scan(text):
+             (r"true|false", bool_token),
+             (r"[a-zA-Z_]\w*", ident_token),
+             (r"[0-9]+", int_token),
+-            (r'("[^"]*")|(\'[^\']*\')', string_token),
++            (r'"[^"]*"|\'[^\']*\'', string_token),
+             (r"==", eq_op_token()),
+             (r"!=", neq_op_token()),
+             (r"<=", le_op_token()),

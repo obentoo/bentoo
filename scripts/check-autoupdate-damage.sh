@@ -127,10 +127,13 @@ _records() {
 # Reads the index under --staged, the tree otherwise — the same revision _blob
 # reads. A package returning in THIS commit is only in the index.
 _has_ebuild() {
+	# A record key may carry an "@label" (dev-build/automake@1.19): the label
+	# names a series inside the package, never a directory, so strip it.
+	local cp=${1%%@*}
 	if [[ "${STAGED}" == "yes" ]]; then
-		[[ -n "$(git -C "${REPO}" ls-files --cached -- "$1/*.ebuild")" ]]
+		[[ -n "$(git -C "${REPO}" ls-files --cached -- "${cp}/*.ebuild")" ]]
 	else
-		compgen -G "${REPO}/$1/*.ebuild" >/dev/null
+		compgen -G "${REPO}/${cp}/*.ebuild" >/dev/null
 	fi
 }
 

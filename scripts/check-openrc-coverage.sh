@@ -163,6 +163,10 @@ declare -A ALLOWLIST=(
 	[gnome-base/gnome-session]=$'its user units are the systemd flavour of the GNOME session\nitself (gnome-session-manager@, -monitor, -signal-init, -restart-dbus). The\nOpenRC flavour is a separate package by design: gnome-base/gnome-session-openrc\n(the session leader plus its user-scope OpenRC scripts), which this ebuild\nRDEPENDs on under !systemd. The counterpart exists; it lives one package over.'
 	[gnome-base/gdm]=$'its system unit is covered by gui-libs/display-manager-init, which\nthis ebuild RDEPENDs on unconditionally (bentoo addition, 2026-10-03):\nDISPLAYMANAGER=gdm in /etc/conf.d/display-manager plus rc-update add\ndisplay-manager starts gdm under OpenRC. KNOWN GAP, kept visible here on\npurpose: the user unit gnome-headless-session@.service (remote headless login,\nsee net-misc/gnome-remote-desktop) has no OpenRC equivalent.'
 	[app-admin/system-config-printer]=$'its unit is a udev-triggered template, not a daemon:\nconfigure-printer@.service runs udev-configure-printer add once per plugged\nUSB printer, started through SYSTEMD_WANTS in 70-printers.rules. An init\nscript cannot stand in for a per-device template. Without systemd the add\ntrigger does not fire (the remove rule uses RUN and still works), exactly as\nin ::gentoo; closing that would take an extra udev rule, not an init script.\nCarried only as a python3_15 mirror (2026-11-04).'
+	[sys-auth/polkit]=$'its unit is D-Bus activated, not supervised: polkit.service has\nBusName=org.freedesktop.PolicyKit1, and the package installs\n/usr/share/dbus-1/system-services/org.freedesktop.PolicyKit1.service with\nExec=/usr/lib/polkit-1/polkitd. dbus-daemon starts polkitd on demand on\nOpenRC too, so an init script would only race the bus activation, as for\nupower. Carried only as a python3_15 mirror (2026-11-04).'
+	[media-video/pipewire]=$'its system unit is built only with USE=system-service, which\n::gentoo ties to systemd (REQUIRED_USE system-service? ( systemd )): the\nsystem-wide mode cannot be selected without systemd at all. The normal\nper-user mode is covered by its /etc/user/init.d scripts, which the\nclassifier sees. Carried only as a python3_15 mirror (2026-11-04).'
+	[media-video/wireplumber]=$'its system unit is built only with USE=system-service, which\n::gentoo ties to systemd (REQUIRED_USE system-service? ( systemd )), exactly\nas for pipewire. The per-user session manager is covered by its\n/etc/user/init.d script. Carried only as a python3_15 mirror (2026-11-04).'
+	[net-wireless/bluez]=$'its user unit is D-Bus activated: obex.service is Type=dbus with\nBusName=org.bluez.obex, and the package installs the org.bluez.obex session\nbus activation file, so the session bus starts obexd on demand without\nsystemd. The system daemon has its init script. Carried only as a python3_15\nmirror (2026-11-04).'
 )
 
 ### command line #####################################################
@@ -1348,11 +1352,11 @@ self_test_assertions() {
 	# the same gap, recorded in gdm's ALLOWLIST text because the allowlist is
 	# per package. Both are WARN (user scope), so the exit code stays 0.
 	#
-	# 9 since 2026-11-04: app-admin/system-config-printer, a udev-triggered
-	# template unit carried as a python3_15 mirror (reason in its entry).
+	# 13 since 2026-11-04: system-config-printer, polkit, pipewire, wireplumber
+	# and bluez, all carried as python3_15 mirrors (reasons in their entries).
 	assert_eq A12 \
 		'a run with no system-scope gap exits 0 and prints the allowlist (was R3.5)' \
-		'exit=0 rows=1 findings=1 allowlisted=9' \
+		'exit=0 rows=1 findings=1 allowlisted=13' \
 		"$(full_run "${SELF_TEST_SCRATCH}")"
 
 	# --- exit 2: nothing was compared ---------------------------------
