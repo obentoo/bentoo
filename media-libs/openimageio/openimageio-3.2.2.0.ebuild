@@ -1,14 +1,21 @@
-# Copyright 1999-2025 Gentoo Authors
+# Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
-# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# Based on ::gentoo's 3.1.7.0-r1 ebuild, bumped to 3.2.2.0; python3_15 added.
+# 3.2 raises the dependency floors (fmt 9, LibRaw 0.21, libtiff 4.1,
+# DCMTK 3.6.2, libjxl 0.10.1), makes nanobind the default Python backend
+# (pinned to pybind11 here, still supported upstream, so no new dependency),
+# picks up libdeflate/zstd automagically and adds an experimental Highway
+# switch (all pinned off), and needs the heif-find patch rebased.
+# BENTOO-DIVERGENCE: KEYWORDS - newer than ::gentoo, so overlay baseline ~amd64 only.
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: DEPEND - python3_15 added; 3.2 dependency floors raised.
+# BENTOO-DIVERGENCE: RDEPEND - python3_15 added; 3.2 dependency floors raised.
+# BENTOO-DIVERGENCE: PATCHES - the 2.5.12.0 heif-find patch rebased onto 3.2.2.0
+# (context line changed in FindLibheif.cmake); same change.
 PYTHON_COMPAT=( python3_{11..15} )
 
 inherit cuda cmake flag-o-matic python-single-r1 toolchain-funcs
@@ -56,7 +63,7 @@ else
 		)
 	"
 	S="${WORKDIR}/OpenImageIO-${PV}"
-	KEYWORDS="~amd64 ~arm ~arm64 ~ppc64 ~riscv"
+	KEYWORDS="~amd64"
 fi
 
 LICENSE="Apache-2.0"
@@ -96,22 +103,22 @@ BDEPEND="
 # >=media-libs/libuhdr-1.3
 RDEPEND="
 	app-arch/bzip2:=
-	dev-cpp/robin-map
+	>=dev-cpp/robin-map-1.3.0
 	dev-libs/pugixml
 	media-libs/libheif:=
 	media-libs/libjpeg-turbo:=
 	media-libs/libpng:=
 	>=media-libs/libwebp-1.6.0:=
 	>=media-libs/opencolorio-2.3:=
-	media-libs/openexr:=
-	media-libs/tiff:=
+	>=media-libs/openexr-3.1:=
+	>=media-libs/tiff-4.1:=
 	virtual/zlib:=
-	dicom? ( sci-libs/dcmtk )
+	dicom? ( >=sci-libs/dcmtk-3.6.2 )
 	ffmpeg? ( media-video/ffmpeg:= )
 	fits? ( sci-libs/cfitsio:= )
 	gif? ( media-libs/giflib:= )
 	jpeg2k? ( media-libs/openjpeg:= )
-	jpegxl? ( media-libs/libjxl:= )
+	jpegxl? ( >=media-libs/libjxl-0.10.1:= )
 	opencv? ( media-libs/opencv:= )
 	openvdb? (
 		dev-cpp/tbb:=
@@ -129,12 +136,12 @@ RDEPEND="
 		media-libs/libglvnd
 		dev-qt/qtbase:6[gui,widgets,opengl]
 	)
-	raw? ( media-libs/libraw:= )
+	raw? ( >=media-libs/libraw-0.21.0:= )
 	truetype? ( media-libs/freetype )
 "
 DEPEND="
-	dev-libs/imath:=
-	dev-libs/libfmt:=
+	>=dev-libs/imath-3.1:=
+	>=dev-libs/libfmt-9.0:=
 	${RDEPEND}
 	test? ( media-fonts/droid )
 "
@@ -146,7 +153,7 @@ DOCS=(
 )
 
 PATCHES=(
-	"${FILESDIR}/${PN}-2.5.12.0-heif-find-fix.patch"
+	"${FILESDIR}/${PN}-3.2.2.0-heif-find-fix.patch"
 	"${FILESDIR}/${PN}-3.1.6.2-tests-optional.patch"
 	# in src_prepare
 	# "${FILESDIR}/${PN}-2.5.12.0_heif_test.patch"
@@ -352,6 +359,10 @@ src_configure() {
 		-DENABLE_TBB="$(usex openvdb)"
 
 		-DENABLE_libuhdr="no" # not in Gentoo
+		# only linked directly to work around static libtiff configs; the
+		# system libtiff carries its own codecs
+		-DENABLE_libdeflate="no"
+		-DENABLE_zstd="no"
 		-DENABLE_WebP="yes"
 
 		-DOIIO_BUILD_TESTS="$(usex test)"
@@ -359,6 +370,7 @@ src_configure() {
 		-DOIIO_DOWNLOAD_MISSING_TESTDATA="no"
 		-DOIIO_INTERNALIZE_FMT="no"
 		-DOIIO_USE_CUDA="$(usex cuda)"
+		-DOIIO_USE_HWY="no" # experimental upstream
 		# -DOIIO_USE_EXR_C_API="yes"
 
 		-DOPENIMAGEIO_CONFIG_DO_NOT_FIND_IMATH="yes"
@@ -389,6 +401,8 @@ src_configure() {
 
 	if use python; then
 		mycmakeargs+=(
+			# 3.2 defaults to nanobind; pybind11 is still supported
+			-DOIIO_PYTHON_BINDINGS_BACKEND="pybind11"
 			"-DPYTHON_VERSION=${EPYTHON#python}"
 			"-DPYTHON_SITE_DIR=$(python_get_sitedir)"
 		)

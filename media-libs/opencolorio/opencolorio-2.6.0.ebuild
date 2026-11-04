@@ -3,13 +3,19 @@
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
-# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# Based on ::gentoo's 2.4.2 ebuild, bumped to 2.6.0; python3_15 added.
+# 2.6.0 raises the dependency floors (expat 2.6.0, yaml-cpp 0.8.0,
+# minizip-ng 4.0.5, pybind11 2.9.2, OpenEXR 3.2.0 for the apps), adds an
+# opt-in Vulkan GPU backend (pinned off: tests/app helpers only) and needs the
+# Python install-path patch rebased.
+# BENTOO-DIVERGENCE: KEYWORDS - newer than ::gentoo, so overlay baseline ~amd64 only.
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: DEPEND - python3_15 added; 2.6.0 dependency floors raised.
+# BENTOO-DIVERGENCE: RDEPEND - python3_15 added; 2.6.0 dependency floors raised.
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: PATCHES - the 2.2.1 Python install-path patch rebased onto
+# 2.6.0 (upstream added a period to the context line); same change.
 PYTHON_COMPAT=( python3_{13..15} )
 
 inherit cmake dot-a python-single-r1 virtualx
@@ -21,9 +27,7 @@ S="${WORKDIR}/OpenColorIO-${PV}"
 
 LICENSE="BSD"
 SLOT="0/$(ver_cut 1-2)"
-# minizip-ng: ~arm ~arm64 ~ppc64 ~riscv
-# osl: ~riscv
-KEYWORDS="amd64 ~arm ~arm64 ~ppc64 ~riscv ~x86"
+KEYWORDS="~amd64"
 CPU_USE=(
 	x86_{avx,avx2,avx512f,f16c,sse2,sse3,sse4_1,sse4_2,ssse3}
 	# requires https://github.com/DLTcollab/sse2neon
@@ -39,14 +43,14 @@ REQUIRED_USE="
 "
 
 RDEPEND="
-	dev-cpp/pystring:=
-	>=dev-cpp/yaml-cpp-0.7.0:=
-	dev-libs/expat
+	>=dev-cpp/pystring-1.1.3:=
+	>=dev-cpp/yaml-cpp-0.8.0:=
+	>=dev-libs/expat-2.6.0
 	media-libs/glu
-	sys-libs/minizip-ng:=
+	>=sys-libs/minizip-ng-4.0.5:=
 	apps? (
 		media-libs/lcms:2
-		>=media-libs/openexr-3.1.5:=
+		>=media-libs/openexr-3.2.0:=
 	)
 	opengl? (
 		media-libs/freeglut
@@ -55,7 +59,7 @@ RDEPEND="
 	)
 	python? (
 		${PYTHON_DEPS}
-		$(python_gen_cond_dep 'dev-python/pybind11[${PYTHON_USEDEP}]')
+		$(python_gen_cond_dep '>=dev-python/pybind11-2.9.2[${PYTHON_USEDEP}]')
 	)
 "
 # TODO: OSL tests would need OIIO, leading to a circular dependency. If OIIO
@@ -98,7 +102,7 @@ BDEPEND="
 RESTRICT="!test? ( test )"
 
 PATCHES=(
-	"${FILESDIR}/${PN}-2.2.1-adjust-python-installation.patch"
+	"${FILESDIR}/${PN}-2.6.0-adjust-python-installation.patch"
 )
 
 pkg_setup() {
@@ -130,6 +134,10 @@ src_configure() {
 		"-DOCIO_BUILD_PYTHON=$(usex python)"
 		"-DOCIO_BUILD_TESTS=$(usex test)"
 		"-DOCIO_INSTALL_EXT_PACKAGES=NONE"
+		"-DOCIO_BUILD_OPENFX=OFF"
+		# Vulkan only drives the GPU unit tests and app helpers, and needs
+		# glslang/Vulkan SDK headers; keep it off.
+		"-DOCIO_VULKAN_ENABLED=OFF"
 		# allow the user to tell OCIO to display more information when searching and building the dependencies.
 		# "-DOCIO_VERBOSE=YES"
 
