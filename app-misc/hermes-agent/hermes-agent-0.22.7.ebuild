@@ -13,7 +13,7 @@ inherit distutils-r1 optfeature
 
 # Git tags are dated (vYYYY.M.D); pyproject carries the SemVer that is PV.
 # Both move together on every release: bump MY_TAG with PV.
-MY_TAG="0.22.6"
+MY_TAG="0.22.7"
 
 DESCRIPTION="Self-improving AI agent CLI by Nous Research"
 HOMEPAGE="
