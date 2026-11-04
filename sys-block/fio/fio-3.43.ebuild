@@ -3,11 +3,14 @@
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
-# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# Based on ::gentoo's 3.41 ebuild, bumped to 3.43; python3_15 added.
+# 3.43 only adds opt-in configure probes (libhipfile, cuda13), left off;
+# fio-2.2.13-libmtd.patch still applies.
+# BENTOO-DIVERGENCE: KEYWORDS - ~amd64 only: a bump past ::gentoo is no longer a mirror,
+# so it follows the overlay baseline (amd64, x86-64-v3).
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: RDEPEND - pandas pulled only for python3_{12..14}: dev-python/pandas lacks python3_15.
 PYTHON_COMPAT=( python3_{12..15} )
 
 inherit python-r1 toolchain-funcs
@@ -24,7 +27,7 @@ S="${WORKDIR}/${MY_P}"
 LICENSE="GPL-2"
 SLOT="0"
 
-KEYWORDS="amd64 arm arm64 ~loong ~ppc ppc64 ~riscv x86"
+KEYWORDS="~amd64"
 
 IUSE="aio curl glusterfs gnuplot gtk io-uring nfs numa pandas python rbd rdma static tcmalloc test valgrind zbc zlib"
 REQUIRED_USE="python? ( ${PYTHON_REQUIRED_USE} )
@@ -63,7 +66,11 @@ DEPEND="${RDEPEND}
 RDEPEND+="
 	python? (
 		${PYTHON_DEPS}
-		pandas? ( dev-python/pandas[${PYTHON_USEDEP}] )
+		pandas? (
+			$(python_gen_cond_dep '
+				dev-python/pandas[${PYTHON_USEDEP}]
+			' python3_{12..14})
+		)
 	)
 	gnuplot? ( sci-visualization/gnuplot )"
 
@@ -102,6 +109,7 @@ src_configure() {
 	# TODO: libblkiio - not packaged in Gentoo
 	# TODO: xnvme - not packaged in Gentoo
 	# TODO: libhdfs
+	# TODO: libhipfile (ROCm) - enable-only, off by default
 	# libnfs option does not work as expected:
 	# $(usex nfs '' '--disable-libnfs') \
 	OPTS=(

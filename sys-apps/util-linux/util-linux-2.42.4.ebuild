@@ -3,12 +3,16 @@
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
-# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# Based on ::gentoo's 2.42.3 ebuild, bumped to 2.42.4; python3_15 added.
+# The four 2.42.3 backports (libmount include/fixup, fileutils warnings,
+# CVE-2026-78408) are part of the 2.42.4 release and were dropped.
+# BENTOO-DIVERGENCE: KEYWORDS - ~amd64 only: a bump past ::gentoo is no longer a mirror,
+# so it follows the overlay baseline (amd64, x86-64-v3).
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: PATCHES - the four 2.42.3 backports are part of 2.42.4.
 PYTHON_COMPAT=( python3_{11..15} )
 TMPFILES_OPTIONAL=1
 
@@ -29,7 +33,7 @@ else
 	inherit verify-sig
 
 	if [[ ${PV} != *_rc* ]] ; then
-		KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~m68k ~mips ppc ppc64 ~riscv ~s390 ~sparc x86 ~arm64-macos"
+		KEYWORDS="~amd64"
 	fi
 
 	SRC_URI="https://www.kernel.org/pub/linux/utils/util-linux/v${PV:0:4}/${MY_P}.tar.xz"
@@ -113,10 +117,6 @@ RESTRICT="!test? ( test )"
 
 PATCHES=(
 	"${FILESDIR}"/${PN}-2.41.4-no-AF_ALG.patch
-	"${FILESDIR}"/${P}-libmount-include.patch
-	"${FILESDIR}"/${P}-CVE-2026-78408.patch
-	"${FILESDIR}"/${P}-fileutils-warnings.patch
-	"${FILESDIR}"/${P}-libmount-fixup.patch
 )
 
 pkg_pretend() {
