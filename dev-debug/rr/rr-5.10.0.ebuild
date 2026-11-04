@@ -3,12 +3,15 @@
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
-# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# Based on ::gentoo's 5.9.0-r1 ebuild, bumped to 5.10.0; python3_15 added.
+# The glibc-2.42 termio patch is upstream in 5.10.0 and is dropped (as in
+# ::gentoo's rr-9999); dependencies (capnproto, zlib, zstd) are unchanged.
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: PATCHES - the glibc-2.42 termio patch is upstream in 5.10.0.
+# BENTOO-DIVERGENCE: KEYWORDS - bumped past ::gentoo, so overlay baseline ~amd64 only.
 PYTHON_COMPAT=( python3_{11..15} )
 CMAKE_BUILD_TYPE=Release
 
@@ -22,7 +25,7 @@ if [[ ${PV} == 9999 ]] ; then
 	inherit git-r3
 else
 	SRC_URI="https://github.com/rr-debugger/${PN}/archive/${PV}.tar.gz -> mozilla-${P}.tar.gz"
-	KEYWORDS="amd64 ~arm64 ~x86"
+	KEYWORDS="~amd64"
 fi
 
 # rr itself is MIT and BSD-2, but there's various bits under third-party too.

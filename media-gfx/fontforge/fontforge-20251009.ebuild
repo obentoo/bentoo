@@ -1,15 +1,22 @@
-# Copyright 2004-2025 Gentoo Authors
+# Copyright 2004-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
-# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# Based on ::gentoo's 20230101-r2 ebuild, bumped to 20251009; python3_15
+# added. Upstream removed the Xlib GUI backend: the GUI is now GTK3 plus
+# gtkmm-3.0 (C++17) only, so USE=X is gone and USE=gtk pulls dev-cpp/gtkmm.
+# The new ENABLE_HARFBUZZ shaper is automagic upstream and is wired to
+# USE=harfbuzz. The three 20230101 patches are upstream (PR #5367 shell
+# injection, PR #5423 sysconfig instead of distutils, fixed fr.po format
+# strings) and are dropped; libltdl is no longer referenced by the sources.
+# BENTOO-DIVERGENCE: IUSE - python3_15 added; X dropped (Xlib backend removed upstream); harfbuzz added.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added; harfbuzz requires gtk (shaper is GUI-only).
+# BENTOO-DIVERGENCE: DEPEND - python3_15 added; GUI is gtk+:3 + gtkmm:3.0, X11 libs and libltdl dropped.
+# BENTOO-DIVERGENCE: RDEPEND - python3_15 added; GUI is gtk+:3 + gtkmm:3.0, X11 libs and libltdl dropped.
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added; test? pulls the reworked RDEPEND.
+# BENTOO-DIVERGENCE: PATCHES - the three 20230101 patches are upstream in 20251009.
+# BENTOO-DIVERGENCE: KEYWORDS - bumped past ::gentoo, so overlay baseline ~amd64 only.
 PYTHON_COMPAT=( python3_{11..15} )
 inherit python-single-r1 xdg cmake
 
@@ -19,14 +26,16 @@ SRC_URI="https://github.com/fontforge/fontforge/releases/download/${PV}/${P}.tar
 
 LICENSE="BSD GPL-3+"
 SLOT="0"
-KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~m68k ~mips ppc ppc64 ~riscv ~s390 ~sparc x86"
-IUSE="doc truetype-debugger gif gtk jpeg png +python readline test tiff svg woff2 X"
+KEYWORDS="~amd64"
+IUSE="doc truetype-debugger gif gtk harfbuzz jpeg png +python readline test tiff svg woff2"
 RESTRICT="!test? ( test )"
-REQUIRED_USE="python? ( ${PYTHON_REQUIRED_USE} )"
+REQUIRED_USE="
+	harfbuzz? ( gtk )
+	python? ( ${PYTHON_REQUIRED_USE} )
+"
 
 RDEPEND="
 	>=dev-libs/glib-2.67:2
-	dev-libs/libltdl:0
 	dev-libs/libxml2:2=
 	>=media-libs/freetype-2.3.7:2=
 	gif? ( media-libs/giflib:= )
@@ -34,22 +43,16 @@ RDEPEND="
 	png? ( media-libs/libpng:= )
 	tiff? ( media-libs/tiff:= )
 	truetype-debugger? ( >=media-libs/freetype-2.3.8:2[fontforge,-bindist(-)] )
-	gtk? ( >=x11-libs/gtk+-3.10:3 )
-	!gtk? (
-		X? (
-			>=x11-libs/cairo-1.6:0=
-			>=x11-libs/pango-1.10:0=[X]
-			x11-libs/libX11:=
-			x11-libs/libXi:=
-		)
+	gtk? (
+		dev-cpp/gtkmm:3.0
+		>=x11-libs/gtk+-3.10:3
+		harfbuzz? ( media-libs/harfbuzz:= )
 	)
 	python? ( ${PYTHON_DEPS} )
 	readline? ( sys-libs/readline:0= )
 	woff2? ( media-libs/woff2:0= )
 "
-DEPEND="${RDEPEND}
-	!gtk? ( X? ( x11-base/xorg-proto ) )
-"
+DEPEND="${RDEPEND}"
 BDEPEND="
 	sys-devel/gettext
 	doc? ( >=dev-python/sphinx-2 )
@@ -81,14 +84,13 @@ src_configure() {
 		-DENABLE_WOFF2=$(usex woff2 ON OFF)
 	)
 
-	if use gtk || use X; then
+	if use gtk; then
 		mycmakeargs+=(
 			-DENABLE_GUI=ON
-			# Prefer GTK over X11 if both USE flage are enabled
-			-DENABLE_X11=$(usex gtk OFF ON)
+			-DENABLE_HARFBUZZ=$(usex harfbuzz ON OFF)
 		)
 	else
-		mycmakeargs+=( -DENABLE_GUI=OFF )
+		mycmakeargs+=( -DENABLE_GUI=OFF -DENABLE_HARFBUZZ=OFF )
 	fi
 
 	if use python; then
