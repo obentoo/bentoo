@@ -20,8 +20,6 @@ EAPI=8
 # ABI reason.  The shared library now links threads (shared-multithread
 # defaults to true); the static one does not (static-multithread = false).
 
-# BENTOO-DIVERGENCE: PATCHES - both ::gentoo 1.10.0 patches dropped, merged upstream.
-
 inherit dot-a meson-multilib
 
 DESCRIPTION="Extremely Fast Compression algorithm"
