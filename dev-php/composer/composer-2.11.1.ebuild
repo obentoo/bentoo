@@ -68,4 +68,10 @@ pkg_postinst() {
 
 	elog "Composer is managed by Portage: 'composer self-update' cannot replace"
 	elog "the root-owned /usr/share/${PN}/${PN}.phar. Update it through emerge."
+	elog
+	elog "glsa-check reports GLSA 202508-06 against every version (<=9999):"
+	elog "it records ::gentoo dropping Composer, and its CVEs are fixed since"
+	elog "2.6.4. This package is maintained by bentoo and follows upstream's"
+	elog "advisories: https://github.com/composer/composer/security/advisories"
+	elog "To mark the GLSA as handled: glsa-check --inject 202508-06 (as root)."
 }
