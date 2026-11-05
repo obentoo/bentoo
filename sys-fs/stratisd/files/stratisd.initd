@@ -1,0 +1,24 @@
+#!/sbin/openrc-run
+# Copyright 1999-2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+
+description="Stratis storage pool daemon"
+
+command="/usr/libexec/stratisd"
+command_args="${STRATISD_OPTS}"
+supervisor="supervise-daemon"
+supervise_daemon_args="--env RUST_BACKTRACE=1"
+# stratisd logs to stderr; hand it to syslog like the journal gets it under
+# systemd.
+error_logger="logger -t ${RC_SVCNAME} -p daemon.info"
+# Upstream's unit stops it with SIGINT (KillSignal=SIGINT), the signal its
+# shutdown path handles.
+retry="SIGINT/30/SIGKILL/5"
+
+depend() {
+	# Claims org.storage.stratis3 on the system bus; follows block devices
+	# through udev.
+	need dbus udev
+	use logger
+	after modules lvm dmeventd
+}
