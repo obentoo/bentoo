@@ -5,13 +5,14 @@ EAPI=8
 DISTUTILS_UPSTREAM_PEP517=standalone
 DISTUTILS_USE_PEP517=setuptools
 DISTUTILS_EXT=1
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
+# Mirrored from ::gentoo only to add python3_15. Drop this copy once
+# ::gentoo lists python3_15.
 # BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# BENTOO-DIVERGENCE: src_prepare - setup.py falls back to nanobind's .abi3.so name (python3_15).
 PYTHON_COMPAT=( python3_{11..15} )
 inherit distutils-r1 cmake
 
@@ -42,6 +43,18 @@ BDEPEND="
 src_prepare() {
 	cmake_src_prepare
 	distutils-r1_src_prepare
+
+	# Python 3.15 lists ".abi3-<multiarch>.so" first in EXTENSION_SUFFIXES, so
+	# setuptools names the module onnx_cpp2py_export.abi3-x86_64-linux-gnu.so,
+	# while nanobind's CMake still writes onnx_cpp2py_export.abi3.so and
+	# BuildExt dies with "can't copy ... doesn't exist". Fall back to the file
+	# nanobind wrote; 3.15 imports both names. No-op on 3.12-3.14.
+	grep -qF '            src = os.path.join(lib_dir, filename)' setup.py \
+		|| die "setup.py: BuildExt src line moved, re-check the abi3 fallback"
+	sed -i '/^            src = os.path.join(lib_dir, filename)$/a\
+\            if not os.path.exists(src):\
+\                src = os.path.join(lib_dir, fullname.rpartition(".")[2] + ".abi3.so")' \
+		setup.py || die
 }
 
 src_configure() {
