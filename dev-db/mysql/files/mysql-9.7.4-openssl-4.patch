@@ -1,0 +1,73 @@
+cmake/ssl.cmake reads OpenSSL's version from OPENSSL_VERSION_MAJOR/MINOR/PATCH
+only when the major version is exactly 3; anything else falls back to the
+OpenSSL 1.x OPENSSL_VERSION_NUMBER hex layout. With OpenSSL 4 that yields an
+empty version ("OPENSSL_VERSION (system) is ..") and configure dies with
+"Not a supported openssl version in WITH_SSL=system". Treat 3 and later
+alike, for the version parse and for the deprecation-warning downgrade.
+
+sql/auth/sql_authentication.cc: OpenSSL 4 returns X509_get_subject_name() as
+const, so X509_gen can no longer add the CN to the certificate's own subject
+in place. Build the name with X509_NAME_new(), set it with
+X509_set_subject_name() (both available since OpenSSL 1.1), and free it.
+The client-side CN checks in sql-common/client.cc, plugin/x and xcom use the
+same const getters but only under OPENSSL_VERSION_NUMBER < 0x10002000L, so
+they are never compiled.
+
+Still present in MySQL 9.7.4; ::gentoo has dev-libs/openssl-4.1.0 in ~amd64.
+
+diff -ruN a/cmake/ssl.cmake b/cmake/ssl.cmake
+--- a/cmake/ssl.cmake	2026-11-05 14:38:48.517265493 -0300
++++ b/cmake/ssl.cmake	2026-11-05 14:38:48.525187067 -0300
+@@ -151,8 +151,8 @@
+       ${version_part} "${${version_part}}")
+   ENDFOREACH()
+   SET(OPENSSL_VERSION_MAJOR ${OPENSSL_VERSION_MAJOR} CACHE INTERNAL "" FORCE)
+-  IF(OPENSSL_VERSION_MAJOR VERSION_EQUAL 3)
+-    # OpenSSL 3
++  IF(OPENSSL_VERSION_MAJOR VERSION_GREATER_EQUAL 3)
++    # OpenSSL 3 and later
+     SET(OPENSSL_FIX_VERSION "${OPENSSL_VERSION_PATCH}")
+   ELSE()
+     # Verify version number. Version information looks like:
+@@ -868,7 +868,7 @@
+ 
+ # Downgrade OpenSSL 3 deprecation warnings.
+ MACRO(DOWNGRADE_OPENSSL3_DEPRECATION_WARNINGS)
+-  IF(OPENSSL_VERSION_MAJOR VERSION_EQUAL 3)
++  IF(OPENSSL_VERSION_MAJOR VERSION_GREATER_EQUAL 3)
+     IF(MY_COMPILER_IS_GNU_OR_CLANG)
+       ADD_COMPILE_FLAGS(${ARGV}
+         COMPILE_FLAGS "-Wno-error=deprecated-declarations")
+diff -ruN a/sql/auth/sql_authentication.cc b/sql/auth/sql_authentication.cc
+--- a/sql/auth/sql_authentication.cc	2026-11-05 14:54:45.036167711 -0300
++++ b/sql/auth/sql_authentication.cc	2026-11-05 14:54:45.045898942 -0300
+@@ -5365,7 +5365,8 @@
+     if (!X509_set_pubkey(x509, pkey)) goto err;
+ 
+     /** Set CN value in subject */
+-    name = X509_get_subject_name(x509);
++    /* OpenSSL 4 returns the subject as const: build it apart and set it. */
++    name = X509_NAME_new();
+     if (!name) goto err;
+ 
+     if (!X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+@@ -5373,6 +5374,8 @@
+                                     0))
+       goto err;
+ 
++    if (!X509_set_subject_name(x509, name)) goto err;
++
+     /** Set Issuer */
+     if (!X509_set_issuer_name(
+             x509, self_sign ? name : X509_get_subject_name(ca_x509)))
+@@ -5394,8 +5397,10 @@
+     /** Sign using SHA256 */
+     if (!X509_sign(x509, self_sign ? pkey : ca_pkey, EVP_sha256())) goto err;
+ 
++    X509_NAME_free(name);
+     return x509;
+   err:
++    if (name) X509_NAME_free(name);
+     if (x509) X509_free(x509);
+     return nullptr;
+   }

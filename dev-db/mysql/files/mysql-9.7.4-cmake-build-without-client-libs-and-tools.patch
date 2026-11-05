@@ -1,0 +1,246 @@
+Rebase of parona-source's mysql-8.4.7-patches-01 0001 onto MySQL 9.7.4.
+
+9.x added two client auth plugins to libmysql/CMakeLists.txt
+(authentication_native_password, now loadable instead of built in, and
+authentication_openid_connect_client), and 9.7.4 replaced fido_client with
+authentication_webauthn. They move into the ELSE(WITHOUT_CLIENTLIBS) branch
+with the others: with WITHOUT_CLIENTLIBS the client plugins are
+dev-db/mysql-connector-c's to install, so building them here would collide
+on /usr/lib*/mysql/plugin.
+
+Original: https://github.com/parona-source/mysql-server/releases/tag/mysql-8.4.7-patches-01
+
+--- a/CMakeLists.txt	2026-11-05 14:38:14.600976325 -0300
++++ b/CMakeLists.txt	2026-11-05 14:38:14.616034951 -0300
+@@ -2359,7 +2359,9 @@
+ ADD_DEPENDENCIES(clang_tidy_prerequisites protobuf_generated_all)
+ ADD_DEPENDENCIES(clang_tidy_prerequisites GenError)
+ 
+-ADD_SUBDIRECTORY(include)
++IF(NOT WITHOUT_CLIENTLIBS)
++  ADD_SUBDIRECTORY(include)
++ENDIF(NOT WITHOUT_CLIENTLIBS)
+ ADD_SUBDIRECTORY(strings)
+ ADD_SUBDIRECTORY(extra/unordered_dense)
+ ADD_SUBDIRECTORY(extra/xxhash)
+@@ -2509,7 +2511,6 @@
+ IF(NOT WITHOUT_SERVER)
+   ADD_SUBDIRECTORY(mysql-test)
+   ADD_SUBDIRECTORY(mysql-test/lib/My/SafeProcess)
+-  ADD_SUBDIRECTORY(support-files)
+   IF(WITH_INTERNAL)
+     ADD_SUBDIRECTORY(internal)
+   ENDIF()
+diff -ruN a/libmysql/CMakeLists.txt b/libmysql/CMakeLists.txt
+--- a/libmysql/CMakeLists.txt	2026-11-05 14:38:14.603175896 -0300
++++ b/libmysql/CMakeLists.txt	2026-11-05 14:38:14.624434301 -0300
+@@ -291,29 +291,38 @@
+   LIST(APPEND LIBS_TO_MERGE auth_win_client)
+ ENDIF()
+ 
+-# LDAP authentication SASL client plug-in
+-ADD_SUBDIRECTORY(authentication_ldap)
+-
+-# authentication kerberos client plug-in
+-ADD_SUBDIRECTORY(authentication_kerberos)
+-
+-# authentication IAM client plug-in
+-ADD_SUBDIRECTORY(authentication_oci_client)
+-
+-# WebAuthn client authentication plug-in
+-ADD_SUBDIRECTORY(authentication_webauthn)
+-
+-# authentication mysql_native_password client plug-in
+-ADD_SUBDIRECTORY(authentication_native_password)
+-
+-# authentication openid connect client plug-in
+-ADD_SUBDIRECTORY(authentication_openid_connect_client)
+-
+-# Merge several convenience libraries into one big mysqlclient
+-MERGE_CONVENIENCE_LIBRARIES(mysqlclient ${LIBS_TO_MERGE}
+-  COMPONENT Development
+-  LINK_LIBRARIES ${LIBS_TO_LINK}
+-  )
++IF(WITHOUT_CLIENTLIBS)
++  # Merge several convenience libraries into one big mysqlclient
++  MERGE_CONVENIENCE_LIBRARIES(mysqlclient ${LIBS_TO_MERGE}
++    COMPONENT Development
++    LINK_LIBRARIES ${LIBS_TO_LINK}
++    SKIP_INSTALL
++    )
++ELSE(WITHOUT_CLIENTLIBS)
++  # LDAP authentication SASL client plug-in
++  ADD_SUBDIRECTORY(authentication_ldap)
++
++  # authentication kerberos client plug-in
++  ADD_SUBDIRECTORY(authentication_kerberos)
++
++  # authentication IAM client plug-in
++  ADD_SUBDIRECTORY(authentication_oci_client)
++
++  # WebAuthn client authentication plug-in
++  ADD_SUBDIRECTORY(authentication_webauthn)
++
++  # authentication mysql_native_password client plug-in
++  ADD_SUBDIRECTORY(authentication_native_password)
++
++  # authentication openid connect client plug-in
++  ADD_SUBDIRECTORY(authentication_openid_connect_client)
++
++  # Merge several convenience libraries into one big mysqlclient
++  MERGE_CONVENIENCE_LIBRARIES(mysqlclient ${LIBS_TO_MERGE}
++    COMPONENT Development
++    LINK_LIBRARIES ${LIBS_TO_LINK}
++    )
++ENDIF(WITHOUT_CLIENTLIBS)
+ 
+ # Visual Studio users need debug  static library for debug projects
+ IF(MSVC)
+@@ -360,17 +369,32 @@
+ 
+ # Merge several convenience libraries into one big mysqlclient
+ # and link them together into shared library.
+-MERGE_LIBRARIES_SHARED(libmysql ${LIBS_TO_MERGE}
+-  EXPORTS
+-  ${CLIENT_API_FUNCTIONS}
+-  ${CLIENT_API_FUNCTIONS_UNDOCUMENTED}
+-  ${CLIENT_API_NONBLOCKING_FUNCTIONS}
+-  COMPONENT SharedLibraries
+-  LINK_LIBRARIES ${LIBS_TO_LINK}
+-  ${UNIX_OUTPUT_NAME}
+-  ${UNIX_SOVERSION}
+-  ${UNIX_VERSION}
+-  )
++IF(WITHOUT_CLIENTLIBS)
++  MERGE_LIBRARIES_SHARED(libmysql ${LIBS_TO_MERGE}
++    EXPORTS
++    ${CLIENT_API_FUNCTIONS}
++    ${CLIENT_API_FUNCTIONS_UNDOCUMENTED}
++    ${CLIENT_API_NONBLOCKING_FUNCTIONS}
++    COMPONENT SharedLibraries
++    LINK_LIBRARIES ${LIBS_TO_LINK}
++    ${UNIX_OUTPUT_NAME}
++    ${UNIX_SOVERSION}
++    ${UNIX_VERSION}
++    SKIP_INSTALL
++    )
++ELSE(WITHOUT_CLIENTLIBS)
++  MERGE_LIBRARIES_SHARED(libmysql ${LIBS_TO_MERGE}
++    EXPORTS
++    ${CLIENT_API_FUNCTIONS}
++    ${CLIENT_API_FUNCTIONS_UNDOCUMENTED}
++    ${CLIENT_API_NONBLOCKING_FUNCTIONS}
++    COMPONENT SharedLibraries
++    LINK_LIBRARIES ${LIBS_TO_LINK}
++    ${UNIX_OUTPUT_NAME}
++    ${UNIX_SOVERSION}
++    ${UNIX_VERSION}
++    )
++ENDIF(WITHOUT_CLIENTLIBS)
+ 
+ # Downgrade warning for strncat in my_crypt_genhash.
+ IF((WITH_LTO OR CMAKE_COMPILER_FLAG_WITH_LTO) AND MY_COMPILER_IS_GNU)
+diff -ruN a/man/CMakeLists.txt b/man/CMakeLists.txt
+--- a/man/CMakeLists.txt	2026-11-05 14:38:14.605323069 -0300
++++ b/man/CMakeLists.txt	2026-11-05 14:38:14.616175203 -0300
+@@ -26,7 +26,6 @@
+   comp_err.1
+   ibd2sdi.1
+   innochecksum.1
+-  my_print_defaults.1
+   myisam_ftdump.1
+   myisamchk.1
+   myisamlog.1
+@@ -45,7 +44,6 @@
+   mysqlman.1
+   mysqlshow.1
+   mysqlslap.1
+-  perror.1
+   )
+ 
+ IF(NOT WITH_SYSTEMD)
+diff -ruN a/scripts/CMakeLists.txt b/scripts/CMakeLists.txt
+--- a/scripts/CMakeLists.txt	2026-11-05 14:38:14.607251113 -0300
++++ b/scripts/CMakeLists.txt	2026-11-05 14:38:14.616193017 -0300
+@@ -494,7 +494,7 @@
+     ${CMAKE_CURRENT_BINARY_DIR}/${PKGCONFIG_FILE}
+     ESCAPE_QUOTES @ONLY)
+ 
+-  IF(INSTALL_PKGCONFIGDIR)
++  IF(INSTALL_PKGCONFIGDIR AND NOT WITHOUT_CLIENTLIBS)
+     MESSAGE(STATUS "INSTALL ${PKGCONFIG_FILE} ${INSTALL_PKGCONFIGDIR}")
+     INSTALL(FILES
+       ${CMAKE_CURRENT_BINARY_DIR}/${PKGCONFIG_FILE}
+@@ -507,19 +507,24 @@
+   # mysqld_safe used in mtr even for systemd platforms
+   IF(WITH_SYSTEMD)
+     SET(BIN_SCRIPTS
+-      mysql_config
+       mysqldumpslow
+       mysqld_safe
+       )
+   ELSE()
+     SET(BIN_SCRIPTS
+-      mysql_config
+       mysqldumpslow
+       mysqld_multi
+       mysqld_safe
+       )
+   ENDIF()
+ 
++  IF(NOT WITHOUT_CLIENTLIBS)
++    SET(BIN_SCRIPTS
++      ${BIN_SCRIPTS}
++      mysql_config
++    )
++  ENDIF(NOT WITHOUT_CLIENTLIBS)
++
+   FOREACH(file ${BIN_SCRIPTS})
+     IF(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${file}.sh)
+       CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/${file}.sh
+diff -ruN a/support-files/CMakeLists.txt b/support-files/CMakeLists.txt
+--- a/support-files/CMakeLists.txt	2026-11-05 14:38:14.609344836 -0300
++++ b/support-files/CMakeLists.txt	2026-11-05 14:38:14.616217022 -0300
+@@ -25,8 +25,9 @@
+   RETURN()
+ ENDIF()
+ 
+-INSTALL(FILES mysql.m4
+-  DESTINATION ${INSTALL_SHAREDIR}/aclocal COMPONENT Development)
++IF(NOT WITHOUT_CLIENTLIBS)
++  INSTALL(FILES mysql.m4 DESTINATION ${INSTALL_SHAREDIR}/aclocal COMPONENT Development)
++ENDIF(NOT WITHOUT_CLIENTLIBS)
+ 
+ SET(localstatedir "${MYSQL_DATADIR}")
+ 
+diff -ruN a/utilities/CMakeLists.txt b/utilities/CMakeLists.txt
+--- a/utilities/CMakeLists.txt	2026-11-05 14:38:14.611189615 -0300
++++ b/utilities/CMakeLists.txt	2026-11-05 14:38:14.616228824 -0300
+@@ -126,6 +126,19 @@
+   EXCLUDE_FROM_ALL
+   )
+ 
++IF(WITHOUT_CLIENTLIBS)
++MYSQL_ADD_EXECUTABLE(my_print_defaults
++  my_print_defaults.cc
++  COMPONENT Server
++  LINK_LIBRARIES mysys
++  SKIP_INSTALL )
++MYSQL_ADD_EXECUTABLE(perror
++  perror.cc
++  COMPONENT Server
++  DEPENDENCIES GenError
++  LINK_LIBRARIES mysys
++  SKIP_INSTALL )
++ELSE(WITHOUT_CLIENTLIBS)
+ MYSQL_ADD_EXECUTABLE(my_print_defaults
+   my_print_defaults.cc
+   COMPONENT Server
+@@ -137,6 +150,7 @@
+   DEPENDENCIES GenError
+   LINK_LIBRARIES mysys
+   )
++ENDIF(WITHOUT_CLIENTLIBS)
+ 
+ # All targets below belong to COMPONENT Server and depend on InnoDB.
+ IF(WITHOUT_SERVER)
