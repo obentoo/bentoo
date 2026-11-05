@@ -1,0 +1,78 @@
+https://github.com/Mbed-TLS/mbedtls/pull/9876
+Subject: Allow install headers to different location
+
+Use standard `CMAKE_INSTALL_INCLUDEDIR` and `CMAKE_INSTALL_LIBDIR`
+location to define headers and library installation. This variable can be
+redefined on configuration phase to allow install headers and libraries to
+different location (like `include/mbedtls3`, #8723).
+
+Additionally removing explicit permission rules as they may broke proper
+permissions for system installation (like remove executable bit from
+libraries). By default CMake sets permissions correctly on all files and
+directories.
+
+Rebased on 3.6.7: upstream already took the INSTALL_INTERFACE and
+include/CMakeLists.txt parts.
+
+--- a/3rdparty/everest/CMakeLists.txt
++++ b/3rdparty/everest/CMakeLists.txt
+@@ -27,16 +27,16 @@
+ endif()
+ 
+ if(INSTALL_MBEDTLS_HEADERS)
+-
+   install(DIRECTORY include/everest
+     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+-    FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+-    DIRECTORY_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+     FILES_MATCHING PATTERN "*.h")
+ 
+ endif(INSTALL_MBEDTLS_HEADERS)
+ 
+ install(TARGETS ${everest_target}
+   EXPORT MbedTLSTargets
+-  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+-  PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
++  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
++  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
++  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
++  INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
++)
+--- a/3rdparty/p256-m/CMakeLists.txt
++++ b/3rdparty/p256-m/CMakeLists.txt
+@@ -25,16 +25,16 @@
+ endif()
+ 
+ if(INSTALL_MBEDTLS_HEADERS)
+-
+-  install(DIRECTORY :${CMAKE_CURRENT_SOURCE_DIR}
++  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+-    FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+-    DIRECTORY_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+     FILES_MATCHING PATTERN "*.h")
+ 
+ endif(INSTALL_MBEDTLS_HEADERS)
+ 
+ install(TARGETS ${p256m_target}
+-EXPORT MbedTLSTargets
+-DESTINATION ${CMAKE_INSTALL_LIBDIR}
+-PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
++  EXPORT MbedTLSTargets
++  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
++  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
++  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
++  INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
++)
+--- a/library/CMakeLists.txt
++++ b/library/CMakeLists.txt
+@@ -368,7 +368,8 @@
+         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+-        PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
++        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
++    )
+ endforeach(target)
+ 
+ set(lib_target "${MBEDTLS_TARGET_PREFIX}lib")
