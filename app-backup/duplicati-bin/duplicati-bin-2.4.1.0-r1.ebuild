@@ -32,7 +32,10 @@ RESTRICT="bindist mirror strip"
 # Avalonia (X11) tray + SkiaSharp renderer need the X11/GL/font stack.
 RDEPEND="
 	dev-libs/icu
-	dev-libs/openssl:0/3
+	|| (
+		dev-libs/openssl-compat:3
+		dev-libs/openssl:0/3
+	)
 	media-libs/fontconfig
 	media-libs/freetype
 	media-libs/mesa

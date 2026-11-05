@@ -94,7 +94,10 @@ RDEPEND="
 	acct-user/lemonade
 	app-arch/unzip
 	app-arch/zstd:=
-	dev-libs/openssl:0/3
+	|| (
+		dev-libs/openssl-compat:3
+		dev-libs/openssl:0/3
+	)
 	virtual/zlib:=
 	x11-libs/libdrm[video_cards_amdgpu]
 "

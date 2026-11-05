@@ -22,7 +22,10 @@ RESTRICT="mirror strip bindist"
 # runtime list in github.com/zed-industries/delta-nix (flake.nix). Only libc,
 # libm, libunwind and the bundled xcb/xkbcommon are linked directly.
 RDEPEND="
-	dev-libs/openssl:0/3
+	|| (
+		dev-libs/openssl-compat:3
+		dev-libs/openssl:0/3
+	)
 	dev-libs/wayland
 	media-libs/alsa-lib
 	media-libs/fontconfig

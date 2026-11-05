@@ -49,7 +49,10 @@ RDEPEND="
 	dev-libs/libusb:1
 	dev-libs/nspr
 	dev-libs/nss
-	dev-libs/openssl:0/3
+	|| (
+		dev-libs/openssl-compat:3
+		dev-libs/openssl:0/3
+	)
 	media-gfx/graphite2
 	media-libs/alsa-lib
 	media-libs/libglvnd

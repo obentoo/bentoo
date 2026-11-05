@@ -25,7 +25,10 @@ RDEPEND="
 	app-arch/zstd:=
 	dev-db/sqlite:3
 	>=dev-libs/libgit2-1.9.0:=
-	dev-libs/openssl:0/3
+	|| (
+		dev-libs/openssl-compat:3
+		dev-libs/openssl:0/3
+	)
 	dev-libs/wayland
 	|| (
 		media-fonts/dejavu
