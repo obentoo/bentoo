@@ -6,8 +6,12 @@ EAPI=8
 KERNEL_IUSE_GENERIC_UKI=1
 LLVM_COMPAT=( {19..23} )
 LLVM_OPTIONAL=1
+# scripts/min-tool-version.sh of 7.3; bindgen is pinned below for the same reason.
+RUST_MIN_VER="1.85.0"
+RUST_OPTIONAL=1
+RUST_REQ_USE="rust-src"
 
-inherit kernel-build llvm-r2 toolchain-funcs verify-sig
+inherit kernel-build llvm-r2 rust toolchain-funcs verify-sig
 
 # Layers, applied in this order on top of kernel.org ${PV}:
 #  1. CachyOS source release ${MY_P}: kernel.org plus CachyOS's topic
@@ -89,11 +93,24 @@ unset _p
 S=${WORKDIR}/${MY_P}
 
 KEYWORDS="~amd64"
-IUSE="+bore debug hardened +lto +sched-ext"
-REQUIRED_USE="lto? ( ${LLVM_REQUIRED_USE} )"
+IUSE="+bore debug hardened +lto rust +sched-ext"
+# init/Kconfig drops CONFIG_RUST without a word when it meets BTF together
+# with LTO (sched-ext and debug turn BTF on) or the GCC RANDSTRUCT plugin
+# (hardened without lto merges hardened-gcc-plugins.config).
+REQUIRED_USE="
+	lto? ( ${LLVM_REQUIRED_USE} )
+	rust? (
+		lto? ( !sched-ext !debug )
+		!lto? ( !hardened )
+	)
+"
 
 BDEPEND="
 	debug? ( dev-util/pahole )
+	rust? (
+		${RUST_DEPEND}
+		>=dev-util/bindgen-0.71.1
+	)
 	lto? (
 		$(llvm_gen_dep '
 			llvm-core/clang:${LLVM_SLOT}
@@ -134,6 +151,10 @@ VERIFY_SIG_OPENPGP_KEY_PATH=/usr/share/openpgp-keys/cachyos.asc
 
 pkg_setup() {
 	kernel-build_pkg_setup
+
+	# Puts the selected slot's rustc first in PATH, where the kernel's
+	# scripts/rust_is_available.sh looks for it.
+	use rust && [[ ${MERGE_TYPE} != binary ]] && rust_pkg_setup
 
 	if use lto && [[ ${MERGE_TYPE} != binary ]]; then
 		llvm-r2_pkg_setup
@@ -270,6 +291,7 @@ src_prepare() {
 	use hardened && use lto && merge_configs+=( "${FILESDIR}"/cfi.config )
 	use bore && merge_configs+=( "${FILESDIR}"/bore.config )
 	use sched-ext && merge_configs+=( "${FILESDIR}"/sched-ext.config )
+	use rust && merge_configs+=( "${FILESDIR}"/rust.config )
 
 	kernel-build_merge_configs "${merge_configs[@]}"
 }
@@ -293,6 +315,7 @@ src_configure() {
 	use hardened && use lto && required+=( CONFIG_CFI=y )
 	use bore && required+=( CONFIG_SCHED_BORE=y )
 	use sched-ext && required+=( CONFIG_DEBUG_INFO_BTF=y CONFIG_SCHED_CLASS_EXT=y )
+	use rust && required+=( CONFIG_RUST=y CONFIG_DRM_PANIC_SCREEN_QR_CODE=y )
 
 	local opt missing=()
 	for opt in "${required[@]}"; do
