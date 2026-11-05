@@ -10,6 +10,7 @@ EAPI=8
 # BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT.
 # BENTOO-DIVERGENCE: DEPEND - glib raised to 2.44 (polkit 128 meson.build).
 # BENTOO-DIVERGENCE: PATCHES - both 126 patches are upstream in 128.
+# BENTOO-DIVERGENCE: DOCS - HACKING.md moved to docs/ upstream in 128.
 PYTHON_COMPAT=( python3_{11..15} )
 inherit meson pam pax-utils python-any-r1 systemd tmpfiles xdg-utils
 
@@ -81,7 +82,7 @@ PDEPEND="
 	kde? ( kde-plasma/polkit-kde-agent )
 "
 
-DOCS=( docs/TODO HACKING.md NEWS.md README.md )
+DOCS=( docs/TODO docs/HACKING.md NEWS.md README.md )
 
 QA_MULTILIB_PATHS="
 	usr/lib/polkit-1/polkit-agent-helper-1
