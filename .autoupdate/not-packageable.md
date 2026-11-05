@@ -396,3 +396,30 @@ install a second, self-updating copy of every app the overlay already ships
 
 **Condition that reopens this:** a mode (build feature or setting) that only
 lists and opens installed apps, with installing and updating turned off.
+
+## `grub-cc` — GRUB EFI for Confidential Computing (Fedora 45)
+
+**Assessed:** 2026-11-05 · **Upstream then:** Fedora 45's `grub-cc`, a second
+build of `sys-boot/grub` sources · **Verdict:** rejected — no gain over the
+boot path bentoo already ships.
+
+`grub-cc` is GRUB built for UEFI only with a fixed, minimal set of built-in
+modules and no module loading, meant to boot a Unified Kernel Image (UKI)
+through Boot Loader Specification entries. Two properties carry its value in
+Fedora: the fixed module set keeps measured-boot PCRs predictable inside
+confidential VMs (AMD SEV-SNP, Intel TDX), and it boots behind the
+Microsoft-signed shim.
+
+Neither transfers to bentoo:
+
+| Fedora's reason | bentoo |
+|---|---|
+| Minimal, fixed boot path for a UKI | Already there: systemd-boot loads the dracut-built UKI, and firmware can load the UKI directly. Both are smaller than any GRUB |
+| Boots under the Microsoft-signed shim | bentoo signs with its own keys (`sbctl`, Secure Boot user mode) and distributes no Microsoft-signed shim |
+
+Carrying it would mean either a second package built from GRUB sources or a
+USE flag on a `sys-boot/grub` mirror — a permanent divergence from
+`::gentoo` for no capability the tree lacks.
+
+**Condition that reopens this:** bentoo distributes a Microsoft-signed shim,
+or ships images for confidential VMs where GRUB is required.
