@@ -44,8 +44,11 @@ Practical consequences, binding on every packaging decision:
   in `.autoupdate/dead-upstreams.md`, so an unverifiable package is never
   mistaken for a verified one.
   - Exception: a **declaration-only** record — `enabled = false`, a
-    `disabled_by` that says so, and a `patched` field — for a package with no
-    upstream of its own (`virtual/*`) that diverges from `::gentoo`.
+    `disabled_by` that says so, and a `patched` field — for a package that
+    diverges from `::gentoo` and has no upstream that can be probed: no
+    upstream of its own (`virtual/*`, a script living in `::gentoo`'s
+    `files/`) or one listed in `dead-upstreams.md`. The `url` is `::gentoo`'s
+    gitweb atom for the package, never polled while disabled.
     `bentoo overlay compare` reads a divergence as declared only from
     `patched`, never from the ebuild's `BENTOO-DIVERGENCE` tag, so without the
     record the package stays `Unknown` on every run.

@@ -1195,9 +1195,13 @@ self_test_assertions() {
 	# backwards and only version_sort_key saves it, whereas here even a naive
 	# sort lands on the right file. Restore the strong form on the next bump
 	# where the stable catches up to the _pre's base version.
+	#
+	# REPINNED 2026-11-05, 1.21.0_pre -> 1.28.0_pre (zed-bin-1.27.0 beside
+	# zed-bin-1.28.0_pre); vercmp('1.28.0_pre', '1.27.0') == 1 was run, not
+	# assumed. Still the weak form: the bases differ (1.28 > 1.27).
 	assert_eq A06 \
 		'app-editors/zed-bin: two ebuilds, one row, and the _pre outranks the release (R3.11)' \
-		'rows=1 ebuild=zed-bin-1.21.0_pre.ebuild' \
+		'rows=1 ebuild=zed-bin-1.28.0_pre.ebuild' \
 		"$(pkg_selection app-editors/zed-bin)"
 
 	# --- the five pins this story MOVED (all six predicted below) -----
