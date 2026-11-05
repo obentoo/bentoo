@@ -11,7 +11,7 @@ HOMEPAGE="https://github.com/obentoo/bentoolkit"
 # version of its own (internal/tray/version/VERSION); BENTOOLKIT_PV is the
 # bentoolkit release that ships this tray version. It shares
 # app-portage/bentoolkit's distfile rather than fetching the same tag twice.
-BENTOOLKIT_PV="0.37.2"
+BENTOOLKIT_PV="0.37.3"
 SRC_URI="https://github.com/obentoo/bentoolkit/archive/refs/tags/v${BENTOOLKIT_PV}.tar.gz -> bentoolkit-${BENTOOLKIT_PV}.tar.gz"
 # The release's vendor tarball (the tag's `go mod vendor`) unpacks into the
 # same ${S}, so the build needs no network access.
