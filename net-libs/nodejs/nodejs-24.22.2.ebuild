@@ -233,6 +233,11 @@ CHECKREQS_DISK_BUILD="22G"
 # all return 404), so carrying the entry forward would break fetching outright.
 PATCHES=(
 	"${FILESDIR}"/${PN}-24.14.0-32-bit.patch
+	# BENTOO-DIVERGENCE: PATCHES - V8's gen-regexp-special-case host tool traps
+	# (CHECK_EQ, SIGTRAP) under USE=system-icu with dev-libs/icu-79: Unicode 18
+	# puts a supplementary code point in the case closure of U+00DF. Generator
+	# half of upstream V8's fix, shared with dev-qt/qtwebengine; see its header.
+	"${FILESDIR}"/${PN}-v8-icu79-regexp-special-case.patch
 )
 
 pkg_pretend() {

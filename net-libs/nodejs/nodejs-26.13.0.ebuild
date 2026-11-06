@@ -332,6 +332,11 @@ src_prepare() {
 		"${FILESDIR}"/${PN}-26.10.0-x86-SSE2-fix.patch
 		"${FILESDIR}"/${PN}-merve-shared-simdutf.patch
 		"${FILESDIR}"/${PN}-test-mkdir-recursive-eacces.patch
+		# BENTOO-DIVERGENCE: PATCHES - V8's gen-regexp-special-case host tool traps
+		# (CHECK_EQ, SIGTRAP) under USE=system-icu with dev-libs/icu-79: Unicode 18
+		# puts a supplementary code point in the case closure of U+00DF. Generator
+		# half of upstream V8's fix, shared with dev-qt/qtwebengine; see its header.
+		"${FILESDIR}"/${PN}-v8-icu79-regexp-special-case.patch
 	)
 
 	# We need to disable mprotect on two files when it builds Bug 694100.

@@ -1,0 +1,56 @@
+From: Lucas C.S. <lucascs@protonmail.com>
+Subject: [PATCH] v8: gen-regexp-special-case: ignore supplementary code points
+
+With USE=system-icu (bentoo's default) against dev-libs/icu-79 (Unicode 18),
+the run_gen-regexp-special-case action dies: the host tool that generates
+special-case.cc traps.
+
+That is SIGTRAP from CHECK_EQ(canonical, Canonicalize(c2)) in
+PrintSpecial(): Unicode 18 puts U+1DF95 (LATIN SMALL LIGATURE LONG S WITH
+DESCENDER S) in the case closure of U+00DF, and the generator compares a
+supplementary code point's canonical value with a BMP one's.
+
+Backport of the generator half of upstream V8's fix (in Chromium 157's V8):
+drop supplementary code points from the closure before classifying.
+Non-unicode ignoreCase matching works on UTF-16 code units, so they can
+never match a BMP character anyway. Upstream's runtime half (a new
+SupplementaryEquivalentsSet plus a namespace refactor) is not taken: the
+affected BMP characters land in IgnoreSet, and GetCaseIndependentLetters()
+returns before closeOver() for those, so no supplementary code point reaches
+the non-unicode path. The file is identical in node 24.22.2 and 26.13.0.
+Drop once node's V8 carries upstream's RemoveSupplementary().
+--- a/deps/v8/src/regexp/gen-regexp-special-case.cc
++++ b/deps/v8/src/regexp/gen-regexp-special-case.cc
+@@ -17,6 +17,16 @@
+ static const base::uc32 kSurrogateEnd = 0xdfff;
+ static const base::uc32 kNonBmpStart = 0x10000;
+ 
++// Removes supplementary code points from |set|. Since Unicode 18 (ICU 79),
++// the case closure of a BMP character can contain supplementary code points
++// (U+1DF95 LATIN SMALL LIGATURE LONG S WITH DESCENDER S case-folds to U+00DF
++// LATIN SMALL LETTER SHARP S). Non-unicode ignoreCase matching compares UTF-16
++// code units, so a supplementary code point never matches a BMP character and
++// does not take part in Canonicalize.
++static void RemoveSupplementary(icu::UnicodeSet& set) {
++  set.remove(static_cast<UChar32>(kNonBmpStart), UCHAR_MAX_VALUE);
++}
++
+ // The following code generates "src/regexp/special-case.cc".
+ void PrintSet(std::ofstream& out, const char* name,
+               const icu::UnicodeSet& set) {
+@@ -63,6 +73,7 @@
+     }
+     current.set(i, i);
+     current.closeOver(USET_CASE_INSENSITIVE);
++    RemoveSupplementary(current);
+ 
+     // Check to see if all characters in the case-folding equivalence
+     // class as defined by UnicodeSet::closeOver all map to the same
+@@ -112,6 +123,7 @@
+       UChar32 canonical = RegExpCaseFolding::Canonicalize(c);
+       current.set(c, c);
+       current.closeOver(USET_CASE_INSENSITIVE);
++      RemoveSupplementary(current);
+       current.removeAll(ignore);
+       for (int32_t j = 0; j < current.getRangeCount(); j++) {
+         for (UChar32 c2 = current.getRangeStart(j);
