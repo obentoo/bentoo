@@ -39,17 +39,39 @@ rustfft_ffi in the same file uses it):
 
 fonts/BUILD.gn keeps only the IFT target; the format-check one moves to
 platform/BUILD.gn as in M152.  Its three `//third_party/rust/...` deps
-move with every roll of those crates (M155: font_types v0_12, read_fonts
-v0_43, skrifa v0_46).  On a series bump, re-read fonts/BUILD.gn and resync.
+move with every roll of those crates (M157: font_types v0_12, read_fonts
+v0_45, skrifa v0_48).  On a series bump, re-read fonts/BUILD.gn and resync.
+
+M157 moved the font headers and sources out of the platform component into
+two source_sets, `font_rust_headers` (consumed by //third_party/blink/
+renderer/core) and `font_rust_support`, and gave blink_platform_unittests
+its own direct dependency on the two bindings and on //build/rust/crubit.
+The Crubit dependencies now sit in `font_rust_headers`' public_deps, which
+take the two cxx targets instead, and in the unittests' deps, which drop
+them (they already reach both through :font_rust_headers).
 
 Applied only with USE=-bundled-toolchain; with the bundled toolchain the
 upstream Crubit path works as-is.  Drop this patch once upstream gates the
 Crubit dependency on `enable_cpp_api_from_rust` or ships Crubit's support
 library outside the toolchain.
 diff -ruN a/third_party/blink/renderer/platform/BUILD.gn b/third_party/blink/renderer/platform/BUILD.gn
---- a/third_party/blink/renderer/platform/BUILD.gn
-+++ b/third_party/blink/renderer/platform/BUILD.gn
-@@ -186,6 +186,18 @@
+--- a/third_party/blink/renderer/platform/BUILD.gn	2026-11-06 04:03:13.288918253 -0300
++++ b/third_party/blink/renderer/platform/BUILD.gn	2026-11-06 04:03:24.245111443 -0300
+@@ -219,11 +219,10 @@
+     "//third_party/blink/renderer:non_test_config",
+   ]
+   public_deps = [
++    ":font_format_check",
+     ":platform_export",
+-    "fonts:font_format_bindings",
+-    "fonts:ift_patcher_bindings",
++    "fonts:ift_patcher_rs",
+     "//base",
+-    "//build/rust/crubit",
+     "//skia",
+     "//third_party/blink/renderer/platform/wtf",
+   ]
+@@ -258,6 +257,18 @@
    ]
  }
  
@@ -60,37 +82,27 @@ diff -ruN a/third_party/blink/renderer/platform/BUILD.gn b/third_party/blink/ren
 +  cxx_bindings = [ crate_root ]
 +  deps = [
 +    "//third_party/rust/font_types/v0_12:lib",
-+    "//third_party/rust/read_fonts/v0_43:lib",
-+    "//third_party/rust/skrifa/v0_46:lib",
++    "//third_party/rust/read_fonts/v0_45:lib",
++    "//third_party/rust/skrifa/v0_48:lib",
 +  ]
 +}
 +
  rust_static_library("rustfft_ffi") {
    allow_unsafe = true  # Needed for FFI that underpins the `cxx` crate.
    crate_root = "audio/rustfft_ffi.rs"
-@@ -1792,7 +1804,6 @@
-     ":allow_discouraged_type",
-     ":blink_platform_public_deps",
-     ":platform_export",
--    "//build/rust/crubit",
-     "//components/language_detection/core",
-     "//gpu/command_buffer/client:raster_interface",
-     "//media/capture:capture_lib",
-@@ -1819,9 +1830,9 @@
-     "//ui/native_theme/features",
-   ]
-   deps = [
-+    ":font_format_check",
-     ":rustfft_ffi",
+@@ -2607,9 +2618,6 @@
+     ":bridge_ice_controller_tests",
+     ":font_rust_headers",
+     ":rustfft_ffi_unittests",
 -    "fonts:font_format_bindings",
 -    "fonts:ift_patcher_bindings",
-+    "fonts:ift_patcher_rs",
-     "//base:base_static",
-     "//base/allocator:buildflags",
-     "//build:chromecast_buildflags",
+-    "//build/rust/crubit",
+   ]
+ 
+   data_deps = [ ":blink_platform_unittests_data" ]
 diff -ruN a/third_party/blink/renderer/platform/fonts/BUILD.gn b/third_party/blink/renderer/platform/fonts/BUILD.gn
---- a/third_party/blink/renderer/platform/fonts/BUILD.gn
-+++ b/third_party/blink/renderer/platform/fonts/BUILD.gn
+--- a/third_party/blink/renderer/platform/fonts/BUILD.gn	2026-11-06 04:03:13.231998875 -0300
++++ b/third_party/blink/renderer/platform/fonts/BUILD.gn	2026-11-06 04:03:24.244646876 -0300
 @@ -4,27 +4,11 @@
  
  import("//build/rust/rust_static_library.gni")
@@ -104,8 +116,8 @@ diff -ruN a/third_party/blink/renderer/platform/fonts/BUILD.gn b/third_party/bli
 -  }
 -  deps = [
 -    "//third_party/rust/font_types/v0_12:lib",
--    "//third_party/rust/read_fonts/v0_43:lib",
--    "//third_party/rust/skrifa/v0_46:lib",
+-    "//third_party/rust/read_fonts/v0_45:lib",
+-    "//third_party/rust/skrifa/v0_48:lib",
 -  ]
 -}
 -
@@ -119,11 +131,11 @@ diff -ruN a/third_party/blink/renderer/platform/fonts/BUILD.gn b/third_party/bli
 -  }
 +  cxx_bindings = [ crate_root ]
    deps = [
-     "//third_party/rust/incremental_font_transfer/v0_7:lib",
+     "//third_party/rust/incremental_font_transfer/v0_9:lib",
      "//third_party/rust/log/v0_4:lib",
 diff -ruN a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.cc b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.cc
---- a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.cc
-+++ b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.cc
+--- a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.cc	2026-11-06 04:03:13.287823809 -0300
++++ b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.cc	2026-11-06 04:03:24.184168508 -0300
 @@ -5,8 +5,11 @@
  #include "third_party/blink/renderer/platform/fonts/ift/ift_patcher.h"
  
@@ -273,8 +285,8 @@ diff -ruN a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.cc b/third
  
  }  // namespace blink
 diff -ruN a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.h b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.h
---- a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.h
-+++ b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.h
+--- a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.h	2026-11-06 04:03:13.287909329 -0300
++++ b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.h	2026-11-06 04:03:24.231907668 -0300
 @@ -9,7 +9,7 @@
  
  #include "base/compiler_specific.h"
@@ -313,8 +325,8 @@ diff -ruN a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.h b/third_
  
  }  // namespace blink
 diff -ruN a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.rs b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.rs
---- a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.rs
-+++ b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.rs
+--- a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.rs	2026-11-06 04:03:13.288003555 -0300
++++ b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.rs	2026-11-06 04:03:24.233701660 -0300
 @@ -2,7 +2,8 @@
  // Use of this source code is governed by a BSD-style license that can be
  // found in the LICENSE file.
@@ -399,8 +411,8 @@ diff -ruN a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.rs b/third
 +    }
 +}
 diff -ruN a/third_party/blink/renderer/platform/fonts/opentype/font_format_check.cc b/third_party/blink/renderer/platform/fonts/opentype/font_format_check.cc
---- a/third_party/blink/renderer/platform/fonts/opentype/font_format_check.cc
-+++ b/third_party/blink/renderer/platform/fonts/opentype/font_format_check.cc
+--- a/third_party/blink/renderer/platform/fonts/opentype/font_format_check.cc	2026-11-06 04:03:13.288069909 -0300
++++ b/third_party/blink/renderer/platform/fonts/opentype/font_format_check.cc	2026-11-06 04:03:24.233786789 -0300
 @@ -7,6 +7,7 @@
  #include "base/containers/span.h"
  #include "base/containers/span_rust.h"
@@ -465,8 +477,8 @@ diff -ruN a/third_party/blink/renderer/platform/fonts/opentype/font_format_check
  
  FontFormatCheck::VariableFontSubType FontFormatCheck::ProbeVariableFont(
 diff -ruN a/third_party/blink/renderer/platform/fonts/opentype/font_format_check.h b/third_party/blink/renderer/platform/fonts/opentype/font_format_check.h
---- a/third_party/blink/renderer/platform/fonts/opentype/font_format_check.h
-+++ b/third_party/blink/renderer/platform/fonts/opentype/font_format_check.h
+--- a/third_party/blink/renderer/platform/fonts/opentype/font_format_check.h	2026-11-06 04:03:13.288106547 -0300
++++ b/third_party/blink/renderer/platform/fonts/opentype/font_format_check.h	2026-11-06 04:03:24.233835380 -0300
 @@ -5,7 +5,7 @@
  #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_OPENTYPE_FONT_FORMAT_CHECK_H_
  #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_OPENTYPE_FONT_FORMAT_CHECK_H_
@@ -495,8 +507,8 @@ diff -ruN a/third_party/blink/renderer/platform/fonts/opentype/font_format_check
  
  }  // namespace blink
 diff -ruN a/third_party/blink/renderer/platform/fonts/opentype/format_check.rs b/third_party/blink/renderer/platform/fonts/opentype/format_check.rs
---- a/third_party/blink/renderer/platform/fonts/opentype/format_check.rs
-+++ b/third_party/blink/renderer/platform/fonts/opentype/format_check.rs
+--- a/third_party/blink/renderer/platform/fonts/opentype/format_check.rs	2026-11-06 04:03:13.288146672 -0300
++++ b/third_party/blink/renderer/platform/fonts/opentype/format_check.rs	2026-11-06 04:03:24.233884572 -0300
 @@ -23,7 +23,7 @@
      format_flags: Option<FontFormatFlags>,
  }

@@ -1,0 +1,83 @@
+From 3fd7bc8b1c5f7eaab9374674e7fc0a5798673b5b Mon Sep 17 00:00:00 2001
+From: Matt Jolly <kangie@gentoo.org>
+Date: Sat, 22 Aug 2026 15:54:04 +1000
+Subject: [PATCH 1/2] build/rust: Use rust_sysroot for bindings and wrappers
+ globally
+
+Hardcoded `//third_party/rust-toolchain` paths were still lingering
+in various places, causing build failures (e.g., ninja errors for missing
+`rustc` and `rs_bindings_from_cc` rules) when utilizing a custom Rust
+sysroot.
+
+This patch updates `rustc_wrapper_inputs`, `cc_bindings_from_rs`,
+`rs_bindings_from_cc`, `rustfmt`, and `clippy-driver` to use the
+configured `rust_sysroot` GN argument instead of hardcoding the default
+tree path. For Python scripts like `run_rs_bindings_from_cc.py`, paths
+are now parsed via command line arguments rather than relying on
+relative directory resolution.
+
+Bug: 491242305
+Signed-off-by: Matt Jolly <kangie@gentoo.org>
+
+
+[bentoo: rebased onto 157. M157 deleted build/rust/rs_bindings_from_cc.gni
+ and gni_impl/run_rs_bindings_from_cc.py: Crubit's tool paths now live in
+ one place, gni_impl/crubit_shared_args.gni (`_toolchain_bin_path`), and
+ the wrapper scripts receive them as arguments.  The two dropped hunks
+ collapse into pointing `_toolchain_bin_path` at `$rust_sysroot/bin`;
+ the file imports //build/config/rust.gni itself because a .gni import
+ runs in a scope of its own.]
+diff -ruN a/build/config/rust.gni b/build/config/rust.gni
+--- a/build/config/rust.gni
++++ b/build/config/rust.gni
+@@ -453,7 +453,7 @@
+ ]
+ 
+ if (host_os == "win") {
+-  rustc_wrapper_inputs += [ "//third_party/rust-toolchain/bin/rustc.exe" ]
++  rustc_wrapper_inputs += [ "$rust_sysroot/bin/rustc.exe" ]
+ } else {
+-  rustc_wrapper_inputs += [ "//third_party/rust-toolchain/bin/rustc" ]
++  rustc_wrapper_inputs += [ "$rust_sysroot/bin/rustc" ]
+ }
+diff -ruN a/build/rust/gni_impl/crubit_shared_args.gni b/build/rust/gni_impl/crubit_shared_args.gni
+--- a/build/rust/gni_impl/crubit_shared_args.gni
++++ b/build/rust/gni_impl/crubit_shared_args.gni
+@@ -5,10 +5,12 @@
+ # This `.gni` file defines constants that are shared / reused across
+ # `cpp_api_from_rust.gni` and `rust_api_from_cpp.gni`.
+ 
++import("//build/config/rust.gni")
++
+ crubit_support_path_format = "\"third_party/crubit/support/{header}\""
+ rustfmt_config_path = "//.rustfmt.toml"
+ 
+-_toolchain_bin_path = "//third_party/rust-toolchain/bin"
++_toolchain_bin_path = "$rust_sysroot/bin"
+ cpp_api_from_rust_exe_path = "${_toolchain_bin_path}/cc_bindings_from_rs"
+ rust_api_from_cpp_exe_path = "${_toolchain_bin_path}/rs_bindings_from_cc"
+ rustfmt_exe_path = "${_toolchain_bin_path}/rustfmt"
+diff -ruN a/build/rust/gni_impl/rust_target.gni b/build/rust/gni_impl/rust_target.gni
+--- a/build/rust/gni_impl/rust_target.gni
++++ b/build/rust/gni_impl/rust_target.gni
+@@ -733,9 +733,9 @@
+           # `import`ed for `LoadRustEnvAndFlags`, etc.
+           inputs = rustc_wrapper_inputs
+           if (host_os == "win") {
+-            inputs += [ "//third_party/rust-toolchain/bin/clippy-driver.exe" ]
++            inputs += [ "$rust_sysroot/bin/clippy-driver.exe" ]
+           } else {
+-            inputs += [ "//third_party/rust-toolchain/bin/clippy-driver" ]
++            inputs += [ "$rust_sysroot/bin/clippy-driver" ]
+           }
+           if (rust_clippy_conf_file != "") {
+             inputs += [ rust_clippy_conf_file ]
+@@ -743,7 +743,7 @@
+ 
+           args = [
+             "--clippy-driver",
+-            rebase_path("//third_party/rust-toolchain/bin/clippy-driver",
++            rebase_path("$rust_sysroot/bin/clippy-driver",
+                         root_build_dir),
+             "--rustc-env-and-flags",
+             rebase_path(_rustc_env_and_flags, root_build_dir),

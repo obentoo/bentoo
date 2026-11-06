@@ -678,7 +678,7 @@ src_prepare() {
 			# Transfer (new in M155, Crubit from the start) gets a cxx bridge of
 			# its own. Same reachability as cbor: no-op with
 			# USE=bundled-toolchain.
-			"${FILESDIR}/chromium-155-blink-fonts-cxx-not-crubit.patch"
+			"${FILESDIR}/chromium-157-blink-fonts-cxx-not-crubit.patch"
 			# bentoo: M154 added two more unconditional Crubit consumers, and
 			# gn gen dies on their missing *_bindings targets. web_package
 			# (upstream e85da0b2f2dc + b2c9d9c61c9f) moved Signed Web Bundle
@@ -709,10 +709,21 @@ src_prepare() {
 			# moved filter_clang_args out of run_bindgen and hoisted the Crubit
 			# support path into a CRUBIT_SUPPORT_PATH constant, which sat exactly
 			# where two of the four hunks anchored, and 155 moved
-			# rs_bindings_from_cc.gni's public_headers from sources to inputs. Reachable only on this
-			# branch: the patchset's toolchain/ directory is applied by the loop
-			# below, which is inside this same USE=-bundled-toolchain else.
-			"${FILESDIR}/chromium-155-fix-rust-2-oxidize-harder.patch"
+			# rs_bindings_from_cc.gni's public_headers from sources to inputs.
+			# 157 deleted both of those files: Crubit's tool paths now come from
+			# gni_impl/crubit_shared_args.gni, so the rebase points that one
+			# `_toolchain_bin_path` at ${rust_sysroot} instead. Reachable only on
+			# this branch: the patchset's toolchain/ directory is applied by the
+			# loop below, which is inside this same USE=-bundled-toolchain else.
+			"${FILESDIR}/chromium-157-fix-rust-2-oxidize-harder.patch"
+			# bentoo: rebase of chromium-patches' toolchain/
+			# cr149-bindgen-libclang-paths.patch, which adds the
+			# bindgen_{libclang_path,clang_resource_dir,extra_clang_args} args
+			# src_configure passes. 157 moved the -resource-dir flag out of
+			# rust_bindgen_generator.gni into gni_impl/libclang_args.gni and
+			# dropped rust_bindgen.gni's own libclang lookup, so two of the five
+			# hunks had nowhere to land. Same reachability as above.
+			"${FILESDIR}/chromium-157-bindgen-libclang-paths.patch"
 			# bentoo: rebase of chromium-patches' toolchain/cr152-compiler.patch.
 			# Its hunk deleting config("clang_revision") no longer anchors: M156
 			# extended that config's Rust check to the crubit and bindgen
@@ -727,6 +738,8 @@ src_prepare() {
 			die "chromium-patches no longer ships cr152-fix-rust-2-oxidize-harder.patch; drop this rm and its rebase"
 		rm "${WORKDIR}/chromium-patches-${PATCH_V}/toolchain/cr152-compiler.patch" ||
 			die "chromium-patches no longer ships cr152-compiler.patch; drop this rm and its rebase"
+		rm "${WORKDIR}/chromium-patches-${PATCH_V}/toolchain/cr149-bindgen-libclang-paths.patch" ||
+			die "chromium-patches no longer ships cr149-bindgen-libclang-paths.patch; drop this rm and its rebase"
 
 		# Automate conditional application of chromium-patches
 		# The directory structure is expected to be something like:
