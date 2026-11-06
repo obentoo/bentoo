@@ -16,7 +16,18 @@ EAPI=8
 #   https://github.com/gentoo-zh-drafts/codex/blob/crate-dist/.github/workflows/crates.yml
 # This allows anyone to review and verify the crate packaging process.
 
+# bentoo: openssl-sys below 0.9.115 aborts its build script against
+# dev-libs/openssl-4 ("only compatible with OpenSSL ... 3"), and both 0.166.0
+# and 0.167.0 lock 0.9.111. Raising openssl-sys alone is not enough: the
+# openssl crate the lock pairs with it (0.10.75) then fails E0308 on the
+# const pointers OpenSSL 4's X509 getters return, so both move, to the pair
+# released together. 0.9.118 also fixes SSL_OP_ALL and SSL_OP_TLSEXT_PADDING
+# on OpenSSL 4.1, and openssl 0.10.82 fixes out-of-bounds writes and a
+# use-after-free. src_prepare points the lock at them; drop both entries
+# once upstream's lock reaches them (the guard there stops acting then).
 CRATES="
+	openssl-sys@0.9.118
+	openssl@0.10.82
 "
 
 # Mirrors every "source = git+..." entry in codex-rs/Cargo.lock. Diff this block
@@ -177,6 +188,30 @@ src_prepare() {
 	if ! grep -q '^[[:space:]]*#!\[recursion_limit' chatgpt/src/lib.rs; then
 		sed -i '1i #![recursion_limit = "512"]' chatgpt/src/lib.rs || die
 	fi
+
+	# bentoo: see the CRATES note. Only ever raise a version: once the lock
+	# is at or past the wanted one on its own, its entry here does nothing.
+	_codex_raise_locked_crate() {
+		local name=${1} want=${2} sum=${3} have
+		have=$(awk -v n="name = \"${name}\"" '$0==n{f=1} f&&/^version = /{gsub(/"/,"",$3); print $3; exit}' Cargo.lock) ||
+			die "Cannot read ${name} from Cargo.lock"
+		[[ -n ${have} ]] || die "Cargo.lock no longer locks ${name}; drop its CRATES entry"
+		ver_test "${have}" -ge "${want}" && return 0
+		sed -i '/^name = "'"${name}"'"$/,/^$/{
+			s|^version = ".*"|version = "'"${want}"'"|
+			s|^checksum = ".*"|checksum = "'"${sum}"'"|
+		}' Cargo.lock || die
+		grep -A1 "^name = \"${name}\"$" Cargo.lock | grep -qxF "version = \"${want}\"" ||
+			die "${name} was not raised to ${want} in Cargo.lock"
+	}
+	_codex_raise_locked_crate openssl-sys 0.9.118 \
+		19c413d6ec9ebaf5e1c829d355cb3e9f783778d700f135be0921d52fce3c60ae
+	_codex_raise_locked_crate openssl 0.10.82 \
+		4de8111e94a56adca7ebfe6c365b6d42f99deb69b74b6becacd4204e2f193aa2
+	# openssl 0.10.81 dropped its once_cell dependency; a stale entry in its
+	# lock block makes cargo want to rewrite the lock, which --offline refuses.
+	sed -i '/^name = "openssl"$/,/^$/{/^ "once_cell",$/d}' Cargo.lock || die
+	unset -f _codex_raise_locked_crate
 
 	# Remove the [patch.crates-io] section and add path-based patches
 	sed -i '/^\[patch\.crates-io\]/,/^$/d' "${S}/Cargo.toml" || die
