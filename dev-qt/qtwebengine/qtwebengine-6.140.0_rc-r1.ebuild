@@ -130,6 +130,11 @@ PATCHES+=(
 	# applies to that file as-is. QTBUG-149946 is left out because its own
 	# header says it is fixed in 6.140.0.
 	"${FILESDIR}"/${PN}-6.11.2-CVE-2026-111943.patch
+	# BENTOO-DIVERGENCE: PATCHES - V8's gen-regexp-special-case host tool
+	# traps (CHECK_EQ, SIGTRAP) under USE=system-icu with dev-libs/icu-79:
+	# Unicode 18 puts a supplementary code point in the case closure of
+	# U+00DF. Generator half of upstream V8's fix; see the patch header.
+	"${FILESDIR}"/${PN}-6.140.0-icu79-regexp-special-case.patch
 )
 
 python_check_deps() {
