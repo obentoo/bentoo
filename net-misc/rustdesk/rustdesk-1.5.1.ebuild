@@ -5,7 +5,16 @@
 
 EAPI=8
 
+# bentoo: openssl-sys below 0.9.115 aborts its build script against
+# dev-libs/openssl-4 ("only compatible with OpenSSL ... or 3"), and 1.5.1
+# locks 0.9.104. The openssl crate moves with it (0.10.68 -> 0.10.82, the
+# pair released together): the old one fails E0308 on the const pointers
+# OpenSSL 4's X509 getters return -- same fix as dev-util/codex. These two
+# land in cargo_home/gentoo next to the bundle's copies, and src_prepare
+# points Cargo.lock at them; drop both once upstream's lock reaches them.
 CRATES="
+	openssl-sys@0.9.118
+	openssl@0.10.82
 "
 
 declare -A GIT_CRATES=(
@@ -203,7 +212,12 @@ RDEPEND="
 	wayland? ( media-video/pipewire[gstreamer] )
 	hwaccel? ( x11-libs/libvdpau )
 "
+# dev-libs/openssl is BDEPEND only: the binary itself links a static
+# OpenSSL built by openssl-src (openssl-sys' `vendored` feature, enabled
+# upstream); only a build-time dependency compiled for the host probes the
+# system one through pkg-config -- that probe is what aborted on OpenSSL 4.
 BDEPEND="
+	dev-libs/openssl
 	dev-lang/nasm
 	dev-lang/yasm
 	media-libs/alsa-lib
@@ -266,6 +280,30 @@ src_prepare() {
 		grep -qF "${crate} = { path = \"${WORKDIR}/${dir}\" }" "${S}"/Cargo.toml \
 			|| die "[patch.crates-io] entry for ${crate} not rewritten"
 	done
+
+	# Raise openssl/openssl-sys in the lock to the CRATES entries above (see
+	# the comment there). Returns early once upstream locks them itself.
+	_rustdesk_raise_locked_crate() {
+		local name=${1} want=${2} sum=${3} have
+		have=$(awk -v n="name = \"${name}\"" '$0==n{f=1} f&&/^version = /{gsub(/"/,"",$3); print $3; exit}' "${S}"/Cargo.lock) ||
+			die "Cannot read ${name} from Cargo.lock"
+		[[ -n ${have} ]] || die "Cargo.lock no longer locks ${name}; drop its CRATES entry"
+		ver_test "${have}" -ge "${want}" && return 0
+		sed -i '/^name = "'"${name}"'"$/,/^$/{
+			s|^version = ".*"|version = "'"${want}"'"|
+			s|^checksum = ".*"|checksum = "'"${sum}"'"|
+		}' "${S}"/Cargo.lock || die
+		grep -A1 "^name = \"${name}\"$" "${S}"/Cargo.lock | grep -qxF "version = \"${want}\"" ||
+			die "${name} was not raised to ${want} in Cargo.lock"
+	}
+	_rustdesk_raise_locked_crate openssl-sys 0.9.118 \
+		19c413d6ec9ebaf5e1c829d355cb3e9f783778d700f135be0921d52fce3c60ae
+	_rustdesk_raise_locked_crate openssl 0.10.82 \
+		4de8111e94a56adca7ebfe6c365b6d42f99deb69b74b6becacd4204e2f193aa2
+	# openssl 0.10.81 dropped its once_cell dependency; a stale entry in its
+	# lock block makes cargo want to rewrite the lock, which --offline refuses.
+	sed -i '/^name = "openssl"$/,/^$/{/^ "once_cell",$/d}' "${S}"/Cargo.lock || die
+	unset -f _rustdesk_raise_locked_crate
 }
 
 src_configure() {
