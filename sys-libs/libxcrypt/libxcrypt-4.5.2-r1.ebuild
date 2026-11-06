@@ -24,7 +24,7 @@ fi
 
 LICENSE="LGPL-2.1+ public-domain BSD BSD-2"
 SLOT="0/1"
-KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~m68k ~mips ppc ppc64 ~riscv ~s390 ~sparc x86"
+KEYWORDS="~alpha amd64 ~arm ~arm64 ~hppa ~loong ~m68k ~mips ppc ppc64 ~riscv ~s390 ~sparc x86"
 IUSE="+compat static-libs +system test headers-only"
 RESTRICT="!test? ( test )"
 
@@ -172,6 +172,7 @@ src_configure() {
 
 multilib_src_configure() {
 	local myconf=(
+		--disable-failure-tokens
 		--disable-werror
 		--prefix="${MYPREFIX}/usr"
 		--libdir="${MYPREFIX}/usr/$(get_libdir)$(usev !system /xcrypt)"
