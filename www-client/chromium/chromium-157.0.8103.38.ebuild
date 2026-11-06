@@ -670,6 +670,12 @@ src_prepare() {
 			# the one that does not. Only reachable here: with USE=bundled-
 			# toolchain the flag is true and the patch is a no-op.
 			"${FILESDIR}/chromium-155-cbor-crubit-optional.patch"
+			# bentoo: M157 deleted the cxx fallback of components/qr_code_generator
+			# (the TODO there assumed enable_cpp_api_from_rust would stay true), so
+			# it depends on //build/rust/crubit unconditionally -- the same gn
+			# death as cbor. Straight revert of its three files to M156; the
+			# Crubit path still wins whenever the flag is true.
+			"${FILESDIR}/chromium-157-revert-qr-code-crubit-only.patch"
 			# bentoo: //third_party/blink/renderer/platform depends on
 			# //build/rust/crubit unconditionally and on two Crubit bindings with
 			# no C++ fallback to gate on -- the same gn death as cbor above. The
@@ -1152,6 +1158,7 @@ src_prepare() {
 		third_party/selenium-atoms
 		third_party/sentencepiece
 		third_party/sentencepiece/src/third_party/darts_clone
+		third_party/sframe
 		third_party/shell-encryption
 		third_party/simdutf
 		third_party/simplejson
@@ -1571,7 +1578,10 @@ chromium_configure() {
 		# compiling anything in V8. Off selects Torque's instance-type output,
 		# which is still generated in every build; upstream documents this as
 		# taking metagen and llvm-libclang out of the graph entirely.
-		"v8_use_metagen_instance_types=false"
+		# M157 renamed the arg from v8_use_metagen_instance_types; gn only
+		# warns "Build argument has no effect" on the old name, and metagen
+		# came back on, so keep this name in step with //v8/gni/v8.gni.
+		"v8_use_metagen=false"
 	)
 
 	if use bindist ; then
