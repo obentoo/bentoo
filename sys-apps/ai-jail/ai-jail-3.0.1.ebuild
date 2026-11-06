@@ -32,7 +32,7 @@ CRATES="
 	quote@1.0.44
 	ring@0.17.14
 	rustls-pki-types@1.15.1
-	rustls-webpki@0.103.15
+	rustls-webpki@0.103.16
 	rustls@0.23.46
 	seccompiler@0.5.0
 	serde@1.0.228
@@ -59,7 +59,7 @@ CRATES="
 	vte@0.15.0
 	wasi@0.11.1+wasi-snapshot-preview1
 	webpki-roots@0.26.11
-	webpki-roots@1.0.9
+	webpki-roots@1.0.10
 	windows-sys@0.52.0
 	windows-targets@0.52.6
 	windows_aarch64_gnullvm@0.52.6
