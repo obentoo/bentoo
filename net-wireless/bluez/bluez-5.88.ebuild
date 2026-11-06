@@ -4,6 +4,8 @@
 EAPI=8
 # Mirrored from ::gentoo only to add python3_15: no code change is needed
 # for it. Drop this copy once ::gentoo lists python3_15.
+# Ahead of ::gentoo (5.87): 5.88 removed attrib/gatttool upstream, so the
+# extra-tools install no longer installs it (bentoo issue #62).
 # BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
@@ -194,11 +196,8 @@ multilib_src_install() {
 			# http://permalink.gmane.org/gmane.linux.bluez.kernel/53115
 			# http://comments.gmane.org/gmane.linux.bluez.kernel/54564
 			dobin tools/btmgmt
-			# gatttool is only built with readline, bug #530776
-			# https://bugzilla.redhat.com/show_bug.cgi?id=1141909
-			# https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=720486
-			# https://bugs.archlinux.org/task/37686
-			dobin attrib/gatttool
+			# No gatttool: 5.88 deleted attrib/ upstream; bluetoothctl's
+			# "gatt" menu replaces it.
 			# https://bugzilla.redhat.com/show_bug.cgi?id=1699680
 			dobin tools/avinfo
 		fi
