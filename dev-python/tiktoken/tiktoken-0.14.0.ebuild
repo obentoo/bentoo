@@ -10,25 +10,25 @@ DISTUTILS_USE_PEP517=setuptools
 # python3_10/python3_11 are _PYTHON_HISTORICAL_IMPLS in this tree
 # (_PYTHON_ALL_IMPLS is 3.12..3.15), and pyo3 0.28 supports CPython up to
 # 3.14 -- hence 12..14.
-PYTHON_COMPAT=( python3_{12..14} )
+PYTHON_COMPAT=( python3_{12..15} )
 
 CRATES="
 	aho-corasick@1.1.5
 	bit-set@0.8.0
 	bit-vec@0.8.0
 	bstr@1.13.1
-	fancy-regex@0.17.0
+	fancy-regex@0.19.2
 	heck@0.5.0
-	libc@0.2.189
+	libc@0.2.191
 	memchr@2.8.3
 	once_cell@1.21.4
 	portable-atomic@1.15.0
 	proc-macro2@1.0.107
-	pyo3-build-config@0.28.3
-	pyo3-ffi@0.28.3
-	pyo3-macros-backend@0.28.3
-	pyo3-macros@0.28.3
-	pyo3@0.28.3
+	pyo3-build-config@0.29.3
+	pyo3-ffi@0.29.3
+	pyo3-macros-backend@0.29.3
+	pyo3-macros@0.29.3
+	pyo3@0.29.3
 	quote@1.0.47
 	regex-automata@0.4.18
 	regex-syntax@0.8.11
@@ -37,14 +37,16 @@ CRATES="
 	serde_core@1.0.229
 	serde_derive@1.0.229
 	syn@2.0.119
-	syn@3.0.3
+	syn@3.0.9
 	target-lexicon@0.13.5
-	unicode-ident@1.0.24
+	unicode-ident@1.0.27
 "
 # Upstream ships no Cargo.lock (it is gitignored), so the list above comes from
 # `cargo generate-lockfile` on the sdist's own Cargo.toml, fed to pycargoebuild.
 # Regenerate it on every bump: 0.13.0 moved pyo3 0.26 -> 0.28 and fancy-regex
 # 0.13 -> 0.17, which alone rewrote 9 entries.
+# 0.14.0 moved them again (pyo3 0.28 -> 0.29, fancy-regex 0.17 -> 0.19) and
+# shipped with the 0.13 list, so it could not build until the list was redone.
 # Highest MSRV among the crates is pyo3's 1.83, but tiktoken itself is
 # edition = "2024", which needs >=1.85.
 RUST_MIN_VER="1.85.0"
