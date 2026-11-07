@@ -373,9 +373,10 @@ BDEPEND="
 # RDEPEND's reuse of the same block.
 # BENTOO-DIVERGENCE: PATCHES - the 5.0.0 set. ::gentoo is on 4.12 and its
 # list diverges accordingly: use-system-flatbuffers moved 4.8.1 -> 4.13.0,
-# use-system-opencl 4.8.1 -> 5.0.0, and the dnn caffe-proto regeneration is
-# new to 5. The ones that carry over unchanged are byte-identical to
-# ::gentoo's.
+# use-system-opencl 4.8.1 -> 5.0.0. 5.1.0 dropped two 5.0.0-only patches:
+# the caffe-proto regeneration (the Caffe importer is gone) and ffmpeg9
+# (upstream now calls avcodec_get_supported_config() itself). The ones that
+# carry over unchanged are byte-identical to ::gentoo's.
 PATCHES=(
 	"${FILESDIR}/${PN}-3.4.1-cuda-add-relaxed-constexpr.patch"
 	"${FILESDIR}/${PN}-4.1.2-opencl-license.patch"
@@ -389,15 +390,6 @@ PATCHES=(
 	"${FILESDIR}/${PN}-4.10.0-tbb-detection.patch"
 
 	"${FILESDIR}/${PN}-4.11.0-cmake-CMP0177.patch"
-
-	# OpenCV 5 dropped src/caffe/opencv-caffe.proto but kept caffe_io.cpp which
-	# needs the generated header; make PROTOBUF_UPDATE_FILES regenerate it (the
-	# .proto itself is reinstated from 4.11.0 in src_prepare below).
-	"${FILESDIR}/${PN}-5.0.0-dnn-regenerate-caffe-proto.patch"
-
-	# FFmpeg 9 removed AVCodec::pix_fmts and AVCodec::supported_framerates;
-	# query them through avcodec_get_supported_config() instead.
-	"${FILESDIR}/${PN}-5.0.0-ffmpeg9.patch"
 
 	# NOTE OpenCV 5: gapi moved from core to opencv_contrib.
 	# The ADE download patch now targets the contrib tree and is applied
@@ -749,13 +741,6 @@ src_prepare() {
 			-e 's:share/OpenCV/testdata:@OPENCV_TEST_DATA_INSTALL_PATH@:g' \
 			-i  "${S}/cmake/templates/opencv_run_all_tests_unix.sh.in" || die
 	fi
-
-	# OpenCV 5 dropped opencv-caffe.proto but kept caffe_io.cpp which needs the
-	# generated header; reinstate the proto (from 4.11.0, identical to the shipped
-	# pre-generated .pb) so PROTOBUF_UPDATE_FILES regenerates it against system
-	# protobuf. The destination filename must stay opencv-caffe.proto since protoc
-	# derives opencv-caffe.pb.h from it. dnn/caffe is core, always built.
-	cp "${FILESDIR}/opencv-caffe.proto" "${S}/modules/dnn/src/caffe/opencv-caffe.proto" || die
 }
 
 multilib_src_configure() {
