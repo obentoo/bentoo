@@ -12,7 +12,7 @@ IUSE="+orc"
 
 RDEPEND="
 	>=media-libs/a52dec-0.7.4-r6[${MULTILIB_USEDEP}]
-	orc? ( >=dev-lang/orc-0.4.33[${MULTILIB_USEDEP}] )
+	orc? ( >=dev-lang/orc-0.4.41[${MULTILIB_USEDEP}] )
 "
 DEPEND="${RDEPEND}"
 

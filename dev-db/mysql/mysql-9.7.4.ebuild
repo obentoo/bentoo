@@ -3,7 +3,7 @@
 
 EAPI=8
 
-# BENTOO-DIVERGENCE: ::gentoo carries no 9.7 slot (the current MySQL LTS,
+# BENTOO-DIVERGENCE: SLOT - ::gentoo carries no 9.7 slot (the current MySQL LTS,
 # Fedora 45's default). This is ::gentoo's mysql-8.4.11 ebuild with:
 # - KEYWORDS reduced to ~amd64 (bentoo is amd64-only);
 # - patchset 0001 and 0006 rebased onto 9.7.4 in files/ (9.x moved the
@@ -284,7 +284,7 @@ src_configure() {
 		-DWITH_CURL=system
 		-DWITH_EDITLINE=bundled # Using bundled editline to get CTRL+C working
 		-DWITH_FIDO=none
-		# BENTOO-DIVERGENCE: 9.7.4 turns the WebAuthn plugin on by default on
+		# BENTOO-DIVERGENCE: OPTIONS - 9.7.4 turns the WebAuthn plugin on by default on
 		# Linux, which then requires libfido2 and fails configure with
 		# WITH_FIDO=none. It is not in the community build anyway (see above);
 		# the client-side plugins it would pull are dev-db/mysql-connector-c's.
@@ -356,7 +356,7 @@ src_configure() {
 			-DWITH_INNOBASE_STORAGE_ENGINE=ON
 			-DWITH_MYISAMMRG_STORAGE_ENGINE=ON
 			-DWITH_MYISAM_STORAGE_ENGINE=ON
-			# BENTOO-DIVERGENCE: the NDB plugin only makes mysqld an SQL node of
+			# BENTOO-DIVERGENCE: OPTIONS - the NDB plugin only makes mysqld an SQL node of
 			# a MySQL Cluster, which is dev-db/mysql-cluster's job (blocked
 			# above). Its TLS code (storage/ndb/src/common/util/NodeCertificate.cpp)
 			# does not build against OpenSSL 4: const X509_NAME, opaque ASN1_STRING.
