@@ -4,7 +4,7 @@
 EAPI=8
 
 ROCM_VERSION="6.3"
-PYTHON_COMPAT=( python3_{12..14} )
+PYTHON_COMPAT=( python3_{12..15} )
 
 inherit cuda python-single-r1 rocm toolchain-funcs wrapper
 

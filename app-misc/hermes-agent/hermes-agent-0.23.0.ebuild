@@ -7,7 +7,7 @@ DISTUTILS_SINGLE_IMPL=1
 DISTUTILS_USE_PEP517=setuptools
 # Upstream caps requires-python at <3.14 only because PyPI lacked cp314
 # wheels for its Rust-backed transitives; Portage builds those from source.
-PYTHON_COMPAT=( python3_{12..14} )
+PYTHON_COMPAT=( python3_{12..15} )
 
 inherit distutils-r1 optfeature
 

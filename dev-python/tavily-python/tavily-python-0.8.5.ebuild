@@ -4,7 +4,7 @@
 EAPI=8
 
 DISTUTILS_USE_PEP517=setuptools
-PYTHON_COMPAT=( python3_{12..14} )
+PYTHON_COMPAT=( python3_{12..15} )
 
 # The pypi eclass derives SRC_URI and S from ${PN}/${PV}. It normalizes the
 # project name ("-" -> "_"), which already yields the upstream sdist name
