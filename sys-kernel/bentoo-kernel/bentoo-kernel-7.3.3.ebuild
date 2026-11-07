@@ -221,6 +221,12 @@ pkg_config() {
 	kernel-install_pkg_config
 }
 
+# Rust plus BTF under LTO: init/Kconfig accepts it since 7.3.3, but the
+# Rust modules get no BTF from pahole and modfinal fails.
+_bentoo-kernel_rust_breaks() {
+	use lto && { use sched-ext || use debug; }
+}
+
 src_unpack() {
 	if use verify-sig; then
 		verify-sig_verify_detached \
@@ -293,9 +299,11 @@ src_prepare() {
 	use hardened && use lto && merge_configs+=( "${FILESDIR}"/cfi.config )
 	use bore && merge_configs+=( "${FILESDIR}"/bore.config )
 	use sched-ext && merge_configs+=( "${FILESDIR}"/sched-ext.config )
+	# Without USE=rust, Rust stays whatever Fedora's config says, except
+	# where it no longer builds: BTF under LTO (see REQUIRED_USE).
 	if use rust; then
 		merge_configs+=( "${FILESDIR}"/rust.config )
-	else
+	elif _bentoo-kernel_rust_breaks; then
 		merge_configs+=( "${FILESDIR}"/no-rust.config )
 	fi
 
@@ -322,7 +330,7 @@ src_configure() {
 	use sched-ext && required+=( CONFIG_DEBUG_INFO_BTF=y CONFIG_SCHED_CLASS_EXT=y )
 	if use rust; then
 		required+=( CONFIG_RUST=y CONFIG_DRM_PANIC_SCREEN_QR_CODE=y )
-	else
+	elif _bentoo-kernel_rust_breaks; then
 		required+=( "# CONFIG_RUST is not set" )
 	fi
 
