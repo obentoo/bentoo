@@ -2022,7 +2022,70 @@ run_staged() {
 		printf '%s: --staged: git diff --cached failed in %s\n' "$PROG" "$TREE" >&2
 		return 2
 	fi
+	if cooldown_block_only "$staged"; then
+		printf '%s: --staged: skip: only the cooldown block changed in profiles/package.mask, nothing to resolve\n' "$PROG"
+		return 0
+	fi
 	resolve_py staged "$staged"
+}
+
+# cooldown_block_only STAGED -- true when the staged paths that trigger
+# resolution are exactly profiles/package.mask and every changed line of it,
+# on both sides of the diff (HEAD and the index), lies strictly between the
+# `# BEGIN bentoo-cooldown` and `# END bentoo-cooldown` markers. Such a commit
+# is the autoupdate cooldown adding or lifting =atoms; it cannot change what a
+# layer resolves to, and resolving it costs ~50 s per bump (story 003, R9.2).
+# Anything else -- a line next to a marker, a marker removed, a second
+# profile path, a file new in this commit -- resolves as before (R9.3).
+cooldown_block_only() {
+	local staged=$1 mask=profiles/package.mask
+	local -a relevant=()
+	local p
+	while IFS= read -r -d '' p; do
+		case $p in
+		profiles/* | layers/* | metadata/layout.conf) relevant+=("$p") ;;
+		esac
+	done <"$staged"
+	[[ ${#relevant[@]} -eq 1 && ${relevant[0]} == "$mask" ]] || return 1
+
+	local old=$WORK/cooldown-mask.old new=$WORK/cooldown-mask.new hunks=$WORK/cooldown-mask.hunks
+	git -C "$TREE" show "HEAD:$mask" >"$old" 2>/dev/null || return 1
+	git -C "$TREE" show ":$mask" >"$new" 2>/dev/null || return 1
+	git -C "$TREE" diff --cached --no-renames -U0 -- "$mask" >"$hunks" || return 1
+
+	local ob oe nb ne
+	read -r ob oe < <(cooldown_markers "$old") || return 1
+	read -r nb ne < <(cooldown_markers "$new") || return 1
+
+	# @@ -a[,b] +c[,d] @@ : b=0 is a pure insertion after old line a, d=0 a
+	# pure deletion after new line c.
+	awk -v ob="$ob" -v oe="$oe" -v nb="$nb" -v ne="$ne" '
+		function inside(start, count, lo, hi) {
+			if (count == 0) return start >= lo && start < hi
+			return start > lo && start + count - 1 < hi
+		}
+		/^@@ / {
+			n++
+			split($2, o, ","); split($3, w, ",")
+			os = substr(o[1], 2) + 0; oc = (2 in o) ? o[2] + 0 : 1
+			ns = substr(w[1], 2) + 0; nc = (2 in w) ? w[2] + 0 : 1
+			if (!inside(os, oc, ob, oe) || !inside(ns, nc, nb, ne)) bad = 1
+		}
+		END { exit (n > 0 && !bad) ? 0 : 1 }
+	' "$hunks"
+}
+
+# cooldown_markers FILE -- prints "BEGIN-line END-line" of the single cooldown
+# block in FILE; fails when there is not exactly one BEGIN and one END after it.
+cooldown_markers() {
+	awk '
+		/^# BEGIN bentoo-cooldown( |$)/ { nb++; b = NR }
+		/^# END bentoo-cooldown$/ { ne++; e = NR }
+		END {
+			if (nb != 1 || ne != 1 || e <= b) exit 1
+			print b, e
+		}
+	' "$1"
 }
 
 run_full() { resolve_py full; }
