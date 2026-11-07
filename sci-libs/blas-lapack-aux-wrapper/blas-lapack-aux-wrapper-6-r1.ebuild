@@ -1,4 +1,4 @@
-# Copyright 2025 Gentoo Authors
+# Copyright 2025-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
@@ -6,9 +6,9 @@ EAPI=8
 # Mirrored from ::gentoo only to add python3_15: no code change is needed
 # for it. Drop this copy once ::gentoo lists python3_15.
 # BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-PYTHON_COMPAT=( python3_{11..15} )
+PYTHON_COMPAT=( python3_{12..15} )
 
-inherit meson python-any-r1 toolchain-funcs
+inherit flag-o-matic meson python-any-r1 toolchain-funcs
 
 LAPACK_VER=3.12.1
 DESCRIPTION="BLAS/LAPACK wrappers for FlexiBLAS"
@@ -47,6 +47,9 @@ src_configure() {
 	if ! tc-ld-is-bfd && ! tc-ld-is-lld; then
 		tc-ld-force-bfd
 	fi
+
+	# bug #974853
+	filter-flags -fno-plt
 
 	local emesonargs=(
 		-Dilp64=$(usex index64 true false)

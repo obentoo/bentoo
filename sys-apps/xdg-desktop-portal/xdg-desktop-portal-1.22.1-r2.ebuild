@@ -3,9 +3,9 @@
 
 EAPI=8
 
-PYTHON_COMPAT=( python3_{11..15} )
+PYTHON_COMPAT=( python3_{12..15} )
 
-# BENTOO-DIVERGENCE: PATCHES - one, where ::gentoo carries two.
+# BENTOO-DIVERGENCE: PATCHES - two, where ::gentoo carries three.
 #
 # optional-gstreamer is deliberately absent and must stay absent: it invents a
 # gstreamer USE flag upstream does not have, and this ebuild takes the
@@ -16,6 +16,10 @@ PYTHON_COMPAT=( python3_{11..15} )
 # apply, open" on 2026-09-07 and resolved the same day: their two hunks were
 # reduced to one, because the trailing-newline fix they also carry is already
 # upstream here.
+#
+# fix-dbus-service-startup is ::gentoo's (bug 985834), carried as-is under a
+# version-agnostic name so a bump does not orphan it; drop it once upstream
+# PR 2027 lands.
 inherit meson python-any-r1 systemd
 
 DESCRIPTION="Desktop integration portal"
@@ -67,9 +71,12 @@ RDEPEND="
 	${DEPEND}
 	sys-apps/dbus
 "
+# bubblewrap again here: meson.build runs find_program('bwrap') on the build
+# host, so the DEPEND copy alone only works when ROOT=/ (::gentoo does the same).
 BDEPEND="
 	>=dev-util/gdbus-codegen-2.80.5-r1
 	dev-python/docutils
+	sys-apps/bubblewrap
 	sys-devel/gettext
 	virtual/pkgconfig
 	test? (
@@ -102,6 +109,9 @@ PATCHES=(
 	# test_location.py want a pipewire connection, network access and
 	# /dev/fuse, and a portage sandbox gives none of the three.
 	"${FILESDIR}"/${PN}-skip-sandbox-hostile-tests.patch
+	# Taken from ::gentoo (bug 985834); pending upstream:
+	# https://github.com/flatpak/xdg-desktop-portal/pull/2027
+	"${FILESDIR}"/${PN}-fix-dbus-service-startup.patch
 )
 
 src_configure() {
