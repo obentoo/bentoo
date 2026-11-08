@@ -92,8 +92,9 @@ src_prepare() {
 	#
 	# Since 2.0.0 the icon at the root is a symlink into usr/, so it is
 	# materialised first; otherwise doicon fails and /opt gets a dangling link.
-	cp --remove-destination "usr/share/icons/hicolor/scalable/${MY_PN}.svg" \
-		"${MY_PN}".svg || die
+	# 2.7.0 went back from the scalable SVG to a 512x512 PNG.
+	cp --remove-destination "usr/share/icons/hicolor/512x512/apps/${MY_PN}.png" \
+		"${MY_PN}".png || die
 	rm -r usr || die
 
 	# AppRun is the AppImage bootstrap and is meaningless once installed, as is
@@ -129,6 +130,6 @@ src_install() {
 	dosym -r "${dest}/${MY_PN}" /usr/bin/"${MY_PN}"
 
 	domenu "${MY_PN}".desktop
-	# 2.0.0 replaced the PNG icon with an SVG at the squashfs root.
-	doicon -s scalable "${MY_PN}".svg
+	# 2.0.0 replaced the PNG icon with an SVG; 2.7.0 restored a 512x512 PNG.
+	doicon -s 512 "${MY_PN}".png
 }
