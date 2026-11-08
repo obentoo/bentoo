@@ -140,6 +140,6 @@ pkg_postinst() {
 	elog "recommended."
 
 	optfeature "repository operations from the Codex agent" dev-vcs/git
-	optfeature "system tray icon" x11-libs/libayatana-appindicator
+	optfeature "system tray icon" dev-libs/libayatana-appindicator
 	optfeature "audio playback via PulseAudio/PipeWire" media-libs/libpulse
 }

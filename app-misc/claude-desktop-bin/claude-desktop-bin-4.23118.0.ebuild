@@ -117,6 +117,6 @@ pkg_postinst() {
 	# also the package carrying the aarch64 firmware.
 	optfeature "sandboxed code execution in a virtual machine" \
 		"app-emulation/qemu sys-firmware/edk2 app-emulation/virtiofsd"
-	optfeature "system tray icon" x11-libs/libayatana-appindicator
+	optfeature "system tray icon" dev-libs/libayatana-appindicator
 	optfeature "storing credentials in a keyring" virtual/secret-service
 }
