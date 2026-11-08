@@ -150,7 +150,7 @@ BDEPEND="${PYTHON_DEPS}
 	sys-apps/coreutils
 	virtual/pkgconfig
 	temporal? ( ${RUST_DEPEND} )
-	test? ( net-misc/curl )
+	test? ( net-misc/curl app-arch/unzip )
 	pax-kernel? ( sys-apps/elfix )"
 DEPEND="${COMMON_DEPEND}"
 # app-eselect/eselect-nodejs is a *runtime* dependency, not a build one: no

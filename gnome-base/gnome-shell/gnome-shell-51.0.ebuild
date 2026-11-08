@@ -8,7 +8,7 @@
 
 EAPI=8
 
-PYTHON_COMPAT=( python3_{12..14} )
+PYTHON_COMPAT=( python3_{12..15} )
 
 inherit flag-o-matic gnome.org gnome2-utils meson optfeature python-single-r1 xdg
 
