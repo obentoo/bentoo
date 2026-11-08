@@ -65,7 +65,7 @@ IUSE="systemd ui"
 # 002. Until then this finding is expected here and must not be "fixed" by
 # dropping the USE flag or the dependency.
 BDEPEND="
-	>=dev-lang/go-1.26.1
+	>=dev-lang/go-1.27.3
 	ui? ( net-libs/nodejs[npm] )
 "
 
@@ -106,17 +106,22 @@ src_compile() {
 	local mytags=()
 
 	if use ui; then
-		# The Svelte UI lives in ui-svelte/ and vite writes its output to
-		# ../internal/server/ui_dist (see ui-svelte/vite.config.*). That path
+		# The Svelte UI lives in ui/ and vite writes its output to
+		# ../internal/server/ui_dist (see ui/vite.config.*). That path
 		# is NOT shipped in the tarball, so it must be built here.
 		#
-		# npm ci, not npm install: upstream commits ui-svelte/package-lock.json
+		# Upstream renamed ui-svelte/ to ui/ in v251. The autoupdate bumps
+		# v251..v270 carried the old path, so USE=ui died here for six
+		# releases while USE=-ui kept building (GitHub issue #65). A bump
+		# that is never compiled with USE=ui does not test this block.
+		#
+		# npm ci, not npm install: upstream commits ui/package-lock.json
 		# and `ci` installs exactly what the lockfile pins, failing if the two
 		# disagree. `install` silently resolves newer versions instead, which
 		# defeats the integrity the lockfile exists to provide. The adopted
 		# ebuild ran `npm ci` under a comment claiming `npm install` was used
 		# and more forgiving; the code was right and the comment was wrong.
-		cd "${S}/ui-svelte" || die
+		cd "${S}/ui" || die
 		npm ci --no-audit --no-fund || die "npm ci failed"
 		npm run build || die "vite build failed"
 		cd "${S}" || die
