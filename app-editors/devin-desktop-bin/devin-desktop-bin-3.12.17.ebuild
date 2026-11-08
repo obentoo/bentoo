@@ -84,16 +84,20 @@ src_install() {
 	# Install launcher symlink (upstream binary is "devin-desktop")
 	dosym "../../opt/${MY_PN}/${MY_PN}" "/usr/bin/${MY_PN}"
 
-	# Fix paths in desktop files
-	sed -i \
-		-e "s|/usr/share/${MY_PN}/${MY_PN}|/opt/${MY_PN}/${MY_PN}|g" \
-		"${S}/usr/share/applications/${MY_PN}.desktop" \
-		"${S}/usr/share/applications/${MY_PN}-url-handler.desktop" \
-		|| die "sed failed"
+	# Fix paths in desktop files. Since 3.12 upstream ships the URL handler as
+	# "${MY_PN}.UrlHandler.desktop" (it was "${MY_PN}-url-handler.desktop").
+	local apps="${S}/usr/share/applications" f
+	for f in "${MY_PN}.desktop" "${MY_PN}.UrlHandler.desktop"; do
+		grep -qF "/usr/share/${MY_PN}/${MY_PN}" "${apps}/${f}" \
+			|| die "${f}: upstream Exec path changed, sed would be a no-op"
+		sed -i -e "s|/usr/share/${MY_PN}/${MY_PN}|/opt/${MY_PN}/${MY_PN}|g" \
+			"${apps}/${f}" || die "sed failed on ${f}"
+	done
 
-	# Install desktop files
-	domenu "${S}/usr/share/applications/${MY_PN}.desktop"
-	domenu "${S}/usr/share/applications/${MY_PN}-url-handler.desktop"
+	# Install desktop files. The URL handler keeps its pre-3.12 installed name
+	# so x-scheme-handler associations users already saved keep resolving.
+	domenu "${apps}/${MY_PN}.desktop"
+	newmenu "${apps}/${MY_PN}.UrlHandler.desktop" "${MY_PN}-url-handler.desktop"
 
 	# Install icon
 	doicon "${S}/usr/share/pixmaps/${MY_PN}.png"
