@@ -1,0 +1,49 @@
+From: Lucas C.S. <lucascs@protonmail.com>
+Subject: intel/perf, panfrost/perf: close the generated files explicitly
+
+gen_perf.py and mali_gen_perf.py open their output files and never close
+them, relying on the interpreter to flush the buffers at exit.  Python
+never guaranteed that, and with Python 3.15 it stops happening for
+gen_perf.py on the full Intel XML set: the script exits 0 while
+intel_perf_metrics.c is cut mid-function and intel_perf_metrics.h is
+left empty, so the build dies much later with "no previous prototype
+for intel_oa_register_queries_*" and "expected expression at end of
+input".  oa-acmgt3.xml alone is enough to trigger it.
+
+Close the files explicitly.  With the patch, Python 3.15 produces
+output byte-identical to Python 3.14's.
+
+--- a/src/intel/perf/gen_perf.py
++++ b/src/intel/perf/gen_perf.py
+@@ -1027,4 +1027,9 @@
+ 
+ 
+ if __name__ == '__main__':
+-    main()
++    try:
++        main()
++    finally:
++        for f in (c_file, header_file):
++            if f is not None:
++                f.close()
+--- a/src/panfrost/perf/mali_gen_perf.py
++++ b/src/panfrost/perf/mali_gen_perf.py
+@@ -35,6 +35,9 @@
+    def outdent(self, n):
+       self._indent -= n
+ 
++   def close(self):
++      self.file.close()
++
+ 
+ @dataclass(frozen=True)
+ class HardwareCounter:
+@@ -467,6 +470,8 @@
+    c.write("   .counters = counters,")
+    c.write("};")
+ 
++   c.close()
++
+ 
+ if __name__ == '__main__':
+    main()

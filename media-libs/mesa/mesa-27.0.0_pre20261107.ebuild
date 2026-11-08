@@ -377,12 +377,16 @@ pkg_setup() {
 }
 
 # BENTOO-DIVERGENCE: PATCHES - astc-spirv1.2, a build fix for glslang
-# enforcing SPIR-V 1.2 on the ASTC decoder shader. Drop when upstream
-# carries it.
+# enforcing SPIR-V 1.2 on the ASTC decoder shader; python-close-generated-files,
+# a build fix for Python 3.15. Drop each when upstream carries it.
 PATCHES=(
 	# Build fix: the ASTC decoder shader needs SPIR-V 1.2, which glslang
 	# started enforcing in 2026-08.  Drop when upstream carries it.
 	"${FILESDIR}"/${PN}-astc-spirv1.2.patch
+	# Build fix: gen_perf.py / mali_gen_perf.py never close their output,
+	# and under Python 3.15 intel_perf_metrics.{c,h} come out truncated
+	# with exit 0.  Drop when upstream closes the files itself.
+	"${FILESDIR}"/${PN}-python-close-generated-files.patch
 )
 
 src_prepare() {
