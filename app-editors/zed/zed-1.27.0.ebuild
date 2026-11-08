@@ -1576,9 +1576,6 @@ SRC_URI="
 	${CARGO_CRATE_URIS}"
 
 S="${WORKDIR}/${PN}-${MY_PV}"
-# BENTOO-DIVERGENCE: LICENSE - the vendored crate set differs six series on, so
-# the LICENSE+= block below names licences 1.14 never pulled in, among them
-# CDLA-Permissive-2.0.
 LICENSE="GPL-3+"
 # license for fuchsia-cprng-0.1.1, which is not set correctly in crate
 LICENSE+=" BSD"
