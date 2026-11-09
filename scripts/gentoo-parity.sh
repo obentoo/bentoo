@@ -1899,6 +1899,7 @@ filesdir_refs() {
 
 	FILESDIR_REFS=""
 	FILESDIR_REFS_ECLASS=""
+	FILESDIR_REFS_GUARDED=""
 	for eb in "${root}/${key}"/*.ebuild; do
 		[[ -f ${eb} ]] || continue
 		base=${eb##*/}
@@ -1951,9 +1952,29 @@ filesdir_refs() {
 		if grep -q 'readme\.gentoo-r1' "${eb}"; then
 			FILESDIR_REFS_ECLASS+="README.gentoo* "
 		fi
+
+		# References the ebuild TESTS for before using them:
+		#   [[ -d "${FILESDIR}"/${PV} ]] && eapply "${FILESDIR}"/${PV}
+		# media-video/pipewire carries exactly that (as ::gentoo does), and
+		# the missing-reference check reported it as a reference that DIES
+		# at install -- false, the use is skipped when the path is absent.
+		# Only the -d/-e/-f/-s tests count, and only for the path tested.
+		while IFS= read -r expr; do
+			expr=${expr//\$\{PF\}/${base}}
+			expr=${expr//\$\{PVR\}/${pvr}}
+			expr=${expr//\$\{P\}/${pn}-${pv}}
+			expr=${expr//\$\{PN\}/${pn}}
+			expr=${expr//\$\{PV\}/${pv}}
+			expr=$(printf '%s' "${expr}" |
+				sed -E 's/\$\{[A-Za-z_][A-Za-z0-9_]*\}/*/g')
+			FILESDIR_REFS_GUARDED+="$(expand_braces "${expr}") "
+		done < <(grep -v '^[[:space:]]*#' "${eb}" 2>/dev/null |
+			grep -hoE -- '-[defs][[:space:]]+"?\$\{FILESDIR\}"?/[^][:space:])"'"'"';]+' |
+			sed -E 's|^-[defs][[:space:]]+"?\$\{FILESDIR\}"?/||')
 	done
 	FILESDIR_REFS=${FILESDIR_REFS% }
 	FILESDIR_REFS_ECLASS=${FILESDIR_REFS_ECLASS% }
+	FILESDIR_REFS_GUARDED=${FILESDIR_REFS_GUARDED% }
 }
 
 # split_by_reference <names> <patterns>
@@ -3036,6 +3057,24 @@ write_parity_report() {
 			printf -- '- none\n\n'
 		fi
 
+		printf "## \`\${FILESDIR}\` references matching no file\n\n"
+		printf -- 'A path an ebuild reads through `${FILESDIR}` that no file under\n'
+		printf -- 'the package `files/` matches. Under EAPI 8 the install helpers die\n'
+		printf -- 'on it, so the package cannot install. A path the ebuild first\n'
+		printf -- 'tests with `-d`/`-e`/`-f`/`-s` is optional and is not listed.\n\n'
+		if (( ${#PARITY_MISSING_FILES[@]} )); then
+			printf "| Package | Ebuilds | Pattern |\n"
+			printf '|---|---|---|\n'
+			for name in "${PARITY_MISSING_FILES[@]}"; do
+				IFS=$'\t' read -r key overlay gentoo <<<"${name}"
+				printf -- "| \`%s\` | \`%s\` | \`%s\` |\n" \
+					"${key}" "${overlay}" "${gentoo}"
+			done
+			printf '\n'
+		else
+			printf -- '- none\n\n'
+		fi
+
 		printf "## Files no ebuild names\n\n"
 		printf -- 'A file under a package `files/` directory that no ebuild of\n'
 		printf -- 'that package reaches through `${FILESDIR}`. Usually a patch\n'
@@ -3221,8 +3260,8 @@ check_manifest_digests() {
 # consulted: those patterns are read by an eclass, and a package inheriting
 # readme.gentoo-r1 without shipping a README.gentoo is not broken.
 check_missing_filesdir_refs() {
-	local pkg_dir key category pn pattern eb_names
-	local -a patterns=() ebuilds=()
+	local pkg_dir key category pn pattern eb_names g is_guarded
+	local -a patterns=() ebuilds=() guarded=()
 
 	for pkg_dir in "${OVERLAY_ROOT}"/*/*/; do
 		pkg_dir=${pkg_dir%/}
@@ -3246,8 +3285,18 @@ check_missing_filesdir_refs() {
 		[[ -n ${FILESDIR_REFS} ]] || continue
 
 		read -r -a patterns <<<"${FILESDIR_REFS}"
+		read -r -a guarded <<<"${FILESDIR_REFS_GUARDED}"
 		for pattern in "${patterns[@]}"; do
 			[[ -n ${pattern} ]] || continue
+			# A path the package tests with -d/-e/-f/-s before using it
+			# is optional by construction: absent, the use is skipped.
+			# Exact string match on the expanded pattern -- the test and
+			# the use name the same path, so they expand the same way.
+			is_guarded=""
+			for g in "${guarded[@]}"; do
+				[[ ${g} == "${pattern}" ]] && { is_guarded=1; break; }
+			done
+			[[ -z ${is_guarded} ]] || continue
 			if ! compgen -G "${pkg_dir}/files/${pattern}" >/dev/null; then
 				# Recorded per PACKAGE, not per ebuild: filesdir_refs pools
 				# every ebuild of the package, so blaming one of them would
@@ -5414,6 +5463,24 @@ self_test_assertions() {
 				>"${scratch}/a33/cat/pkg/pkg-1.0.ebuild" &&
 			filesdir_refs "${scratch}/a33" cat/pkg &&
 			printf 'refs=%s' "${FILESDIR_REFS}")"
+
+	# A path tested before use is optional, from media-video/pipewire:
+	# [[ -d "${FILESDIR}"/${PV} ]] && eapply "${FILESDIR}"/${PV}. The sweep
+	# reported it as a reference that DIES at install. The decoy pins the
+	# other half: an UNTESTED missing path in the same package is still
+	# named, so the fix cannot pass by silencing the whole package.
+	assert_eq A34 \
+		'a ${FILESDIR} path tested with -d before use is not a missing reference' \
+		'missing=1 names=absent.patch' \
+		"$(mkdir -p -- "${scratch}/a34/cat/pkg/files" &&
+			printf '%s\n' 'EAPI=8' \
+				'src_prepare() {' \
+				'	[[ -d "${FILESDIR}"/${PV} ]] && eapply "${FILESDIR}"/${PV}' \
+				'	eapply "${FILESDIR}"/absent.patch' \
+				'}' >"${scratch}/a34/cat/pkg/pkg-1.0.ebuild" &&
+			OVERLAY_ROOT="${scratch}/a34" FILTER=cat/pkg PARITY_MISSING_FILES=() &&
+			check_missing_filesdir_refs >/dev/null &&
+			report_missing_filesdir_refs)"
 
 	rm -rf -- "${scratch}"
 }
