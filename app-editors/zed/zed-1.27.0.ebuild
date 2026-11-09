@@ -1660,6 +1660,8 @@ RDEPEND="
 	${DEPEND}
 	neovim? ( app-editors/neovim )
 "
+# BENTOO-DIVERGENCE: BDEPEND - no llvm-core/lld: ::gentoo pulls it only under
+# arm64?, and bentoo is amd64-only.
 BDEPEND="
 	app-arch/unzip
 	dev-build/cmake

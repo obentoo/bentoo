@@ -261,6 +261,9 @@ RDEPEND="${COMMON_DEPEND}
 
 DOCS=( AUTHORS THANKS NEWS README.md doc/fortunes.txt )
 
+# BENTOO-DIVERGENCE: PATCHES - no ffmpeg9.patch: this snapshot already defines
+# FF_API_V408_CODECID in modules/codec/avcodec/avcommon_compat.h (checked
+# against the f94b6117 tarball on 2026-11-08).
 PATCHES=(
 	"${FILESDIR}"/${PN}-4.0.0_pre20260320-gettext-version.patch # bug 766549
 	"${FILESDIR}"/${PN}-4.0.0_pre20260320-no-vlc-cache-gen.patch # bugs 564842, 608256

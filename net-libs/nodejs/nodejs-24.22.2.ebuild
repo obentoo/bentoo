@@ -4,6 +4,8 @@
 EAPI=8
 
 CONFIG_CHECK="~ADVISE_SYSCALLS"
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT (gyp runs on it
+# unchanged), so dev-lang/python:3.15 joins PYTHON_DEPS.
 PYTHON_COMPAT=( python3_{11..15} )
 PYTHON_REQ_USE="threads(+)"
 

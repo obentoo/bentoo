@@ -5,6 +5,9 @@ EAPI=8
 
 # BENTOO-DIVERGENCE: SLOT - ::gentoo carries no 9.7 slot (the current MySQL LTS,
 # Fedora 45's default). This is ::gentoo's mysql-8.4.11 ebuild with:
+# BENTOO-DIVERGENCE: KEYWORDS - ~amd64 only, per the list below.
+# BENTOO-DIVERGENCE: PATCHES - the 9.7.4 set described below, in place of
+# ::gentoo's 8.4 bundled-abseil patch.
 # - KEYWORDS reduced to ~amd64 (bentoo is amd64-only);
 # - patchset 0001 and 0006 rebased onto 9.7.4 in files/ (9.x moved the
 #   native, OpenID Connect and WebAuthn client auth plugins in

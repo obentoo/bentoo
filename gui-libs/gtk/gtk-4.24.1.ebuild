@@ -17,6 +17,8 @@ REQUIRED_USE="
 	gtk-doc? ( introspection )
 	test? ( introspection )
 "
+# BENTOO-DIVERGENCE: KEYWORDS - no ~alpha/~hppa: ::gentoo keyworded its 50.x
+# for them after the GNOME 51 copy (7ec33f058) was taken; bentoo tests amd64 only.
 KEYWORDS="~amd64 ~arm ~arm64 ~loong ~ppc ~ppc64 ~riscv ~sparc ~x86"
 IUSE="aqua broadway cloudproviders colord cups examples gstreamer gtk-doc +introspection sysprof test vulkan wayland +X cpu_flags_x86_f16c"
 

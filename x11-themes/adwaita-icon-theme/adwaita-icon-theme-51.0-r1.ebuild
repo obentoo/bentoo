@@ -17,6 +17,8 @@ LICENSE="
 	branding? ( CC-BY-SA-4.0 )
 "
 SLOT="0"
+# BENTOO-DIVERGENCE: KEYWORDS - no ~alpha/~hppa: ::gentoo keyworded its 50.x
+# for them after the GNOME 51 copy (7ec33f058) was taken; bentoo tests amd64 only.
 KEYWORDS="~amd64 ~arm ~arm64 ~loong ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86"
 
 IUSE="branding"

@@ -47,6 +47,9 @@ CPU_FEATURES=(
 # default; this is 13.0.0 and offers abi14..abi11 with abi13 default. Identical
 # generative code, different input. Nothing here was hand-written, and aligning
 # any of it would mean un-bumping the package.
+# BENTOO-DIVERGENCE: DEPEND - dev-libs/c-blosc only under USE=blosc, and no
+# dev-libs/log4cplus: 14.0.0 removed log4cplus support (see PATCHES below).
+# BENTOO-DIVERGENCE: RDEPEND - the same c-blosc/log4cplus change.
 # BENTOO-DIVERGENCE: IUSE - abi14-compat exists here and abi10-compat does not.
 # BENTOO-DIVERGENCE: IUSE_DEFAULTS - +abi13-compat here, +abi12-compat there.
 # BENTOO-DIVERGENCE: REQUIRED_USE - the same ?? ( ... ) group over the shifted

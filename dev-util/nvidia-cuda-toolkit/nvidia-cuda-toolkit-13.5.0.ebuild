@@ -7,6 +7,7 @@ EAPI=8
 
 # BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT (the build-time
 # defusedxml script runs on 3.15 unchanged).
+# BENTOO-DIVERGENCE: REQUIRED_USE - the same python3_15, through PYTHON_REQUIRED_USE.
 PYTHON_COMPAT=( python3_{12..15} )
 inherit check-reqs edo toolchain-funcs
 inherit python-r1

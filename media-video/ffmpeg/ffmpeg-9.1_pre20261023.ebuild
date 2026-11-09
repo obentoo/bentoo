@@ -10,6 +10,8 @@ FFMPEG_SOC_PATCH=
 FFMPEG_COMMIT=47b92841e33b67c1699394415641b34d1157d8d7
 FFMPEG_SUBSLOT=61.63.63 # avutil.avcodec.avformat SONAME
 
+# BENTOO-DIVERGENCE: KEYWORDS - none: the 9.1 snapshot is unkeyworded for testing
+# (see the commented KEYWORDS below), where ::gentoo keywords its 9.0.2 release.
 # BENTOO-DIVERGENCE: INHERIT - verify-sig only for real releases; a _pre
 # snapshot is a GitHub archive of a branch commit and has no .asc to verify.
 # BENTOO-DIVERGENCE: BDEPEND - openpgp-keys-ffmpeg (and verify-sig's gpg deps)

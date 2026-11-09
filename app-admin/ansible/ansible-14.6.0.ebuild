@@ -18,6 +18,8 @@ HOMEPAGE="
 
 LICENSE="GPL-3+"
 SLOT="0"
+# BENTOO-DIVERGENCE: KEYWORDS - ~amd64 only: 14.6.0 is a bump past ::gentoo's
+# 14.3.1, not a mirror, so it follows the overlay baseline (amd64, x86-64-v3).
 KEYWORDS="~amd64"
 RESTRICT="test"
 

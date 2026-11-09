@@ -10,6 +10,8 @@ EAPI=8
 # BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT.
 # BENTOO-DIVERGENCE: SRC_URI - the c++23 patch is part of 20260817.0.
 # BENTOO-DIVERGENCE: PATCHES - the c++23 patch is part of 20260817.0.
+# BENTOO-DIVERGENCE: SLOT - the subslot is computed from PV (2608.0.0 here,
+# 2601.1.0 in ::gentoo); the formula is ::gentoo's, only the version moved.
 PYTHON_COMPAT=( python3_{10..15} )
 
 inherit cmake-multilib edo flag-o-matic python-any-r1
