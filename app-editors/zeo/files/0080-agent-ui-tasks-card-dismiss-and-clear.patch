@@ -1,0 +1,415 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 9 Nov 2026 16:33:14 -0300
+Subject: [PATCH] agent_ui: tasks card gets an always-visible scrollbar,
+ dismiss and Clear finished
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Wave 2 of the Zeo next proposal (docs/ZEO-NEXT-PROPOSAL.md §5.2, asks 4,
+32, 33; finding F2). Patch 0037's card capped its list at 24 rem and
+scrolled it, but drew no scrollbar, no row could be dismissed and there
+was no clear-all: an ended row left only when its 10 s linger ran out,
+and a native subagent row in state Unknown stayed while its parent was
+held.
+
+- The list keeps its 24 rem cap and now draws its scrollbar always, the
+  way the Agent Tasks panel does (`Scrollbars::always_visible`, tracked
+  by a `ScrollHandle` the card holds): `Scrollbars::new` hides the thumb
+  a second after the pointer enters, which story 034 measured.
+- An "×" on every row in a terminal state and on rows in state Unknown;
+  running and waiting rows keep Stop. An ended row leaves at once (its
+  linger entry is dropped); an Unknown row is hidden while it stays
+  Unknown and comes back if it turns Running.
+- "Clear finished" in the header, shown while any such row is on show,
+  does both for every row.
+
+Dismissing is the card's alone: the Agent Tasks panel, its history and
+the tray keep every record. Sub-thread rows (story 040) are not
+dismissable yet.
+
+Tests: tasks_card/dismiss_tests.rs — an ended row dismissed leaves and
+the card hides; a running row cannot be dismissed; Clear finished keeps
+the running row. The scrollbar and the Unknown-row dismissal are not
+covered by a test (Xvfb, and the native-subagent fixture). Verified 2026-11-09 in the prepared d2a4fb6 tree: cargo check --tests, cargo clippy --tests and cargo fmt --check clean, cargo test passing, on acp_thread, agent_servers, agent_ui and sidebar.
+---
+
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index 843ba15..6cde4d9 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -25,10 +25,13 @@ use collections::{HashMap, HashSet};
+ use gpui::{
+     AnyElement, AnyView, App, AvailableSpace, Bounds, Context, Element, Entity, EntityId,
+     EventEmitter, FocusHandle, GlobalElementId, InspectorElementId, LayoutId, Pixels, PromptLevel,
+-    Render, SharedString, Style, Subscription, Task, WeakEntity, Window, point, size,
++    Render, ScrollHandle, SharedString, Style, Subscription, Task, WeakEntity, Window, point, size,
+ };
+ use settings::{Settings as _, SettingsStore, TasksCardPosition};
+-use ui::{ButtonLike, Chip, CommonAnimationExt as _, Tooltip, prelude::*};
++use ui::{
++    ButtonLike, Chip, CommonAnimationExt as _, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
++    prelude::*,
++};
+ 
+ use crate::DEFAULT_THREAD_TITLE;
+ use crate::conversation_view::ConversationView;
+@@ -56,6 +59,10 @@ mod native_subagent;
+ #[path = "tasks_card/model_tests.rs"]
+ mod model;
+ 
++#[cfg(test)]
++#[path = "tasks_card/dismiss_tests.rs"]
++mod dismiss;
++
+ #[cfg(test)]
+ #[path = "tasks_card/panel_close_tests.rs"]
+ mod panel_close;
+@@ -408,6 +415,13 @@ pub struct TasksCard {
+     native_statuses: HashMap<TaskKey, TaskRowStatus>,
+     /// One subscription per registered child of a held thread, keyed by the row's key.
+     native_subscriptions: HashMap<TaskKey, Subscription>,
++    /// Native rows the operator dismissed while their status is `Unknown` (Zeo next
++    /// proposal §5.2). Card only: the Agent Tasks panel keeps the record. A row that turns
++    /// Running again is shown again, since the filter only hides `Unknown`.
++    dismissed_unknown: HashSet<TaskKey>,
++    /// The list's scroll position, so its scrollbar can be drawn always visible (§5.2):
++    /// `Scrollbars::new` hides the thumb a second after the pointer enters.
++    list_scroll: ScrollHandle,
+ }
+ 
+ /// A per-row control that takes keyboard focus.
+@@ -508,7 +522,42 @@ impl TasksCard {
+             sub_thread_rows: HashMap::default(),
+             native_statuses: HashMap::default(),
+             native_subscriptions: HashMap::default(),
++            dismissed_unknown: HashSet::default(),
++            list_scroll: ScrollHandle::new(),
++        }
++    }
++
++    /// Removes one row from the card (§5.2): an ended row leaves before its linger runs out,
++    /// an `Unknown` row is hidden while it stays `Unknown`. Running rows have Stop instead.
++    pub fn dismiss_row(&mut self, key: TaskKey, status: TaskRowStatus, cx: &mut Context<Self>) {
++        if status.is_terminal() {
++            self.ended.remove(&key);
++        } else if status == TaskRowStatus::Unknown {
++            self.dismissed_unknown.insert(key);
++        } else {
++            return;
+         }
++        cx.notify();
++    }
++
++    /// "Clear finished" (§5.2): every ended row leaves, and every `Unknown` row on show is
++    /// hidden. Running and waiting rows stay.
++    pub fn clear_finished(&mut self, cx: &mut Context<Self>) {
++        let unknown: Vec<TaskKey> = self
++            .rows(cx)
++            .into_iter()
++            .flat_map(|group| {
++                let session_id = group.session_id;
++                group
++                    .rows
++                    .into_iter()
++                    .filter(|row| row.status == TaskRowStatus::Unknown)
++                    .map(move |row| (session_id.clone(), row.task.id))
++            })
++            .collect();
++        self.ended.clear();
++        self.dismissed_unknown.extend(unknown);
++        cx.notify();
+     }
+ 
+     /// Lets the card tell `zeo-systray` about endings, asking `in_view` first
+@@ -590,6 +639,12 @@ impl TasksCard {
+                 .into_iter()
+                 .chain(ended.into_iter().map(EndedRow::to_row))
+                 .map(|row| self.dress(thread, row, cx))
++                .filter(|row| {
++                    row.status != TaskRowStatus::Unknown
++                        || !self
++                            .dismissed_unknown
++                            .contains(&(session_id.clone(), row.task.id.clone()))
++                })
+                 .collect();
+ 
+             let subs: Vec<SubThreadRow> = sub_threads
+@@ -1881,7 +1936,7 @@ impl TasksCard {
+ }
+ 
+ impl Render for TasksCard {
+-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+         #[cfg(test)]
+         RENDERED_ARIA_LABELS.with_borrow_mut(Vec::clear);
+         let groups = self.rows(cx);
+@@ -1894,7 +1949,7 @@ impl Render for TasksCard {
+         if self.is_minimized() {
+             return self.render_pill(running_count(&groups), cx);
+         }
+-        self.render_expanded(groups, cx)
++        self.render_expanded(groups, window, cx)
+     }
+ }
+ 
+@@ -1940,9 +1995,20 @@ impl TasksCard {
+             .into_any_element()
+     }
+ 
+-    fn render_expanded(&mut self, groups: Vec<ThreadGroup>, cx: &mut Context<Self>) -> AnyElement {
++    fn render_expanded(
++        &mut self,
++        groups: Vec<ThreadGroup>,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> AnyElement {
+         let running = running_count(&groups);
+         let now = SystemTime::now();
++        let anything_finished = groups.iter().any(|group| {
++            group
++                .rows
++                .iter()
++                .any(|row| row.status.is_terminal() || row.status == TaskRowStatus::Unknown)
++        });
+ 
+         let header = h_flex()
+             .flex_none()
+@@ -1963,35 +2029,68 @@ impl TasksCard {
+                     ),
+             )
+             .child(
+-                div().debug_selector(|| "tasks-card-minimize".into()).child(
+-                    IconButton::new("tasks-card-minimize", IconName::Minimize)
+-                        .icon_size(IconSize::Small)
+-                        .icon_color(Color::Muted)
+-                        .aria_label("Minimize the tasks card")
+-                        .tooltip(card_tooltip(
+-                            "minimize".into(),
+-                            "Minimize Tasks Card".into(),
+-                        ))
+-                        .track_focus(&self.minimize_focus_handle)
+-                        .on_click(cx.listener(|card, _, window, cx| {
+-                            card.toggle_minimized_keeping_focus(window, cx)
+-                        })),
+-                ),
++                h_flex()
++                    .gap_0p5()
++                    .when(anything_finished, |this| {
++                        this.child(
++                            div()
++                                .debug_selector(|| "tasks-card-clear-finished".into())
++                                .child(
++                                    Button::new("tasks-card-clear-finished", "Clear finished")
++                                        .label_size(LabelSize::Small)
++                                        .color(Color::Muted)
++                                        .tooltip(Tooltip::text(
++                                            "Remove finished tasks from this card; \
++                                         the Agent Tasks panel keeps them",
++                                        ))
++                                        .on_click(
++                                            cx.listener(|card, _, _, cx| card.clear_finished(cx)),
++                                        ),
++                                ),
++                        )
++                    })
++                    .child(
++                        div().debug_selector(|| "tasks-card-minimize".into()).child(
++                            IconButton::new("tasks-card-minimize", IconName::Minimize)
++                                .icon_size(IconSize::Small)
++                                .icon_color(Color::Muted)
++                                .aria_label("Minimize the tasks card")
++                                .tooltip(card_tooltip(
++                                    "minimize".into(),
++                                    "Minimize Tasks Card".into(),
++                                ))
++                                .track_focus(&self.minimize_focus_handle)
++                                .on_click(cx.listener(|card, _, window, cx| {
++                                    card.toggle_minimized_keeping_focus(window, cx)
++                                })),
++                        ),
++                    ),
+             );
+ 
+         // The list is what gives way when the panel is short: it shrinks and scrolls
+         // so the card stays inside the area `TasksCardOverlay` hands it.
+-        let list = v_flex()
++        let rows = v_flex()
+             .id("tasks-card-list")
+-            .min_h_0()
+-            .flex_shrink(1.)
+             .max_h(rems(24.))
+             .overflow_y_scroll()
++            .track_scroll(&self.list_scroll)
+             .children(
+                 groups
+                     .into_iter()
+                     .map(|group| self.render_group(group, now, cx)),
+             );
++        let list = v_flex()
++            .min_h_0()
++            .flex_shrink(1.)
++            .max_h(rems(24.))
++            .overflow_hidden()
++            .child(rows)
++            .custom_scrollbars(
++                Scrollbars::always_visible(ScrollAxes::Vertical)
++                    .tracked_scroll_handle(&self.list_scroll),
++                window,
++                cx,
++            );
+ 
+         v_flex()
+             .id("tasks-card")
+@@ -2299,6 +2398,34 @@ impl TasksCard {
+                 .child(button)
+         });
+ 
++        // Ended and Unknown rows can be dismissed from the card; a running row has Stop.
++        let dismiss_button =
++            (status.is_terminal() || status == TaskRowStatus::Unknown).then(|| {
++                div()
++                    .debug_selector({
++                        let task_id = task_id.clone();
++                        move || format!("tasks-card-dismiss-{task_id}")
++                    })
++                    .flex_none()
++                    .child(
++                        IconButton::new(
++                            SharedString::from(format!("tasks-card-dismiss-{element_key}")),
++                            IconName::Close,
++                        )
++                        .icon_size(IconSize::Small)
++                        .icon_color(Color::Muted)
++                        .aria_label(row_aria_label(format!("Dismiss: {shown_label}")))
++                        .tooltip(card_tooltip(
++                            format!("dismiss-{task_id}").into(),
++                            "Remove From This Card".into(),
++                        ))
++                        .on_click(cx.listener({
++                            let key = key.clone();
++                            move |card, _, _, cx| card.dismiss_row(key.clone(), status, cx)
++                        })),
++                    )
++            });
++
+         let open_focus_handle = self.row_focus_handle(&key, RowControl::Open, cx);
+         let open_button = IconButton::new(
+             SharedString::from(format!("tasks-card-open-{element_key}")),
+@@ -2476,7 +2603,8 @@ impl TasksCard {
+             .children(open_thread_button)
+             .child(watch_button)
+             .children(background_button)
+-            .children(stop_button);
++            .children(stop_button)
++            .children(dismiss_button);
+ 
+         v_flex()
+             .id(SharedString::from(format!("tasks-card-row-{element_key}")))
+diff --git a/crates/agent_ui/src/tasks_card/dismiss_tests.rs b/crates/agent_ui/src/tasks_card/dismiss_tests.rs
+new file mode 100644
+index 0000000..7097c7c
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/dismiss_tests.rs
+@@ -0,0 +1,100 @@
++// Zeo next proposal §5.2 (asks 4, 32, 33): an ended row can be dismissed from the card, and
++// "Clear finished" removes every ended row while running rows stay. Card only: the Agent
++// Tasks panel keeps the records.
++//
++// Not covered here: dismissing a native subagent row in state `Unknown` (it needs the
++// native-subagent fixture), and the always-visible scrollbar, which only an Xvfb capture
++// proves (GPUI tests do not see auto-hide).
++
++use super::TaskRowStatus;
++use super::test_helpers::*;
++use gpui::TestAppContext;
++
++#[gpui::test]
++async fn an_ended_row_dismissed_leaves_before_its_linger(cx: &mut TestAppContext) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    let connection = TaskActionsConnection::new();
++    let thread = open_titled_thread(&panel, &connection, "Thread", &mut cx);
++    send_tasks(
++        &thread,
++        vec![wire_task("t1", "running", true, 1_000)],
++        &mut cx,
++    );
++    send_tasks(
++        &thread,
++        vec![wire_task("t1", "completed", true, 1_000)],
++        &mut cx,
++    );
++    let card = card(&panel, &cx);
++    let session = session_of(&thread, &cx);
++    let row = find_row(&card, &session, "t1", &mut cx).expect("fixture: the ended row lingers");
++    assert!(row.status.is_terminal(), "fixture: the row has ended");
++
++    card.update(&mut cx, |card, cx| {
++        card.dismiss_row((session.clone(), row.task.id.clone()), row.status, cx)
++    });
++
++    assert!(find_row(&card, &session, "t1", &mut cx).is_none());
++    assert!(!visible(&card, &mut cx), "nothing left: the card hides");
++}
++
++#[gpui::test]
++async fn a_running_row_cannot_be_dismissed(cx: &mut TestAppContext) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    let connection = TaskActionsConnection::new();
++    let thread = open_titled_thread(&panel, &connection, "Thread", &mut cx);
++    send_tasks(
++        &thread,
++        vec![wire_task("t1", "running", true, 1_000)],
++        &mut cx,
++    );
++    let card = card(&panel, &cx);
++    let session = session_of(&thread, &cx);
++    let key = (session.clone(), "t1".to_string().into());
++
++    card.update(&mut cx, |card, cx| {
++        card.dismiss_row(key, TaskRowStatus::Running, cx)
++    });
++
++    assert!(
++        find_row(&card, &session, "t1", &mut cx).is_some(),
++        "Stop is its control"
++    );
++}
++
++#[gpui::test]
++async fn clear_finished_removes_ended_rows_and_keeps_running_ones(cx: &mut TestAppContext) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    let connection = TaskActionsConnection::new();
++    let thread = open_titled_thread(&panel, &connection, "Thread", &mut cx);
++    send_tasks(
++        &thread,
++        vec![
++            wire_task("done", "running", true, 1_000),
++            wire_task("live", "running", true, 2_000),
++        ],
++        &mut cx,
++    );
++    send_tasks(
++        &thread,
++        vec![
++            wire_task("done", "completed", true, 1_000),
++            wire_task("live", "running", true, 2_000),
++        ],
++        &mut cx,
++    );
++    let card = card(&panel, &cx);
++    let session = session_of(&thread, &cx);
++    assert_eq!(
++        row_ids(&rows_of(&card, &session, &mut cx)),
++        vec!["done".to_string(), "live".to_string()],
++        "fixture: an ended row lingers beside a running one"
++    );
++
++    card.update(&mut cx, |card, cx| card.clear_finished(cx));
++
++    assert_eq!(
++        row_ids(&rows_of(&card, &session, &mut cx)),
++        vec!["live".to_string()]
++    );
++}

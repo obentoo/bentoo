@@ -1,0 +1,186 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 9 Nov 2026 15:34:56 -0300
+Subject: [PATCH] acp_thread: read the Claude task _meta on v2 session info
+ updates too
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Wave 2 of the Zeo next proposal (docs/ZEO-NEXT-PROPOSAL.md §5), review
+debt found in the 0.5.1 bump review: patches 0029 and 0034 read the
+Claude adapter's `_meta` — `_claude/backgroundTasks.count` for the
+sidebar's Background status, `_claude/tasks` for the task list — inside
+the `acp_v1::SessionUpdate::SessionInfoUpdate` arm only. A v2 agent's
+session info update goes through `InboundSessionUpdate::SessionInfo`
+(agent_servers/src/acp/session_updates.rs), which called
+`update_session_info` and nothing else, so for a v2 agent both stayed
+empty. PARITY-REPORT §24.1 measured the same gap from the other side.
+
+The reading moves, unchanged, into `AcpThread::apply_claude_task_meta`,
+and both arms call it before `update_session_info`. Its rules are the
+ones 0029 and 0034 wrote: a missing key is "no change", never "no tasks",
+and a malformed snapshot is logged by category and position only.
+
+Claude Agent (Plus) speaks v1, so nothing changes for it; this matters
+the day an agent sends the same `_meta` over v2. The v2 `_meta` is a
+patch (`MaybeUndefined`); a `null` or absent one carries no keys, which
+is again "no change".
+
+Test: agent_servers acp::v1 tests,
+`v2_session_info_carries_the_claude_task_meta`, through the real v2
+harness. Verified 2026-11-09 in the prepared d2a4fb6 tree: cargo check --tests, cargo clippy --tests and cargo fmt --check clean, cargo test passing, on acp_thread, agent_servers, agent_ui and sidebar.
+---
+
+diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
+index a80b297..9c0dc06 100644
+--- a/crates/acp_thread/src/acp_thread.rs
++++ b/crates/acp_thread/src/acp_thread.rs
+@@ -5789,42 +5789,7 @@ impl AcpThread {
+                 self.push_notice(notices::from_v1(notice).map_err(acp_v1::Error::from)?, cx);
+             }
+             acp_v1::SessionUpdate::SessionInfoUpdate(info_update) => {
+-                // Absent for every agent but the Claude adapter, and absent from its own
+-                // title-only updates too, so a missing key leaves the count alone rather
+-                // than resetting it.
+-                let background_task_count = info_update
+-                    .meta
+-                    .as_ref()
+-                    .and_then(|meta| meta.get(CLAUDE_BACKGROUND_TASKS_META_KEY))
+-                    .and_then(|payload| payload.get("count"))
+-                    .and_then(|count| count.as_u64());
+-                if let Some(count) = background_task_count
+-                    && let Ok(count) = usize::try_from(count)
+-                    && count != self.background_task_count
+-                {
+-                    self.background_task_count = count;
+-                    cx.emit(AcpThreadEvent::BackgroundTasksUpdated);
+-                }
+-                // Absent from the adapter's title-only and count-only updates: a missing
+-                // key is "no change", never "no tasks", or the list would blank.
+-                if let Some(payload) = info_update
+-                    .meta
+-                    .as_ref()
+-                    .and_then(|meta| meta.get(CLAUDE_TASKS_META_KEY))
+-                {
+-                    match serde_json::from_value::<WireTasksSnapshot>(payload.clone()) {
+-                        Ok(snapshot) => self.apply_tasks_snapshot(snapshot, cx),
+-                        // Category and position only: serde's message quotes the
+-                        // offending value, which for `tail` is the shell's output.
+-                        Err(err) => log::warn!(
+-                            "malformed _claude/tasks for session {}: {:?} error at line {} column {}",
+-                            self.session_id(),
+-                            err.classify(),
+-                            err.line(),
+-                            err.column()
+-                        ),
+-                    }
+-                }
++                self.apply_claude_task_meta(info_update.meta.as_ref(), cx);
+                 self.update_session_info(info_update, cx);
+             }
+             acp_v1::SessionUpdate::AvailableCommandsUpdate(acp_v1::AvailableCommandsUpdate {
+@@ -6878,6 +6843,46 @@ impl AcpThread {
+         cx.emit(AcpThreadEvent::EntryUpdated(ix));
+     }
+ 
++    /// The Claude adapter's task `_meta` on a session info update — the background count of
++    /// patch 0029 and the `_claude/tasks` snapshot of 0034 — read for either protocol
++    /// version. Only the v1 arm used to read it, so a v2 agent's update bypassed both.
++    pub fn apply_claude_task_meta(
++        &mut self,
++        meta: Option<&serde_json::Map<String, serde_json::Value>>,
++        cx: &mut Context<Self>,
++    ) {
++        // Absent for every agent but the Claude adapter, and absent from its own
++        // title-only updates too, so a missing key leaves the count alone rather
++        // than resetting it.
++        let background_task_count = meta
++            .and_then(|meta| meta.get(CLAUDE_BACKGROUND_TASKS_META_KEY))
++            .and_then(|payload| payload.get("count"))
++            .and_then(|count| count.as_u64());
++        if let Some(count) = background_task_count
++            && let Ok(count) = usize::try_from(count)
++            && count != self.background_task_count
++        {
++            self.background_task_count = count;
++            cx.emit(AcpThreadEvent::BackgroundTasksUpdated);
++        }
++        // Absent from the adapter's title-only and count-only updates: a missing
++        // key is "no change", never "no tasks", or the list would blank.
++        if let Some(payload) = meta.and_then(|meta| meta.get(CLAUDE_TASKS_META_KEY)) {
++            match serde_json::from_value::<WireTasksSnapshot>(payload.clone()) {
++                Ok(snapshot) => self.apply_tasks_snapshot(snapshot, cx),
++                // Category and position only: serde's message quotes the
++                // offending value, which for `tail` is the shell's output.
++                Err(err) => log::warn!(
++                    "malformed _claude/tasks for session {}: {:?} error at line {} column {}",
++                    self.session_id(),
++                    err.classify(),
++                    err.line(),
++                    err.column()
++                ),
++            }
++        }
++    }
++
+     pub fn update_session_info(
+         &mut self,
+         update: impl Into<AgentSessionInfoUpdate>,
+diff --git a/crates/agent_servers/src/acp/session_updates.rs b/crates/agent_servers/src/acp/session_updates.rs
+index b4114ad..674e079 100644
+--- a/crates/agent_servers/src/acp/session_updates.rs
++++ b/crates/agent_servers/src/acp/session_updates.rs
+@@ -363,6 +363,7 @@ impl InboundSessionNotification {
+             }
+             .apply(thread, cx),
+             InboundSessionUpdate::SessionInfo(update) => {
++                thread.apply_claude_task_meta(update.meta.value(), cx);
+                 thread.update_session_info(update, cx);
+                 Ok(())
+             }
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index eddb66c..78b568f 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -4449,6 +4449,40 @@ mod tests {
+         );
+     }
+ 
++    // Zeo: patches 0029 and 0034 read the Claude adapter's task `_meta` only on the v1 arm,
++    // so a v2 agent's session info update reached neither the background count nor the
++    // task list.
++    #[gpui::test]
++    async fn v2_session_info_carries_the_claude_task_meta(cx: &mut gpui::TestAppContext) {
++        use serde_json::json;
++
++        let harness = V2SessionHarness::new(cx).await;
++        harness.send(
++            json!({
++                "sessionUpdate": "session_info_update",
++                "_meta": {
++                    "_claude/backgroundTasks": { "count": 2 },
++                    "_claude/tasks": { "tasks": [{
++                        "id": "t1",
++                        "type": "shell",
++                        "description": "sleep 60",
++                        "background": true,
++                        "depth": 0,
++                        "status": "running",
++                        "startedAt": 1
++                    }] }
++                }
++            }),
++            None,
++        );
++        harness.drain(cx).await;
++
++        harness.thread.read_with(cx, |thread, _| {
++            assert_eq!(thread.background_task_count(), 2, "0029's count");
++            assert_eq!(thread.tasks().len(), 1, "0034's task list");
++        });
++    }
++
+     #[gpui::test]
+     async fn v2_session_info_sdk_updates_thread_and_list_projection(cx: &mut gpui::TestAppContext) {
+         use acp_thread::{AcpThreadEvent, AgentSessionInfo, SessionListUpdate};

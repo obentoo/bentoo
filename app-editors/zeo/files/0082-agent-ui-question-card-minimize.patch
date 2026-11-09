@@ -1,0 +1,245 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 9 Nov 2026 17:34:06 -0300
+Subject: [PATCH] agent_ui: the pending question card minimizes to a one-line
+ bar
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Wave 2 of the Zeo next proposal (docs/ZEO-NEXT-PROPOSAL.md §5.5, ask 9).
+Patch 0027 pins the agent's pending question above the composer, which
+is right while it is being answered and costs a third of the panel while
+the operator reads the conversation to decide what to answer.
+
+A chevron on the card collapses it into one line above the composer —
+"Question pending", or "Question pending · N questions" when several
+wait — and the bar's chevron restores it. `agent::ToggleQuestionCard`
+does the same from the keyboard (no default binding), and both controls
+carry an accessible label and a tooltip naming the action.
+
+The state lives on the ThreadView, so it is per thread, and it returns
+to open as soon as no question is pending: the next question must never
+arrive hidden. The questions themselves are untouched while minimized —
+still pending, still blocking the turn — and 0043's Enter rule is
+unchanged.
+
+Tests: thread_view tests/question_card_minimize_tests.rs — the card
+minimizes to the bar and comes back; a minimized card is open again once
+the question is answered. Verified 2026-11-09 in the prepared d2a4fb6
+tree: cargo check --tests, cargo clippy --tests and cargo fmt --check
+clean on agent_ui; the 79 elicitation tests still pass. The bar's look
+is for an Xvfb capture.
+---
+
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index c589882..f1f0799 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -453,6 +453,8 @@ actions!(
+         ImportThreadsFromOtherChannels,
+         /// Starts a new terminal thread.
+         NewTerminalThread,
++        /// Minimizes the pending question card to a one-line bar, or restores it.
++        ToggleQuestionCard,
+     ]
+ );
+ 
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index cdc6dc0..7c515f7 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -804,6 +804,9 @@ pub struct ThreadView {
+     /// Decline on the same card opens no second prompt.
+     open_decline_confirmations: HashSet<ElicitationEntryId>,
+     question_queue: QuestionQueue,
++    /// The pending question card is minimized to its bar (Zeo next proposal §5.5). Per
++    /// thread, and back to open once no question is pending, so the next one shows.
++    pub(crate) question_card_minimized: bool,
+     /// The entry count when auto-scroll was paused (Zeo next proposal §5.8), or `None` while
+     /// the view follows the tail. Per thread: each thread view holds its own.
+     pub(crate) auto_scroll_paused_at: Option<usize>,
+@@ -1348,6 +1351,7 @@ impl ThreadView {
+             elicitation_form_states: HashMap::default(),
+             open_decline_confirmations: HashSet::default(),
+             question_queue: QuestionQueue::default(),
++            question_card_minimized: false,
+             auto_scroll_paused_at: None,
+             _cancel_task: None,
+             _save_task: None,
+@@ -9347,6 +9351,13 @@ impl ThreadView {
+             .map(|elicitation| &elicitation.id)
+             .collect::<Vec<_>>();
+         let queue_position = self.question_queue.advance(&pending);
++        let pending_count = pending.len();
++        if pending_count == 0 {
++            self.question_card_minimized = false;
++        }
++        if self.question_card_minimized {
++            return Some(Self::render_question_card_bar(pending_count, cx));
++        }
+ 
+         let (ix, elicitation) = thread
+             .elicitations()
+@@ -9367,11 +9378,81 @@ impl ThreadView {
+         Some(
+             v_flex()
+                 .id("pinned-elicitations")
++                .relative()
+                 .child(card)
++                .child(
++                    div().absolute().top_1().right_1().child(
++                        IconButton::new("minimize-question-card", IconName::ChevronDown)
++                            .icon_size(IconSize::Small)
++                            .icon_color(Color::Muted)
++                            .aria_label("Minimize the question card")
++                            .tooltip(Tooltip::for_action_title(
++                                "Minimize Question",
++                                &crate::ToggleQuestionCard,
++                            ))
++                            .on_click(cx.listener(|this, _, _, cx| {
++                                this.toggle_question_card(&crate::ToggleQuestionCard, cx)
++                            })),
++                    ),
++                )
+                 .into_any_element(),
+         )
+     }
+ 
++    /// The minimized question card: one line above the composer (§5.5). The questions stay
++    /// pending and 0043's Enter rule is unchanged; this only frees the space they took.
++    fn render_question_card_bar(pending_count: usize, cx: &Context<Self>) -> AnyElement {
++        let label = if pending_count == 1 {
++            "Question pending".to_string()
++        } else {
++            format!("Question pending · {pending_count} questions")
++        };
++        h_flex()
++            .id("question-card-bar")
++            .debug_selector(|| "question-card-bar".into())
++            .w_full()
++            .px_2()
++            .py_1()
++            .gap_2()
++            .justify_between()
++            .border_t_1()
++            .border_color(cx.theme().colors().border)
++            .bg(cx.theme().colors().editor_background)
++            .child(
++                h_flex()
++                    .gap_1p5()
++                    .child(
++                        Icon::new(IconName::Info)
++                            .size(IconSize::Small)
++                            .color(Color::Accent),
++                    )
++                    .child(Label::new(label).size(LabelSize::Small)),
++            )
++            .child(
++                IconButton::new("expand-question-card", IconName::ChevronUp)
++                    .icon_size(IconSize::Small)
++                    .icon_color(Color::Muted)
++                    .aria_label("Show the pending question")
++                    .tooltip(Tooltip::for_action_title(
++                        "Show Question",
++                        &crate::ToggleQuestionCard,
++                    ))
++                    .on_click(cx.listener(|this, _, _, cx| {
++                        this.toggle_question_card(&crate::ToggleQuestionCard, cx)
++                    })),
++            )
++            .into_any_element()
++    }
++
++    pub(crate) fn toggle_question_card(
++        &mut self,
++        _: &crate::ToggleQuestionCard,
++        cx: &mut Context<Self>,
++    ) {
++        self.question_card_minimized = !self.question_card_minimized;
++        cx.notify();
++    }
++
+     fn render_request_elicitations(&self, cx: &Context<Self>) -> Vec<AnyElement> {
+         let server_view = self.server_view.clone();
+         let handlers_view = server_view.clone();
+@@ -15315,6 +15396,9 @@ impl Render for ThreadView {
+             .on_action(cx.listener(Self::open_permission_dropdown))
+             .on_action(cx.listener(Self::open_add_context_menu))
+             .on_action(cx.listener(Self::scroll_output_page_up))
++            .on_action(
++                cx.listener(|this, action, _window, cx| this.toggle_question_card(action, cx)),
++            )
+             .on_action(cx.listener(Self::scroll_output_page_down))
+             .on_action(cx.listener(Self::scroll_output_line_up))
+             .on_action(cx.listener(Self::scroll_output_line_down))
+@@ -15936,6 +16020,8 @@ mod tests {
+ 
+     mod decline_contract_tests;
+ 
++    mod question_card_minimize_tests;
++
+     use super::*;
+     use gpui::UpdateGlobal;
+     use project::{FakeFs, Project};
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/question_card_minimize_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/question_card_minimize_tests.rs
+new file mode 100644
+index 0000000..4a3047e
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/tests/question_card_minimize_tests.rs
+@@ -0,0 +1,55 @@
++// Zeo next proposal §5.5 (ask 9): the pending question card minimizes to a one-line bar and
++// comes back; the state is per thread and returns to open once no question is pending.
++
++use gpui::TestAppContext;
++
++use super::elicitation_decline_harness::*;
++
++const BAR: &str = "question-card-bar";
++
++#[gpui::test]
++async fn the_question_card_minimizes_to_a_bar_and_comes_back(cx: &mut TestAppContext) {
++    let (view, thread, mut cx) = setup(cx).await;
++    ask(&thread, one_question(), "First?", &mut cx);
++    ask(&thread, one_question(), "Second?", &mut cx);
++    draw(&mut cx);
++    assert!(cx.debug_bounds(BAR).is_none(), "the card starts open");
++
++    view.update(&mut cx, |view, cx| {
++        view.toggle_question_card(&crate::ToggleQuestionCard, cx)
++    });
++    draw(&mut cx);
++    assert!(cx.debug_bounds(BAR).is_some(), "minimized: the bar shows");
++
++    view.update(&mut cx, |view, cx| {
++        view.toggle_question_card(&crate::ToggleQuestionCard, cx)
++    });
++    draw(&mut cx);
++    assert!(
++        cx.debug_bounds(BAR).is_none(),
++        "restored: the card shows again"
++    );
++}
++
++#[gpui::test]
++async fn a_minimized_card_opens_again_once_nothing_is_pending(cx: &mut TestAppContext) {
++    let (view, thread, mut cx) = setup(cx).await;
++    let question = ask(&thread, one_question(), "Only?", &mut cx);
++    draw(&mut cx);
++    view.update(&mut cx, |view, cx| {
++        view.toggle_question_card(&crate::ToggleQuestionCard, cx)
++    });
++    draw(&mut cx);
++
++    let id = question.id;
++    view.update_in(&mut cx, |view, window, cx| {
++        view.cancel_elicitation(id, window, cx)
++    });
++    settle(&mut cx);
++    draw(&mut cx);
++
++    assert!(
++        !view.read_with(&cx, |view, _| view.question_card_minimized),
++        "the next question must not arrive hidden"
++    );
++}

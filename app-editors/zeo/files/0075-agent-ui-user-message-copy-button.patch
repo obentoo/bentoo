@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 9 Nov 2026 15:29:39 -0300
+Subject: [PATCH] agent_ui: copy a user message with upstream's CopyButton
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Wave 2 of the Zeo next proposal (docs/ZEO-NEXT-PROPOSAL.md §5, held back
+from §4.1 because it is visible). Patch 0014 added a copy control to the
+user message as a bare IconButton: it wrote to the clipboard and gave no
+sign that it had. Every other copy control in the agent panel (code
+blocks, terminal commands, error messages) is upstream's `CopyButton`,
+which swaps its icon for a green check and its tooltip for "Copied!" for
+two seconds.
+
+The button is now a `CopyButton` too. What it copies is unchanged — the
+same `get_agent_message_content` call 0014 introduced, read once per
+render so `disabled` and the copied text still cannot disagree. The id
+now carries the entry index (`("copy_user_message", entry_ix)`):
+CopyButton keeps its copied state keyed by id, and one shared id would
+show the check on every user message at once.
+
+Verified 2026-11-09 in the prepared d2a4fb6 tree: cargo check --tests, cargo clippy --tests and cargo fmt --check clean, cargo test passing, on acp_thread, agent_servers, agent_ui and sidebar. Not render-verified. 0014's own tests cover the text, not the button.
+---
+
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index db6b26a..6b49005 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -8136,30 +8136,26 @@ impl ThreadView {
+                                     // branch, so it exists in both states: copying
+                                     // matters most where editing is unavailable, which
+                                     // is the state with no other way to get the text
+-                                    // out. `disabled` and the click read the same
+-                                    // function, so what the button offers and what it
+-                                    // copies cannot disagree.
+-                                    .child(
+-                                        IconButton::new("copy_user_message", IconName::Copy)
+-                                            .disabled(Self::get_agent_message_content(
+-                                                self.thread.read(cx).entries(),
+-                                                entry_ix,
+-                                                cx,
+-                                            ).is_none())
+-                                            .icon_color(Color::Muted)
+-                                            .icon_size(IconSize::XSmall)
+-                                            .tooltip(Tooltip::text("Copy Message"))
+-                                            .on_click(cx.listener(move |this, _, _, cx| {
+-                                                let entries = this.thread.read(cx).entries();
+-                                                if let Some(text) = Self::get_agent_message_content(
+-                                                    entries, entry_ix, cx,
+-                                                ) {
+-                                                    cx.write_to_clipboard(
+-                                                        ClipboardItem::new_string(text),
+-                                                    );
+-                                                }
+-                                            })),
+-                                    );
++                                    // out. `disabled` and the copied text come from one
++                                    // call, so what the button offers and what it copies
++                                    // cannot disagree. Upstream's `CopyButton` gives the
++                                    // same "Copied!" check as every other copy control in
++                                    // the panel; the id carries the entry so each
++                                    // message keeps its own copied state.
++                                    .child({
++                                        let text = Self::get_agent_message_content(
++                                            self.thread.read(cx).entries(),
++                                            entry_ix,
++                                            cx,
++                                        );
++                                        CopyButton::new(
++                                            ("copy_user_message", entry_ix),
++                                            text.clone().unwrap_or_default(),
++                                        )
++                                        .disabled(text.is_none())
++                                        .icon_size(IconSize::XSmall)
++                                        .tooltip_label("Copy Message")
++                                    });
+ 
+                                 let is_loading_contents = self.is_loading_contents;
+                                 if is_editable {

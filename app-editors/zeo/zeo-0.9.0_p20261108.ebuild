@@ -2127,6 +2127,25 @@ src_prepare() {
 			# 0010 rules. After 0072; 0052, 0057 and 0063 are regenerated on
 			# top of it (offsets only).
 			"${FILESDIR}/0073-agent-ui-todo-toggle-in-agent-menu.patch"
+			# 0074-0083 (Zeo 0.9.0, Wave 2 of the Zeo next proposal): one patch
+			# per item, each stacked on the patch it changes -- the "5-hour
+			# limit" label (0011), CopyButton on the user message (0014), the
+			# task _meta read on v2 too (0029/0034), Pinned remembers being
+			# collapsed (0049), pause auto-scroll (0026), a foreground task ends
+			# with its turn (0034), the tasks card's scrollbar, dismiss and
+			# Clear finished (0037), the plan's scrollbar, the question card
+			# minimizes (0027), tasks_card.start_minimized (0037). 0052, 0057,
+			# 0058, 0063 and 0067 are regenerated on top of them.
+			"${FILESDIR}/0074-agent-ui-five-hour-limit-label.patch"
+			"${FILESDIR}/0075-agent-ui-user-message-copy-button.patch"
+			"${FILESDIR}/0076-acp-thread-task-meta-on-v2.patch"
+			"${FILESDIR}/0077-sidebar-pinned-remembers-collapsed.patch"
+			"${FILESDIR}/0078-agent-ui-pause-auto-scroll.patch"
+			"${FILESDIR}/0079-acp-thread-foreground-task-ends-with-turn.patch"
+			"${FILESDIR}/0080-agent-ui-tasks-card-dismiss-and-clear.patch"
+			"${FILESDIR}/0081-agent-ui-plan-scrollbar.patch"
+			"${FILESDIR}/0082-agent-ui-question-card-minimize.patch"
+			"${FILESDIR}/0083-agent-ui-tasks-card-start-minimized.patch"
 		)
 	fi
 
@@ -2154,8 +2173,14 @@ src_prepare() {
 	# same agent thread through zeo-browser-host and a v2 session protocol on
 	# 0052's bridge socket, after an Allow in Zeo. Its own group, after ai-jail and
 	# before test; it applies with or without 0057, and 0050/0051 on top of it.
+	# 0084 (Zeo 0.9.0): the browser's cancel is answered once the cancellation
+	# resolved, not before it. Right after 0058, whose handler it changes; 0063
+	# is regenerated on top of it.
 	if use browser-extension; then
-		PATCHES+=( "${FILESDIR}/0058-browser-extension.patch" )
+		PATCHES+=(
+			"${FILESDIR}/0058-browser-extension.patch"
+			"${FILESDIR}/0084-browser-cancel-answers-after-the-outcome.patch"
+		)
 	fi
 
 	# 0063 (story 055): the devtools panel -- the zeo-devtools panel page drives
@@ -2184,8 +2209,13 @@ src_prepare() {
 	# group, after epic and before test; it applies with the optional groups
 	# above on or off (eleven combinations checked), and 0050/0051 apply on top
 	# of it.
+	# 0085 (Zeo 0.9.0): the microphone ends the composer's left-hand group, next
+	# to Add Context, instead of sitting beside Send.
 	if use voice; then
-		PATCHES+=( "${FILESDIR}/0067-voice-input.patch" )
+		PATCHES+=(
+			"${FILESDIR}/0067-voice-input.patch"
+			"${FILESDIR}/0085-agent-ui-voice-button-beside-add-context.patch"
+		)
 	fi
 
 	# 0050 and 0051 change tests only -- nothing in them reaches the binary -- so

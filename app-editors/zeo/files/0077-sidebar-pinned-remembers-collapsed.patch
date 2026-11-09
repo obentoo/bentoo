@@ -1,0 +1,205 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 9 Nov 2026 15:37:34 -0300
+Subject: [PATCH] sidebar: the Pinned section remembers being collapsed
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Wave 2 of the Zeo next proposal (docs/ZEO-NEXT-PROPOSAL.md §5.7, ask 14).
+Patch 0049 kept the Pinned section's collapsed state for the session
+only, so every restart opened it again. Confirmed with the operator
+(§12-9): the section restores its last state; it does not start
+collapsed.
+
+Where it is kept is a deliberate departure from the proposal, which named
+0048's ThreadOrganizationDb. That domain's migrations are append-only and
+a shipped step can never change, so a new column there is a schema step
+for one boolean. Upstream's key-value store (db::kvp) has what the
+proposal asked for — app-wide like the pins, not per window like
+SerializedSidebar — and a new key needs no migration:
+`zeo_sidebar_pinned_collapsed`, "true" or "false". A failed read reads as
+expanded, which is the old behaviour; a failed write is logged.
+Each write waits for the one before it: a quick collapse-then-expand
+once stored "true", which `expanding_again_is_stored_too` caught.
+
+`db` joins sidebar's [dependencies]; it was already a dev-dependency, so
+Cargo.lock does not change.
+
+Tests: sidebar_pinned_persist_tests.rs — the choice is stored, a sidebar
+built after it restores it, and expanding again is stored too. Verified 2026-11-09 in the prepared d2a4fb6 tree: cargo check --tests, cargo clippy --tests and cargo fmt --check clean, cargo test passing, on acp_thread, agent_servers, agent_ui and sidebar.
+---
+
+diff --git a/crates/sidebar/Cargo.toml b/crates/sidebar/Cargo.toml
+index 7d9a92a..c41b015 100644
+--- a/crates/sidebar/Cargo.toml
++++ b/crates/sidebar/Cargo.toml
+@@ -25,6 +25,7 @@ agent_settings.workspace = true
+ agent_ui = { workspace = true, features = ["audio"] }
+ anyhow.workspace = true
+ chrono.workspace = true
++db.workspace = true
+ editor.workspace = true
+ feature_flags.workspace = true
+ fs.workspace = true
+diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
+index 5c843d3..fb65cc9 100644
+--- a/crates/sidebar/src/sidebar.rs
++++ b/crates/sidebar/src/sidebar.rs
+@@ -48,6 +48,7 @@ use recent_projects::sidebar_recent_projects::SidebarRecentProjects;
+ use remote::RemoteConnectionOptions;
+ use ui::utils::platform_title_bar_height;
+ 
++use db::kvp::KeyValueStore;
+ use serde::{Deserialize, Serialize};
+ use settings::{Settings as _, SettingsStore};
+ use std::cmp::Ordering;
+@@ -91,6 +92,8 @@ mod sidebar_tests;
+ #[cfg(test)]
+ mod sidebar_child_background_tests;
+ #[cfg(test)]
++mod sidebar_pinned_persist_tests;
++#[cfg(test)]
+ mod sidebar_pinned_tests;
+ #[cfg(test)]
+ mod sidebar_sub_thread_tests;
+@@ -909,6 +912,19 @@ fn create_worktree_in_workspace(
+ /// change via `update_entries` → `rebuild_contents`. Avoid adding
+ /// incremental or inter-event coordination state — if something can
+ /// be computed from the current world state, compute it in the rebuild.
++/// Whether the Pinned section is collapsed (Zeo next proposal §5.7). Upstream's key-value
++/// store is app-wide like the pins themselves, and a key needs no migration step in 0048's
++/// append-only domain, where a step can never be edited once it ships.
++pub(crate) const PINNED_COLLAPSED_KEY: &str = "zeo_sidebar_pinned_collapsed";
++
++fn read_pinned_collapsed(cx: &App) -> bool {
++    KeyValueStore::global(cx)
++        .read_kvp(PINNED_COLLAPSED_KEY)
++        .log_err()
++        .flatten()
++        .is_some_and(|value| value == "true")
++}
++
+ pub struct Sidebar {
+     multi_workspace: WeakEntity<MultiWorkspace>,
+     width: Pixels,
+@@ -974,6 +990,9 @@ pub struct Sidebar {
+     cross_channel_import_channels: Vec<SharedString>,
+     /// Never serialized: the Pinned section's collapsed state lasts for the session.
+     pinned_collapsed: bool,
++    /// The last write of `pinned_collapsed`. Each write waits for the one before it, so
++    /// a quick collapse-then-expand cannot land in the store in the wrong order.
++    pinned_collapsed_write: Option<Task<()>>,
+ }
+ 
+ impl Sidebar {
+@@ -1126,7 +1145,8 @@ impl Sidebar {
+             update_task: None,
+             import_banners_use_verbose_labels: None,
+             cross_channel_import_channels: Vec::new(),
+-            pinned_collapsed: false,
++            pinned_collapsed: read_pinned_collapsed(cx),
++            pinned_collapsed_write: None,
+         }
+     }
+ 
+@@ -3608,6 +3628,17 @@ impl Sidebar {
+     fn set_pinned_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+         if self.pinned_collapsed != collapsed {
+             self.pinned_collapsed = collapsed;
++            let store = KeyValueStore::global(cx);
++            let previous = self.pinned_collapsed_write.take();
++            self.pinned_collapsed_write = Some(cx.background_spawn(async move {
++                if let Some(previous) = previous {
++                    previous.await;
++                }
++                store
++                    .write_kvp(PINNED_COLLAPSED_KEY.to_string(), collapsed.to_string())
++                    .await
++                    .log_err();
++            }));
+             self.update_entries(cx);
+             // Collapsing drops the rows after the header, which is the last entry: a selected
+             // pinned row would otherwise point past the end of the list.
+diff --git a/crates/sidebar/src/sidebar_pinned_persist_tests.rs b/crates/sidebar/src/sidebar_pinned_persist_tests.rs
+new file mode 100644
+index 0000000..ab24b33
+--- /dev/null
++++ b/crates/sidebar/src/sidebar_pinned_persist_tests.rs
+@@ -0,0 +1,76 @@
++// Zeo next proposal §5.7 (ask 14): the Pinned section remembers being collapsed. Patch 0049
++// kept the choice for the session only, so every restart opened the section again. Confirmed
++// with the operator (§12-9): the section restores its last state; it does not start collapsed.
++//
++// Rung: the stored record and a sidebar built after it. A real relaunch is not driven here.
++
++use super::*;
++use crate::sidebar_tests::{init_test, setup_sidebar};
++use fs::FakeFs;
++use gpui::TestAppContext;
++
++const ALPHA: &str = "/alpha";
++
++async fn alpha_project(cx: &mut TestAppContext) -> Entity<project::Project> {
++    init_test(cx);
++    let fs = FakeFs::new(cx.executor());
++    fs.insert_tree(ALPHA, serde_json::json!({ "src": {} }))
++        .await;
++    cx.update(|cx| {
++        <dyn fs::Fs>::set_global(fs.clone(), cx);
++        agent_ui::thread_organization::init(cx);
++    });
++    cx.run_until_parked();
++    project::Project::test(fs, [ALPHA.as_ref()], cx).await
++}
++
++fn stored(cx: &mut gpui::VisualTestContext) -> Option<String> {
++    cx.update(|_, cx| {
++        KeyValueStore::global(cx)
++            .read_kvp(PINNED_COLLAPSED_KEY)
++            .expect("the store is readable")
++    })
++}
++
++#[gpui::test]
++async fn collapsing_pinned_is_stored_and_a_new_sidebar_restores_it(cx: &mut TestAppContext) {
++    let project = alpha_project(cx).await;
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
++    let sidebar = setup_sidebar(&multi_workspace, cx);
++    assert!(
++        !sidebar.read_with(cx, |sidebar, _| sidebar.pinned_collapsed),
++        "nothing stored yet: the section starts expanded"
++    );
++
++    sidebar.update(cx, |sidebar, cx| sidebar.set_pinned_collapsed(true, cx));
++    cx.run_until_parked();
++    assert_eq!(stored(cx).as_deref(), Some("true"));
++
++    let reopened = cx.update(|window, cx| {
++        let multi_workspace = multi_workspace.clone();
++        cx.new(|cx| Sidebar::new(multi_workspace, window, cx))
++    });
++    assert!(
++        reopened.read_with(cx, |sidebar, _| sidebar.pinned_collapsed),
++        "a sidebar built after the choice restores it"
++    );
++}
++
++#[gpui::test]
++async fn expanding_again_is_stored_too(cx: &mut TestAppContext) {
++    let project = alpha_project(cx).await;
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
++    let sidebar = setup_sidebar(&multi_workspace, cx);
++
++    sidebar.update(cx, |sidebar, cx| sidebar.set_pinned_collapsed(true, cx));
++    sidebar.update(cx, |sidebar, cx| sidebar.set_pinned_collapsed(false, cx));
++    cx.run_until_parked();
++
++    assert_eq!(
++        stored(cx).as_deref(),
++        Some("false"),
++        "the last choice wins, so an expanded section stays expanded"
++    );
++}

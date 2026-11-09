@@ -1,0 +1,197 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 9 Nov 2026 17:29:52 -0300
+Subject: [PATCH] agent_ui: draw the expanded plan's scrollbar always
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Wave 2 of the Zeo next proposal (docs/ZEO-NEXT-PROPOSAL.md §5.1, asks 27
+and 31; finding F1). Upstream caps the expanded item plan at `max_h_40`
+and scrolls it, but draws no scrollbar, so a list longer than the cap
+gave no sign that it went on. Claude Agent (Plus) 0.36 sends its task
+list as a keyed plan that Zed no longer prunes, so the list that stays
+on screen can now outgrow the cap more often.
+
+The list keeps its cap and now draws its scrollbar always
+(`Scrollbars::always_visible`, tracked by a `ScrollHandle` on the
+ThreadView) — `Scrollbars::new` hides the thumb a second after the
+pointer enters, which story 034 measured.
+
+Why the element is built in `render()`: drawing a scrollbar needs a
+mutable `App`, and `render_activity_bar` holds the thread borrowed
+through `&Context` for its whole body. `render_scrollable_plan_items`
+builds the list where `cx` is mutable and hands it to
+`render_activity_bar`, which gained a `plan_items` argument; a markdown
+plan, a collapsed plan and a `None` still render exactly as before.
+`render_plan_entries` returns its `Stateful<Div>` so the scroll handle
+can be attached.
+
+Verified 2026-11-09 in the prepared d2a4fb6 tree: cargo check --tests,
+cargo clippy --tests and cargo fmt --check clean on agent_ui; cargo test
+-p agent_ui --lib 1521 passed, the 3 that fail share the process-wide
+logger and pass alone. The scrollbar itself is for an Xvfb capture: GPUI
+tests do not see auto-hide.
+---
+
+diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
+index b1896ca..7a63802 100644
+--- a/crates/agent_ui/src/conversation_view.rs
++++ b/crates/agent_ui/src/conversation_view.rs
+@@ -10441,7 +10441,7 @@ pub(crate) mod tests {
+         cx.run_until_parked();
+         assert!(cx.debug_bounds("plan_summary").is_none());
+         thread_view.update_in(cx, |view, window, cx| {
+-            assert!(view.render_activity_bar(window, cx).is_none());
++            assert!(view.render_activity_bar(None, window, cx).is_none());
+         });
+     }
+ 
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 72ee8b2..cdc6dc0 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -49,8 +49,8 @@ use notifications::status_toast::StatusToast;
+ use project::ResolvedPath;
+ use settings::{ElicitationPlacement, update_settings_file, update_settings_file_with_completion};
+ use ui::{
+-    ButtonLike, CalloutBorderPosition, Checkbox, SpinnerLabel, SpinnerVariant, SplitButton,
+-    SplitButtonStyle, Tab, ToggleState,
++    ButtonLike, CalloutBorderPosition, Checkbox, ScrollAxes, Scrollbars, SpinnerLabel,
++    SpinnerVariant, SplitButton, SplitButtonStyle, Tab, ToggleState,
+ };
+ use url::Url;
+ use util::markdown::source_position_from_fragment;
+@@ -780,6 +780,9 @@ pub struct ThreadView {
+     /// its allow buttons stay disabled. See [`Self::sandbox_confusable_findings`].
+     acknowledged_confusable_warnings: HashSet<acp_v2::ToolCallId>,
+     pub subagent_scroll_handles: RefCell<HashMap<acp_v2::SessionId, ScrollHandle>>,
++    /// The expanded plan list's scroll position, so its scrollbar can be drawn always
++    /// visible (Zeo next proposal §5.1): the list is capped and scrolled, and drew none.
++    plan_items_scroll: ScrollHandle,
+     pub edits_expanded: bool,
+     pub plan_expanded: bool,
+     pub queue_expanded: bool,
+@@ -1328,6 +1331,7 @@ impl ThreadView {
+             collapsed_sandbox_network_details: HashSet::default(),
+             acknowledged_confusable_warnings: HashSet::default(),
+             subagent_scroll_handles: RefCell::new(HashMap::default()),
++            plan_items_scroll: ScrollHandle::new(),
+             edits_expanded: false,
+             plan_expanded: false,
+             queue_expanded: true,
+@@ -4361,8 +4365,12 @@ impl ThreadView {
+         editor_bg_color.blend(active_color.opacity(0.3))
+     }
+ 
++    /// `plan_items`: the expanded item plan, built by `render_scrollable_plan_items` where
++    /// `cx` is mutable — drawing a scrollbar needs that, and this function holds the thread
++    /// borrowed throughout.
+     pub fn render_activity_bar(
+         &self,
++        plan_items: Option<AnyElement>,
+         window: &mut Window,
+         cx: &Context<Self>,
+     ) -> Option<AnyElement> {
+@@ -4440,10 +4448,12 @@ impl ThreadView {
+                         |this| this.child(Divider::horizontal().color(DividerColor::Border)),
+                     )
+                     .when_some(plan, |this, plan| {
+-                        this.child(self.render_plan_summary(plan, window, cx))
+-                            .when(plan_expanded, |parent| {
+-                                parent.children(self.render_plan_body(plan, window, cx))
+-                            })
++                        this.child(self.render_plan_summary(plan, window, cx)).when(
++                            plan_expanded,
++                            |parent| {
++                                parent.children(self.render_plan_body(plan, plan_items, window, cx))
++                            },
++                        )
+                     })
+                     .when(has_plan && !changed_buffers.is_empty(), |this| {
+                         this.child(Divider::horizontal().color(DividerColor::Border))
+@@ -5405,14 +5415,15 @@ impl ThreadView {
+     fn render_plan_body(
+         &self,
+         plan: &Plan,
++        plan_items: Option<AnyElement>,
+         window: &mut Window,
+         cx: &Context<Self>,
+     ) -> Option<AnyElement> {
+         match &plan.content {
+-            PlanContent::Items(entries) => Some(
++            PlanContent::Items(entries) => Some(plan_items.unwrap_or_else(|| {
+                 self.render_plan_entries(entries, window, cx)
+-                    .into_any_element(),
+-            ),
++                    .into_any_element()
++            })),
+             PlanContent::Markdown(markdown) => Some(
+                 v_flex()
+                     .id("plan_markdown")
+@@ -5432,12 +5443,44 @@ impl ThreadView {
+         }
+     }
+ 
++    /// The expanded item plan with its scrollbar always drawn (§5.1). `None` when the plan
++    /// is collapsed, empty or not an item list; the activity bar then renders as before.
++    fn render_scrollable_plan_items(
++        &self,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> Option<AnyElement> {
++        if !self.plan_expanded {
++            return None;
++        }
++        let list = {
++            let thread = self.thread.read(cx);
++            let plan = thread.plan().filter(|plan| !plan.is_empty(cx))?;
++            let PlanContent::Items(entries) = &plan.content else {
++                return None;
++            };
++            self.render_plan_entries(entries, window, cx)
++                .track_scroll(&self.plan_items_scroll)
++        };
++        Some(
++            div()
++                .child(list)
++                .custom_scrollbars(
++                    Scrollbars::always_visible(ScrollAxes::Vertical)
++                        .tracked_scroll_handle(&self.plan_items_scroll),
++                    window,
++                    cx,
++                )
++                .into_any_element(),
++        )
++    }
++
+     fn render_plan_entries(
+         &self,
+         entries: &[acp_thread::PlanEntry],
+         window: &mut Window,
+         cx: &Context<Self>,
+-    ) -> impl IntoElement {
++    ) -> Stateful<Div> {
+         v_flex()
+             .id("plan_items_list")
+             .max_h_40()
+@@ -5503,7 +5546,6 @@ impl ThreadView {
+                     )
+                 })),
+             )
+-            .into_any_element()
+     }
+ 
+     fn render_context_compaction(
+@@ -15473,7 +15515,10 @@ impl Render for ThreadView {
+             )
+             .child(conversation)
+             .children(self.render_multi_root_callout(cx))
+-            .children(self.render_activity_bar(window, cx))
++            .children({
++                let plan_items = self.render_scrollable_plan_items(window, cx);
++                self.render_activity_bar(plan_items, window, cx)
++            })
+             .when_some(
+                 self.render_recoverable_submissions(cx),
+                 |this, submissions| this.child(submissions),

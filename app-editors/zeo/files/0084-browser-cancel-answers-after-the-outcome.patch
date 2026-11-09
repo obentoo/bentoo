@@ -1,0 +1,227 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 9 Nov 2026 15:33:03 -0300
+Subject: [PATCH] agent_ui: answer the browser's cancel only once the
+ cancellation resolved
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Wave 2 of the Zeo next proposal (docs/ZEO-NEXT-PROPOSAL.md §5), review
+debt found in the 0.5.1 bump review: patch 0058's `cancel` asked the
+thread view to stop and answered `ok` in the same breath. Cancelling is
+fallible — `AcpThread::cancel` returns a task, and the agent can refuse —
+so the sidebar could show a turn as stopped that was still running.
+
+`ThreadView::cancel_generation_with_outcome` does what the window's Stop
+does (the same three resets, the same queue pause, the same error shown
+in the thread) and also hands back the outcome. The channel awaits it:
+`ok` on success, `send_failed` with the agent's message on failure. No
+new wire code: the v2 contract is shared with zeo-browser, whose schema
+is strict, and `send_failed` already means "the agent did not do what was
+asked". The upstream `cancel_generation` is left untouched so a Zed bump
+re-resolves nothing here.
+
+The handler now returns `"cancelling"`, as `send` returns `"sending"`:
+the answer leaves later. drive.rs's existing cancel test drains the
+probe before reading the reply, so it still sees `ok`.
+
+Test: browser_channel_tests/cancel_outcome.rs — a cancel the stub
+refuses (`set_next_cancel_error`) must not be answered `ok`. Verified 2026-11-09 in the prepared d2a4fb6 tree: cargo check --tests, cargo clippy --tests and cargo fmt --check clean, cargo test passing, on acp_thread, agent_servers, agent_ui and sidebar.
+---
+
+diff --git a/crates/agent_ui/src/browser_channel.rs b/crates/agent_ui/src/browser_channel.rs
+index b26f710..82c5813 100644
+--- a/crates/agent_ui/src/browser_channel.rs
++++ b/crates/agent_ui/src/browser_channel.rs
+@@ -2232,22 +2232,55 @@ fn cancel(id: &SessionId, request_id: String, cx: &mut App) -> &'static str {
+         Ok(driven) => driven,
+         Err(error) => return reply_error(id, Some(request_id), error, cx),
+     };
+-    driven
++    let outcome = driven
+         .view
+-        .update(cx, |view, cx| view.cancel_generation(cx));
+-    send(
+-        id,
+-        ServerMsg::Ok {
+-            v: V2,
+-            id: request_id,
+-        },
+-        cx,
+-    );
+-    log_line(
+-        log::Level::Info,
+-        format!("devtools_bridge event=browser_cancel session={id} outcome=ok"),
+-    );
+-    "ok"
++        .update(cx, |view, cx| view.cancel_generation_with_outcome(cx));
++    let session = id.clone();
++    cx.spawn(async move |cx| {
++        let outcome = outcome.await;
++        cx.update(|cx| match outcome {
++            Ok(()) => {
++                send(
++                    &session,
++                    ServerMsg::Ok {
++                        v: V2,
++                        id: request_id,
++                    },
++                    cx,
++                );
++                log_line(
++                    log::Level::Info,
++                    format!("devtools_bridge event=browser_cancel session={session} outcome=ok"),
++                );
++            }
++            // `send_failed` is the contract's code for "the agent did not do what was asked";
++            // a new code would break zeo-browser's strict schema. Answered here rather than
++            // through `send_failed()`, whose log line names a send.
++            Err(message) => {
++                let error_code = ChannelError::SendFailed;
++                send(
++                    &session,
++                    ServerMsg::Error {
++                        v: V2,
++                        id: Some(request_id),
++                        error: error_code,
++                        message: format!("{}: {message}", error_code.message()),
++                        fatal: error_code.fatal(),
++                    },
++                    cx,
++                );
++                log_line(
++                    log::Level::Warn,
++                    format!(
++                        "devtools_bridge event=browser_cancel session={session} \
++                         outcome=send_failed reason=cancel_failed"
++                    ),
++                );
++            }
++        });
++    })
++    .detach();
++    "cancelling"
+ }
+ 
+ /// Answers the pending permission request whose wire id is `permission` with the option
+@@ -2536,6 +2569,9 @@ fn logged_levels() -> Vec<(log::Level, String)> {
+ #[path = "browser_channel_tests/approval.rs"]
+ mod approval;
+ #[cfg(test)]
++#[path = "browser_channel_tests/cancel_outcome.rs"]
++mod cancel_outcome;
++#[cfg(test)]
+ #[path = "browser_channel_tests/drive.rs"]
+ mod drive;
+ #[cfg(test)]
+diff --git a/crates/agent_ui/src/browser_channel_tests/cancel_outcome.rs b/crates/agent_ui/src/browser_channel_tests/cancel_outcome.rs
+new file mode 100644
+index 0000000..8444719
+--- /dev/null
++++ b/crates/agent_ui/src/browser_channel_tests/cancel_outcome.rs
+@@ -0,0 +1,58 @@
++// The browser's `cancel` is answered with the cancellation's outcome, not before it (Zeo next
++// proposal §5, review debt from the 0.5.1 bump). Patch 0058 answered `ok` as soon as it had
++// asked the thread to stop, so a cancel the agent refused still read as done in the sidebar.
++
++use acp_thread::StubAgentConnection;
++use gpui::TestAppContext;
++use serde_json::{Value, json};
++
++use super::test_support::*;
++
++async fn approved_on(win: &Win, cx: &mut TestAppContext) -> Probe {
++    let probe = open_session(1);
++    approve(&probe, &win.app_state(), cx);
++    probe.handle(
++        request("subscribe", "s", json!({ "target": { "follow": true } })),
++        &win.app_state(),
++        cx,
++    );
++    probe.drain(cx);
++    probe
++}
++
++fn reply(messages: &[Value], id: &str) -> Value {
++    messages
++        .iter()
++        .find(|message| message["id"] == id)
++        .cloned()
++        .unwrap_or_else(|| panic!("no reply to {id}: {messages:?}"))
++}
++
++#[gpui::test]
++async fn a_cancel_the_agent_refuses_is_not_answered_ok(cx: &mut TestAppContext) {
++    init(cx);
++    let fs = shared_fs(cx).await;
++    let connection = StubAgentConnection::new();
++    let win = window(&fs, "/p/app", Some(connection.clone()), cx).await;
++    let probe = approved_on(&win, cx).await;
++    probe.handle(
++        request(
++            "send",
++            "m1",
++            json!({ "text": "long task", "attachments": [] }),
++        ),
++        &win.app_state(),
++        cx,
++    );
++    probe.drain(cx);
++    connection.set_next_cancel_error(anyhow::anyhow!("the agent refused to stop"));
++
++    probe.handle(request("cancel", "c1", json!({})), &win.app_state(), cx);
++
++    let answer = reply(&probe.drain(cx), "c1");
++    assert_eq!(
++        answer["kind"], "error",
++        "answered before the cancel resolved: {answer}"
++    );
++    assert_eq!(answer["error"], "send_failed");
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 806cd7a..c963a4b 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -2910,6 +2910,41 @@ impl ThreadView {
+         cx.notify();
+     }
+ 
++    /// `cancel_generation`, handing back the cancellation's outcome. The browser channel
++    /// answers its `cancel` only once that outcome is known: answering `ok` first told the
++    /// sidebar the turn had stopped when the agent could still refuse.
++    pub(crate) fn cancel_generation_with_outcome(
++        &mut self,
++        cx: &mut Context<Self>,
++    ) -> Task<Result<(), SharedString>> {
++        self.thread_retry_status.take();
++        self.thread_error.take();
++        self.message_queue.pause();
++        let cancellation = self.thread.update(cx, |thread, cx| thread.cancel(cx));
++        let (outcome_tx, outcome_rx) = futures::channel::oneshot::channel();
++        self._cancel_task = Some(cx.spawn(async move |this, cx| {
++            let outcome = match cancellation.await {
++                Ok(()) => Ok(()),
++                Err(error) => {
++                    let message = SharedString::from(format!("{error:#}"));
++                    this.update(cx, |this, cx| this.handle_thread_error(error, cx))
++                        .log_err();
++                    Err(message)
++                }
++            };
++            // The receiver is gone only when the channel stopped waiting; the thread view
++            // already showed the error, so there is nobody else to tell.
++            outcome_tx.send(outcome).ok();
++        }));
++        self.sync_generating_indicator(cx);
++        cx.notify();
++        cx.background_spawn(async move {
++            outcome_rx
++                .await
++                .unwrap_or_else(|_| Err("the cancellation was dropped".into()))
++        })
++    }
++
+     fn cancel_tool_call(&self, tool_call_id: acp_v2::ToolCallId, cx: &mut Context<Self>) {
+         let cancellation = self
+             .thread

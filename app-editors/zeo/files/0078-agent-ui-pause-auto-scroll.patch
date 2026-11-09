@@ -1,0 +1,176 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 9 Nov 2026 16:27:51 -0300
+Subject: [PATCH] agent_ui: pause and resume the conversation's auto-scroll
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Wave 2 of the Zeo next proposal (docs/ZEO-NEXT-PROPOSAL.md §5.8, ask 28),
+on top of 0026 as re-authored for d2a4fb6. A Pause/Resume toggle opens
+the floating controls. Paused, the view never follows the tail, even
+when it sits at the bottom; a "N new" label counts the entries that
+arrived since the pause. Resuming snaps to the end and follows again.
+
+Paused is `gpui::FollowMode::Normal`; resumed is `FollowMode::Tail`,
+which is the mode conversation_view gives every new list. A plain scroll
+up is still the implicit pause upstream has — it stops following until
+the bottom is reached again — and is untouched. Every other caller that
+scrolls to the end checks `is_following_tail()` first, so a paused view
+is left alone; an explicit "Scroll to Bottom" still moves it without
+resuming.
+
+The state is the entry count at the pause, kept on the ThreadView, so it
+is per thread and does not survive closing the thread.
+
+Test: conversation_view tests,
+`zeo_paused_auto_scroll_does_not_follow_and_counts_new_entries`. Verified 2026-11-09 in the prepared d2a4fb6 tree: cargo check --tests, cargo clippy --tests and cargo fmt --check clean, cargo test passing, on acp_thread, agent_servers, agent_ui and sidebar; the control's look is
+for an Xvfb capture.
+---
+
+diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
+index 413ac86..b1896ca 100644
+--- a/crates/agent_ui/src/conversation_view.rs
++++ b/crates/agent_ui/src/conversation_view.rs
+@@ -11947,6 +11947,58 @@ pub(crate) mod tests {
+         });
+     }
+ 
++    // Zeo next proposal §5.8 (ask 28): a paused view never follows the tail, even at the
++    // bottom, counts what arrived while paused, and resuming follows again.
++    #[gpui::test]
++    async fn zeo_paused_auto_scroll_does_not_follow_and_counts_new_entries(
++        cx: &mut TestAppContext,
++    ) {
++        init_test(cx);
++        let (conversation_view, cx) =
++            setup_conversation_view(StubAgentServer::default_response(), cx).await;
++        let thread_view = active_thread(&conversation_view, cx);
++        let list_state = thread_view.read_with(cx, |view, _| view.list_state.clone());
++
++        thread_view.update(cx, |view, cx| view.toggle_auto_scroll_pause(cx));
++        assert!(!list_state.is_following_tail(), "paused: not following");
++        assert_eq!(
++            thread_view.read_with(cx, |view, cx| view.thread.read(cx).entries().len()),
++            thread_view.read_with(cx, |view, _| view
++                .auto_scroll_paused_at
++                .unwrap_or(usize::MAX)),
++            "the pause remembers where the thread was"
++        );
++
++        let thread = thread_view.read_with(cx, |view, _| view.thread.clone());
++        thread
++            .update(cx, |thread, cx| {
++                thread.handle_session_update(
++                    acp_v1::SessionUpdate::AgentMessageChunk(acp_v1::ContentChunk::new(
++                        "arrived while paused".into(),
++                    )),
++                    cx,
++                )
++            })
++            .expect("the update applies");
++        cx.run_until_parked();
++        assert!(
++            !list_state.is_following_tail(),
++            "new entries do not re-engage a paused view"
++        );
++        let new_entries = thread_view.read_with(cx, |view, cx| {
++            let at = view.auto_scroll_paused_at.expect("still paused");
++            view.thread.read(cx).entries().len() - at
++        });
++        assert_eq!(
++            new_entries, 1,
++            "the marker counts what arrived while paused"
++        );
++
++        thread_view.update(cx, |view, cx| view.toggle_auto_scroll_pause(cx));
++        assert!(list_state.is_following_tail(), "resumed: following again");
++        assert!(thread_view.read_with(cx, |view, _| view.auto_scroll_paused_at.is_none()));
++    }
++
+     #[gpui::test]
+     async fn test_restore_scroll_position_survives_deferred_markdown_parsing(
+         cx: &mut TestAppContext,
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 6b49005..72ee8b2 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -801,6 +801,9 @@ pub struct ThreadView {
+     /// Decline on the same card opens no second prompt.
+     open_decline_confirmations: HashSet<ElicitationEntryId>,
+     question_queue: QuestionQueue,
++    /// The entry count when auto-scroll was paused (Zeo next proposal §5.8), or `None` while
++    /// the view follows the tail. Per thread: each thread view holds its own.
++    pub(crate) auto_scroll_paused_at: Option<usize>,
+     pub _cancel_task: Option<Task<()>>,
+     _save_task: Option<Task<()>>,
+     _draft_resolve_task: Option<Task<()>>,
+@@ -1341,6 +1344,7 @@ impl ThreadView {
+             elicitation_form_states: HashMap::default(),
+             open_decline_confirmations: HashSet::default(),
+             question_queue: QuestionQueue::default(),
++            auto_scroll_paused_at: None,
+             _cancel_task: None,
+             _save_task: None,
+             _draft_resolve_task: None,
+@@ -8960,6 +8964,15 @@ impl ThreadView {
+         let copy_target = self.entry_ix_at_viewport_bottom().and_then(|ix| {
+             Self::enabled_copy_target(entries, ix, self.is_last_turn_in_progress(cx))
+         });
++        let paused = self.auto_scroll_paused_at.is_some();
++        let new_while_paused = self
++            .auto_scroll_paused_at
++            .map_or(0, |at| entries.len().saturating_sub(at));
++        let (pause_icon, pause_tooltip) = if paused {
++            (IconName::PlayFilled, "Resume Auto-Scroll")
++        } else {
++            (IconName::DebugPause, "Pause Auto-Scroll")
++        };
+ 
+         div()
+             .absolute()
+@@ -8976,6 +8989,23 @@ impl ThreadView {
+                     .bg(cx.theme().colors().elevated_surface_background)
+                     .opacity(0.4)
+                     .hover(|s| s.opacity(1.))
++                    .child(
++                        IconButton::new("floating_toggle_auto_scroll", pause_icon)
++                            .icon_size(IconSize::Small)
++                            .icon_color(if paused { Color::Accent } else { Color::Muted })
++                            .toggle_state(paused)
++                            .tooltip(Tooltip::text(pause_tooltip))
++                            .on_click(cx.listener(|this, _, _, cx| {
++                                this.toggle_auto_scroll_pause(cx);
++                            })),
++                    )
++                    .when(new_while_paused > 0, |this| {
++                        this.child(
++                            Label::new(format!("{new_while_paused} new"))
++                                .size(LabelSize::Small)
++                                .color(Color::Accent),
++                        )
++                    })
+                     .child(
+                         IconButton::new("floating_copy_agent_response", IconName::Copy)
+                             .icon_size(IconSize::Small)
+@@ -9045,6 +9075,20 @@ impl ThreadView {
+             )
+     }
+ 
++    /// Pausing puts the list in `FollowMode::Normal`, so it never follows the tail, even when
++    /// the view sits at the bottom. A plain scroll up only stops following until the bottom is
++    /// reached again, which is the implicit pause upstream already has. Resuming is
++    /// `FollowMode::Tail`, which snaps to the end.
++    pub(crate) fn toggle_auto_scroll_pause(&mut self, cx: &mut Context<Self>) {
++        if self.auto_scroll_paused_at.take().is_some() {
++            self.list_state.set_follow_mode(gpui::FollowMode::Tail);
++        } else {
++            self.auto_scroll_paused_at = Some(self.thread.read(cx).entries().len());
++            self.list_state.set_follow_mode(gpui::FollowMode::Normal);
++        }
++        cx.notify();
++    }
++
+     fn is_last_turn_in_progress(&self, cx: &App) -> bool {
+         let thread = self.thread.read(cx);
+         matches!(thread.status(), ThreadStatus::Generating)

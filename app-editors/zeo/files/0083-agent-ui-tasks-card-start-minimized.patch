@@ -1,0 +1,232 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 9 Nov 2026 17:41:53 -0300
+Subject: [PATCH] agent_ui: the tasks card can start minimized, by setting
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Wave 2 of the Zeo next proposal (docs/ZEO-NEXT-PROPOSAL.md §5.10, ask
+17). `agent.tasks_card.start_minimized` (default false, today's open
+card) makes patch 0037's card start as its pill. The Minimize control
+still toggles it for the rest of the session; the setting only picks
+how it starts.
+
+Of the three surfaces §5.10 named, this is the only one that needed a
+setting. Measured on d2a4fb6 before writing any: generic tool calls
+(reads, searches, fetches, MCP calls) already start collapsed —
+`EntryViewState::is_tool_call_content_visible` shows content only once
+the call is expanded or awaits an authorization; terminal and edit
+cards, which do open by themselves, already have upstream's
+`expand_terminal_card`/`expand_edit_card`. Subagent cards show their
+preview only when expanded, except while a permission is pending, which
+must stay visible. Adding settings for those would change nothing; they
+are documented in Zeo's README instead.
+
+The new field joins `TasksCardSettingsContent`, `default.json` and
+`TasksCardSettings`; every literal of the latter (two non-test, five in
+tests) gains `start_minimized: false`.
+
+Tests: tasks_card/start_minimized_tests.rs — the card starts open by
+default and minimized when the setting says so. Verified 2026-11-09 in
+the prepared d2a4fb6 tree: cargo check --tests and cargo clippy --tests
+clean on agent, agent_settings, agent_ui and settings_content, cargo fmt
+--check clean; tasks_card tests 196 passed; settings, settings_content
+and agent_settings tests pass.
+---
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index 01d0d42..176ad0f 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -1448,6 +1448,8 @@
+       // The corner of the agent panel the card is anchored to. One of
+       // "top_right", "top_left", "bottom_right" or "bottom_left".
+       "position": "top_right",
++      // Whether the card starts minimized to its pill.
++      "start_minimized": false,
+     },
+     // Whether to show the merge conflict indicator in the status bar
+     // that offers to resolve conflicts using the agent.
+diff --git a/crates/agent/src/tool_permissions.rs b/crates/agent/src/tool_permissions.rs
+index dd07a26..9f6b03a 100644
+--- a/crates/agent/src/tool_permissions.rs
++++ b/crates/agent/src/tool_permissions.rs
+@@ -611,6 +611,7 @@ mod tests {
+             tasks_card: agent_settings::TasksCardSettings {
+                 enabled: true,
+                 position: settings::TasksCardPosition::default(),
++                start_minimized: false,
+             },
+             show_merge_conflict_indicator: true,
+             auto_generate_thread_titles: true,
+diff --git a/crates/agent_settings/src/agent_settings.rs b/crates/agent_settings/src/agent_settings.rs
+index 4f1542e..863ab51 100644
+--- a/crates/agent_settings/src/agent_settings.rs
++++ b/crates/agent_settings/src/agent_settings.rs
+@@ -263,6 +263,8 @@ pub struct TasksCardSettings {
+     pub enabled: bool,
+     /// The corner of the agent panel the card is anchored to.
+     pub position: TasksCardPosition,
++    /// Whether the card starts minimized to its pill (Zeo next proposal §5.10).
++    pub start_minimized: bool,
+ }
+ 
+ #[derive(Clone, Copy, Debug)]
+@@ -862,6 +864,7 @@ impl Settings for AgentSettings {
+                 TasksCardSettings {
+                     enabled: tasks_card.enabled.unwrap(),
+                     position: tasks_card.position.unwrap(),
++                    start_minimized: tasks_card.start_minimized.unwrap(),
+                 }
+             },
+             show_merge_conflict_indicator: agent.show_merge_conflict_indicator.unwrap(),
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index f1f0799..8d0b8ad 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -1186,6 +1186,7 @@ mod tests {
+             tasks_card: agent_settings::TasksCardSettings {
+                 enabled: true,
+                 position: settings::TasksCardPosition::default(),
++                start_minimized: false,
+             },
+             show_merge_conflict_indicator: true,
+             auto_generate_thread_titles: true,
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index 6cde4d9..6bcafa5 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -63,6 +63,10 @@ mod model;
+ #[path = "tasks_card/dismiss_tests.rs"]
+ mod dismiss;
+ 
++#[cfg(test)]
++#[path = "tasks_card/start_minimized_tests.rs"]
++mod start_minimized;
++
+ #[cfg(test)]
+ #[path = "tasks_card/panel_close_tests.rs"]
+ mod panel_close;
+@@ -497,7 +501,8 @@ impl TasksCard {
+     pub fn new(cx: &mut Context<Self>) -> Self {
+         Self {
+             views: Vec::new(),
+-            minimized: false,
++            // §5.10: the setting picks how the card starts; Minimize still toggles it after.
++            minimized: AgentSettings::get_global(cx).tasks_card.start_minimized,
+             watched: HashSet::default(),
+             expanded: HashSet::default(),
+             ended: HashMap::default(),
+diff --git a/crates/agent_ui/src/tasks_card/activity_tests.rs b/crates/agent_ui/src/tasks_card/activity_tests.rs
+index 1da7c16..37991d2 100644
+--- a/crates/agent_ui/src/tasks_card/activity_tests.rs
++++ b/crates/agent_ui/src/tasks_card/activity_tests.rs
+@@ -424,6 +424,7 @@ async fn tasks_card_activity_keeps_emitting_while_disabled_hidden_or_minimized(
+                 tasks_card: TasksCardSettings {
+                     enabled: false,
+                     position: TasksCardPosition::TopRight,
++                    start_minimized: false,
+                 },
+                 ..AgentSettings::get_global(cx).clone()
+             },
+@@ -445,6 +446,7 @@ async fn tasks_card_activity_keeps_emitting_while_disabled_hidden_or_minimized(
+                 tasks_card: TasksCardSettings {
+                     enabled: true,
+                     position: TasksCardPosition::TopRight,
++                    start_minimized: false,
+                 },
+                 ..AgentSettings::get_global(cx).clone()
+             },
+diff --git a/crates/agent_ui/src/tasks_card/model_tests.rs b/crates/agent_ui/src/tasks_card/model_tests.rs
+index 61bf722..9bfa8eb 100644
+--- a/crates/agent_ui/src/tasks_card/model_tests.rs
++++ b/crates/agent_ui/src/tasks_card/model_tests.rs
+@@ -387,6 +387,7 @@ async fn test_card_keeps_syncing_while_disabled_or_minimized(cx: &mut TestAppCon
+                 tasks_card: TasksCardSettings {
+                     enabled: false,
+                     position: TasksCardPosition::TopRight,
++                    start_minimized: false,
+                 },
+                 ..AgentSettings::get_global(cx).clone()
+             },
+diff --git a/crates/agent_ui/src/tasks_card/placement_tests.rs b/crates/agent_ui/src/tasks_card/placement_tests.rs
+index 38ce6f2..4723a32 100644
+--- a/crates/agent_ui/src/tasks_card/placement_tests.rs
++++ b/crates/agent_ui/src/tasks_card/placement_tests.rs
+@@ -30,6 +30,7 @@ fn set_position(position: TasksCardPosition, cx: &mut VisualTestContext) {
+                 tasks_card: TasksCardSettings {
+                     enabled: true,
+                     position,
++                    start_minimized: false,
+                 },
+                 ..AgentSettings::get_global(cx).clone()
+             },
+diff --git a/crates/agent_ui/src/tasks_card/render_tests.rs b/crates/agent_ui/src/tasks_card/render_tests.rs
+index 49f0bb1..072fa0f 100644
+--- a/crates/agent_ui/src/tasks_card/render_tests.rs
++++ b/crates/agent_ui/src/tasks_card/render_tests.rs
+@@ -20,7 +20,11 @@ fn set_card_settings(enabled: bool, position: TasksCardPosition, cx: &mut Visual
+     cx.update(|_, cx| {
+         AgentSettings::override_global(
+             AgentSettings {
+-                tasks_card: TasksCardSettings { enabled, position },
++                tasks_card: TasksCardSettings {
++                    enabled,
++                    position,
++                    start_minimized: false,
++                },
+                 ..AgentSettings::get_global(cx).clone()
+             },
+             cx,
+diff --git a/crates/agent_ui/src/tasks_card/start_minimized_tests.rs b/crates/agent_ui/src/tasks_card/start_minimized_tests.rs
+new file mode 100644
+index 0000000..5d3c0f5
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/start_minimized_tests.rs
+@@ -0,0 +1,29 @@
++// Zeo next proposal §5.10 (ask 17): the tasks card can start minimized to its pill, by
++// setting; the default keeps today's open card.
++
++use agent_settings::AgentSettings;
++use gpui::{AppContext as _, TestAppContext};
++use settings::Settings as _;
++
++use super::TasksCard;
++
++fn card_starts_minimized(start_minimized: bool, cx: &mut TestAppContext) -> bool {
++    crate::conversation_view::tests::init_test(cx);
++    cx.update(|cx| {
++        let mut settings = AgentSettings::get_global(cx).clone();
++        settings.tasks_card.start_minimized = start_minimized;
++        AgentSettings::override_global(settings, cx);
++    });
++    let card = cx.new(TasksCard::new);
++    card.read_with(cx, |card, _| card.is_minimized())
++}
++
++#[gpui::test]
++fn the_card_starts_open_by_default(cx: &mut TestAppContext) {
++    assert!(!card_starts_minimized(false, cx));
++}
++
++#[gpui::test]
++fn the_card_starts_minimized_when_the_setting_says_so(cx: &mut TestAppContext) {
++    assert!(card_starts_minimized(true, cx));
++}
+diff --git a/crates/settings_content/src/agent.rs b/crates/settings_content/src/agent.rs
+index ca9edb1..5ee2c1f 100644
+--- a/crates/settings_content/src/agent.rs
++++ b/crates/settings_content/src/agent.rs
+@@ -165,6 +165,11 @@ pub struct TasksCardSettingsContent {
+     ///
+     /// Default: top_right
+     pub position: Option<TasksCardPosition>,
++    /// Whether the card starts minimized to its pill when Zeo starts. The choice made with
++    /// its Minimize control still holds for the rest of the session.
++    ///
++    /// Default: false
++    pub start_minimized: Option<bool>,
+ }
+ 
+ /// Threshold at which agent auto-compaction runs. See

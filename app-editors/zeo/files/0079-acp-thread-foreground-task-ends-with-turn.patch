@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 9 Nov 2026 16:29:57 -0300
+Subject: [PATCH] acp_thread: a foreground task cannot outlive its turn
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Wave 2 of the Zeo next proposal (docs/ZEO-NEXT-PROPOSAL.md §5.2, asks 4,
+32, 33; finding F2/F3). A foreground task the agent still reported
+running after its turn ended stayed "running" in the tasks card, the
+Agent Tasks panel and the tray until the session ended — plus did not
+always send the closing event (fixed adapter-side in plus's feed, §5.3),
+and any other agent can do the same.
+
+`AcpThread::interrupt_foreground_tasks` ends such a task as interrupted
+and announces the ending once, through the same `announce_task_endings`
+the snapshot path uses, so every surface hears one `TaskEnded`. A task a
+snapshot already marked background is left alone: it is meant to outlive
+the turn. It runs where a turn ends: `cleanup_local_turn` (end of turn,
+max tokens, cancel — `finish_local_turn` included), the prompt's error
+branch, and the v2 idle transition before `Stopped`.
+
+Known edge, accepted: a completion snapshot arriving after the turn's
+response replaces the status with `completed`, but the interrupted ending
+was already announced (and may have reached the tray).
+
+Tests: acp_thread_tasks_turn_end_tests.rs — a foreground task is
+interrupted and a background one kept; a task backgrounded just before
+the end is kept. Verified 2026-11-09 in the prepared d2a4fb6 tree: cargo check --tests, cargo clippy --tests and cargo fmt --check clean, cargo test passing, on acp_thread, agent_servers, agent_ui and sidebar.
+---
+
+diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
+index 9c0dc06..04aaef7 100644
+--- a/crates/acp_thread/src/acp_thread.rs
++++ b/crates/acp_thread/src/acp_thread.rs
+@@ -5424,6 +5424,7 @@ impl AcpThread {
+                     )
+                 );
+                 // Reported refusal does not authorize deleting agent-owned history.
++                self.interrupt_foreground_tasks(cx);
+                 cx.emit(AcpThreadEvent::Stopped {
+                     activity_generation: self.activity.generation(),
+                     activity_duration: self.activity.duration(),
+@@ -5614,6 +5615,27 @@ impl AcpThread {
+         }
+     }
+ 
++    /// Zeo next proposal §5.2: a foreground task cannot outlive its turn. When the turn ends
++    /// (end of turn, cancel or error), a foreground task the agent still reports running is
++    /// ended as interrupted, so the tasks card, the panel and the tray stop showing it as
++    /// live. A task a snapshot already marked background is left alone: it is meant to
++    /// outlive the turn.
++    pub fn interrupt_foreground_tasks(&mut self, cx: &mut Context<Self>) {
++        let now = SystemTime::now();
++        let mut changed = false;
++        for task in &mut self.tasks {
++            if task.status.is_running() && !task.background {
++                task.status = AgentTaskStatus::Interrupted;
++                task.ended_at = Some(now);
++                changed = true;
++            }
++        }
++        if changed {
++            cx.emit(AcpThreadEvent::TasksUpdated);
++            self.announce_task_endings(cx);
++        }
++    }
++
+     pub fn cost(&self) -> Option<&SessionCost> {
+         self.cost.as_ref()
+     }
+@@ -8551,6 +8573,7 @@ impl AcpThread {
+                         this.flush_streaming_text(cx);
+                         if is_same_turn {
+                             this.cancel_pending_turn_entries(cx);
++                            this.interrupt_foreground_tasks(cx);
+                         }
+                         this.had_error = true;
+                         cx.emit(AcpThreadEvent::Error);
+@@ -8715,6 +8738,9 @@ impl AcpThread {
+         is_same_turn: bool,
+         cx: &mut Context<Self>,
+     ) {
++        if is_same_turn {
++            self.interrupt_foreground_tasks(cx);
++        }
+         match reason {
+             acp_v2::StopReason::Cancelled
+             | acp_v2::StopReason::MaxTokens
+@@ -28166,4 +28192,5 @@ mod tests {
+     include!("acp_thread_tasks_v2_tests.rs");
+     include!("acp_thread_tasks_contract_v2_tests.rs");
+     include!("acp_thread_tasks_child_session_tests.rs");
++    include!("acp_thread_tasks_turn_end_tests.rs");
+ }
+diff --git a/crates/acp_thread/src/acp_thread_tasks_turn_end_tests.rs b/crates/acp_thread/src/acp_thread_tasks_turn_end_tests.rs
+new file mode 100644
+index 0000000..6c75fea
+--- /dev/null
++++ b/crates/acp_thread/src/acp_thread_tasks_turn_end_tests.rs
+@@ -0,0 +1,65 @@
++// Zeo next proposal §5.2: a foreground task cannot outlive its turn. When the turn ends, a
++// foreground task still reported running ends as interrupted; a background one is left alone.
++//
++// Included at the end of `mod tests` in `acp_thread.rs`, after `acp_thread_tasks_tests.rs`,
++// whose fixtures (`tasks_thread`, `tasks_snapshot`, `tasks_wire_task`, `tasks_ids`) it uses.
++//
++// The turn is ended through `finish_local_turn`, the public turn-end path that reaches
++// `cleanup_local_turn`; the prompt-response and v2 idle paths call the same rule.
++
++fn tasks_foreground(id: &str, started_at: u64) -> serde_json::Value {
++    let mut task = tasks_wire_task(id, "running", started_at);
++    task["background"] = serde_json::json!(false);
++    task
++}
++
++#[gpui::test]
++async fn tasks_turn_end_interrupts_foreground_and_keeps_background(cx: &mut TestAppContext) {
++    let (thread, events) = tasks_thread(Rc::new(FakeAgentConnection::new()), cx).await;
++    tasks_send(
++        &thread,
++        tasks_snapshot(vec![
++            tasks_foreground("fg", 1_000),
++            tasks_wire_task("bg", "running", 2_000),
++        ]),
++        cx,
++    );
++
++    thread.update(cx, |thread, cx| {
++        thread.finish_local_turn(acp_v2::StopReason::EndTurn, cx)
++    });
++
++    assert_eq!(
++        tasks_ids(&thread, cx),
++        vec![
++            ("fg".to_string(), "interrupted"),
++            ("bg".to_string(), "running")
++        ]
++    );
++    assert_eq!(
++        events.borrow().ended,
++        vec![("fg".to_string(), "interrupted")],
++        "the ending is announced once, for the foreground task only"
++    );
++}
++
++#[gpui::test]
++async fn tasks_turn_end_leaves_a_task_backgrounded_at_the_end_of_the_turn(
++    cx: &mut TestAppContext,
++) {
++    let (thread, events) = tasks_thread(Rc::new(FakeAgentConnection::new()), cx).await;
++    tasks_send(&thread, tasks_snapshot(vec![tasks_foreground("t", 1_000)]), cx);
++    // The agent moves it to the background just before the turn ends.
++    tasks_send(
++        &thread,
++        tasks_snapshot(vec![tasks_wire_task("t", "running", 1_000)]),
++        cx,
++    );
++
++    thread.update(cx, |thread, cx| {
++        thread.finish_local_turn(acp_v2::StopReason::EndTurn, cx)
++    });
++
++    assert_eq!(tasks_ids(&thread, cx), vec![("t".to_string(), "running")]);
++    assert!(events.borrow().ended.is_empty());
++}
