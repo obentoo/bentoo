@@ -234,10 +234,13 @@ src_compile() {
 
 	RUSTY_V8_ARCHIVE="${DISTDIR}/rusty_v8_${RUSTY_V8_TAG}_librusty_v8_release_${rusty_v8_triple}.a.gz" \
 	RUSTY_V8_SRC_BINDING_PATH="${DISTDIR}/rusty_v8_${RUSTY_V8_TAG}_src_binding_release_${rusty_v8_triple}.rs" \
-		cargo_src_compile --package codex-cli
+		cargo_src_compile --package codex-cli --package codex-code-mode-host
 }
 
 src_install() {
 	dobin "$(cargo_target_dir)/codex"
+	# codex spawns the Code Mode host from its own directory (install-context
+	# crate, code_mode_host_program_from_exe); without it Code Mode fails.
+	dobin "$(cargo_target_dir)/codex-code-mode-host"
 	einstalldocs
 }
