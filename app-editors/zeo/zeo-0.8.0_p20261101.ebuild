@@ -1546,7 +1546,7 @@ declare -A GIT_CRATES=(
 # keep current would leave a new tarball under an old, already-manifested name).
 
 EGIT_COMMIT="a4b39c38e0056a5631a6f49f7fb13d4d1c4b6a9c"
-# LLVM 23 only, so it is the default slot: llvm-r1 would always prefer slot 22
+# LLVM 23 only, so it is the default slot: llvm-r2 would always prefer slot 22
 # (its newest stable) whenever 22 is listed. RUST_NEEDS_LLVM ties the Rust slot
 # to it, so this builds with Rust 1.99, one release past upstream's 1.98.1 pin
 # in rust-toolchain.toml -- the series' suites pass there (zed-patches test.sh).
@@ -1555,11 +1555,11 @@ RUST_MIN_VER="1.99.0"
 RUST_NEEDS_LLVM=1
 WEBRTC_COMMIT="0001d84-4"
 
-# BENTOO-DIVERGENCE: INHERIT - llvm-r1, because series 1.20 needs a pinned LLVM
+# BENTOO-DIVERGENCE: INHERIT - llvm-r2, because series 1.20 needs a pinned LLVM
 # slot to build; 1.14 in ::gentoo does not.
 # BENTOO-DIVERGENCE: PATCHES - overlay-only, all of them wiring the
 # claude-agent-acp integrations; ::gentoo carries none.
-inherit cargo check-reqs desktop flag-o-matic llvm-r1 toolchain-funcs xdg
+inherit cargo check-reqs desktop flag-o-matic llvm-r2 toolchain-funcs xdg
 
 # BENTOO-DIVERGENCE: metadata.xml - a <use> block describing sixteen flags,
 # where ::gentoo's file has none. Every one of them is a flag this overlay adds
@@ -1800,7 +1800,7 @@ pkg_setup() {
 	strip-unsupported-flags
 	# flags from upstream
 	export RUSTFLAGS="${RUSTFLAGS} -C symbol-mangling-version=v0 --cfg tokio_unstable -C link-args=-Wl,--disable-new-dtags,-rpath,\$ORIGIN/../lib"
-	llvm-r1_pkg_setup
+	llvm-r2_pkg_setup
 	rust_pkg_setup
 }
 

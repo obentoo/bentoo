@@ -1545,9 +1545,9 @@ RUST_MIN_VER="1.98.1"
 RUST_NEEDS_LLVM=1
 WEBRTC_COMMIT="0001d84-4"
 
-# BENTOO-DIVERGENCE: INHERIT - llvm-r1, because series 1.20 needs a pinned LLVM
+# BENTOO-DIVERGENCE: INHERIT - llvm-r2, because series 1.20 needs a pinned LLVM
 # slot to build; 1.14 in ::gentoo does not.
-inherit cargo check-reqs desktop flag-o-matic llvm-r1 toolchain-funcs xdg
+inherit cargo check-reqs desktop flag-o-matic llvm-r2 toolchain-funcs xdg
 
 # BENTOO-DIVERGENCE: metadata.xml - a <use> block describing fourteen flags,
 # where ::gentoo's file has none. Every one of them is a flag this overlay adds
@@ -1700,7 +1700,7 @@ pkg_setup() {
 	strip-unsupported-flags
 	# flags from upstream
 	export RUSTFLAGS="${RUSTFLAGS} -C symbol-mangling-version=v0 --cfg tokio_unstable -C link-args=-Wl,--disable-new-dtags,-rpath,\$ORIGIN/../lib"
-	llvm-r1_pkg_setup
+	llvm-r2_pkg_setup
 	rust_pkg_setup
 }
 
