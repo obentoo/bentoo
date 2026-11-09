@@ -146,7 +146,7 @@ LICENSE+=" rar? ( unRAR )"
 SLOT="stable"
 # bentoo: the copied base is a stabilised ebuild; this overlay has not run
 # .173 anywhere, so the stable keywords do not travel with the copy.
-KEYWORDS="~amd64 ~arm64"
+KEYWORDS="~amd64"
 
 IUSE_SYSTEM_LIBS="+system-harfbuzz +system-icu +system-zstd"
 IUSE="+X ${IUSE_SYSTEM_LIBS} bindist bundled-toolchain cups debug ffmpeg-chromium gtk4 +hangouts headless kerberos +official pax-kernel pgo"
