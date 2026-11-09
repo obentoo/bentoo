@@ -53,7 +53,7 @@ batch is atomic when a row fails mid-way.
 ---
 
 diff --git a/crates/agent_tasks_panel/src/history_db.rs b/crates/agent_tasks_panel/src/history_db.rs
-index 61a3643..bca3410 100644
+index d1da8f2..88626c8 100644
 --- a/crates/agent_tasks_panel/src/history_db.rs
 +++ b/crates/agent_tasks_panel/src/history_db.rs
 @@ -92,8 +92,8 @@ pub struct HistoryEntry {
@@ -98,7 +98,7 @@ index 61a3643..bca3410 100644
      /// Sets or clears (`None`) the user's label of one task. Only that `(session_id, task_id)`
      /// row is written; its description, status and archive flag are left as they are.
      pub async fn set_label(&self, key: &TaskKey, label: Option<&str>) -> Result<()> {
-@@ -262,18 +286,37 @@ impl AgentTaskHistoryDb {
+@@ -262,18 +286,38 @@ impl AgentTaskHistoryDb {
      }
  
      /// Every record, archived or not, newest first.
@@ -109,26 +109,22 @@ index 61a3643..bca3410 100644
 +    /// the session. The row stays in the table for the build that understands it.
      pub async fn load_all(&self) -> Result<Vec<HistoryEntry>> {
 -        self.select::<HistoryEntry>(sql!(
--            SELECT session_id, task_id, thread_title, project, kind, description, background,
--                status, started_at, ended_at, tokens, tool_uses, archived, label, tool_call_id
--            FROM agent_task_history
--            ORDER BY started_at DESC, session_id, task_id
--        ))?()
++        let rows = self.select::<HistoryRow>(sql!(
+             SELECT session_id, task_id, thread_title, project, kind, description, background,
+                 status, started_at, ended_at, tokens, tool_uses, archived, label, tool_call_id
+             FROM agent_task_history
+             ORDER BY started_at DESC, session_id, task_id
+         ))?()
 -        .context("loading the agent task history")
-+        let rows = self
-+            .select::<HistoryRow>(sql!(
-+                SELECT session_id, task_id, thread_title, project, kind, description, background,
-+                    status, started_at, ended_at, tokens, tool_uses, archived, label, tool_call_id
-+                FROM agent_task_history
-+                ORDER BY started_at DESC, session_id, task_id
-+            ))?()
-+            .context("loading the agent task history")?;
++        .context("loading the agent task history")?;
 +        Ok(rows
 +            .into_iter()
 +            .filter_map(|row| match row.0 {
 +                Ok(entry) => Some(entry),
 +                Err(unreadable) => {
-+                    log::warn!("agent task history: skipping a record this build cannot read: {unreadable}");
++                    log::warn!(
++                        "agent task history: skipping a record this build cannot read: {unreadable}"
++                    );
 +                    None
 +                }
 +            })
@@ -144,7 +140,7 @@ index 61a3643..bca3410 100644
      fn column(statement: &mut Statement, start_index: i32) -> Result<(Self, i32)> {
          let (session_id, next): (String, i32) = Column::column(statement, start_index)?;
          let (task_id, next): (String, i32) = Column::column(statement, next)?;
-@@ -291,8 +334,15 @@ impl Column for HistoryEntry {
+@@ -291,8 +335,15 @@ impl Column for HistoryEntry {
          let (label, next): (Option<String>, i32) = Column::column(statement, next)?;
          let (tool_call_id, next): (Option<String>, i32) = Column::column(statement, next)?;
  
@@ -162,7 +158,7 @@ index 61a3643..bca3410 100644
          let record = TaskRecord {
              session_id: acp_v2::SessionId::new(session_id),
              task_id: AgentTaskId::from(task_id),
-@@ -309,11 +359,11 @@ impl Column for HistoryEntry {
+@@ -309,11 +360,11 @@ impl Column for HistoryEntry {
              tool_call_id: tool_call_id.map(Into::into),
          };
          Ok((
@@ -177,10 +173,10 @@ index 61a3643..bca3410 100644
          ))
      }
 diff --git a/crates/agent_tasks_panel/src/history_db/statement_tests.rs b/crates/agent_tasks_panel/src/history_db/statement_tests.rs
-index db7724e..78490ea 100644
+index 718acb4..08d458d 100644
 --- a/crates/agent_tasks_panel/src/history_db/statement_tests.rs
 +++ b/crates/agent_tasks_panel/src/history_db/statement_tests.rs
-@@ -417,3 +417,69 @@ async fn history_db_load_all_returns_newest_first(_cx: &mut TestAppContext) {
+@@ -417,3 +417,76 @@ async fn history_db_load_all_returns_newest_first(_cx: &mut TestAppContext) {
          .collect();
      assert_eq!(order, vec!["newest", "mid", "old"]);
  }
@@ -243,15 +239,22 @@ index db7724e..78490ea 100644
 +    .await;
 +
 +    let batch = [key("s1", "a"), key("s1", "boom"), key("s1", "c")];
-+    assert!(db.delete(&batch).await.is_err(), "the forced failure surfaces");
-+    assert_eq!(load(&db).await.len(), 3, "no row of the failed batch is gone");
++    assert!(
++        db.delete(&batch).await.is_err(),
++        "the forced failure surfaces"
++    );
++    assert_eq!(
++        load(&db).await.len(),
++        3,
++        "no row of the failed batch is gone"
++    );
 +
 +    run_sql(&db, "DROP TRIGGER fail_delete_mid_batch").await;
 +    db.delete(&batch).await.unwrap();
 +    assert!(load(&db).await.is_empty());
 +}
 diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
-index c8d53e8..dcb229b 100644
+index 218039b..a174877 100644
 --- a/crates/agent_tasks_panel/src/panel.rs
 +++ b/crates/agent_tasks_panel/src/panel.rs
 @@ -24,8 +24,9 @@ use db::kvp::KeyValueStore;
@@ -461,10 +464,10 @@ index c8d53e8..dcb229b 100644
 +mod delete_action;
 diff --git a/crates/agent_tasks_panel/src/panel/delete_action_tests.rs b/crates/agent_tasks_panel/src/panel/delete_action_tests.rs
 new file mode 100644
-index 0000000..408c8d7
+index 0000000..7c11553
 --- /dev/null
 +++ b/crates/agent_tasks_panel/src/panel/delete_action_tests.rs
-@@ -0,0 +1,293 @@
+@@ -0,0 +1,326 @@
 +// Story 025, task 1.3 — Delete on an archived row and Delete All Archived, both confirmed.
 +// Module path: `panel::delete_action`. Every test name starts with `delete_action_`, the
 +// story's validation filter.
@@ -679,9 +682,33 @@ index 0000000..408c8d7
 +    cx: &mut TestAppContext,
 +) {
 +    let db = init_base(cx);
-+    seed(&db, "s1", "kept-archived", AgentTaskStatus::Completed, 1_000, true).await;
-+    seed(&db, "s1", "unarchived-meanwhile", AgentTaskStatus::Failed, 1_100, true).await;
-+    seed(&db, "s2", "archived-meanwhile", AgentTaskStatus::Completed, 1_200, false).await;
++    seed(
++        &db,
++        "s1",
++        "kept-archived",
++        AgentTaskStatus::Completed,
++        1_000,
++        true,
++    )
++    .await;
++    seed(
++        &db,
++        "s1",
++        "unarchived-meanwhile",
++        AgentTaskStatus::Failed,
++        1_100,
++        true,
++    )
++    .await;
++    seed(
++        &db,
++        "s2",
++        "archived-meanwhile",
++        AgentTaskStatus::Completed,
++        1_200,
++        false,
++    )
++    .await;
 +    let mut panels = open_panels(cx).await;
 +    only(&mut panels, &[TaskFilter::Archived]);
 +
@@ -711,11 +738,20 @@ index 0000000..408c8d7
 +    assert!(find(&in_memory, "s2", "archived-meanwhile").is_some());
 +
 +    let rows = load(&db).await;
-+    assert!(find(&rows, "s1", "kept-archived").is_none(), "the counted row still archived goes");
++    assert!(
++        find(&rows, "s1", "kept-archived").is_none(),
++        "the counted row still archived goes"
++    );
 +    let unarchived = find(&rows, "s1", "unarchived-meanwhile").expect("not deleted");
-+    assert!(!unarchived.archived, "a row unarchived while asking is kept, unarchived");
++    assert!(
++        !unarchived.archived,
++        "a row unarchived while asking is kept, unarchived"
++    );
 +    let archived = find(&rows, "s2", "archived-meanwhile").expect("not deleted");
-+    assert!(archived.archived, "a row archived after the count is not in the batch");
++    assert!(
++        archived.archived,
++        "a row archived after the count is not in the batch"
++    );
 +}
 +
 +// The thread a deleted record belonged to is untouched: its metadata row stays.
@@ -759,7 +795,7 @@ index 0000000..408c8d7
 +    assert!(find_row(&mut panels, &session.to_string(), "t").is_none());
 +}
 diff --git a/crates/agent_tasks_panel/src/store.rs b/crates/agent_tasks_panel/src/store.rs
-index f6c9bf4..c782d72 100644
+index e8eb349..fc6329b 100644
 --- a/crates/agent_tasks_panel/src/store.rs
 +++ b/crates/agent_tasks_panel/src/store.rs
 @@ -19,7 +19,7 @@ use agent_ui::{

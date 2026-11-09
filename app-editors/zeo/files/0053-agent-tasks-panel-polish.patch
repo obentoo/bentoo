@@ -84,7 +84,7 @@ series; the series is only ever built whole. No behaviour change.
 ---
 
 diff --git a/assets/keymaps/default-linux.json b/assets/keymaps/default-linux.json
-index edd830c..691c9d1 100644
+index c5df522..430ddf1 100644
 --- a/assets/keymaps/default-linux.json
 +++ b/assets/keymaps/default-linux.json
 @@ -986,6 +986,12 @@
@@ -101,7 +101,7 @@ index edd830c..691c9d1 100644
      "context": "OutlinePanel && not_editing",
      "bindings": {
 diff --git a/assets/keymaps/default-macos.json b/assets/keymaps/default-macos.json
-index 52d58f0..dc27e53 100644
+index ca2c467..de2a333 100644
 --- a/assets/keymaps/default-macos.json
 +++ b/assets/keymaps/default-macos.json
 @@ -1042,6 +1042,12 @@
@@ -117,65 +117,8 @@ index 52d58f0..dc27e53 100644
    {
      "context": "OutlinePanel && not_editing",
      "use_key_equivalents": true,
-diff --git a/crates/agent_tasks_panel/src/history_db.rs b/crates/agent_tasks_panel/src/history_db.rs
-index bca3410..a7e570b 100644
---- a/crates/agent_tasks_panel/src/history_db.rs
-+++ b/crates/agent_tasks_panel/src/history_db.rs
-@@ -292,20 +292,21 @@ impl AgentTaskHistoryDb {
-     /// row must not make the whole history unavailable, which also drops every write for
-     /// the session. The row stays in the table for the build that understands it.
-     pub async fn load_all(&self) -> Result<Vec<HistoryEntry>> {
--        let rows = self
--            .select::<HistoryRow>(sql!(
--                SELECT session_id, task_id, thread_title, project, kind, description, background,
--                    status, started_at, ended_at, tokens, tool_uses, archived, label, tool_call_id
--                FROM agent_task_history
--                ORDER BY started_at DESC, session_id, task_id
--            ))?()
--            .context("loading the agent task history")?;
-+        let rows = self.select::<HistoryRow>(sql!(
-+            SELECT session_id, task_id, thread_title, project, kind, description, background,
-+                status, started_at, ended_at, tokens, tool_uses, archived, label, tool_call_id
-+            FROM agent_task_history
-+            ORDER BY started_at DESC, session_id, task_id
-+        ))?()
-+        .context("loading the agent task history")?;
-         Ok(rows
-             .into_iter()
-             .filter_map(|row| match row.0 {
-                 Ok(entry) => Some(entry),
-                 Err(unreadable) => {
--                    log::warn!("agent task history: skipping a record this build cannot read: {unreadable}");
-+                    log::warn!(
-+                        "agent task history: skipping a record this build cannot read: {unreadable}"
-+                    );
-                     None
-                 }
-             })
-diff --git a/crates/agent_tasks_panel/src/history_db/statement_tests.rs b/crates/agent_tasks_panel/src/history_db/statement_tests.rs
-index 78490ea..2198618 100644
---- a/crates/agent_tasks_panel/src/history_db/statement_tests.rs
-+++ b/crates/agent_tasks_panel/src/history_db/statement_tests.rs
-@@ -476,8 +476,15 @@ async fn history_db_delete_is_atomic_when_a_row_fails_mid_batch(_cx: &mut TestAp
-     .await;
- 
-     let batch = [key("s1", "a"), key("s1", "boom"), key("s1", "c")];
--    assert!(db.delete(&batch).await.is_err(), "the forced failure surfaces");
--    assert_eq!(load(&db).await.len(), 3, "no row of the failed batch is gone");
-+    assert!(
-+        db.delete(&batch).await.is_err(),
-+        "the forced failure surfaces"
-+    );
-+    assert_eq!(
-+        load(&db).await.len(),
-+        3,
-+        "no row of the failed batch is gone"
-+    );
- 
-     run_sql(&db, "DROP TRIGGER fail_delete_mid_batch").await;
-     db.delete(&batch).await.unwrap();
 diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
-index dcb229b..84104b7 100644
+index a174877..b68d452 100644
 --- a/crates/agent_tasks_panel/src/panel.rs
 +++ b/crates/agent_tasks_panel/src/panel.rs
 @@ -23,13 +23,16 @@ use collections::HashMap;
@@ -1721,71 +1664,6 @@ index 0000000..23a601e
 +        );
 +    }
 +}
-diff --git a/crates/agent_tasks_panel/src/panel/delete_action_tests.rs b/crates/agent_tasks_panel/src/panel/delete_action_tests.rs
-index 408c8d7..7c11553 100644
---- a/crates/agent_tasks_panel/src/panel/delete_action_tests.rs
-+++ b/crates/agent_tasks_panel/src/panel/delete_action_tests.rs
-@@ -212,9 +212,33 @@ async fn delete_action_all_archived_deletes_only_the_counted_rows_still_archived
-     cx: &mut TestAppContext,
- ) {
-     let db = init_base(cx);
--    seed(&db, "s1", "kept-archived", AgentTaskStatus::Completed, 1_000, true).await;
--    seed(&db, "s1", "unarchived-meanwhile", AgentTaskStatus::Failed, 1_100, true).await;
--    seed(&db, "s2", "archived-meanwhile", AgentTaskStatus::Completed, 1_200, false).await;
-+    seed(
-+        &db,
-+        "s1",
-+        "kept-archived",
-+        AgentTaskStatus::Completed,
-+        1_000,
-+        true,
-+    )
-+    .await;
-+    seed(
-+        &db,
-+        "s1",
-+        "unarchived-meanwhile",
-+        AgentTaskStatus::Failed,
-+        1_100,
-+        true,
-+    )
-+    .await;
-+    seed(
-+        &db,
-+        "s2",
-+        "archived-meanwhile",
-+        AgentTaskStatus::Completed,
-+        1_200,
-+        false,
-+    )
-+    .await;
-     let mut panels = open_panels(cx).await;
-     only(&mut panels, &[TaskFilter::Archived]);
- 
-@@ -244,11 +268,20 @@ async fn delete_action_all_archived_deletes_only_the_counted_rows_still_archived
-     assert!(find(&in_memory, "s2", "archived-meanwhile").is_some());
- 
-     let rows = load(&db).await;
--    assert!(find(&rows, "s1", "kept-archived").is_none(), "the counted row still archived goes");
-+    assert!(
-+        find(&rows, "s1", "kept-archived").is_none(),
-+        "the counted row still archived goes"
-+    );
-     let unarchived = find(&rows, "s1", "unarchived-meanwhile").expect("not deleted");
--    assert!(!unarchived.archived, "a row unarchived while asking is kept, unarchived");
-+    assert!(
-+        !unarchived.archived,
-+        "a row unarchived while asking is kept, unarchived"
-+    );
-     let archived = find(&rows, "s2", "archived-meanwhile").expect("not deleted");
--    assert!(archived.archived, "a row archived after the count is not in the batch");
-+    assert!(
-+        archived.archived,
-+        "a row archived after the count is not in the batch"
-+    );
- }
- 
- // The thread a deleted record belonged to is untouched: its metadata row stays.
 diff --git a/crates/agent_tasks_panel/src/panel/delete_selected_tests.rs b/crates/agent_tasks_panel/src/panel/delete_selected_tests.rs
 new file mode 100644
 index 0000000..c8a1a46
@@ -4150,7 +4028,7 @@ index 0000000..c39ad2e
 +    );
 +}
 diff --git a/crates/agent_tasks_panel/src/test_helpers.rs b/crates/agent_tasks_panel/src/test_helpers.rs
-index 815ef52..daed4f9 100644
+index 8b54139..595ca24 100644
 --- a/crates/agent_tasks_panel/src/test_helpers.rs
 +++ b/crates/agent_tasks_panel/src/test_helpers.rs
 @@ -134,6 +134,7 @@ pub(crate) fn record(
@@ -4160,17 +4038,4 @@ index 815ef52..daed4f9 100644
 +        child_session_id: None,
      }
  }
- 
-@@ -299,7 +300,11 @@ impl AgentConnection for StopConnection {
-         &[]
-     }
- 
--    fn authenticate(&self, _method: agent_client_protocol::schema::v2::AuthMethodId, _cx: &mut App) -> Task<Result<()>> {
-+    fn authenticate(
-+        &self,
-+        _method: agent_client_protocol::schema::v2::AuthMethodId,
-+        _cx: &mut App,
-+    ) -> Task<Result<()>> {
-         Task::ready(Ok(()))
-     }
  

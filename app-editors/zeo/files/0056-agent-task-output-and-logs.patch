@@ -84,10 +84,10 @@ patch's version 2 fields, which is why it is here and not in 0034. 3 tests
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index f2f2fa5..74e88da 100644
+index e104f7b..f25720a 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -3888,6 +3888,23 @@ pub struct AgentTask {
+@@ -3998,6 +3998,23 @@ pub struct AgentTask {
      pub usage: Option<AgentTaskUsage>,
      pub last_tool: Option<SharedString>,
      pub summary: Option<SharedString>,
@@ -111,7 +111,7 @@ index f2f2fa5..74e88da 100644
  }
  
  #[derive(Deserialize)]
-@@ -3911,6 +3928,16 @@ struct WireTask {
+@@ -4021,6 +4038,16 @@ struct WireTask {
      usage: Option<WireTaskUsage>,
      last_tool: Option<String>,
      summary: Option<String>,
@@ -128,7 +128,7 @@ index f2f2fa5..74e88da 100644
  }
  
  #[derive(Deserialize)]
-@@ -3940,7 +3967,20 @@ fn system_time_from_millis(millis: u64) -> SystemTime {
+@@ -4050,7 +4077,20 @@ fn system_time_from_millis(millis: u64) -> SystemTime {
  }
  
  impl From<WireTask> for AgentTask {
@@ -150,7 +150,7 @@ index f2f2fa5..74e88da 100644
          AgentTask {
              id: task.id.into(),
              tool_call_id: task.tool_call_id.map(acp_v2::ToolCallId::new),
-@@ -3964,6 +4004,11 @@ impl From<WireTask> for AgentTask {
+@@ -4074,6 +4114,11 @@ impl From<WireTask> for AgentTask {
              }),
              last_tool: task.last_tool.map(SharedString::from),
              summary: task.summary.map(SharedString::from),
@@ -162,7 +162,7 @@ index f2f2fa5..74e88da 100644
          }
      }
  }
-@@ -5270,6 +5315,17 @@ impl AcpThread {
+@@ -5423,6 +5468,17 @@ impl AcpThread {
              .stop_task(self.session_id(), task_id, cx)
      }
  
@@ -180,7 +180,7 @@ index f2f2fa5..74e88da 100644
      /// Resolves to `false` when the agent had nothing to move to the background.
      pub fn background_task(&self, tool_call_id: &str, cx: &mut App) -> Task<Result<bool>> {
          self.connection
-@@ -5534,10 +5590,14 @@ impl AcpThread {
+@@ -5694,10 +5750,14 @@ impl AcpThread {
                  {
                      match serde_json::from_value::<WireTasksSnapshot>(payload.clone()) {
                          Ok(snapshot) => self.apply_tasks_snapshot(snapshot, cx),
@@ -197,43 +197,7 @@ index f2f2fa5..74e88da 100644
                          ),
                      }
                  }
-@@ -9431,12 +9491,15 @@ mod tests {
-             "utilization": 0.40,
-         })));
-         for blank in ["", "   ", "\t\n"] {
--            assert!(!usage.ingest(&serde_json::json!({
--                "status": "allowed",
--                "rateLimitType": "model_scoped",
--                "displayName": blank,
--                "utilization": 0.40,
--            })), "display name {blank:?} is no name");
-+            assert!(
-+                !usage.ingest(&serde_json::json!({
-+                    "status": "allowed",
-+                    "rateLimitType": "model_scoped",
-+                    "displayName": blank,
-+                    "utilization": 0.40,
-+                })),
-+                "display name {blank:?} is no name"
-+            );
-         }
-         assert!(
-             usage.is_empty(),
-@@ -23899,7 +23962,12 @@ mod tests {
-         });
- 
-         thread.read_with(cx, |thread, _| {
--            assert_eq!(thread.entries().len(), 1, "entries were {:?}", thread.entries());
-+            assert_eq!(
-+                thread.entries().len(),
-+                1,
-+                "entries were {:?}",
-+                thread.entries()
-+            );
-             let compaction = compaction_entries(thread)
-                 .pop()
-                 .expect("the compaction entry survives the enrichment frame");
-@@ -27520,4 +27588,7 @@ mod tests {
+@@ -27949,4 +28009,7 @@ mod tests {
  
      include!("acp_thread_tasks_tests.rs");
      include!("acp_thread_tasks_review_tests.rs");
@@ -807,16 +771,16 @@ index 0000000..bc94905
 +    );
 +}
 diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
-index c85cd5d..2804d65 100644
+index 5b0f0b2..ad80e1a 100644
 --- a/crates/acp_thread/src/connection.rs
 +++ b/crates/acp_thread/src/connection.rs
 @@ -1,4 +1,4 @@
 -use crate::{AcpThread, ElicitationStore, ReceiptSubmission};
 +use crate::{AcpThread, ElicitationStore, ReceiptSubmission, TaskOutput};
- use agent_client_protocol::schema::{MaybeUndefined, v1 as acp_v1, v2 as acp_v2};
+ use agent_client_protocol::{schema::MaybeUndefined, v1::schema as acp_v1, v2::schema as acp_v2};
  use anyhow::Result;
  use chrono::{DateTime, Utc};
-@@ -158,6 +158,19 @@ pub trait AgentConnection {
+@@ -164,6 +164,19 @@ pub trait AgentConnection {
          Task::ready(Err(anyhow::Error::msg("Closing sessions is not supported")))
      }
  
@@ -910,10 +874,10 @@ index 0000000..63eb65f
 +  ]
 +}
 diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
-index 3cdc564..b1b3f4c 100644
+index bf421ab..ea4ee5e 100644
 --- a/crates/agent_servers/src/acp/v1.rs
 +++ b/crates/agent_servers/src/acp/v1.rs
-@@ -57,6 +57,9 @@ const PARAMETERIZED_MODEL_PICKER_META_KEY: &str = "parameterizedModelPicker";
+@@ -58,6 +58,9 @@ const PARAMETERIZED_MODEL_PICKER_META_KEY: &str = "parameterizedModelPicker";
  const CLAUDE_TASKS_CAPABILITY: &str = "_claude/tasks";
  const CLAUDE_TASKS_STOP_METHOD: &str = "_claude/tasks/stop";
  const CLAUDE_TASKS_BACKGROUND_METHOD: &str = "_claude/tasks/background";
@@ -923,7 +887,7 @@ index 3cdc564..b1b3f4c 100644
  async fn close_session_and_drain(
      connection: &ConnectionTo<Agent>,
      session_id: acp_v2::SessionId,
-@@ -94,6 +97,31 @@ async fn send_task_request(
+@@ -95,6 +98,31 @@ async fn send_task_request(
          .map_err(failed)
  }
  
@@ -955,7 +919,7 @@ index 3cdc564..b1b3f4c 100644
  pub struct AcpConnection {
      id: AgentId,
      telemetry_id: SharedString,
-@@ -963,14 +991,21 @@ impl AcpConnection {
+@@ -968,14 +996,21 @@ impl AcpConnection {
  
      /// Keyed on the capability alone: the entry id is whatever the user named it, and
      /// the agent's self-reported name differs between the fork and the published package.
@@ -979,7 +943,7 @@ index 3cdc564..b1b3f4c 100644
      }
  
      /// `rpc_call` gets a receiver that resolves once its response has been applied, and
-@@ -2141,6 +2176,38 @@ impl AgentConnection for AcpConnection {
+@@ -2146,6 +2181,38 @@ impl AgentConnection for AcpConnection {
              .spawn(async move { request.await.map(|_| ()) })
      }
  
@@ -1018,7 +982,7 @@ index 3cdc564..b1b3f4c 100644
      fn background_task(
          self: Rc<Self>,
          session_id: &acp_v2::SessionId,
-@@ -2526,6 +2593,17 @@ pub mod test_support {
+@@ -2531,6 +2598,17 @@ pub mod test_support {
                  .background_task(session_id, tool_call_id, cx)
          }
  
@@ -1036,7 +1000,7 @@ index 3cdc564..b1b3f4c 100644
          fn request_elicitations(&self) -> Option<Entity<ElicitationStore>> {
              self.inner.request_elicitations()
          }
-@@ -10349,6 +10427,7 @@ exit 7
+@@ -10489,6 +10567,7 @@ exit 7
      }
  
      include!("../acp_task_actions_tests.rs");
@@ -1299,7 +1263,7 @@ index 0000000..46ca0c4
 +    assert_eq!(task_actions_requests(&peer).len(), 1);
 +}
 diff --git a/crates/agent_tasks_panel/src/history_db.rs b/crates/agent_tasks_panel/src/history_db.rs
-index a7e570b..d5f0e9e 100644
+index 88626c8..9dc81c8 100644
 --- a/crates/agent_tasks_panel/src/history_db.rs
 +++ b/crates/agent_tasks_panel/src/history_db.rs
 @@ -44,7 +44,7 @@ pub struct AgentTaskHistoryDb(ThreadSafeConnection);
@@ -1705,11 +1669,11 @@ index 5c7fc30..c27a730 100644
      );
      assert!(
 diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
-index 84104b7..991006f 100644
+index b68d452..3ec5bbc 100644
 --- a/crates/agent_tasks_panel/src/panel.rs
 +++ b/crates/agent_tasks_panel/src/panel.rs
 @@ -15,7 +15,7 @@ use acp_thread::{AgentTask, AgentTaskId, AgentTaskStatus};
- use agent_client_protocol::schema::v2 as acp_v2;
+ use agent_client_protocol::v2::schema as acp_v2;
  use agent_ui::{
      AgentPanel, DEFAULT_THREAD_TITLE, OpenAgentSessionOptions, OpenedAgentSession, TaskRecord,
 -    TasksCard, collapse_label, display_label, open_agent_session,
@@ -2320,7 +2284,7 @@ index 0000000..9060c3a
 +    assert_eq!(active_editor(&mut panels), before, "nothing opened");
 +}
 diff --git a/crates/agent_tasks_panel/src/store.rs b/crates/agent_tasks_panel/src/store.rs
-index c782d72..61f3c9c 100644
+index fc6329b..cdbb4a8 100644
 --- a/crates/agent_tasks_panel/src/store.rs
 +++ b/crates/agent_tasks_panel/src/store.rs
 @@ -1,9 +1,13 @@
@@ -2353,7 +2317,7 @@ index c782d72..61f3c9c 100644
 +};
  
  use acp_thread::{AgentTask, AgentTaskId};
- use agent_client_protocol::schema::v2 as acp_v2;
+ use agent_client_protocol::v2::schema as acp_v2;
  use agent_ui::{
 -    TaskActivity, TaskLabels, TaskRecord, TasksCard, ThreadTitleChanged, normalize_user_label,
 +    TaskActivity, TaskLabels, TaskRecord, TasksCard, TasksCardEvent, ThreadTitleChanged,
@@ -3090,7 +3054,7 @@ index 0000000..a64f9e2
 +    }
 +}
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index 0a356d0..3b46f11 100644
+index e6bfe88..3b14c12 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -1580,6 +1580,30 @@ impl AgentPanel {
@@ -3326,7 +3290,7 @@ index 0a356d0..3b46f11 100644
      fn open_thread_at_tool_call(
          &mut self,
          session_id: &acp_v2::SessionId,
-@@ -7368,6 +7580,11 @@ impl AgentPanel {
+@@ -7382,6 +7594,11 @@ impl AgentPanel {
      }
  }
  
@@ -3339,7 +3303,7 @@ index 0a356d0..3b46f11 100644
  /// returns its index, or `None` when the root thread has no such entry: a nested
  /// subagent's tool call lives in its own thread, not among the root's entries.
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index 9b41954..be8d9d5 100644
+index 64cf53f..4b98f0a 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
 @@ -95,7 +95,11 @@ pub use crate::message_editor::MessageEditorEvent;
@@ -3470,7 +3434,7 @@ index 9b41954..be8d9d5 100644
  
  pub const DEFAULT_THREAD_TITLE: &str = "New Agent Thread";
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 38b5432..b2d5bef 100644
+index 217f19c..73b4f3f 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -2734,6 +2734,19 @@ impl ConversationView {
@@ -3494,7 +3458,7 @@ index 38b5432..b2d5bef 100644
          login: task::SpawnInTerminal,
          workspace: Entity<Workspace>,
 diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
-index 5c7cd60..b806f62 100644
+index 5daf1d1..9e6b526 100644
 --- a/crates/agent_ui/src/tasks_card.rs
 +++ b/crates/agent_ui/src/tasks_card.rs
 @@ -13,6 +13,7 @@
@@ -4193,7 +4157,7 @@ index 5c7cd60..b806f62 100644
          Some(usage) => format!("{} tokens · {} tool uses", usage.tokens, usage.tool_uses),
 diff --git a/crates/agent_ui/src/tasks_card/expand_tests.rs b/crates/agent_ui/src/tasks_card/expand_tests.rs
 new file mode 100644
-index 0000000..3586113
+index 0000000..551e8f2
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/expand_tests.rs
 @@ -0,0 +1,314 @@
@@ -4224,7 +4188,7 @@ index 0000000..3586113
 +// no tail block and no "No output yet".
 +
 +use acp_thread::AcpThread;
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::v1::schema as acp;
 +use gpui::{AppContext as _, Entity, FocusHandle, TestAppContext, VisualTestContext};
 +use serde_json::json;
 +
@@ -4513,7 +4477,7 @@ index 0000000..3586113
 +}
 diff --git a/crates/agent_ui/src/tasks_card/open_log_remote_tests.rs b/crates/agent_ui/src/tasks_card/open_log_remote_tests.rs
 new file mode 100644
-index 0000000..53749f0
+index 0000000..a919ef9
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/open_log_remote_tests.rs
 @@ -0,0 +1,514 @@
@@ -4574,8 +4538,8 @@ index 0000000..53749f0
 +};
 +
 +use acp_thread::{AcpThread, AgentConnection, StubAgentConnection, TaskOutput};
-+use agent_client_protocol::schema::v1 as acp;
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v1::schema as acp;
++use agent_client_protocol::v2::schema as acp_v2;
 +use anyhow::{Result, anyhow};
 +use gpui::{App, AppContext as _, Entity, SharedString, Task, TestAppContext, VisualTestContext};
 +use project::{AgentId, Project};
@@ -5033,7 +4997,7 @@ index 0000000..53749f0
 +}
 diff --git a/crates/agent_ui/src/tasks_card/open_log_tests.rs b/crates/agent_ui/src/tasks_card/open_log_tests.rs
 new file mode 100644
-index 0000000..226c6e6
+index 0000000..a104e02
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/open_log_tests.rs
 @@ -0,0 +1,562 @@
@@ -5075,8 +5039,8 @@ index 0000000..226c6e6
 +};
 +
 +use acp_thread::{AcpThread, AgentConnection, StubAgentConnection, TaskOutput};
-+use agent_client_protocol::schema::v1 as acp;
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v1::schema as acp;
++use agent_client_protocol::v2::schema as acp_v2;
 +use anyhow::{Result, anyhow};
 +use gpui::{App, AppContext as _, Entity, SharedString, Task, TestAppContext, VisualTestContext};
 +use project::{AgentId, Project};
@@ -5601,7 +5565,7 @@ index 0000000..226c6e6
 +}
 diff --git a/crates/agent_ui/src/tasks_card/open_subagent_tests.rs b/crates/agent_ui/src/tasks_card/open_subagent_tests.rs
 new file mode 100644
-index 0000000..135e6fb
+index 0000000..c6f9be0
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/open_subagent_tests.rs
 @@ -0,0 +1,197 @@
@@ -5633,8 +5597,8 @@ index 0000000..135e6fb
 +// says so; with two subagents, each opens its own session, never the other's.
 +
 +use acp_thread::AcpThread;
-+use agent_client_protocol::schema::v1 as acp;
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v1::schema as acp;
++use agent_client_protocol::v2::schema as acp_v2;
 +use gpui::{Entity, TestAppContext, VisualTestContext};
 +use serde_json::json;
 +
@@ -6708,23 +6672,13 @@ index 0000000..76acc2a
 +    );
 +}
 diff --git a/crates/agent_ui/src/tasks_card/test_helpers.rs b/crates/agent_ui/src/tasks_card/test_helpers.rs
-index 6b2f789..ada9d99 100644
+index 0208066..c0d1b0c 100644
 --- a/crates/agent_ui/src/tasks_card/test_helpers.rs
 +++ b/crates/agent_ui/src/tasks_card/test_helpers.rs
-@@ -171,7 +171,42 @@ impl AgentConnection for TaskActionsConnection {
-                 project,
-                 action_log,
-                 session_id,
--                watch::Receiver::constant(agent_client_protocol::schema::v2::PromptCapabilities::new()),
-+                watch::Receiver::constant(
-+                    agent_client_protocol::schema::v2::PromptCapabilities::new(),
-+                ),
-+                cx,
-+            )
-+        });
-+        Task::ready(Ok(thread))
-+    }
-+
+@@ -180,6 +180,39 @@ impl AgentConnection for TaskActionsConnection {
+         Task::ready(Ok(thread))
+     }
+ 
 +    // Loads a subagent's own session the way `new_session` builds a thread, so the
 +    // conversation can hold and show a subagent thread (story 041, R5.5).
 +    fn supports_load_session(&self) -> bool {
@@ -6750,26 +6704,19 @@ index 6b2f789..ada9d99 100644
 +                action_log,
 +                session_id,
 +                watch::Receiver::constant(
-+                    agent_client_protocol::schema::v2::PromptCapabilities::new(),
++                    agent_client_protocol::v2::schema::PromptCapabilities::new(),
 +                ),
-                 cx,
-             )
-         });
-@@ -182,7 +217,11 @@ impl AgentConnection for TaskActionsConnection {
++                cx,
++            )
++        });
++        Task::ready(Ok(thread))
++    }
++
+     fn auth_methods(&self) -> &[agent_client_protocol::v2::schema::AuthMethod] {
          &[]
      }
- 
--    fn authenticate(&self, _method: agent_client_protocol::schema::v2::AuthMethodId, _cx: &mut App) -> Task<Result<()>> {
-+    fn authenticate(
-+        &self,
-+        _method: agent_client_protocol::schema::v2::AuthMethodId,
-+        _cx: &mut App,
-+    ) -> Task<Result<()>> {
-         Task::ready(Ok(()))
-     }
- 
 diff --git a/crates/agent_ui/src/test_support.rs b/crates/agent_ui/src/test_support.rs
-index c0238fc..01b566f 100644
+index 70af3e2..3f454d9 100644
 --- a/crates/agent_ui/src/test_support.rs
 +++ b/crates/agent_ui/src/test_support.rs
 @@ -294,10 +294,13 @@ pub fn type_draft_prompt(panel: &Entity<AgentPanel>, text: &str, cx: &mut Visual

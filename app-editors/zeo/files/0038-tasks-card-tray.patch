@@ -81,7 +81,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index 4a29b83..ca4b8aa 100644
+index 9bf46ce..c62124c 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -1550,7 +1550,10 @@ impl AgentPanel {
@@ -96,7 +96,7 @@ index 4a29b83..ca4b8aa 100644
          // The dock caches this panel's view, and a hidden card is not rendered at
          // all, so the card's own notify would never reach the screen: whether it
          // shows is decided here, in `render`. Once shown, the card repaints itself;
-@@ -4509,6 +4512,48 @@ impl AgentPanel {
+@@ -4514,6 +4517,48 @@ impl AgentPanel {
          self.retained_threads.remove(thread_id)
      }
  
@@ -146,7 +146,7 @@ index 4a29b83..ca4b8aa 100644
      pub(crate) fn tasks_card(&self) -> &Entity<TasksCard> {
          &self.tasks_card
 diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
-index a955b5d..4e41c41 100644
+index 7b47b8b..d87c3c5 100644
 --- a/crates/agent_ui/src/tasks_card.rs
 +++ b/crates/agent_ui/src/tasks_card.rs
 @@ -30,6 +30,8 @@ use ui::{ButtonLike, Chip, CommonAnimationExt as _, Tooltip, prelude::*};
@@ -304,7 +304,7 @@ index a955b5d..4e41c41 100644
  }
 diff --git a/crates/agent_ui/src/tasks_card/restored_outcome_tests.rs b/crates/agent_ui/src/tasks_card/restored_outcome_tests.rs
 new file mode 100644
-index 0000000..4a00fbb
+index 0000000..c72d1db
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/restored_outcome_tests.rs
 @@ -0,0 +1,333 @@
@@ -346,7 +346,7 @@ index 0000000..4a00fbb
 +use std::{cell::RefCell, io, os::unix::net::UnixDatagram, path::Path, rc::Rc, time::Duration};
 +
 +use acp_thread::{AcpThread, AgentConnection};
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use gpui::{AppContext as _, Entity, Subscription, TestAppContext};
 +
 +use super::send::ENV_LOCK;
@@ -659,7 +659,7 @@ index 0000000..f863c60
 +}
 diff --git a/crates/agent_ui/src/tasks_card/tray.rs b/crates/agent_ui/src/tasks_card/tray.rs
 new file mode 100644
-index 0000000..5968ccd
+index 0000000..ebf7884
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/tray.rs
 @@ -0,0 +1,217 @@
@@ -680,7 +680,7 @@ index 0000000..5968ccd
 +};
 +
 +use acp_thread::{AgentTask, AgentTaskStatus};
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use gpui::{App, AppContext as _};
 +use serde::Serialize;
 +
@@ -882,7 +882,7 @@ index 0000000..5968ccd
 +}
 diff --git a/crates/agent_ui/src/tasks_card/tray/decision_tests.rs b/crates/agent_ui/src/tasks_card/tray/decision_tests.rs
 new file mode 100644
-index 0000000..2be26f8
+index 0000000..fb384e5
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/tray/decision_tests.rs
 @@ -0,0 +1,265 @@
@@ -896,7 +896,7 @@ index 0000000..2be26f8
 +};
 +
 +use acp_thread::{AgentTask, AgentTaskStatus};
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use gpui::{TestAppContext, VisualTestContext};
 +use serde_json::json;
 +
@@ -1153,10 +1153,10 @@ index 0000000..2be26f8
 +}
 diff --git a/crates/agent_ui/src/tasks_card/tray/dedupe_tests.rs b/crates/agent_ui/src/tasks_card/tray/dedupe_tests.rs
 new file mode 100644
-index 0000000..8583740
+index 0000000..1318816
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/tray/dedupe_tests.rs
-@@ -0,0 +1,277 @@
+@@ -0,0 +1,281 @@
 +// Story 013 / task 9.2 — one ending, one datagram, however many views hold its
 +// thread (R5.10). Filter: `tasks_card::tray::dedupe`.
 +//
@@ -1178,8 +1178,8 @@ index 0000000..8583740
 +};
 +
 +use acp_thread::{AcpThread, AgentConnection};
-+use agent_client_protocol::schema::v1 as acp;
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v1::schema as acp;
++use agent_client_protocol::v2::schema as acp_v2;
 +use anyhow::{Result, anyhow};
 +use gpui::{
 +    App, AppContext as _, Entity, SharedString, Task, TestAppContext, VisualTestContext, WeakEntity,
@@ -1289,17 +1289,21 @@ index 0000000..8583740
 +        Task::ready(held.ok_or_else(|| anyhow!("session {session_id} is not open")))
 +    }
 +
-+    fn auth_methods(&self) -> &[agent_client_protocol::schema::v2::AuthMethod] {
++    fn auth_methods(&self) -> &[agent_client_protocol::v2::schema::AuthMethod] {
 +        &[]
 +    }
 +
-+    fn authenticate(&self, method: agent_client_protocol::schema::v2::AuthMethodId, cx: &mut App) -> Task<Result<()>> {
++    fn authenticate(
++        &self,
++        method: agent_client_protocol::v2::schema::AuthMethodId,
++        cx: &mut App,
++    ) -> Task<Result<()>> {
 +        self.inner.authenticate(method, cx)
 +    }
 +
 +    fn prompt(
 +        &self,
-+        params: agent_client_protocol::schema::v2::PromptRequest,
++        params: agent_client_protocol::v2::schema::PromptRequest,
 +        cx: &mut App,
 +    ) -> Task<Result<acp::PromptResponse>> {
 +        self.inner.prompt(params, cx)
@@ -1436,10 +1440,10 @@ index 0000000..8583740
 +}
 diff --git a/crates/agent_ui/src/tasks_card/tray/send_tests.rs b/crates/agent_ui/src/tasks_card/tray/send_tests.rs
 new file mode 100644
-index 0000000..8b72c4a
+index 0000000..88f6e35
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/tray/send_tests.rs
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,326 @@
 +// Story 013 / task 6.2 — the non-blocking send and its wiring (R5.1, R5.3, R5.4).
 +// Filter: `tasks_card::tray::send`.
 +//
@@ -1570,7 +1574,11 @@ index 0000000..8b72c4a
 +    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 +    for dir in ["", "rel", "./run/user"] {
 +        set_runtime_dir(Some(std::path::Path::new(dir)));
-+        assert_eq!(super::socket_path(), None, "XDG_RUNTIME_DIR={dir:?} is not used");
++        assert_eq!(
++            super::socket_path(),
++            None,
++            "XDG_RUNTIME_DIR={dir:?} is not used"
++        );
 +        assert!(send(&datagram()).is_ok());
 +    }
 +    set_runtime_dir(None);
@@ -1764,7 +1772,7 @@ index 0000000..8b72c4a
 +}
 diff --git a/crates/agent_ui/src/tasks_card/tray/subagent_tests.rs b/crates/agent_ui/src/tasks_card/tray/subagent_tests.rs
 new file mode 100644
-index 0000000..1b4434d
+index 0000000..63549d7
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/tray/subagent_tests.rs
 @@ -0,0 +1,265 @@
@@ -1801,7 +1809,7 @@ index 0000000..1b4434d
 +    time::{Duration, SystemTime},
 +};
 +
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use gpui::TestAppContext;
 +
 +use super::send::ENV_LOCK;
@@ -2035,10 +2043,10 @@ index 0000000..1b4434d
 +}
 diff --git a/crates/agent_ui/src/tasks_card/tray/wiring_tests.rs b/crates/agent_ui/src/tasks_card/tray/wiring_tests.rs
 new file mode 100644
-index 0000000..f3b27be
+index 0000000..802967d
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/tray/wiring_tests.rs
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,189 @@
 +// Story 013 / task 6.2 review — what the card asks before telling the tray, and
 +// the cap on the title it sends. Filter: `tasks_card::tray::wiring`.
 +//
@@ -2049,7 +2057,7 @@ index 0000000..f3b27be
 +// in-view answer itself, not a datagram that merely failed to arrive.
 +
 +use acp_thread::AgentTask;
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use gpui::{Entity, TestAppContext, VisualTestContext};
 +use project::Project;
 +use workspace::MultiWorkspace;
@@ -2060,7 +2068,11 @@ index 0000000..f3b27be
 +use crate::tasks_card::test_helpers::*;
 +
 +/// The card's answer to "is this session's thread in front of the user?".
-+fn in_view(card: &Entity<TasksCard>, session: &acp_v2::SessionId, cx: &mut VisualTestContext) -> bool {
++fn in_view(
++    card: &Entity<TasksCard>,
++    session: &acp_v2::SessionId,
++    cx: &mut VisualTestContext,
++) -> bool {
 +    card.update(cx, |card, cx| {
 +        card.in_view
 +            .as_ref()

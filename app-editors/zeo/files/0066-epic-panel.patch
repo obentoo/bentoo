@@ -98,10 +98,10 @@ the fs symlink log line).
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
-index 8894601..0c2dcd6 100644
+index 03439e1..9778fe6 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -5841,6 +5841,30 @@ dependencies = [
+@@ -5862,6 +5862,30 @@ dependencies = [
   "serde",
  ]
  
@@ -132,7 +132,7 @@ index 8894601..0c2dcd6 100644
  [[package]]
  name = "equator"
  version = "0.4.2"
-@@ -22563,6 +22587,7 @@ dependencies = [
+@@ -22615,6 +22639,7 @@ dependencies = [
   "editor",
   "encoding_selector",
   "env_logger 0.11.8",
@@ -141,7 +141,7 @@ index 8894601..0c2dcd6 100644
   "extension",
   "extension_host",
 diff --git a/Cargo.toml b/Cargo.toml
-index be8e7ce..eaa1371 100644
+index a9ab818..030a9e4 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -71,6 +71,7 @@ members = [
@@ -152,7 +152,7 @@ index be8e7ce..eaa1371 100644
      "crates/etw_tracing",
      "crates/eval_cli",
      "crates/eval_utils",
-@@ -355,6 +356,7 @@ edit_prediction_ui = { path = "crates/edit_prediction_ui" }
+@@ -357,6 +358,7 @@ edit_prediction_ui = { path = "crates/edit_prediction_ui" }
  editor = { path = "crates/editor" }
  encoding_selector = { path = "crates/encoding_selector" }
  env_var = { path = "crates/env_var" }
@@ -720,10 +720,10 @@ index 0000000..a2d9fed
 +mod cell_tests;
 diff --git a/crates/epic_panel/src/format_cell_tests.rs b/crates/epic_panel/src/format_cell_tests.rs
 new file mode 100644
-index 0000000..86e6900
+index 0000000..3322452
 --- /dev/null
 +++ b/crates/epic_panel/src/format_cell_tests.rs
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,398 @@
 +// Story 042, task 2.3 — the Status and Progress cells (R3.1, R3.4-R3.8, R4.3, R4.4).
 +//
 +// Mounted from `src/format.rs` as
@@ -769,7 +769,10 @@ index 0000000..86e6900
 +}
 +
 +fn spike_tasks(verdict: &str) -> String {
-+    fm(&[("scale", "spike"), ("status", "in-progress")], &format!("## Verdict\n{verdict}\n"))
++    fm(
++        &[("scale", "spike"), ("status", "in-progress")],
++        &format!("## Verdict\n{verdict}\n"),
++    )
 +}
 +
 +// ── where status comes from (R3.1) ──────────────────────────────────────────
@@ -810,10 +813,18 @@ index 0000000..86e6900
 +#[test]
 +fn cell_no_status_anywhere_is_the_em_dash() {
 +    let story = fm(&[("type", "feature")], "");
-+    for (story, tasks) in [(None, None), (Some(story.as_str()), None), (None, Some("# no frontmatter\n"))] {
++    for (story, tasks) in [
++        (None, None),
++        (Some(story.as_str()), None),
++        (None, Some("# no frontmatter\n")),
++    ] {
 +        let shown = text(story, tasks, &[]);
 +        assert_eq!(shown, EM_DASH);
-+        assert_eq!(shown.as_bytes(), [0xE2, 0x80, 0x94], "U+2014, not '-' or '--'");
++        assert_eq!(
++            shown.as_bytes(),
++            [0xE2, 0x80, 0x94],
++            "U+2014, not '-' or '--'"
++        );
 +        assert!(matches!(cell(story, tasks, &[]), StatusCell::Absent));
 +    }
 +}
@@ -823,11 +834,21 @@ index 0000000..86e6900
 +#[test]
 +fn cell_lifecycle_values_are_recognised() {
 +    let cases: [(&str, fn(&StatusCell) -> bool); 5] = [
-+        ("draft", |c| matches!(c, StatusCell::Lifecycle(Lifecycle::Draft))),
-+        ("in-progress", |c| matches!(c, StatusCell::Lifecycle(Lifecycle::InProgress))),
-+        ("done", |c| matches!(c, StatusCell::Lifecycle(Lifecycle::Done))),
-+        ("validated", |c| matches!(c, StatusCell::Lifecycle(Lifecycle::Validated))),
-+        ("archived", |c| matches!(c, StatusCell::Lifecycle(Lifecycle::Archived))),
++        ("draft", |c| {
++            matches!(c, StatusCell::Lifecycle(Lifecycle::Draft))
++        }),
++        ("in-progress", |c| {
++            matches!(c, StatusCell::Lifecycle(Lifecycle::InProgress))
++        }),
++        ("done", |c| {
++            matches!(c, StatusCell::Lifecycle(Lifecycle::Done))
++        }),
++        ("validated", |c| {
++            matches!(c, StatusCell::Lifecycle(Lifecycle::Validated))
++        }),
++        ("archived", |c| {
++            matches!(c, StatusCell::Lifecycle(Lifecycle::Archived))
++        }),
 +    ];
 +    for (status, is_expected) in cases {
 +        let story = fm(&[("status", status)], "");
@@ -837,14 +858,25 @@ index 0000000..86e6900
 +    }
 +    let story = fm(&[("status", "superseded")], "");
 +    let got = cell(Some(&story), None, &[]);
-+    assert!(!matches!(got, StatusCell::Unknown(_)), "superseded is a known status");
++    assert!(
++        !matches!(got, StatusCell::Unknown(_)),
++        "superseded is a known status"
++    );
 +    assert_eq!(got.text(), "superseded");
 +}
 +
 +// Hostile half: spellings one character away from a lifecycle value are NOT that value.
 +#[test]
 +fn cell_near_miss_statuses_are_unknown_and_shown_verbatim() {
-+    for status in ["Done", "DONE", "in_progress", "inprogress", "validated!", "blocked", "done-ish"] {
++    for status in [
++        "Done",
++        "DONE",
++        "in_progress",
++        "inprogress",
++        "validated!",
++        "blocked",
++        "done-ish",
++    ] {
 +        let story = fm(&[("status", status)], "");
 +        let got = cell(Some(&story), None, &[]);
 +        assert!(
@@ -862,7 +894,10 @@ index 0000000..86e6900
 +    for raw in ["\"done\"", "'done'", "done # closed early", "  done  "] {
 +        let story = fm(&[("status", raw)], "");
 +        assert!(
-+            matches!(cell(Some(&story), None, &[]), StatusCell::Lifecycle(Lifecycle::Done)),
++            matches!(
++                cell(Some(&story), None, &[]),
++                StatusCell::Lifecycle(Lifecycle::Done)
++            ),
 +            "{raw:?}"
 +        );
 +    }
@@ -874,9 +909,15 @@ index 0000000..86e6900
 +fn cell_spike_shows_its_verdict() {
 +    let tasks = spike_tasks("- status: wont-do");
 +    let got = cell(None, Some(&tasks), &[]);
-+    assert!(matches!(got, StatusCell::Verdict { .. }), "a verdict, not a lifecycle or Unknown");
++    assert!(
++        matches!(got, StatusCell::Verdict { .. }),
++        "a verdict, not a lifecycle or Unknown"
++    );
 +    assert_eq!(got.text(), "wont-do");
-+    assert_eq!(text(None, Some(&spike_tasks("- status: open")), &[]), "open");
++    assert_eq!(
++        text(None, Some(&spike_tasks("- status: open")), &[]),
++        "open"
++    );
 +}
 +
 +#[test]
@@ -889,9 +930,16 @@ index 0000000..86e6900
 +
 +#[test]
 +fn cell_spike_promote_without_a_target_is_bare() {
-+    assert_eq!(text(None, Some(&spike_tasks("- status: promote")), &["12"]), "promote");
 +    assert_eq!(
-+        text(None, Some(&spike_tasks("- status: promote\n- promoted-to: NNN")), &["12"]),
++        text(None, Some(&spike_tasks("- status: promote")), &["12"]),
++        "promote"
++    );
++    assert_eq!(
++        text(
++            None,
++            Some(&spike_tasks("- status: promote\n- promoted-to: NNN")),
++            &["12"]
++        ),
 +        "promote"
 +    );
 +}
@@ -909,7 +957,11 @@ index 0000000..86e6900
 +    let tasks = fm(&[("scale", "spike"), ("status", "done")], "## Overview\n");
 +    assert_eq!(text(None, Some(&tasks), &[]), EM_DASH);
 +    let story = fm(&[("scale", "spike"), ("status", "done")], "");
-+    assert_eq!(text(Some(&story), None, &[]), EM_DASH, "spike with no tasks.md");
++    assert_eq!(
++        text(Some(&story), None, &[]),
++        EM_DASH,
++        "spike with no tasks.md"
++    );
 +}
 +
 +// Hostile half for "which file says spike": story.md's scale wins when present.
@@ -933,7 +985,11 @@ index 0000000..86e6900
 +    let story = fm(&[("scale", "spike")], "## Verdict\n- status: wont-do\n");
 +    let tasks = spike_tasks("- status: open");
 +    assert_eq!(text(Some(&story), Some(&tasks), &[]), "open");
-+    assert_eq!(text(Some(&story), None, &[]), EM_DASH, "a verdict in story.md is never read");
++    assert_eq!(
++        text(Some(&story), None, &[]),
++        EM_DASH,
++        "a verdict in story.md is never read"
++    );
 +}
 +
 +// ── superseded (R3.6) ───────────────────────────────────────────────────────
@@ -942,7 +998,10 @@ index 0000000..86e6900
 +fn cell_superseded_by_resolved_and_missing() {
 +    let story = fm(&[("status", "superseded"), ("superseded-by", "7")], "");
 +    assert_eq!(text(Some(&story), None, &["7"]), "superseded by 7");
-+    assert_eq!(text(Some(&story), None, &["8"]), "superseded by 7 (missing)");
++    assert_eq!(
++        text(Some(&story), None, &["8"]),
++        "superseded by 7 (missing)"
++    );
 +}
 +
 +#[test]
@@ -991,9 +1050,15 @@ index 0000000..86e6900
 +#[test]
 +fn cell_resolution_does_not_collapse_different_numbers() {
 +    let tasks = spike_tasks("- status: promote\n- promoted-to: 120");
-+    assert_eq!(text(None, Some(&tasks), &["12"]), "promote to 120 (missing)");
++    assert_eq!(
++        text(None, Some(&tasks), &["12"]),
++        "promote to 120 (missing)"
++    );
 +    let story = fm(&[("status", "superseded"), ("superseded-by", "1")], "");
-+    assert_eq!(text(Some(&story), None, &["12", "10"]), "superseded by 1 (missing)");
++    assert_eq!(
++        text(Some(&story), None, &["12", "10"]),
++        "superseded by 1 (missing)"
++    );
 +}
 +
 +// Hostile half (wrong split): 012 and 12 are the same story number.
@@ -1013,14 +1078,18 @@ index 0000000..86e6900
 +        false
 +    };
 +    let tasks = spike_tasks("- status: promote\n- promoted-to: 0042-slug");
-+    assert_eq!(status_cell(None, Some(&tasks), &known).text(), "promote to 0042-slug (missing)");
++    assert_eq!(
++        status_cell(None, Some(&tasks), &known).text(),
++        "promote to 0042-slug (missing)"
++    );
 +    let story = fm(&[("status", "superseded"), ("superseded-by", "000")], "");
 +    status_cell(Some(&story), None, &known);
 +    let asked = asked.into_inner();
 +    assert!(!asked.is_empty(), "the resolver is consulted");
 +    for number in &asked {
 +        assert!(
-+            number.chars().all(|c| c.is_ascii_digit()) && (number == "0" || !number.starts_with('0')),
++            number.chars().all(|c| c.is_ascii_digit())
++                && (number == "0" || !number.starts_with('0')),
 +            "known() received {number:?}; it must get strip_zeros of the leading digits"
 +        );
 +    }
@@ -1055,10 +1124,10 @@ index 0000000..86e6900
 +}
 diff --git a/crates/epic_panel/src/format_census_tests.rs b/crates/epic_panel/src/format_census_tests.rs
 new file mode 100644
-index 0000000..82a81df
+index 0000000..0363f59
 --- /dev/null
 +++ b/crates/epic_panel/src/format_census_tests.rs
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,149 @@
 +// Story 042, task 2.2 — the checkbox census (R4.1, R4.2).
 +//
 +// Mounted from `src/format.rs` as
@@ -1129,7 +1198,11 @@ index 0000000..82a81df
 +#[test]
 +fn census_counts_boxes_inside_fenced_code_blocks() {
 +    let text = "```markdown\n- [x] in a fence\n- [ ] also\n```\n- [x] outside\n";
-+    assert_eq!(census(text), c(3, 2, 0), "A7: the plugin does not skip fences");
++    assert_eq!(
++        census(text),
++        c(3, 2, 0),
++        "A7: the plugin does not skip fences"
++    );
 +}
 +
 +#[test]
@@ -1175,7 +1248,11 @@ index 0000000..82a81df
 +        "- [~] x (N-A: case matters)",
 +        "- [~] x (Deferred: case matters)",
 +    ] {
-+        assert_eq!(census(line), c(1, 0, 0), "{line:?} counts in the total only");
++        assert_eq!(
++            census(line),
++            c(1, 0, 0),
++            "{line:?} counts in the total only"
++        );
 +    }
 +}
 +
@@ -1202,10 +1279,10 @@ index 0000000..82a81df
 +}
 diff --git a/crates/epic_panel/src/format_dir_tests.rs b/crates/epic_panel/src/format_dir_tests.rs
 new file mode 100644
-index 0000000..b1dc1a8
+index 0000000..3f58e75
 --- /dev/null
 +++ b/crates/epic_panel/src/format_dir_tests.rs
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,82 @@
 +// Story 042, task 2.1 — story directory names and the numeric key (R2.2).
 +//
 +// Mounted from `src/format.rs` as
@@ -1223,7 +1300,10 @@ index 0000000..b1dc1a8
 +
 +#[test]
 +fn split_dir_name_splits_number_and_slug() {
-+    assert_eq!(split_dir_name("042-epic-panel-read-only"), (Some("042"), "epic-panel-read-only"));
++    assert_eq!(
++        split_dir_name("042-epic-panel-read-only"),
++        (Some("042"), "epic-panel-read-only")
++    );
 +    assert_eq!(split_dir_name("7-x"), (Some("7"), "x"));
 +    assert_eq!(split_dir_name("0099-c"), (Some("0099"), "c"));
 +    // The number is the leading digit run; everything after the FIRST hyphen is the slug.
@@ -1235,14 +1315,13 @@ index 0000000..b1dc1a8
 +#[test]
 +fn split_dir_name_refuses_names_that_only_look_numbered() {
 +    for name in [
-+        "042",      // no slug
-+        "042-",     // empty slug
-+        "-042-x",   // no leading digit
-+        "abc-1",    // letters first
-+        "v2-x",
-+        "4a-x",     // digits then a letter before the hyphen
-+        "١٢-x",     // Arabic-Indic digits are not [0-9] under LC_ALL=C
-+        "１２-x",   // fullwidth digits neither
++        "042",    // no slug
++        "042-",   // empty slug
++        "-042-x", // no leading digit
++        "abc-1",  // letters first
++        "v2-x", "4a-x",   // digits then a letter before the hyphen
++        "١٢-x",   // Arabic-Indic digits are not [0-9] under LC_ALL=C
++        "１２-x", // fullwidth digits neither
 +        "",
 +    ] {
 +        assert_eq!(split_dir_name(name), (None, ""), "{name:?}");
@@ -1288,10 +1367,10 @@ index 0000000..b1dc1a8
 +}
 diff --git a/crates/epic_panel/src/format_front_tests.rs b/crates/epic_panel/src/format_front_tests.rs
 new file mode 100644
-index 0000000..f50a85b
+index 0000000..4bc6e88
 --- /dev/null
 +++ b/crates/epic_panel/src/format_front_tests.rs
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,293 @@
 +// Story 042, task 2.1 — the frontmatter reader and the title (R3.2, R3.3, R6.4, R2.9).
 +//
 +// Mounted from `src/format.rs` as
@@ -1398,7 +1477,8 @@ index 0000000..f50a85b
 +
 +#[test]
 +fn front_value_ignores_keys_it_was_not_asked_for() {
-+    let text = fm("history:\n  - 2026-10-10: a: b\t|c\nweird line without colon\nstatus: done\nextra: x");
++    let text =
++        fm("history:\n  - 2026-10-10: a: b\t|c\nweird line without colon\nstatus: done\nextra: x");
 +    assert_eq!(value(&text, "status").as_deref(), Some("done"));
 +    assert_eq!(value(&text, "scale"), None);
 +}
@@ -1501,7 +1581,10 @@ index 0000000..f50a85b
 +
 +#[test]
 +fn front_value_never_reads_below_the_closing_line() {
-+    assert_eq!(value("---\ntype: feature\n---\nstatus: done\n", "status"), None);
++    assert_eq!(
++        value("---\ntype: feature\n---\nstatus: done\n", "status"),
++        None
++    );
 +}
 +
 +#[test]
@@ -1532,7 +1615,10 @@ index 0000000..f50a85b
 +#[test]
 +fn front_value_borrows_when_it_does_not_need_to_allocate() {
 +    let text = fm("status: done");
-+    assert!(matches!(front_value(&text, "status"), Some(Cow::Borrowed("done"))));
++    assert!(matches!(
++        front_value(&text, "status"),
++        Some(Cow::Borrowed("done"))
++    ));
 +}
 +
 +// ── title (R2.9) ────────────────────────────────────────────────────────────
@@ -1548,7 +1634,10 @@ index 0000000..f50a85b
 +// Hostile half: words that merely contain a prefix are not stripped.
 +#[test]
 +fn title_keeps_text_that_only_resembles_a_prefix() {
-+    assert_eq!(title("# Storytelling - tips\n"), Some("Storytelling - tips"));
++    assert_eq!(
++        title("# Storytelling - tips\n"),
++        Some("Storytelling - tips")
++    );
 +    assert_eq!(title("# A Story - told\n"), Some("A Story - told"));
 +    assert_eq!(title("# Story-less\n"), Some("Story-less"));
 +    assert_eq!(title("# Designer - notes\n"), Some("Designer - notes"));
@@ -1562,7 +1651,10 @@ index 0000000..f50a85b
 +
 +#[test]
 +fn title_takes_the_first_level_one_heading_only() {
-+    assert_eq!(title("## Overview\n#NoSpace\n# Story - First\n# Second\n"), Some("First"));
++    assert_eq!(
++        title("## Overview\n#NoSpace\n# Story - First\n# Second\n"),
++        Some("First")
++    );
 +    assert_eq!(title("## Only deeper\n### headings\n"), None);
 +    assert_eq!(title(""), None);
 +}
@@ -1574,10 +1666,10 @@ index 0000000..f50a85b
 +}
 diff --git a/crates/epic_panel/src/format_verdict_tests.rs b/crates/epic_panel/src/format_verdict_tests.rs
 new file mode 100644
-index 0000000..0aa5ab2
+index 0000000..622001d
 --- /dev/null
 +++ b/crates/epic_panel/src/format_verdict_tests.rs
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,208 @@
 +// Story 042, task 2.2 — the spike `## Verdict` section (R3.4).
 +//
 +// Mounted from `src/format.rs` as
@@ -1607,14 +1699,18 @@ index 0000000..0aa5ab2
 +
 +#[test]
 +fn verdict_reads_status_and_target() {
-+    let text = "# Plan\n\n## Verdict\n- status: promote\n- conclusion: worth it\n- promoted-to: 044\n";
++    let text =
++        "# Plan\n\n## Verdict\n- status: promote\n- conclusion: worth it\n- promoted-to: 044\n";
 +    assert_eq!(parse_verdict(text), v(Some("promote"), Some("044")));
 +}
 +
 +#[test]
 +fn verdict_absent_section_is_empty() {
 +    assert_eq!(parse_verdict(""), v(None, None));
-+    assert_eq!(parse_verdict("## Overview\n- status: open\n"), v(None, None));
++    assert_eq!(
++        parse_verdict("## Overview\n- status: open\n"),
++        v(None, None)
++    );
 +}
 +
 +// Hostile half first: a `status:` outside the section — above all the frontmatter's
@@ -1638,7 +1734,11 @@ index 0000000..0aa5ab2
 +        "## Verdict ",
 +    ] {
 +        let text = format!("{heading}\n- status: wont-do\n");
-+        assert_eq!(parse_verdict(&text), v(Some("wont-do"), None), "{heading:?}");
++        assert_eq!(
++            parse_verdict(&text),
++            v(Some("wont-do"), None),
++            "{heading:?}"
++        );
 +    }
 +}
 +
@@ -1687,7 +1787,10 @@ index 0000000..0aa5ab2
 +        parse_verdict("## Verdict\n- status: open | promote | wont-do\n"),
 +        v(Some("open"), None)
 +    );
-+    assert_eq!(parse_verdict("## Verdict\n- status: promote|x\n"), v(Some("promote"), None));
++    assert_eq!(
++        parse_verdict("## Verdict\n- status: promote|x\n"),
++        v(Some("promote"), None)
++    );
 +    assert_eq!(
 +        parse_verdict("## Verdict\n- status: wont-do (decided)\n"),
 +        v(Some("wont-do"), None)
@@ -1696,11 +1799,21 @@ index 0000000..0aa5ab2
 +
 +#[test]
 +fn verdict_status_line_shapes() {
-+    for line in ["status: open", "- status: open", "  - status:open", "\t-\tstatus:   open"] {
++    for line in [
++        "status: open",
++        "- status: open",
++        "  - status:open",
++        "\t-\tstatus:   open",
++    ] {
 +        let text = format!("## Verdict\n{line}\n");
 +        assert_eq!(parse_verdict(&text), v(Some("open"), None), "{line:?}");
 +    }
-+    for line in ["- substatus: open", "- **status**: open", "* status: open", "-status: open"] {
++    for line in [
++        "- substatus: open",
++        "- **status**: open",
++        "* status: open",
++        "-status: open",
++    ] {
 +        let text = format!("## Verdict\n{line}\n");
 +        assert_eq!(parse_verdict(&text), v(None, None), "{line:?}");
 +    }
@@ -1728,7 +1841,9 @@ index 0000000..0aa5ab2
 +        v(Some("promote"), None)
 +    );
 +    assert_eq!(
-+        parse_verdict("## Verdict\n- status: promote\n- promoted-to: NNN   # required\n- promoted-to: 7\n"),
++        parse_verdict(
++            "## Verdict\n- status: promote\n- promoted-to: NNN   # required\n- promoted-to: 7\n"
++        ),
 +        v(Some("promote"), Some("7"))
 +    );
 +    assert_eq!(
@@ -1765,10 +1880,10 @@ index 0000000..0aa5ab2
 +}
 diff --git a/crates/epic_panel/src/never_writes_tests.rs b/crates/epic_panel/src/never_writes_tests.rs
 new file mode 100644
-index 0000000..887d0c4
+index 0000000..8e00df6
 --- /dev/null
 +++ b/crates/epic_panel/src/never_writes_tests.rs
-@@ -0,0 +1,359 @@
+@@ -0,0 +1,463 @@
 +// Story 042, task 3.2 — the panel never writes and never starts a process (R6.5, R6.6).
 +//
 +// Mounted from the crate root `src/epic_panel.rs` as
@@ -1840,28 +1955,84 @@ index 0000000..887d0c4
 +        text.push_str(body);
 +        text.into_bytes()
 +    };
-+    write(&epic, "EPICO.md", b"# Epic\n\n<!-- epico:index:start -->\n<!-- epico:index:end -->\n");
-+    write(&epic, "stories/001-normal/story.md", &fm(&[("status", "in-progress"), ("type", "feature")], "# Story - Normal\n"));
-+    write(&epic, "stories/001-normal/tasks.md", b"- [x] a\n- [ ] b\n- [~] c (deferred: d)\n");
-+    write(&epic, "stories/002-spike/tasks.md", &fm(&[("scale", "spike")], "## Verdict\n- status: promote\n- promoted-to: 3\n"));
-+    write(&epic, "stories/004-no-status/story.md", &fm(&[("type", "bug")], "# Story - No status\n"));
-+    write(&epic, "stories/005-unknown/story.md", &fm(&[("status", "blocked")], ""));
-+    write(&epic, "stories/006-superseded/story.md", &fm(&[("status", "superseded"), ("superseded-by", "3")], ""));
-+    write(&epic, "stories/007-dangling/story.md", &fm(&[("status", "superseded"), ("superseded-by", "999")], ""));
++    write(
++        &epic,
++        "EPICO.md",
++        b"# Epic\n\n<!-- epico:index:start -->\n<!-- epico:index:end -->\n",
++    );
++    write(
++        &epic,
++        "stories/001-normal/story.md",
++        &fm(
++            &[("status", "in-progress"), ("type", "feature")],
++            "# Story - Normal\n",
++        ),
++    );
++    write(
++        &epic,
++        "stories/001-normal/tasks.md",
++        b"- [x] a\n- [ ] b\n- [~] c (deferred: d)\n",
++    );
++    write(
++        &epic,
++        "stories/002-spike/tasks.md",
++        &fm(
++            &[("scale", "spike")],
++            "## Verdict\n- status: promote\n- promoted-to: 3\n",
++        ),
++    );
++    write(
++        &epic,
++        "stories/004-no-status/story.md",
++        &fm(&[("type", "bug")], "# Story - No status\n"),
++    );
++    write(
++        &epic,
++        "stories/005-unknown/story.md",
++        &fm(&[("status", "blocked")], ""),
++    );
++    write(
++        &epic,
++        "stories/006-superseded/story.md",
++        &fm(&[("status", "superseded"), ("superseded-by", "3")], ""),
++    );
++    write(
++        &epic,
++        "stories/007-dangling/story.md",
++        &fm(&[("status", "superseded"), ("superseded-by", "999")], ""),
++    );
 +    write(&epic, "stories/notes/tasks.md", b"- [ ] unnumbered\n");
 +    mkdir(&epic, "stories/008-empty/.draft");
 +    write(&epic, "stories/009-binary/tasks.md", b"- [x] a\n\xff\xfe\n");
 +    let mut large = b"- [x] a\n".to_vec();
 +    large.resize(1024 * 1024 + 1, b' ');
 +    write(&epic, "stories/010-large/tasks.md", &large);
-+    write(&epic, "archive/003-archived/story.md", &fm(&[("status", "archived")], "# Story - Archived\n"));
++    write(
++        &epic,
++        "archive/003-archived/story.md",
++        &fm(&[("status", "archived")], "# Story - Archived\n"),
++    );
 +    write(&epic, "archive/manifest.yaml", b"entries: []\n");
 +
-+    write(root, "outside/real-story/story.md", &fm(&[("status", "validated")], ""));
++    write(
++        root,
++        "outside/real-story/story.md",
++        &fm(&[("status", "validated")], ""),
++    );
 +    write(root, "outside/secret.md", b"- [x] secret\n");
-+    symlink(&root.join("outside/real-story"), &epic.join("stories/011-linked-dir"));
-+    write(&epic, "stories/012-linked-file/story.md", &fm(&[("status", "done")], ""));
-+    symlink(&root.join("outside/secret.md"), &epic.join("stories/012-linked-file/tasks.md"));
++    symlink(
++        &root.join("outside/real-story"),
++        &epic.join("stories/011-linked-dir"),
++    );
++    write(
++        &epic,
++        "stories/012-linked-file/story.md",
++        &fm(&[("status", "done")], ""),
++    );
++    symlink(
++        &root.join("outside/secret.md"),
++        &epic.join("stories/012-linked-file/tasks.md"),
++    );
 +    epic
 +}
 +
@@ -1890,10 +2061,12 @@ index 0000000..887d0c4
 +        let file_type = meta.file_type();
 +        let kind = if file_type.is_symlink() {
 +            Kind::Symlink {
-+                target: stdfs::read_link(path).unwrap_or_else(|e| panic!("read_link {}: {e}", path.display())),
++                target: stdfs::read_link(path)
++                    .unwrap_or_else(|e| panic!("read_link {}: {e}", path.display())),
 +            }
 +        } else if file_type.is_dir() {
-+            let entries = stdfs::read_dir(path).unwrap_or_else(|e| panic!("read_dir {}: {e}", path.display()));
++            let entries = stdfs::read_dir(path)
++                .unwrap_or_else(|e| panic!("read_dir {}: {e}", path.display()));
 +            for entry in entries {
 +                let entry = entry.unwrap_or_else(|e| panic!("entry of {}: {e}", path.display()));
 +                walk(root, &entry.path(), out);
@@ -1922,9 +2095,17 @@ index 0000000..887d0c4
 +fn assert_same_tree(before: &BTreeMap<PathBuf, EntryState>, after: &BTreeMap<PathBuf, EntryState>) {
 +    let before_names: Vec<_> = before.keys().collect();
 +    let after_names: Vec<_> = after.keys().collect();
-+    assert_eq!(after_names, before_names, "R6.5: no path was created, removed or renamed");
++    assert_eq!(
++        after_names, before_names,
++        "R6.5: no path was created, removed or renamed"
++    );
 +    for (path, state) in before {
-+        assert_eq!(after.get(path), Some(state), "R6.5: {} changed", path.display());
++        assert_eq!(
++            after.get(path),
++            Some(state),
++            "R6.5: {} changed",
++            path.display()
++        );
 +    }
 +}
 +
@@ -1938,7 +2119,10 @@ index 0000000..887d0c4
 +    let fifo = {
 +        let fifo = epic.join("stories/013-fifo/tasks.md");
 +        mkdir(&epic, "stories/013-fifo");
-+        let made = std::process::Command::new("mkfifo").arg(&fifo).status().expect("mkfifo runs");
++        let made = std::process::Command::new("mkfifo")
++            .arg(&fifo)
++            .status()
++            .expect("mkfifo runs");
 +        assert!(made.success(), "mkfifo {}", fifo.display());
 +        fifo
 +    };
@@ -1952,7 +2136,11 @@ index 0000000..887d0c4
 +        // A reader that opens the FIFO gets EOF instead of hanging the test.
 +        let handle = std::thread::spawn(move || {
 +            while !flag.load(Ordering::SeqCst) {
-+                if let Ok(writer) = stdfs::OpenOptions::new().write(true).custom_flags(0o4000).open(&fifo) {
++                if let Ok(writer) = stdfs::OpenOptions::new()
++                    .write(true)
++                    .custom_flags(0o4000)
++                    .open(&fifo)
++                {
 +                    drop(writer);
 +                }
 +                std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1964,7 +2152,9 @@ index 0000000..887d0c4
 +    let before = tree_state(temp.path());
 +    let fs: Arc<dyn Fs> = fs::RealFs::new(None, cx.executor());
 +    for _ in 0..2 {
-+        let snapshot = scan_epic_dir(fs.clone(), epic.clone()).await.expect("the corpus scans");
++        let snapshot = scan_epic_dir(fs.clone(), epic.clone())
++            .await
++            .expect("the corpus scans");
 +        assert!(
 +            snapshot.active.len() + snapshot.archived.len() >= 13,
 +            "the scan saw the corpus (else this test proves nothing)"
@@ -2001,7 +2191,11 @@ index 0000000..887d0c4
 +    build_corpus(temp.path());
 +    let base = tree_state(temp.path());
 +    let epic = temp.path().join("project/.epico");
-+    stdfs::rename(epic.join("stories/004-no-status"), epic.join("archive/004-no-status")).expect("rename");
++    stdfs::rename(
++        epic.join("stories/004-no-status"),
++        epic.join("archive/004-no-status"),
++    )
++    .expect("rename");
 +    assert_ne!(tree_state(temp.path()), base, "a move is noticed");
 +}
 +
@@ -2044,15 +2238,21 @@ index 0000000..887d0c4
 +}
 +
 +fn is_test_source(path: &Path) -> bool {
-+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
++    let name = path
++        .file_name()
++        .and_then(|name| name.to_str())
++        .unwrap_or_default();
 +    name.ends_with("_tests.rs") || name.ends_with("test_helpers.rs")
 +}
 +
 +fn non_test_sources() -> Vec<PathBuf> {
 +    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-+        let entries = stdfs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
++        let entries =
++            stdfs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
 +        for entry in entries {
-+            let path = entry.unwrap_or_else(|e| panic!("entry of {}: {e}", dir.display())).path();
++            let path = entry
++                .unwrap_or_else(|e| panic!("entry of {}: {e}", dir.display()))
++                .path();
 +            if path.is_dir() {
 +                walk(&path, out);
 +            } else if path.extension().is_some_and(|ext| ext == "rs") && !is_test_source(&path) {
@@ -2071,19 +2271,31 @@ index 0000000..887d0c4
 +    let sources = non_test_sources();
 +    let names: Vec<String> = sources
 +        .iter()
-+        .filter_map(|path| path.file_name().and_then(|name| name.to_str()).map(str::to_string))
++        .filter_map(|path| {
++            path.file_name()
++                .and_then(|name| name.to_str())
++                .map(str::to_string)
++        })
 +        .collect();
 +    for required in ["format.rs", "scan.rs"] {
-+        assert!(names.contains(&required.to_string()), "the guard must read {required}; it read {names:?}");
++        assert!(
++            names.contains(&required.to_string()),
++            "the guard must read {required}; it read {names:?}"
++        );
 +    }
 +    let mut report = Vec::new();
 +    for path in &sources {
-+        let source = stdfs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
++        let source =
++            stdfs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
 +        for violation in violations(&source) {
 +            report.push(format!("{}: {violation}", path.display()));
 +        }
 +    }
-+    assert!(report.is_empty(), "R6.5/R6.6: non-test code names a writer or a process:\n{}", report.join("\n"));
++    assert!(
++        report.is_empty(),
++        "R6.5/R6.6: non-test code names a writer or a process:\n{}",
++        report.join("\n")
++    );
 +}
 +
 +// Hostile half: the matcher fires on every forbidden shape...
@@ -2106,7 +2318,10 @@ index 0000000..887d0c4
 +        "fs.trash(&path, Default::default()).await?;",
 +        "fs . copy_file (&a, &b, Default::default()).await?;",
 +    ] {
-+        assert!(!violations(sample).is_empty(), "the guard must flag {sample:?}");
++        assert!(
++            !violations(sample).is_empty(),
++            "the guard must flag {sample:?}"
++        );
 +    }
 +}
 +
@@ -2125,7 +2340,11 @@ index 0000000..887d0c4
 +        "let renamed = row.renamed_from.clone();",
 +        "use std::{path::PathBuf, sync::Arc};",
 +    ] {
-+        assert!(violations(sample).is_empty(), "the guard must not flag {sample:?}: {:?}", violations(sample));
++        assert!(
++            violations(sample).is_empty(),
++            "the guard must not flag {sample:?}: {:?}",
++            violations(sample)
++        );
 +    }
 +}
 diff --git a/crates/epic_panel/src/panel.rs b/crates/epic_panel/src/panel.rs
@@ -4639,10 +4858,10 @@ index 0000000..64f5026
 +}
 diff --git a/crates/epic_panel/src/panel_fs_log_tests.rs b/crates/epic_panel/src/panel_fs_log_tests.rs
 new file mode 100644
-index 0000000..195c875
+index 0000000..5bce402
 --- /dev/null
 +++ b/crates/epic_panel/src/panel_fs_log_tests.rs
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,278 @@
 +// Story 042, task 11.1 — a hostile symlink in `.epico/` puts no absolute path in any log line,
 +// from any crate (R8.5, R8.4; Q5, Q14). Module path: `panel::panel_fs_log_tests`.
 +//
@@ -4739,11 +4958,17 @@ index 0000000..195c875
 +    let stories = project.join(".epico/stories");
 +    let story = |status: &str| fm(&[("status", status)], "# Story - Hostile link\n");
 +
-+    write(&stories.join(LOOP_STORY).join("story.md"), &story("in-progress"));
++    write(
++        &stories.join(LOOP_STORY).join("story.md"),
++        &story("in-progress"),
++    );
 +    let loop_tasks = stories.join(LOOP_STORY).join("tasks.md");
 +    symlink(&loop_tasks, &loop_tasks);
 +
-+    write(&stories.join(LOCKED_STORY).join("story.md"), &story("draft"));
++    write(
++        &stories.join(LOCKED_STORY).join("story.md"),
++        &story("draft"),
++    );
 +    let locked_dir = root.join("locked");
 +    let locked_target = locked_dir.join("tasks.md");
 +    write(&locked_target, "- [ ] hidden\n");
@@ -4753,7 +4978,11 @@ index 0000000..195c875
 +    let unlock = Unlock(locked_dir);
 +    let locked_errors = stdfs::metadata(&locked_target).is_err();
 +
-+    let mut hostile = vec![loop_tasks, stories.join(LOCKED_STORY).join("tasks.md"), locked_target];
++    let mut hostile = vec![
++        loop_tasks,
++        stories.join(LOCKED_STORY).join("tasks.md"),
++        locked_target,
++    ];
 +    for entry in [LOOP_ENTRY, FORGING_ENTRY] {
 +        let link = stories.join(entry);
 +        symlink(&link, &link);
@@ -4791,17 +5020,25 @@ index 0000000..195c875
 +        forbidden.push(canonical.to_string_lossy().into_owned());
 +    }
 +    for path in &forbidden {
-+        assert!(path.contains("epic_panel"), "the capture sees this path only through its name: {path}");
++        assert!(
++            path.contains("epic_panel"),
++            "the capture sees this path only through its name: {path}"
++        );
 +    }
 +
 +    let fs: Arc<dyn fs::Fs> = fs::RealFs::new(None, cx.executor());
 +    cx.update(|cx| <dyn fs::Fs>::set_global(fs.clone(), cx));
 +    let project = project::Project::test(fs.clone(), [corpus.project.as_path()], cx).await;
-+    let window = cx.add_window(|window, cx| workspace::MultiWorkspace::test_new(project.clone(), window, cx));
-+    let workspace = window.read_with(cx, |multi, _| multi.workspace().clone()).expect("workspace");
++    let window = cx
++        .add_window(|window, cx| workspace::MultiWorkspace::test_new(project.clone(), window, cx));
++    let workspace = window
++        .read_with(cx, |multi, _| multi.workspace().clone())
++        .expect("workspace");
 +    let mut vcx = gpui::VisualTestContext::from_window(window.into(), cx);
 +    let panel = load(&workspace, &mut vcx).await;
-+    workspace.update_in(&mut vcx, |workspace, window, cx| workspace.add_panel(panel.clone(), window, cx));
++    workspace.update_in(&mut vcx, |workspace, window, cx| {
++        workspace.add_panel(panel.clone(), window, cx)
++    });
 +    vcx.run_until_parked();
 +    let fake = fs::FakeFs::new(vcx.executor());
 +    let mut rig = Rig {
@@ -4832,7 +5069,11 @@ index 0000000..195c875
 +    for dir_name in [LOOP_STORY, LOCKED_STORY] {
 +        let row = find_row(&mut rig, dir_name)
 +            .unwrap_or_else(|| panic!("{dir_name} is listed: {:?}", lines(&mut rig)));
-+        assert_eq!(row.problem, Some(RowProblem::Symlink("tasks.md".to_string())), "{dir_name}: {row:?}");
++        assert_eq!(
++            row.problem,
++            Some(RowProblem::Symlink("tasks.md".to_string())),
++            "{dir_name}: {row:?}"
++        );
 +        assert_eq!(row_badge(&row), Some("symlink not followed"), "{dir_name}");
 +    }
 +
@@ -4841,9 +5082,11 @@ index 0000000..195c875
 +    // Liveness: the `fs` crate's warn for the looping entry was captured, so the scan below
 +    // looked at the `fs` crate's lines and not only the panel's.
 +    assert!(
-+        captured.iter().any(|(level, line)| *level == log::Level::Warn
-+            && line.contains(LOOP_ENTRY)
-+            && !line.starts_with("epic_panel ")),
++        captured
++            .iter()
++            .any(|(level, line)| *level == log::Level::Warn
++                && line.contains(LOOP_ENTRY)
++                && !line.starts_with("epic_panel ")),
 +        "the capture saw the fs crate's warn for the looping entry {LOOP_ENTRY:?}: {captured:#?}"
 +    );
 +
@@ -4884,20 +5127,25 @@ index 0000000..195c875
 +
 +    // The derived file name is written escaped: a name holding a newline forges no line.
 +    for (level, line) in &captured {
-+        assert!(!line.contains('\n'), "a {level} line holds a raw newline (forged line): {line:?}");
++        assert!(
++            !line.contains('\n'),
++            "a {level} line holds a raw newline (forged line): {line:?}"
++        );
 +    }
 +
 +    if !corpus.locked_errors {
-+        eprintln!("panel_fs_log: the locked target was readable (running as root?); only the loop exercised the error path");
++        eprintln!(
++            "panel_fs_log: the locked target was readable (running as root?); only the loop exercised the error path"
++        );
 +    }
 +    drop(rig);
 +}
 diff --git a/crates/epic_panel/src/panel_live_tests.rs b/crates/epic_panel/src/panel_live_tests.rs
 new file mode 100644
-index 0000000..d3db3aa
+index 0000000..c37aa42
 --- /dev/null
 +++ b/crates/epic_panel/src/panel_live_tests.rs
-@@ -0,0 +1,335 @@
+@@ -0,0 +1,474 @@
 +// Story 042, task 5.4 — live updates, Refresh, the watch-failure banner and the logs (R5.1-R5.6,
 +// R8.1-R8.4; Q14; R6.5 over a full panel session). Module path: `panel::panel_live_tests`.
 +// See panel_test_helpers.rs for the assumed contract.
@@ -4936,28 +5184,52 @@ index 0000000..d3db3aa
 +#[gpui::test]
 +async fn panel_live_tasks_md_change_shows_within_two_seconds(cx: &mut TestAppContext) {
 +    let mut rig = rig(cx, &[("/work/project", corpus())], &["/work/project"]).await;
-+    assert_eq!(line_of(&mut rig, "001 a").as_deref(), Some("001 a | in-progress | 0/2"));
++    assert_eq!(
++        line_of(&mut rig, "001 a").as_deref(),
++        Some("001 a | in-progress | 0/2")
++    );
 +    rig.fs
-+        .insert_file("/work/project/.epico/stories/001-a/tasks.md", b"- [x] one\n- [ ] two\n".to_vec())
++        .insert_file(
++            "/work/project/.epico/stories/001-a/tasks.md",
++            b"- [x] one\n- [ ] two\n".to_vec(),
++        )
 +        .await;
 +    settle(&mut rig.cx);
-+    assert_eq!(line_of(&mut rig, "001 a").as_deref(), Some("001 a | in-progress | 1/2"), "R5.1");
++    assert_eq!(
++        line_of(&mut rig, "001 a").as_deref(),
++        Some("001 a | in-progress | 1/2"),
++        "R5.1"
++    );
 +
 +    rig.fs
-+        .insert_file("/work/project/.epico/stories/001-a/story.md", fm(&[("status", "done")], "").into_bytes())
++        .insert_file(
++            "/work/project/.epico/stories/001-a/story.md",
++            fm(&[("status", "done")], "").into_bytes(),
++        )
 +        .await;
 +    settle(&mut rig.cx);
-+    assert_eq!(line_of(&mut rig, "001 a").as_deref(), Some("001 a | done | 1/2"), "R5.1 status");
++    assert_eq!(
++        line_of(&mut rig, "001 a").as_deref(),
++        Some("001 a | done | 1/2"),
++        "R5.1 status"
++    );
 +}
 +
 +#[gpui::test]
 +async fn panel_live_directories_added_moved_removed(cx: &mut TestAppContext) {
 +    let mut rig = rig(cx, &[("/work/project", corpus())], &["/work/project"]).await;
 +    rig.fs
-+        .insert_tree("/work/project/.epico/stories/004-new", json!({ "story.md": fm(&[("status", "draft")], "") }))
++        .insert_tree(
++            "/work/project/.epico/stories/004-new",
++            json!({ "story.md": fm(&[("status", "draft")], "") }),
++        )
 +        .await;
 +    settle(&mut rig.cx);
-+    assert!(line_of(&mut rig, "004 new").is_some(), "R5.2 added: {:?}", lines(&mut rig));
++    assert!(
++        line_of(&mut rig, "004 new").is_some(),
++        "R5.2 added: {:?}",
++        lines(&mut rig)
++    );
 +
 +    rig.fs
 +        .rename(
@@ -4968,8 +5240,15 @@ index 0000000..d3db3aa
 +        .await
 +        .expect("archive 002-b");
 +    settle(&mut rig.cx);
-+    assert!(line_of(&mut rig, "002 b").is_none(), "moved out of the active rows");
-+    assert!(line_of(&mut rig, "Archived (2)").is_some(), "R5.2 moved: {:?}", lines(&mut rig));
++    assert!(
++        line_of(&mut rig, "002 b").is_none(),
++        "moved out of the active rows"
++    );
++    assert!(
++        line_of(&mut rig, "Archived (2)").is_some(),
++        "R5.2 moved: {:?}",
++        lines(&mut rig)
++    );
 +
 +    rig.fs
 +        .remove_dir(
@@ -5006,8 +5285,15 @@ index 0000000..d3db3aa
 +    settle(&mut rig.cx);
 +    let scans = events("scan").len() - scans_before;
 +    // 20 changes over ~1 s, then the deadline: at most one read per 500 ms window.
-+    assert!((1..=4).contains(&scans), "R5.3: {scans} reads for 20 changes in 1 s");
-+    assert_eq!(line_of(&mut rig, "001 a").as_deref(), Some("001 a | in-progress | 1/2"), "the last change lands");
++    assert!(
++        (1..=4).contains(&scans),
++        "R5.3: {scans} reads for 20 changes in 1 s"
++    );
++    assert_eq!(
++        line_of(&mut rig, "001 a").as_deref(),
++        Some("001 a | in-progress | 1/2"),
++        "the last change lands"
++    );
 +}
 +
 +// R5.5 — Refresh re-reads even when no event arrives; its hostile half: without Refresh (and
@@ -5017,15 +5303,26 @@ index 0000000..d3db3aa
 +    let mut rig = rig(cx, &[("/work/project", corpus())], &["/work/project"]).await;
 +    rig.fs.pause_events();
 +    rig.fs
-+        .insert_file("/work/project/.epico/stories/001-a/tasks.md", b"- [x] one\n- [x] two\n".to_vec())
++        .insert_file(
++            "/work/project/.epico/stories/001-a/tasks.md",
++            b"- [x] one\n- [x] two\n".to_vec(),
++        )
 +        .await;
 +    settle(&mut rig.cx);
-+    assert_eq!(line_of(&mut rig, "001 a").as_deref(), Some("001 a | in-progress | 0/2"), "no event, no change");
++    assert_eq!(
++        line_of(&mut rig, "001 a").as_deref(),
++        Some("001 a | in-progress | 0/2"),
++        "no event, no change"
++    );
 +
 +    focus_panel(&mut rig);
 +    press(&mut rig, super::Refresh);
 +    settle(&mut rig.cx);
-+    assert_eq!(line_of(&mut rig, "001 a").as_deref(), Some("001 a | in-progress | 2/2"), "R5.5");
++    assert_eq!(
++        line_of(&mut rig, "001 a").as_deref(),
++        Some("001 a | in-progress | 2/2"),
++        "R5.5"
++    );
 +    rig.fs.unpause_events_and_flush();
 +}
 +
@@ -5065,11 +5362,16 @@ index 0000000..d3db3aa
 +        "/work/project/.epico/stories/001-a/tasks.md",
 +    );
 +    let project = project::Project::test(fs.clone(), [Path::new("/work/project")], cx).await;
-+    let window = cx.add_window(|window, cx| workspace::MultiWorkspace::test_new(project.clone(), window, cx));
-+    let workspace = window.read_with(cx, |multi, _| multi.workspace().clone()).expect("workspace");
++    let window = cx
++        .add_window(|window, cx| workspace::MultiWorkspace::test_new(project.clone(), window, cx));
++    let workspace = window
++        .read_with(cx, |multi, _| multi.workspace().clone())
++        .expect("workspace");
 +    let mut vcx = gpui::VisualTestContext::from_window(window.into(), cx);
 +    let panel = load(&workspace, &mut vcx).await;
-+    workspace.update_in(&mut vcx, |workspace, window, cx| workspace.add_panel(panel.clone(), window, cx));
++    workspace.update_in(&mut vcx, |workspace, window, cx| {
++        workspace.add_panel(panel.clone(), window, cx)
++    });
 +    settle(&mut vcx);
 +    let mut rig = Rig {
 +        fs,
@@ -5082,71 +5384,126 @@ index 0000000..d3db3aa
 +    let shown = banner(&mut rig).expect("R5.6: a banner is shown");
 +    assert!(shown.starts_with("Live updates are off: "), "{shown}");
 +    assert!(shown.ends_with(". Use Refresh."), "{shown}");
-+    assert!(line_of(&mut rig, "001 a").is_some(), "the list is still shown");
++    assert!(
++        line_of(&mut rig, "001 a").is_some(),
++        "the list is still shown"
++    );
 +
 +    let failures = events("watch_failed");
 +    assert_eq!(failures.len(), 1, "R8.3 one warn line: {failures:?}");
 +    assert_eq!(failures[0].0, log::Level::Warn);
 +    assert_eq!(field(&failures[0].1, "worktree"), Some("project"));
 +    assert!(field(&failures[0].1, "reason").is_some());
-+    assert!(!failures[0].1.contains("/work/"), "R8.4 no absolute path: {}", failures[0].1);
++    assert!(
++        !failures[0].1.contains("/work/"),
++        "R8.4 no absolute path: {}",
++        failures[0].1
++    );
 +
 +    rig.fs.pause_events();
 +    rig.fs
-+        .insert_file("/work/project/.epico/stories/001-a/tasks.md", b"- [x] one\n- [x] two\n".to_vec())
++        .insert_file(
++            "/work/project/.epico/stories/001-a/tasks.md",
++            b"- [x] one\n- [x] two\n".to_vec(),
++        )
 +        .await;
 +    focus_panel(&mut rig);
 +    press(&mut rig, super::Refresh);
 +    settle(&mut rig.cx);
-+    assert_eq!(line_of(&mut rig, "001 a").as_deref(), Some("001 a | in-progress | 2/2"), "Refresh still works");
++    assert_eq!(
++        line_of(&mut rig, "001 a").as_deref(),
++        Some("001 a | in-progress | 2/2"),
++        "Refresh still works"
++    );
 +    rig.fs.unpause_events_and_flush();
 +}
 +
 +// R8.1, R8.2, R8.4, Q14 — the log lines.
 +#[gpui::test]
-+async fn panel_live_logs_are_structured_and_carry_no_content_or_absolute_path(cx: &mut TestAppContext) {
++async fn panel_live_logs_are_structured_and_carry_no_content_or_absolute_path(
++    cx: &mut TestAppContext,
++) {
 +    capture_logs();
 +    let mut tree = corpus();
 +    tree[".epico"]["stories"]["005-binary"] = json!({ "story.md": fm(&[("status", "draft")], "") });
 +    let mut rig = rig(cx, &[("/work/project", tree)], &["/work/project"]).await;
 +    rig.fs
-+        .insert_file("/work/project/.epico/stories/005-binary/tasks.md", b"\xff\xfe".to_vec())
++        .insert_file(
++            "/work/project/.epico/stories/005-binary/tasks.md",
++            b"\xff\xfe".to_vec(),
++        )
 +        .await;
 +    settle(&mut rig.cx);
 +
 +    let scans = events("scan");
 +    assert!(!scans.is_empty(), "R8.1 a scan line is logged");
-+    assert_eq!(scans[0].0, log::Level::Info, "R8.1 the first read logs at info");
++    assert_eq!(
++        scans[0].0,
++        log::Level::Info,
++        "R8.1 the first read logs at info"
++    );
 +    let first = &scans[0].1;
 +    assert_eq!(field(first, "worktree"), Some("project"));
 +    assert_eq!(field(first, "stories"), Some("3"), "{first}");
 +    assert_eq!(field(first, "archived"), Some("1"), "{first}");
-+    assert!(field(first, "problems").is_some_and(|n| n.parse::<u32>().is_ok()), "{first}");
-+    assert!(field(first, "duration_ms").is_some_and(|n| n.parse::<u64>().is_ok()), "{first}");
++    assert!(
++        field(first, "problems").is_some_and(|n| n.parse::<u32>().is_ok()),
++        "{first}"
++    );
++    assert!(
++        field(first, "duration_ms").is_some_and(|n| n.parse::<u64>().is_ok()),
++        "{first}"
++    );
 +    for (level, line) in &scans[1..] {
-+        assert_eq!(*level, log::Level::Debug, "R8.1 later reads log at debug: {line}");
++        assert_eq!(
++            *level,
++            log::Level::Debug,
++            "R8.1 later reads log at debug: {line}"
++        );
 +    }
 +
 +    // R8.2 names no field keys: a warn line naming the story directory and the file.
 +    let warns_for_binary = || {
 +        panel_lines()
 +            .into_iter()
-+            .filter(|(level, line)| *level == log::Level::Warn && line.contains("005-binary") && line.contains("tasks.md"))
++            .filter(|(level, line)| {
++                *level == log::Level::Warn
++                    && line.contains("005-binary")
++                    && line.contains("tasks.md")
++            })
 +            .count()
 +    };
-+    assert_eq!(warns_for_binary(), 1, "R8.2 one warn line for the new problem: {:?}", panel_lines());
++    assert_eq!(
++        warns_for_binary(),
++        1,
++        "R8.2 one warn line for the new problem: {:?}",
++        panel_lines()
++    );
 +
 +    // The same problem on the next read is not logged again (once per change of reason).
 +    focus_panel(&mut rig);
 +    press(&mut rig, super::Refresh);
 +    settle(&mut rig.cx);
-+    assert_eq!(warns_for_binary(), 1, "R8.2 not repeated while the reason is unchanged");
++    assert_eq!(
++        warns_for_binary(),
++        1,
++        "R8.2 not repeated while the reason is unchanged"
++    );
 +
 +    for (_, line) in panel_lines() {
-+        assert!(!line.contains(SECRET), "R8.4 no story content in the log: {line}");
-+        assert!(!line.contains("/work/project"), "R8.4 no absolute path in the log: {line}");
++        assert!(
++            !line.contains(SECRET),
++            "R8.4 no story content in the log: {line}"
++        );
++        assert!(
++            !line.contains("/work/project"),
++            "R8.4 no absolute path in the log: {line}"
++        );
 +        if let Some(start) = line.find("event=") {
-+            assert!(parses_as_key_values(&line[start..]), "Q14 key=value fields (quote values with spaces): {line}");
++            assert!(
++                parses_as_key_values(&line[start..]),
++                "Q14 key=value fields (quote values with spaces): {line}"
++            );
 +        }
 +    }
 +}
@@ -5166,11 +5523,16 @@ index 0000000..d3db3aa
 +    let fs: Arc<dyn fs::Fs> = fs::RealFs::new(None, cx.executor());
 +    cx.update(|cx| <dyn fs::Fs>::set_global(fs.clone(), cx));
 +    let project = project::Project::test(fs.clone(), [project_root.as_path()], cx).await;
-+    let window = cx.add_window(|window, cx| workspace::MultiWorkspace::test_new(project.clone(), window, cx));
-+    let workspace = window.read_with(cx, |multi, _| multi.workspace().clone()).expect("workspace");
++    let window = cx
++        .add_window(|window, cx| workspace::MultiWorkspace::test_new(project.clone(), window, cx));
++    let workspace = window
++        .read_with(cx, |multi, _| multi.workspace().clone())
++        .expect("workspace");
 +    let mut vcx = gpui::VisualTestContext::from_window(window.into(), cx);
 +    let panel = load(&workspace, &mut vcx).await;
-+    workspace.update_in(&mut vcx, |workspace, window, cx| workspace.add_panel(panel.clone(), window, cx));
++    workspace.update_in(&mut vcx, |workspace, window, cx| {
++        workspace.add_panel(panel.clone(), window, cx)
++    });
 +    vcx.run_until_parked();
 +    let fake = fs::FakeFs::new(vcx.executor());
 +    let mut rig = Rig {
@@ -5188,7 +5550,11 @@ index 0000000..d3db3aa
 +        std::thread::sleep(Duration::from_millis(50));
 +        rig.cx.run_until_parked();
 +    }
-+    assert!(line_of(&mut rig, "001 normal").is_some(), "the panel read the corpus: {:?}", lines(&mut rig));
++    assert!(
++        line_of(&mut rig, "001 normal").is_some(),
++        "the panel read the corpus: {:?}",
++        lines(&mut rig)
++    );
 +    activate_line(&mut rig, "Archived (");
 +    activate_line(&mut rig, "001 normal");
 +    focus_panel(&mut rig);
@@ -5197,9 +5563,18 @@ index 0000000..d3db3aa
 +    drop(rig);
 +
 +    let after = crate::never_writes_tests::tree_state(temp.path());
-+    assert_eq!(after.keys().collect::<Vec<_>>(), before.keys().collect::<Vec<_>>(), "R6.5 names");
++    assert_eq!(
++        after.keys().collect::<Vec<_>>(),
++        before.keys().collect::<Vec<_>>(),
++        "R6.5 names"
++    );
 +    for (path, state) in &before {
-+        assert_eq!(after.get(path), Some(state), "R6.5: {} changed during a panel session", path.display());
++        assert_eq!(
++            after.get(path),
++            Some(state),
++            "R6.5: {} changed during a panel session",
++            path.display()
++        );
 +    }
 +}
 +
@@ -5210,14 +5585,18 @@ index 0000000..d3db3aa
 +        if rest.is_empty() {
 +            return true;
 +        }
-+        let Some(eq) = rest.find('=') else { return false };
++        let Some(eq) = rest.find('=') else {
++            return false;
++        };
 +        let key = &rest[..eq];
 +        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
 +            return false;
 +        }
 +        rest = &rest[eq + 1..];
 +        if let Some(quoted) = rest.strip_prefix('"') {
-+            let Some(end) = quoted.find('"') else { return false };
++            let Some(end) = quoted.find('"') else {
++                return false;
++            };
 +            rest = &quoted[end + 1..];
 +        } else {
 +            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
@@ -5228,17 +5607,25 @@ index 0000000..d3db3aa
 +
 +#[test]
 +fn panel_live_key_value_parser_both_directions() {
-+    assert!(parses_as_key_values("event=scan worktree=project stories=2 duration_ms=4"));
-+    assert!(parses_as_key_values("event=watch_failed worktree=p reason=\"too many open files\""));
-+    assert!(!parses_as_key_values("event=problem reason=stream did not contain valid UTF-8"));
-+    assert!(!parses_as_key_values("event=scan worktree=p reason=\"unterminated"));
++    assert!(parses_as_key_values(
++        "event=scan worktree=project stories=2 duration_ms=4"
++    ));
++    assert!(parses_as_key_values(
++        "event=watch_failed worktree=p reason=\"too many open files\""
++    ));
++    assert!(!parses_as_key_values(
++        "event=problem reason=stream did not contain valid UTF-8"
++    ));
++    assert!(!parses_as_key_values(
++        "event=scan worktree=p reason=\"unterminated"
++    ));
 +}
 diff --git a/crates/epic_panel/src/panel_open_tests.rs b/crates/epic_panel/src/panel_open_tests.rs
 new file mode 100644
-index 0000000..e4bcb6d
+index 0000000..b1b347b
 --- /dev/null
 +++ b/crates/epic_panel/src/panel_open_tests.rs
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,130 @@
 +// Story 042, task 5.3 — activating rows opens files (R2.6, R2.7, R2.8, R6.3).
 +// Module path: `panel::panel_open_tests`. See panel_test_helpers.rs for the assumed contract.
 +
@@ -5272,14 +5659,22 @@ index 0000000..e4bcb6d
 +async fn panel_open_prefers_story_md(cx: &mut TestAppContext) {
 +    let mut rig = rig(cx, &[("/work/project", corpus())], &["/work/project"]).await;
 +    activate_line(&mut rig, "001 both");
-+    assert_eq!(active_path(&mut rig).as_deref(), Some(".epico/stories/001-both/story.md"), "R2.6");
++    assert_eq!(
++        active_path(&mut rig).as_deref(),
++        Some(".epico/stories/001-both/story.md"),
++        "R2.6"
++    );
 +}
 +
 +#[gpui::test]
 +async fn panel_open_falls_back_to_tasks_md(cx: &mut TestAppContext) {
 +    let mut rig = rig(cx, &[("/work/project", corpus())], &["/work/project"]).await;
 +    activate_line(&mut rig, "002 tasks-only");
-+    assert_eq!(active_path(&mut rig).as_deref(), Some(".epico/stories/002-tasks-only/tasks.md"), "R2.6");
++    assert_eq!(
++        active_path(&mut rig).as_deref(),
++        Some(".epico/stories/002-tasks-only/tasks.md"),
++        "R2.6"
++    );
 +}
 +
 +#[gpui::test]
@@ -5294,7 +5689,11 @@ index 0000000..e4bcb6d
 +async fn panel_open_epic_md_control(cx: &mut TestAppContext) {
 +    let mut rig = rig(cx, &[("/work/project", corpus())], &["/work/project"]).await;
 +    activate_line(&mut rig, "Open EPICO.md");
-+    assert_eq!(active_path(&mut rig).as_deref(), Some(".epico/EPICO.md"), "R2.8");
++    assert_eq!(
++        active_path(&mut rig).as_deref(),
++        Some(".epico/EPICO.md"),
++        "R2.8"
++    );
 +}
 +
 +// R6.3 — a symlinked story directory opens nothing, so no file is read through the link.
@@ -5304,19 +5703,28 @@ index 0000000..e4bcb6d
 +        cx,
 +        &[
 +            ("/work/project", corpus()),
-+            ("/outside/real", json!({ "story.md": fm(&[("status", "validated")], "# Story - Outside\n") })),
++            (
++                "/outside/real",
++                json!({ "story.md": fm(&[("status", "validated")], "# Story - Outside\n") }),
++            ),
 +        ],
 +        &["/work/project"],
 +    )
 +    .await;
 +    rig.fs
-+        .insert_symlink("/work/project/.epico/stories/004-linked", PathBuf::from("/outside/real"))
++        .insert_symlink(
++            "/work/project/.epico/stories/004-linked",
++            PathBuf::from("/outside/real"),
++        )
 +        .await;
 +    settle(&mut rig.cx);
 +    let before = item_count(&mut rig);
 +    activate_line(&mut rig, "004 linked");
 +    assert_eq!(item_count(&mut rig), before);
-+    assert_ne!(active_path(&mut rig).as_deref(), Some(".epico/stories/004-linked/story.md"));
++    assert_ne!(
++        active_path(&mut rig).as_deref(),
++        Some(".epico/stories/004-linked/story.md")
++    );
 +}
 +
 +// Error path: the file vanished between the scan and the activation (events paused, so no
@@ -5324,7 +5732,9 @@ index 0000000..e4bcb6d
 +#[gpui::test]
 +async fn panel_open_failure_is_shown_to_the_user(cx: &mut TestAppContext) {
 +    let mut rig = rig(cx, &[("/work/project", corpus())], &["/work/project"]).await;
-+    let notifications_before = rig.workspace.read_with(&rig.cx, |workspace, _| workspace.notification_ids().len());
++    let notifications_before = rig
++        .workspace
++        .read_with(&rig.cx, |workspace, _| workspace.notification_ids().len());
 +    rig.fs.pause_events();
 +    rig.fs
 +        .remove_file(
@@ -5337,7 +5747,9 @@ index 0000000..e4bcb6d
 +        .await
 +        .expect("remove tasks.md");
 +    activate_line(&mut rig, "002 tasks-only");
-+    let notifications_after = rig.workspace.read_with(&rig.cx, |workspace, _| workspace.notification_ids().len());
++    let notifications_after = rig
++        .workspace
++        .read_with(&rig.cx, |workspace, _| workspace.notification_ids().len());
 +    assert!(
 +        notifications_after > notifications_before,
 +        "an open failure becomes a visible error (workspace.show_error)"
@@ -5346,10 +5758,10 @@ index 0000000..e4bcb6d
 +}
 diff --git a/crates/epic_panel/src/panel_polish_tests.rs b/crates/epic_panel/src/panel_polish_tests.rs
 new file mode 100644
-index 0000000..c8c8a25
+index 0000000..86c354f
 --- /dev/null
 +++ b/crates/epic_panel/src/panel_polish_tests.rs
-@@ -0,0 +1,250 @@
+@@ -0,0 +1,256 @@
 +// Story 042, task 10.1 — log values the frozen Q14 parser reads, and a right gutter for the
 +// list's scrollbar (R8.3, R8.4, R2.1; Q5, Q14, Q16). Module path: `panel::panel_polish_tests`.
 +//
@@ -5462,7 +5874,10 @@ index 0000000..c8c8a25
 +fn assert_one_token(raw: &str) {
 +    let written = log_value(raw);
 +    let line = format!("event=problem story={written} file=tasks.md");
-+    assert!(frozen_parser(&line), "Q14: the frozen parser rejects {line:?}");
++    assert!(
++        frozen_parser(&line),
++        "Q14: the frozen parser rejects {line:?}"
++    );
 +    let tokens = frozen_tokens(&line).unwrap_or_else(|| panic!("not key=value: {line:?}"));
 +    let keys: Vec<&str> = tokens.iter().map(|(key, _)| *key).collect();
 +    assert_eq!(
@@ -5470,7 +5885,10 @@ index 0000000..c8c8a25
 +        ["event", "story", "file"],
 +        "{raw:?} must stay one value, neither forging a key nor splitting: {line:?}"
 +    );
-+    assert_eq!(tokens[1].1, written, "the whole of {written:?} is the story value");
++    assert_eq!(
++        tokens[1].1, written,
++        "the whole of {written:?} is the story value"
++    );
 +    assert_eq!(
 +        decode_token(&written).as_deref(),
 +        Some(raw),
@@ -5602,10 +6020,10 @@ index 0000000..c8c8a25
 +}
 diff --git a/crates/epic_panel/src/panel_rows_tests.rs b/crates/epic_panel/src/panel_rows_tests.rs
 new file mode 100644
-index 0000000..490ba1f
+index 0000000..878c5a4
 --- /dev/null
 +++ b/crates/epic_panel/src/panel_rows_tests.rs
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,397 @@
 +// Story 042, task 5.2 — rows, groups, empty states, badges, tooltips and the keyboard (R1.4,
 +// R2.1, R2.3, R2.4, R2.5, R2.7, R2.8, R2.9, R2.10, R2.11, R2.12, R3.8, R6.1-R6.3; Q16).
 +// Module path: `panel::panel_rows_tests`. See panel_test_helpers.rs for the assumed contract.
@@ -5667,14 +6085,24 @@ index 0000000..490ba1f
 +    let mut rig = rig(cx, &[("/work/project", corpus())], &["/work/project"]).await;
 +    activate_line(&mut rig, "Archived (2)");
 +    let expanded = lines(&mut rig);
-+    let header = expanded.iter().position(|line| line == "Archived (2) [expanded]").expect("expanded header");
++    let header = expanded
++        .iter()
++        .position(|line| line == "Archived (2) [expanded]")
++        .expect("expanded header");
 +    assert_eq!(
 +        &expanded[header + 1..],
-+        ["003 x | archived | \u{2014}".to_string(), "004 y | \u{2014} | 1/1".to_string()],
++        [
++            "003 x | archived | \u{2014}".to_string(),
++            "004 y | \u{2014} | 1/1".to_string()
++        ],
 +        "R2.4 expanded shows the archived rows, in order"
 +    );
 +    activate_line(&mut rig, "Archived (2)");
-+    assert_eq!(lines(&mut rig).last().map(String::as_str), Some("Archived (2)"), "R2.4 collapses again");
++    assert_eq!(
++        lines(&mut rig).last().map(String::as_str),
++        Some("Archived (2)"),
++        "R2.4 collapses again"
++    );
 +}
 +
 +// Hostile half for R2.5: one worktree with `.epico/` gets no header, even beside a second
@@ -5683,12 +6111,17 @@ index 0000000..490ba1f
 +async fn panel_rows_no_worktree_header_when_only_one_worktree_has_epic(cx: &mut TestAppContext) {
 +    let mut rig = rig(
 +        cx,
-+        &[("/work/alpha", corpus()), ("/work/plain", json!({ "src": {} }))],
++        &[
++            ("/work/alpha", corpus()),
++            ("/work/plain", json!({ "src": {} })),
++        ],
 +        &["/work/alpha", "/work/plain"],
 +    )
 +    .await;
 +    assert!(
-+        !lines(&mut rig).iter().any(|line| line.starts_with("worktree ")),
++        !lines(&mut rig)
++            .iter()
++            .any(|line| line.starts_with("worktree ")),
 +        "{:?}",
 +        lines(&mut rig)
 +    );
@@ -5697,16 +6130,29 @@ index 0000000..490ba1f
 +#[gpui::test]
 +async fn panel_rows_worktree_headers_when_several_worktrees_have_epic(cx: &mut TestAppContext) {
 +    let beta = json!({ ".epico": { "stories": { "001-only": { "story.md": fm(&[("status", "draft")], "") } } } });
-+    let mut rig = rig(cx, &[("/work/alpha", corpus()), ("/work/beta", beta)], &["/work/alpha", "/work/beta"]).await;
++    let mut rig = rig(
++        cx,
++        &[("/work/alpha", corpus()), ("/work/beta", beta)],
++        &["/work/alpha", "/work/beta"],
++    )
++    .await;
 +    let shown = lines(&mut rig);
-+    assert!(shown.iter().any(|line| line == "worktree alpha"), "R2.5: {shown:?}");
-+    let beta = shown.iter().position(|line| line == "worktree beta").expect("R2.5 beta header");
++    assert!(
++        shown.iter().any(|line| line == "worktree alpha"),
++        "R2.5: {shown:?}"
++    );
++    let beta = shown
++        .iter()
++        .position(|line| line == "worktree beta")
++        .expect("R2.5 beta header");
 +    let beta_section: Vec<&String> = shown[beta + 1..]
 +        .iter()
 +        .take_while(|line| !line.starts_with("worktree "))
 +        .collect();
 +    assert!(
-+        beta_section.iter().any(|line| *line == "001 only | draft | \u{2014}"),
++        beta_section
++            .iter()
++            .any(|line| *line == "001 only | draft | \u{2014}"),
 +        "beta's rows sit under beta's header: {shown:?}"
 +    );
 +    assert!(
@@ -5721,8 +6167,14 @@ index 0000000..490ba1f
 +    let tree = json!({ ".epico": { "EPICO.md": "# Epic\n", "stories": { "README.md": "x" } } });
 +    let mut rig = rig(cx, &[("/work/project", tree)], &["/work/project"]).await;
 +    let shown = lines(&mut rig);
-+    assert!(shown.iter().any(|line| line == "No stories yet"), "{shown:?}");
-+    assert!(!shown.iter().any(|line| line.starts_with("Archived")), "{shown:?}");
++    assert!(
++        shown.iter().any(|line| line == "No stories yet"),
++        "{shown:?}"
++    );
++    assert!(
++        !shown.iter().any(|line| line.starts_with("Archived")),
++        "{shown:?}"
++    );
 +}
 +
 +#[gpui::test]
@@ -5730,7 +6182,10 @@ index 0000000..490ba1f
 +    let tree = json!({ ".epico": { "archive": { "003-x": {} } } });
 +    let mut rig = rig(cx, &[("/work/project", tree)], &["/work/project"]).await;
 +    let shown = lines(&mut rig);
-+    assert!(!shown.iter().any(|line| line == "No stories yet"), "{shown:?}");
++    assert!(
++        !shown.iter().any(|line| line == "No stories yet"),
++        "{shown:?}"
++    );
 +    assert!(shown.iter().any(|line| line == "Archived (1)"), "{shown:?}");
 +}
 +
@@ -5753,7 +6208,13 @@ index 0000000..490ba1f
 +    let mut rig = rig(cx, &[("/work/project", tree)], &["/work/project"]).await;
 +    let shown = lines(&mut rig);
 +    assert_eq!(shown.last().map(String::as_str), Some("1 more not shown"));
-+    assert_eq!(shown.iter().filter(|line| line.ends_with("| \u{2014} | \u{2014}")).count(), 2000);
++    assert_eq!(
++        shown
++            .iter()
++            .filter(|line| line.ends_with("| \u{2014} | \u{2014}"))
++            .count(),
++        2000
++    );
 +}
 +
 +// R2.7, R6.1-R6.3 — what a problem row says, beside an ordinary one.
@@ -5768,16 +6229,28 @@ index 0000000..490ba1f
 +    } } });
 +    let mut rig = rig(
 +        cx,
-+        &[("/work/project", tree), ("/outside", json!({ "secret.md": "- [x] s\n" }))],
++        &[
++            ("/work/project", tree),
++            ("/outside", json!({ "secret.md": "- [x] s\n" })),
++        ],
 +        &["/work/project"],
 +    )
 +    .await;
 +    let epic = PathBuf::from("/work/project/.epico/stories");
-+    rig.fs.insert_file(epic.join("002-binary/tasks.md"), b"\xff\xfe".to_vec()).await;
++    rig.fs
++        .insert_file(epic.join("002-binary/tasks.md"), b"\xff\xfe".to_vec())
++        .await;
 +    let mut large = b"- [x] a\n".to_vec();
 +    large.resize(1024 * 1024 + 1, b' ');
-+    rig.fs.insert_file(epic.join("003-large/tasks.md"), large).await;
-+    rig.fs.insert_symlink(epic.join("004-linked/tasks.md"), PathBuf::from("/outside/secret.md")).await;
++    rig.fs
++        .insert_file(epic.join("003-large/tasks.md"), large)
++        .await;
++    rig.fs
++        .insert_symlink(
++            epic.join("004-linked/tasks.md"),
++            PathBuf::from("/outside/secret.md"),
++        )
++        .await;
 +    focus_panel(&mut rig);
 +    press(&mut rig, super::Refresh);
 +    settle(&mut rig.cx);
@@ -5790,9 +6263,18 @@ index 0000000..490ba1f
 +    assert_eq!(badge(&mut rig, "005-nothing"), Some("no story files"));
 +
 +    let tooltip = row_tooltip(&find_row(&mut rig, "002-binary").expect("row"));
-+    assert!(tooltip.contains("tasks.md"), "R6.1 the tooltip names the file: {tooltip}");
-+    assert!(tooltip.to_lowercase().contains("utf-8"), "R6.1 and the reason: {tooltip}");
-+    assert!(!tooltip.contains("/work/project"), "no absolute path in the tooltip: {tooltip}");
++    assert!(
++        tooltip.contains("tasks.md"),
++        "R6.1 the tooltip names the file: {tooltip}"
++    );
++    assert!(
++        tooltip.to_lowercase().contains("utf-8"),
++        "R6.1 and the reason: {tooltip}"
++    );
++    assert!(
++        !tooltip.contains("/work/project"),
++        "no absolute path in the tooltip: {tooltip}"
++    );
 +}
 +
 +#[gpui::test]
@@ -5803,7 +6285,10 @@ index 0000000..490ba1f
 +        assert!(tooltip.contains(needle), "R2.9 {needle:?} in {tooltip:?}");
 +    }
 +    let bare = row_tooltip(&find_row(&mut rig, "0100-e").expect("row"));
-+    assert!(!bare.contains("feature"), "absent values are not invented: {bare:?}");
++    assert!(
++        !bare.contains("feature"),
++        "absent values are not invented: {bare:?}"
++    );
 +}
 +
 +// R3.8 — the warning is for unknown statuses only.
@@ -5815,12 +6300,22 @@ index 0000000..490ba1f
 +        "003-near": { "story.md": fm(&[("status", "Done")], "") },
 +    } } });
 +    let mut rig = rig(cx, &[("/work/project", tree)], &["/work/project"]).await;
-+    let warning = |rig: &mut Rig, dir: &str| status_warning(&find_row(rig, dir).expect("row").status);
++    let warning =
++        |rig: &mut Rig, dir: &str| status_warning(&find_row(rig, dir).expect("row").status);
 +    let expected = Some("Status not known to this Zeo; the epic plugin may be newer");
 +    assert_eq!(warning(&mut rig, "001-odd"), expected);
-+    assert_eq!(warning(&mut rig, "003-near"), expected, "a near miss is still unknown");
++    assert_eq!(
++        warning(&mut rig, "003-near"),
++        expected,
++        "a near miss is still unknown"
++    );
 +    assert_eq!(warning(&mut rig, "002-known"), None);
-+    assert!(lines(&mut rig).iter().any(|line| line == "001 odd | blocked | \u{2014}"), "shown as written");
++    assert!(
++        lines(&mut rig)
++            .iter()
++            .any(|line| line == "001 odd | blocked | \u{2014}"),
++        "shown as written"
++    );
 +}
 +
 +// R2.10, Q16 — Up/Down (menu::SelectPrevious/SelectNext) move the selection over rows and
@@ -5844,10 +6339,16 @@ index 0000000..490ba1f
 +    let mut rig = rig(cx, &[("/work/project", corpus())], &["/work/project"]).await;
 +    select_line(&mut rig, "010 b");
 +    rig.fs
-+        .insert_file("/work/project/.epico/stories/010-b/tasks.md", b"- [x] a\n- [x] b\n".to_vec())
++        .insert_file(
++            "/work/project/.epico/stories/010-b/tasks.md",
++            b"- [x] a\n- [x] b\n".to_vec(),
++        )
 +        .await;
 +    settle(&mut rig.cx);
-+    assert_eq!(selected_line(&mut rig).as_deref(), Some("010 b | done | 2/2"));
++    assert_eq!(
++        selected_line(&mut rig).as_deref(),
++        Some("010 b | done | 2/2")
++    );
 +
 +    rig.fs
 +        .rename(
@@ -5858,7 +6359,11 @@ index 0000000..490ba1f
 +        .await
 +        .expect("archive 010-b");
 +    settle(&mut rig.cx);
-+    assert_eq!(selected_line(&mut rig).as_deref(), Some("Archived (3)"), "collapsed: the header");
++    assert_eq!(
++        selected_line(&mut rig).as_deref(),
++        Some("Archived (3)"),
++        "collapsed: the header"
++    );
 +
 +    activate_line(&mut rig, "Archived (3)");
 +    select_line(&mut rig, "010 b");
@@ -5890,7 +6395,10 @@ index 0000000..490ba1f
 +    let mut rig = rig(cx, &[("/work/project", legacy)], &["/work/project"]).await;
 +    assert_eq!(
 +        lines(&mut rig),
-+        ["Open EPIC.md".to_string(), format!("001 old | done | {DASH}")]
++        [
++            "Open EPIC.md".to_string(),
++            format!("001 old | done | {DASH}")
++        ]
 +    );
 +}
 +
@@ -5907,15 +6415,18 @@ index 0000000..490ba1f
 +    let mut rig = rig(cx, &[("/work/project", both)], &["/work/project"]).await;
 +    assert_eq!(
 +        lines(&mut rig),
-+        ["Open EPICO.md".to_string(), format!("002 current | draft | {DASH}")]
++        [
++            "Open EPICO.md".to_string(),
++            format!("002 current | draft | {DASH}")
++        ]
 +    );
 +}
 diff --git a/crates/epic_panel/src/panel_shell_tests.rs b/crates/epic_panel/src/panel_shell_tests.rs
 new file mode 100644
-index 0000000..832bdc3
+index 0000000..da89344
 --- /dev/null
 +++ b/crates/epic_panel/src/panel_shell_tests.rs
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,279 @@
 +// Story 042, task 5.1 — the panel shell, its registration and the dock button (R1.1, R1.2,
 +// R1.3, R1.5, R5.4; Assumptions A3, A6, A8). Module path: `panel::panel_shell_tests`.
 +// See panel_test_helpers.rs for the mount lines and the assumed contract.
@@ -5942,14 +6453,30 @@ index 0000000..832bdc3
 +
 +#[gpui::test]
 +async fn panel_shell_identity_dock_and_toggle_action(cx: &mut TestAppContext) {
-+    let mut rig = rig(cx, &[("/work/project", project_with_epic())], &["/work/project"]).await;
++    let mut rig = rig(
++        cx,
++        &[("/work/project", project_with_epic())],
++        &["/work/project"],
++    )
++    .await;
 +    assert_eq!(<EpicPanel as Panel>::persistent_name(), "EpicPanel");
 +    assert_eq!(<EpicPanel as Panel>::panel_key(), "EpicPanel");
 +    rig.panel.update_in(&mut rig.cx, |panel, window, cx| {
-+        assert_eq!(panel.position(window, cx), DockPosition::Right, "A8: right dock when nothing was saved");
++        assert_eq!(
++            panel.position(window, cx),
++            DockPosition::Right,
++            "A8: right dock when nothing was saved"
++        );
 +        assert_eq!(panel.default_size(window, cx), px(300.), "A8: 300 px");
-+        for position in [DockPosition::Left, DockPosition::Right, DockPosition::Bottom] {
-+            assert!(panel.position_is_valid(position), "{position:?} is a valid dock (R1.5)");
++        for position in [
++            DockPosition::Left,
++            DockPosition::Right,
++            DockPosition::Bottom,
++        ] {
++            assert!(
++                panel.position_is_valid(position),
++                "{position:?} is a valid dock (R1.5)"
++            );
 +        }
 +        assert_eq!(panel.icon_tooltip(window, cx), Some("Epico Stories"));
 +        assert!(panel.toggle_action().partial_eq(&super::ToggleFocus));
@@ -5959,21 +6486,31 @@ index 0000000..832bdc3
 +// R1.1 — the palette action `epic panel: toggle focus` opens and focuses the panel.
 +#[gpui::test]
 +async fn panel_shell_toggle_focus_action_opens_and_focuses_the_panel(cx: &mut TestAppContext) {
-+    let mut rig = rig(cx, &[("/work/project", project_with_epic())], &["/work/project"]).await;
++    let mut rig = rig(
++        cx,
++        &[("/work/project", project_with_epic())],
++        &["/work/project"],
++    )
++    .await;
 +    assert_eq!(
 +        gpui::Action::name(&super::ToggleFocus),
 +        "epic_panel::ToggleFocus",
 +        "the palette shows it as `epic panel: toggle focus`"
 +    );
 +    press(&mut rig, super::ToggleFocus);
-+    let (open, focused) = rig.workspace.update_in(&mut rig.cx, |workspace, window, cx| {
-+        let dock = workspace.right_dock().read(cx);
-+        let open = dock.is_open() && dock.visible_panel().is_some_and(|panel| panel.panel_key() == "EpicPanel");
-+        let focused = workspace
-+            .panel::<EpicPanel>(cx)
-+            .is_some_and(|panel| panel.focus_handle(cx).contains_focused(window, cx));
-+        (open, focused)
-+    });
++    let (open, focused) = rig
++        .workspace
++        .update_in(&mut rig.cx, |workspace, window, cx| {
++            let dock = workspace.right_dock().read(cx);
++            let open = dock.is_open()
++                && dock
++                    .visible_panel()
++                    .is_some_and(|panel| panel.panel_key() == "EpicPanel");
++            let focused = workspace
++                .panel::<EpicPanel>(cx)
++                .is_some_and(|panel| panel.focus_handle(cx).contains_focused(window, cx));
++            (open, focused)
++        });
 +    assert!(open, "the right dock shows the Epic panel");
 +    assert!(focused, "the panel has focus");
 +}
@@ -5982,7 +6519,11 @@ index 0000000..832bdc3
 +async fn assert_no_dock_button(cx: &mut TestAppContext, case: &str, tree: serde_json::Value) {
 +    let mut rig = rig(cx, &[("/work/project", tree)], &["/work/project"]).await;
 +    assert_eq!(icon(&mut rig), None, "{case}: no dock button");
-+    assert_eq!(lines(&mut rig), ["No .epico/ directory in this project"], "{case}: R1.4 empty state");
++    assert_eq!(
++        lines(&mut rig),
++        ["No .epico/ directory in this project"],
++        "{case}: R1.4 empty state"
++    );
 +}
 +
 +#[gpui::test]
@@ -5992,7 +6533,12 @@ index 0000000..832bdc3
 +
 +#[gpui::test]
 +async fn panel_shell_dock_button_hidden_for_a_file_named_epic(cx: &mut TestAppContext) {
-+    assert_no_dock_button(cx, "a FILE named .epico", json!({ ".epico": "not a directory", "src": {} })).await;
++    assert_no_dock_button(
++        cx,
++        "a FILE named .epico",
++        json!({ ".epico": "not a directory", "src": {} }),
++    )
++    .await;
 +}
 +
 +#[gpui::test]
@@ -6008,30 +6554,52 @@ index 0000000..832bdc3
 +// Converse: a root `.epico/` directory shows the button — gitignored or not.
 +#[gpui::test]
 +async fn panel_shell_dock_button_shown_with_a_root_epic_directory(cx: &mut TestAppContext) {
-+    let mut rig = rig(cx, &[("/work/project", project_with_epic())], &["/work/project"]).await;
++    let mut rig = rig(
++        cx,
++        &[("/work/project", project_with_epic())],
++        &["/work/project"],
++    )
++    .await;
 +    assert_eq!(icon(&mut rig), Some(IconName::ListTree), "A8: ListTree");
 +}
 +
 +#[gpui::test]
-+async fn panel_shell_dock_button_appears_within_two_seconds_for_a_gitignored_epic(cx: &mut TestAppContext) {
++async fn panel_shell_dock_button_appears_within_two_seconds_for_a_gitignored_epic(
++    cx: &mut TestAppContext,
++) {
 +    let mut rig = rig(
 +        cx,
-+        &[("/work/project", json!({ ".git": {}, ".gitignore": ".epico/\n", "src": {} }))],
++        &[(
++            "/work/project",
++            json!({ ".git": {}, ".gitignore": ".epico/\n", "src": {} }),
++        )],
 +        &["/work/project"],
 +    )
 +    .await;
 +    assert_eq!(icon(&mut rig), None);
 +
 +    rig.fs
-+        .insert_tree("/work/project/.epico", json!({ "stories": { "001-a": {} } }))
++        .insert_tree(
++            "/work/project/.epico",
++            json!({ "stories": { "001-a": {} } }),
++        )
 +        .await;
 +    settle(&mut rig.cx);
-+    assert_eq!(icon(&mut rig), Some(IconName::ListTree), "R1.3: within 2 s, though .epico/ is gitignored");
++    assert_eq!(
++        icon(&mut rig),
++        Some(IconName::ListTree),
++        "R1.3: within 2 s, though .epico/ is gitignored"
++    );
 +}
 +
 +#[gpui::test]
 +async fn panel_shell_dock_button_hides_when_epic_is_removed(cx: &mut TestAppContext) {
-+    let mut rig = rig(cx, &[("/work/project", project_with_epic())], &["/work/project"]).await;
++    let mut rig = rig(
++        cx,
++        &[("/work/project", project_with_epic())],
++        &["/work/project"],
++    )
++    .await;
 +    assert_eq!(icon(&mut rig), Some(IconName::ListTree));
 +    rig.fs
 +        .remove_dir(
@@ -6053,15 +6621,26 @@ index 0000000..832bdc3
 +async fn panel_shell_dock_button_follows_worktrees(cx: &mut TestAppContext) {
 +    let mut rig = rig(
 +        cx,
-+        &[("/work/with", project_with_epic()), ("/work/without", project_without_epic())],
++        &[
++            ("/work/with", project_with_epic()),
++            ("/work/without", project_without_epic()),
++        ],
 +        &["/work/without"],
 +    )
 +    .await;
 +    assert_eq!(icon(&mut rig), None);
 +    add_worktree(&mut rig, "/work/with").await;
-+    assert_eq!(icon(&mut rig), Some(IconName::ListTree), "a worktree with .epico/ was added");
++    assert_eq!(
++        icon(&mut rig),
++        Some(IconName::ListTree),
++        "a worktree with .epico/ was added"
++    );
 +    remove_worktree(&mut rig, "/work/with").await;
-+    assert_eq!(icon(&mut rig), None, "the only worktree with .epico/ was removed");
++    assert_eq!(
++        icon(&mut rig),
++        None,
++        "the only worktree with .epico/ was removed"
++    );
 +}
 +
 +async fn reload(rig: &mut Rig) -> gpui::Entity<EpicPanel> {
@@ -6069,15 +6648,26 @@ index 0000000..832bdc3
 +}
 +
 +fn move_to(rig: &mut Rig, position: DockPosition) {
-+    rig.panel.update_in(&mut rig.cx, |panel, window, cx| panel.set_position(position, window, cx));
++    rig.panel.update_in(&mut rig.cx, |panel, window, cx| {
++        panel.set_position(position, window, cx)
++    });
 +    rig.cx.run_until_parked();
 +}
 +
 +// R1.5 — the dock survives a restart; Right when nothing was saved.
 +#[gpui::test]
 +async fn panel_shell_dock_position_survives_a_reload(cx: &mut TestAppContext) {
-+    let mut rig = rig(cx, &[("/work/project", project_with_epic())], &["/work/project"]).await;
-+    for position in [DockPosition::Left, DockPosition::Bottom, DockPosition::Right] {
++    let mut rig = rig(
++        cx,
++        &[("/work/project", project_with_epic())],
++        &["/work/project"],
++    )
++    .await;
++    for position in [
++        DockPosition::Left,
++        DockPosition::Bottom,
++        DockPosition::Right,
++    ] {
 +        move_to(&mut rig, position);
 +        let moved = rig.workspace.read_with(&rig.cx, |workspace, cx| {
 +            let dock = match position {
@@ -6090,27 +6680,38 @@ index 0000000..832bdc3
 +        assert!(moved, "the dock moves the panel to {position:?}");
 +        let reloaded = reload(&mut rig).await;
 +        let saved = reloaded.update_in(&mut rig.cx, |panel, window, cx| panel.position(window, cx));
-+        assert_eq!(saved, position, "a fresh load docks where the panel was left");
++        assert_eq!(
++            saved, position,
++            "a fresh load docks where the panel was left"
++        );
 +    }
 +}
 +
 +#[gpui::test]
 +async fn panel_shell_unknown_saved_position_falls_back_to_right(cx: &mut TestAppContext) {
-+    let mut rig = rig(cx, &[("/work/project", project_with_epic())], &["/work/project"]).await;
++    let mut rig = rig(
++        cx,
++        &[("/work/project", project_with_epic())],
++        &["/work/project"],
++    )
++    .await;
 +    let kvp = rig.cx.update(|_, cx| db::kvp::KeyValueStore::global(cx));
-+    kvp.write_kvp(<EpicPanel as Panel>::panel_key().to_string(), "upside-down".to_string())
-+        .await
-+        .expect("seed the key-value store");
++    kvp.write_kvp(
++        <EpicPanel as Panel>::panel_key().to_string(),
++        "upside-down".to_string(),
++    )
++    .await
++    .expect("seed the key-value store");
 +    let reloaded = reload(&mut rig).await;
 +    let position = reloaded.update_in(&mut rig.cx, |panel, window, cx| panel.position(window, cx));
 +    assert_eq!(position, DockPosition::Right);
 +}
 diff --git a/crates/epic_panel/src/panel_test_helpers.rs b/crates/epic_panel/src/panel_test_helpers.rs
 new file mode 100644
-index 0000000..9a6ee1c
+index 0000000..aa77f50
 --- /dev/null
 +++ b/crates/epic_panel/src/panel_test_helpers.rs
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,389 @@
 +// Story 042 — shared rig for the Epic panel tests (tasks 5.1-5.4).
 +//
 +// Mounted from `src/panel.rs` as
@@ -6218,7 +6819,9 @@ index 0000000..9a6ee1c
 +    vcx.simulate_resize(gpui::size(gpui::px(1400.), gpui::px(900.)));
 +    vcx.run_until_parked();
 +    let panel = load(&workspace, &mut vcx).await;
-+    workspace.update_in(&mut vcx, |workspace, window, cx| workspace.add_panel(panel.clone(), window, cx));
++    workspace.update_in(&mut vcx, |workspace, window, cx| {
++        workspace.add_panel(panel.clone(), window, cx)
++    });
 +    settle(&mut vcx);
 +    Rig {
 +        fs,
@@ -6229,7 +6832,10 @@ index 0000000..9a6ee1c
 +    }
 +}
 +
-+pub(crate) async fn load(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Entity<EpicPanel> {
++pub(crate) async fn load(
++    workspace: &Entity<Workspace>,
++    cx: &mut VisualTestContext,
++) -> Entity<EpicPanel> {
 +    let weak = workspace.downgrade();
 +    let loading = cx.update(|window, cx| EpicPanel::load(weak, window.to_async(cx)));
 +    cx.run_until_parked();
@@ -6244,14 +6850,19 @@ index 0000000..9a6ee1c
 +}
 +
 +pub(crate) fn icon(rig: &mut Rig) -> Option<IconName> {
-+    rig.panel.update_in(&mut rig.cx, |panel, window, cx| panel.icon(window, cx))
++    rig.panel
++        .update_in(&mut rig.cx, |panel, window, cx| panel.icon(window, cx))
 +}
 +
 +/// One readable line per visible entry, in display order. A story reads
 +/// `"<number or —> <slug or dir name> | <status> | <progress>"`.
 +pub(crate) fn lines(rig: &mut Rig) -> Vec<String> {
 +    rig.panel.read_with(&rig.cx, |panel, _| {
-+        panel.entries().iter().map(|entry| describe(panel, entry)).collect()
++        panel
++            .entries()
++            .iter()
++            .map(|entry| describe(panel, entry))
++            .collect()
 +    })
 +}
 +
@@ -6261,12 +6872,21 @@ index 0000000..9a6ee1c
 +            format!("worktree {}", panel.worktree_name(*worktree).unwrap_or("?"))
 +        }
 +        DisplayEntry::OpenIndex { worktree } => panel.index_label(*worktree),
-+        DisplayEntry::Story { worktree, area, row } => match panel.story_row(*worktree, *area, *row) {
++        DisplayEntry::Story {
++            worktree,
++            area,
++            row,
++        } => match panel.story_row(*worktree, *area, *row) {
 +            Some(row) => story_line(row),
 +            None => format!("dangling story entry {worktree}/{row}"),
 +        },
-+        DisplayEntry::ArchivedHeader { count, expanded, .. } => {
-+            format!("Archived ({count}){}", if *expanded { " [expanded]" } else { "" })
++        DisplayEntry::ArchivedHeader {
++            count, expanded, ..
++        } => {
++            format!(
++                "Archived ({count}){}",
++                if *expanded { " [expanded]" } else { "" }
++            )
 +        }
 +        DisplayEntry::MoreNotShown { count, .. } => format!("{count} more not shown"),
 +        DisplayEntry::Empty { message } => message.to_string(),
@@ -6276,15 +6896,27 @@ index 0000000..9a6ee1c
 +
 +pub(crate) fn story_line(row: &StoryRow) -> String {
 +    let number = row.number.clone().unwrap_or_else(|| "\u{2014}".to_string());
-+    let name = if row.number.is_some() { row.slug.clone() } else { row.dir_name.clone() };
-+    format!("{number} {name} | {} | {}", row.status.text(), progress_text(row.census))
++    let name = if row.number.is_some() {
++        row.slug.clone()
++    } else {
++        row.dir_name.clone()
++    };
++    format!(
++        "{number} {name} | {} | {}",
++        row.status.text(),
++        progress_text(row.census)
++    )
 +}
 +
 +/// The StoryRow a visible entry shows, found by directory name.
 +pub(crate) fn find_row(rig: &mut Rig, dir_name: &str) -> Option<StoryRow> {
 +    rig.panel.read_with(&rig.cx, |panel, _| {
 +        panel.entries().iter().find_map(|entry| match entry {
-+            DisplayEntry::Story { worktree, area, row } => panel
++            DisplayEntry::Story {
++                worktree,
++                area,
++                row,
++            } => panel
 +                .story_row(*worktree, *area, *row)
 +                .filter(|row| row.dir_name == dir_name)
 +                .cloned(),
@@ -6294,14 +6926,17 @@ index 0000000..9a6ee1c
 +}
 +
 +pub(crate) fn selected_line(rig: &mut Rig) -> Option<String> {
-+    let index = rig.panel.read_with(&rig.cx, |panel, _| panel.selected_index())?;
++    let index = rig
++        .panel
++        .read_with(&rig.cx, |panel, _| panel.selected_index())?;
 +    lines(rig).get(index).cloned()
 +}
 +
 +pub(crate) fn focus_panel(rig: &mut Rig) {
-+    rig.workspace.update_in(&mut rig.cx, |workspace, window, cx| {
-+        workspace.focus_panel::<EpicPanel>(window, cx);
-+    });
++    rig.workspace
++        .update_in(&mut rig.cx, |workspace, window, cx| {
++            workspace.focus_panel::<EpicPanel>(window, cx);
++        });
 +    rig.cx.run_until_parked();
 +}
 +
@@ -6321,7 +6956,10 @@ index 0000000..9a6ee1c
 +        }
 +        press(rig, menu::SelectNext);
 +    }
-+    panic!("no line starting with {prefix:?} could be selected; lines: {:?}", lines(rig));
++    panic!(
++        "no line starting with {prefix:?} could be selected; lines: {:?}",
++        lines(rig)
++    );
 +}
 +
 +pub(crate) fn activate_line(rig: &mut Rig, prefix: &str) {
@@ -6341,7 +6979,8 @@ index 0000000..9a6ee1c
 +}
 +
 +pub(crate) fn item_count(rig: &mut Rig) -> usize {
-+    rig.workspace.read_with(&rig.cx, |workspace, cx| workspace.items(cx).count())
++    rig.workspace
++        .read_with(&rig.cx, |workspace, cx| workspace.items(cx).count())
 +}
 +
 +pub(crate) fn banner(rig: &mut Rig) -> Option<String> {
@@ -6366,14 +7005,15 @@ index 0000000..9a6ee1c
 +            .map(|worktree| worktree.read(cx).id())
 +            .expect("the worktree exists")
 +    });
-+    rig.project.update(&mut rig.cx, |project, cx| project.remove_worktree(id, cx));
++    rig.project
++        .update(&mut rig.cx, |project, cx| project.remove_worktree(id, cx));
 +    settle(&mut rig.cx);
 +}
 +
 +pub(crate) async fn add_worktree(rig: &mut Rig, root: &str) {
-+    let task = rig
-+        .project
-+        .update(&mut rig.cx, |project, cx| project.find_or_create_worktree(root, true, cx));
++    let task = rig.project.update(&mut rig.cx, |project, cx| {
++        project.find_or_create_worktree(root, true, cx)
++    });
 +    task.await.expect("the worktree is added");
 +    settle(&mut rig.cx);
 +}
@@ -6399,7 +7039,11 @@ index 0000000..9a6ee1c
 +        let mut line = record.args().to_string();
 +        struct Collect<'a>(&'a mut String);
 +        impl<'kvs> log::kv::VisitSource<'kvs> for Collect<'_> {
-+            fn visit_pair(&mut self, key: log::kv::Key<'kvs>, value: log::kv::Value<'kvs>) -> Result<(), log::kv::Error> {
++            fn visit_pair(
++                &mut self,
++                key: log::kv::Key<'kvs>,
++                value: log::kv::Value<'kvs>,
++            ) -> Result<(), log::kv::Error> {
 +                self.0.push_str(&format!(" {key}={value}"));
 +                Ok(())
 +            }
@@ -6420,7 +7064,8 @@ index 0000000..9a6ee1c
 +/// rather than letting a log assertion pass or fail for the wrong reason.
 +pub(crate) fn capture_logs() {
 +    INSTALL.call_once(|| {
-+        log::set_boxed_logger(Box::new(CaptureLogger)).expect("another logger is installed; the log capture cannot run");
++        log::set_boxed_logger(Box::new(CaptureLogger))
++            .expect("another logger is installed; the log capture cannot run");
 +        log::set_max_level(log::LevelFilter::Trace);
 +    });
 +    CAPTURED.with(|captured| captured.borrow_mut().clear());
@@ -6453,14 +7098,15 @@ index 0000000..9a6ee1c
 +
 +/// `key=value` tokens of a structured line (Q14).
 +pub(crate) fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
-+    line.split_whitespace().find_map(|token| token.strip_prefix(key)?.strip_prefix('='))
++    line.split_whitespace()
++        .find_map(|token| token.strip_prefix(key)?.strip_prefix('='))
 +}
 diff --git a/crates/epic_panel/src/parity_tests.rs b/crates/epic_panel/src/parity_tests.rs
 new file mode 100644
-index 0000000..6e8a005
+index 0000000..f3909fe
 --- /dev/null
 +++ b/crates/epic_panel/src/parity_tests.rs
-@@ -0,0 +1,387 @@
+@@ -0,0 +1,468 @@
 +// Story 042, task 3.3 — parity with epic plugin 0.13.1's `epic-index.sh` (R4.5, Q13), carried to
 +// the plugin renamed Epico: `epico-index.sh` in 0.25.1 is the same grammar under the new names
 +// (`.epico/`, `EPICO.md`, `epico:index` markers), so the contract now runs against it.
@@ -6518,7 +7164,11 @@ index 0000000..6e8a005
 +
 +impl Row {
 +    fn key(&self) -> (String, String, String) {
-+        (self.location.clone(), self.number.clone(), self.slug.clone())
++        (
++            self.location.clone(),
++            self.number.clone(),
++            self.slug.clone(),
++        )
 +    }
 +}
 +
@@ -6596,7 +7246,10 @@ index 0000000..6e8a005
 +        let cells = split_unescaped(line);
 +        // "| a | b | c | d | e |" -> ["", a, b, c, d, e, ""]
 +        if cells.len() != 7 {
-+            return Err(format!("a row with {} columns: {line}", cells.len().saturating_sub(2)));
++            return Err(format!(
++                "a row with {} columns: {line}",
++                cells.len().saturating_sub(2)
++            ));
 +        }
 +        rows.push(Row {
 +            number: unescape(cells[1].trim()),
@@ -6666,15 +7319,19 @@ index 0000000..6e8a005
 +}
 +
 +fn copy_tree(source: &Path, target: &Path) {
-+    let meta = stdfs::symlink_metadata(source).unwrap_or_else(|e| panic!("stat {}: {e}", source.display()));
++    let meta = stdfs::symlink_metadata(source)
++        .unwrap_or_else(|e| panic!("stat {}: {e}", source.display()));
 +    let file_type = meta.file_type();
 +    if file_type.is_symlink() {
-+        let link = stdfs::read_link(source).unwrap_or_else(|e| panic!("read_link {}: {e}", source.display()));
++        let link = stdfs::read_link(source)
++            .unwrap_or_else(|e| panic!("read_link {}: {e}", source.display()));
 +        std::os::unix::fs::symlink(&link, target)
 +            .unwrap_or_else(|e| panic!("symlink {} -> {}: {e}", target.display(), link.display()));
 +    } else if file_type.is_dir() {
-+        stdfs::create_dir_all(target).unwrap_or_else(|e| panic!("create {}: {e}", target.display()));
-+        let entries = stdfs::read_dir(source).unwrap_or_else(|e| panic!("read_dir {}: {e}", source.display()));
++        stdfs::create_dir_all(target)
++            .unwrap_or_else(|e| panic!("create {}: {e}", target.display()));
++        let entries = stdfs::read_dir(source)
++            .unwrap_or_else(|e| panic!("read_dir {}: {e}", source.display()));
 +        for entry in entries {
 +            let entry = entry.unwrap_or_else(|e| panic!("entry of {}: {e}", source.display()));
 +            copy_tree(&entry.path(), &target.join(entry.file_name()));
@@ -6683,7 +7340,10 @@ index 0000000..6e8a005
 +        stdfs::copy(source, target)
 +            .unwrap_or_else(|e| panic!("copy {} -> {}: {e}", source.display(), target.display()));
 +    } else {
-+        eprintln!("parity: not copied (neither file, directory nor symlink): {}", source.display());
++        eprintln!(
++            "parity: not copied (neither file, directory nor symlink): {}",
++            source.display()
++        );
 +    }
 +}
 +
@@ -6697,15 +7357,25 @@ index 0000000..6e8a005
 +
 +#[gpui::test]
 +async fn parity_with_epic_index_sh(cx: &mut TestAppContext) {
-+    let (Some(corpus), Some(script)) = (env::var_os("EPIC_PARITY_DIR"), env::var_os("EPIC_INDEX_SH")) else {
++    let (Some(corpus), Some(script)) =
++        (env::var_os("EPIC_PARITY_DIR"), env::var_os("EPIC_INDEX_SH"))
++    else {
 +        println!("SKIPPED: set EPIC_PARITY_DIR and EPIC_INDEX_SH");
 +        return;
 +    };
 +    cx.executor().allow_parking();
 +    let corpus = PathBuf::from(corpus);
 +    let script = PathBuf::from(script);
-+    assert!(corpus.is_dir(), "EPIC_PARITY_DIR is not a directory: {}", corpus.display());
-+    assert!(script.is_file(), "EPIC_INDEX_SH is not a file: {}", script.display());
++    assert!(
++        corpus.is_dir(),
++        "EPIC_PARITY_DIR is not a directory: {}",
++        corpus.display()
++    );
++    assert!(
++        script.is_file(),
++        "EPIC_INDEX_SH is not a file: {}",
++        script.display()
++    );
 +    let corpus_index_before = file_state(&corpus.join("EPICO.md"));
 +
 +    let temp = tempfile::tempdir().expect("temp dir");
@@ -6725,23 +7395,44 @@ index 0000000..6e8a005
 +        String::from_utf8_lossy(&output.stderr)
 +    );
 +
-+    let index_text = stdfs::read_to_string(copy.join("EPICO.md"))
-+        .unwrap_or_else(|e| panic!("read the generated {}: {e}", copy.join("EPICO.md").display()));
++    let index_text = stdfs::read_to_string(copy.join("EPICO.md")).unwrap_or_else(|e| {
++        panic!(
++            "read the generated {}: {e}",
++            copy.join("EPICO.md").display()
++        )
++    });
 +    let index: Vec<Row> = parse_index(&index_text)
 +        .unwrap_or_else(|e| panic!("parse the generated index: {e}"))
 +        .into_iter()
 +        .filter(|row| row.location != REMOVED) // Assumption A5
 +        .collect();
-+    assert!(!index.is_empty(), "the generated index has zero story rows: parity would prove nothing");
++    assert!(
++        !index.is_empty(),
++        "the generated index has zero story rows: parity would prove nothing"
++    );
 +
 +    let fs: Arc<dyn Fs> = fs::RealFs::new(None, cx.executor());
-+    let snapshot = scan_epic_dir(fs, copy.clone()).await.expect("scan the copy");
-+    assert_eq!(snapshot.not_shown, 0, "the corpus exceeds MAX_ROWS; parity would be partial");
++    let snapshot = scan_epic_dir(fs, copy.clone())
++        .await
++        .expect("scan the copy");
++    assert_eq!(
++        snapshot.not_shown, 0,
++        "the corpus exceeds MAX_ROWS; parity would be partial"
++    );
 +    let panel = panel_rows(&snapshot);
 +
 +    let report = compare(&index, &panel);
-+    println!("parity: {} EPICO.md rows, {} panel rows, {} mismatches", index.len(), panel.len(), report.len());
-+    assert!(report.is_empty(), "the panel and epico-index.sh disagree:\n{}", report.join("\n"));
++    println!(
++        "parity: {} EPICO.md rows, {} panel rows, {} mismatches",
++        index.len(),
++        panel.len(),
++        report.len()
++    );
++    assert!(
++        report.is_empty(),
++        "the panel and epico-index.sh disagree:\n{}",
++        report.join("\n")
++    );
 +
 +    assert_eq!(
 +        file_state(&corpus.join("EPICO.md")),
@@ -6757,7 +7448,11 @@ index 0000000..6e8a005
 +#[test]
 +fn parity_parser_reads_rows_inside_the_markers_only() {
 +    let rows = parse_index(SAMPLE).expect("parses");
-+    assert_eq!(rows.len(), 4, "text outside the markers is not a row: {rows:?}");
++    assert_eq!(
++        rows.len(),
++        4,
++        "text outside the markers is not a row: {rows:?}"
++    );
 +    assert_eq!(
 +        rows[0],
 +        Row {
@@ -6812,7 +7507,10 @@ index 0000000..6e8a005
 +
 +#[test]
 +fn parity_comparator_accepts_identical_rows() {
-+    let rows = vec![r("001", "a", "done", "1/1", "active"), r("002", "b", EM_DASH, EM_DASH, "archived")];
++    let rows = vec![
++        r("001", "a", "done", "1/1", "active"),
++        r("002", "b", EM_DASH, EM_DASH, "archived"),
++    ];
 +    assert!(compare(&rows, &rows).is_empty());
 +}
 +
@@ -6825,28 +7523,57 @@ index 0000000..6e8a005
 +        r("003", "c", "archived", "2/2", "archived"),
 +    ];
 +    let panel = vec![
-+        r("001", "a", "done", "1/2", "active"),         // progress differs
-+        r("002", "b", "draft ", "0/3", "active"),       // status differs by a trailing space
-+        r("003", "c", "archived", "2/2", "active"),     // location differs -> both sides orphaned
-+        r("004", "d", "draft", "0/0", "active"),        // only in the panel
++        r("001", "a", "done", "1/2", "active"),     // progress differs
++        r("002", "b", "draft ", "0/3", "active"),   // status differs by a trailing space
++        r("003", "c", "archived", "2/2", "active"), // location differs -> both sides orphaned
++        r("004", "d", "draft", "0/0", "active"),    // only in the panel
 +    ];
 +    let report = compare(&index, &panel);
-+    assert!(report.iter().any(|line| line.contains("progress")), "{report:?}");
-+    assert!(report.iter().any(|line| line.contains("status")), "{report:?}");
-+    assert!(report.iter().any(|line| line.starts_with("only in EPICO.md") && line.contains("\"c\"")), "{report:?}");
-+    assert!(report.iter().filter(|line| line.starts_with("only in the panel")).count() == 2, "{report:?}");
++    assert!(
++        report.iter().any(|line| line.contains("progress")),
++        "{report:?}"
++    );
++    assert!(
++        report.iter().any(|line| line.contains("status")),
++        "{report:?}"
++    );
++    assert!(
++        report
++            .iter()
++            .any(|line| line.starts_with("only in EPICO.md") && line.contains("\"c\"")),
++        "{report:?}"
++    );
++    assert!(
++        report
++            .iter()
++            .filter(|line| line.starts_with("only in the panel"))
++            .count()
++            == 2,
++        "{report:?}"
++    );
 +}
 +
 +// Hostile half for identity: two rows sharing a number in different areas are two rows, and
 +// the same row twice on one side is not absorbed by one on the other.
 +#[test]
 +fn parity_comparator_neither_collapses_nor_splits_rows() {
-+    let index = vec![r("012", "a", "done", "1/1", "active"), r("012", "b", "done", "1/1", "archived")];
++    let index = vec![
++        r("012", "a", "done", "1/1", "active"),
++        r("012", "b", "done", "1/1", "archived"),
++    ];
 +    assert!(compare(&index, &index.clone()).is_empty());
 +    let panel = vec![r("012", "a", "done", "1/1", "active")];
-+    assert_eq!(compare(&index, &panel).len(), 1, "the archived 012 is missing from the panel");
++    assert_eq!(
++        compare(&index, &panel).len(),
++        1,
++        "the archived 012 is missing from the panel"
++    );
 +    let doubled = vec![index[0].clone(), index[0].clone(), index[1].clone()];
-+    assert_eq!(compare(&index, &doubled).len(), 1, "one extra panel row is reported");
++    assert_eq!(
++        compare(&index, &doubled).len(),
++        1,
++        "one extra panel row is reported"
++    );
 +}
 diff --git a/crates/epic_panel/src/scan.rs b/crates/epic_panel/src/scan.rs
 new file mode 100644
@@ -7281,10 +8008,10 @@ index 0000000..0912fe8
 +mod scan_tests;
 diff --git a/crates/epic_panel/src/scan_tests.rs b/crates/epic_panel/src/scan_tests.rs
 new file mode 100644
-index 0000000..f43d2c3
+index 0000000..7ed9aac
 --- /dev/null
 +++ b/crates/epic_panel/src/scan_tests.rs
-@@ -0,0 +1,701 @@
+@@ -0,0 +1,825 @@
 +// Story 042, task 3.1 — reading one `.epico/` directory into a snapshot (R2.1, R2.2, R2.3, R2.7,
 +// R2.8, R2.11, R2.12, R3.5, R3.6, R6.1-R6.4, R6.6).
 +//
@@ -7428,7 +8155,10 @@ index 0000000..f43d2c3
 +    assert_eq!(first.kind.as_deref(), Some("feature"));
 +    assert_eq!(first.scale.as_deref(), Some("standard"));
 +    assert_eq!(first.engineering.as_deref(), Some("project"));
-+    assert_eq!(first.open_target, Some(path("stories/001-first-story/story.md")));
++    assert_eq!(
++        first.open_target,
++        Some(path("stories/001-first-story/story.md"))
++    );
 +    assert_eq!(problem(first), None);
 +
 +    let old = row(&snapshot, "002-old-story");
@@ -7457,15 +8187,30 @@ index 0000000..f43d2c3
 +    assert!(!snapshot.has_index, "no EPICO.md");
 +
 +    let no_status = row(&snapshot, "003-no-status");
-+    assert_eq!(status(no_status), "in-progress", "R3.1 fallback to tasks.md");
++    assert_eq!(
++        status(no_status),
++        "in-progress",
++        "R3.1 fallback to tasks.md"
++    );
 +    assert_eq!(no_status.title.as_deref(), Some("Has no status"));
-+    assert_eq!(no_status.open_target, Some(path("stories/003-no-status/story.md")));
++    assert_eq!(
++        no_status.open_target,
++        Some(path("stories/003-no-status/story.md"))
++    );
 +
 +    let tasks_only = row(&snapshot, "004-tasks-only");
 +    assert_eq!(status(tasks_only), "done");
-+    assert_eq!(tasks_only.title.as_deref(), Some("Tasks only"), "R2.9 title from tasks.md");
++    assert_eq!(
++        tasks_only.title.as_deref(),
++        Some("Tasks only"),
++        "R2.9 title from tasks.md"
++    );
 +    assert_eq!(tasks_only.scale.as_deref(), Some("fast"));
-+    assert_eq!(tasks_only.open_target, Some(path("stories/004-tasks-only/tasks.md")), "R2.6");
++    assert_eq!(
++        tasks_only.open_target,
++        Some(path("stories/004-tasks-only/tasks.md")),
++        "R2.6"
++    );
 +}
 +
 +#[gpui::test]
@@ -7543,8 +8288,11 @@ index 0000000..f43d2c3
 +    ] {
 +        stories.insert(name.to_string(), json!({}));
 +    }
-+    fs.insert_tree(ROOT, json!({ ".epico": { "stories": Value::Object(stories) } }))
-+        .await;
++    fs.insert_tree(
++        ROOT,
++        json!({ ".epico": { "stories": Value::Object(stories) } }),
++    )
++    .await;
 +    let snapshot = scan(&fs).await;
 +    assert_eq!(
 +        names(&snapshot.active),
@@ -7622,8 +8370,14 @@ index 0000000..f43d2c3
 +    assert_eq!(status(row(&snapshot, "021-old")), "superseded by 0008");
 +    // Hostile half (wrong collapse): an unnumbered "4" and a file are not story number 4,
 +    // and 120 is not 12.
-+    assert_eq!(status(row(&snapshot, "022-dangling")), "superseded by 4 (missing)");
-+    assert_eq!(status(row(&snapshot, "023-prefix")), "promote to 12 (missing)");
++    assert_eq!(
++        status(row(&snapshot, "022-dangling")),
++        "superseded by 4 (missing)"
++    );
++    assert_eq!(
++        status(row(&snapshot, "023-prefix")),
++        "promote to 12 (missing)"
++    );
 +}
 +
 +// ── tolerance (R6.1-R6.3) ───────────────────────────────────────────────────
@@ -7639,20 +8393,37 @@ index 0000000..f43d2c3
 +        }),
 +    )
 +    .await;
-+    fs.insert_tree(ROOT, json!({ ".epico": { "stories": { "010-plain": {} } } }))
-+        .await;
-+    fs.insert_symlink(path("stories/011-link"), PathBuf::from("/outside/real-story"))
-+        .await;
++    fs.insert_tree(
++        ROOT,
++        json!({ ".epico": { "stories": { "010-plain": {} } } }),
++    )
++    .await;
++    fs.insert_symlink(
++        path("stories/011-link"),
++        PathBuf::from("/outside/real-story"),
++    )
++    .await;
 +
 +    let snapshot = scan(&fs).await;
-+    assert_eq!(names(&snapshot.active), ["010-plain", "011-link"], "the link is still a row");
++    assert_eq!(
++        names(&snapshot.active),
++        ["010-plain", "011-link"],
++        "the link is still a row"
++    );
 +    let link = row(&snapshot, "011-link");
-+    assert!(matches!(link.problem, Some(RowProblem::Symlink(_))), "{:?}", problem(link));
++    assert!(
++        matches!(link.problem, Some(RowProblem::Symlink(_))),
++        "{:?}",
++        problem(link)
++    );
 +    assert_eq!(status(link), EM_DASH, "nothing behind the link is read");
 +    assert_eq!(link.census, None);
 +    assert_eq!(link.title, None);
 +    assert_eq!(link.kind, None);
-+    assert_eq!(link.open_target, None, "activating it must not open a file through the link");
++    assert_eq!(
++        link.open_target, None,
++        "activating it must not open a file through the link"
++    );
 +}
 +
 +#[gpui::test]
@@ -7670,24 +8441,40 @@ index 0000000..f43d2c3
 +        } } } }),
 +    )
 +    .await;
-+    fs.insert_symlink(path("stories/013-linked-tasks/tasks.md"), PathBuf::from("/outside/secret.md"))
-+        .await;
++    fs.insert_symlink(
++        path("stories/013-linked-tasks/tasks.md"),
++        PathBuf::from("/outside/secret.md"),
++    )
++    .await;
 +
 +    let snapshot = scan(&fs).await;
 +    let linked = row(&snapshot, "013-linked-tasks");
 +    assert_eq!(problem(linked), Some("symlink tasks.md".to_string()));
-+    assert_eq!(status(linked), "done", "story.md is still read (a problem row keeps what it could read)");
++    assert_eq!(
++        status(linked),
++        "done",
++        "story.md is still read (a problem row keeps what it could read)"
++    );
 +    assert_eq!(linked.census, None, "the target's boxes are never counted");
 +    assert_eq!(progress(linked), EM_DASH);
-+    assert_eq!(linked.scale, None, "the target's `scale: spike` is never read");
-+    assert_eq!(linked.open_target, Some(path("stories/013-linked-tasks/story.md")));
++    assert_eq!(
++        linked.scale, None,
++        "the target's `scale: spike` is never read"
++    );
++    assert_eq!(
++        linked.open_target,
++        Some(path("stories/013-linked-tasks/story.md"))
++    );
 +}
 +
 +#[gpui::test]
 +async fn scan_does_not_follow_a_symlinked_story_md(cx: &mut TestAppContext) {
 +    let fs = FakeFs::new(cx.executor());
-+    fs.insert_tree("/outside", json!({ "secret.md": fm(&[("status", "validated")], "# Story - Secret\n") }))
-+        .await;
++    fs.insert_tree(
++        "/outside",
++        json!({ "secret.md": fm(&[("status", "validated")], "# Story - Secret\n") }),
++    )
++    .await;
 +    fs.insert_tree(
 +        ROOT,
 +        json!({ ".epico": { "stories": { "014-linked-story": {
@@ -7695,13 +8482,20 @@ index 0000000..f43d2c3
 +        } } } }),
 +    )
 +    .await;
-+    fs.insert_symlink(path("stories/014-linked-story/story.md"), PathBuf::from("/outside/secret.md"))
-+        .await;
++    fs.insert_symlink(
++        path("stories/014-linked-story/story.md"),
++        PathBuf::from("/outside/secret.md"),
++    )
++    .await;
 +
 +    let snapshot = scan(&fs).await;
 +    let linked = row(&snapshot, "014-linked-story");
 +    assert_eq!(problem(linked), Some("symlink story.md".to_string()));
-+    assert_eq!(status(linked), "draft", "status falls back to tasks.md, never the target");
++    assert_eq!(
++        status(linked),
++        "draft",
++        "status falls back to tasks.md, never the target"
++    );
 +    assert_ne!(linked.title.as_deref(), Some("Secret"));
 +    assert_eq!(progress(linked), "0/1");
 +    assert_ne!(
@@ -7730,8 +8524,13 @@ index 0000000..f43d2c3
 +        } } }),
 +    )
 +    .await;
-+    fs.insert_file(path("stories/030-at-limit/tasks.md"), tasks_of_len(limit)).await;
-+    fs.insert_file(path("stories/031-over-limit/tasks.md"), tasks_of_len(limit + 1)).await;
++    fs.insert_file(path("stories/030-at-limit/tasks.md"), tasks_of_len(limit))
++        .await;
++    fs.insert_file(
++        path("stories/031-over-limit/tasks.md"),
++        tasks_of_len(limit + 1),
++    )
++    .await;
 +
 +    let snapshot = scan(&fs).await;
 +    let at = row(&snapshot, "030-at-limit");
@@ -7739,7 +8538,10 @@ index 0000000..f43d2c3
 +    assert_eq!(progress(at), "1/2");
 +
 +    let over = row(&snapshot, "031-over-limit");
-+    assert_eq!(problem(over), Some(format!("too large tasks.md {}", limit + 1)));
++    assert_eq!(
++        problem(over),
++        Some(format!("too large tasks.md {}", limit + 1))
++    );
 +    assert_eq!(over.census, None);
 +    assert_eq!(status(over), "done");
 +}
@@ -7755,17 +8557,27 @@ index 0000000..f43d2c3
 +        } } }),
 +    )
 +    .await;
-+    fs.insert_file(path("stories/040-binary/tasks.md"), b"- [x] a\n\xff\xfe\n".to_vec())
-+        .await;
++    fs.insert_file(
++        path("stories/040-binary/tasks.md"),
++        b"- [x] a\n\xff\xfe\n".to_vec(),
++    )
++    .await;
 +
 +    let snapshot = scan(&fs).await;
 +    let binary = row(&snapshot, "040-binary");
 +    let shown = problem(binary).expect("a problem is recorded");
 +    assert!(shown.starts_with("unreadable tasks.md: "), "{shown}");
-+    assert!(shown.to_lowercase().contains("utf-8"), "the reason names the cause: {shown}");
++    assert!(
++        shown.to_lowercase().contains("utf-8"),
++        "the reason names the cause: {shown}"
++    );
 +    assert_eq!(status(binary), "done");
 +    assert_eq!(binary.census, None);
-+    assert_eq!(status(row(&snapshot, "041-fine")), "draft", "R6.1 every other row as usual");
++    assert_eq!(
++        status(row(&snapshot, "041-fine")),
++        "draft",
++        "R6.1 every other row as usual"
++    );
 +}
 +
 +#[gpui::test]
@@ -7792,8 +8604,11 @@ index 0000000..f43d2c3
 +#[gpui::test]
 +async fn scan_missing_areas_are_empty_not_errors(cx: &mut TestAppContext) {
 +    let fs = FakeFs::new(cx.executor());
-+    fs.insert_tree(ROOT, json!({ ".epico": { "archive": { "003-only-archived": {} } } }))
-+        .await;
++    fs.insert_tree(
++        ROOT,
++        json!({ ".epico": { "archive": { "003-only-archived": {} } } }),
++    )
++    .await;
 +    let snapshot = scan(&fs).await;
 +    assert!(snapshot.active.is_empty(), "no stories/ is an empty area");
 +    assert_eq!(names(&snapshot.archived), ["003-only-archived"]);
@@ -7815,8 +8630,14 @@ index 0000000..f43d2c3
 +        .err()
 +        .expect("a missing .epico cannot be listed");
 +    let outer = error.to_string();
-+    assert!(outer.contains("project/.epico"), "context names <worktree>/.epico: {outer}");
-+    assert!(!outer.contains("/work/"), "the context carries no absolute path: {outer}");
++    assert!(
++        outer.contains("project/.epico"),
++        "context names <worktree>/.epico: {outer}"
++    );
++    assert!(
++        !outer.contains("/work/"),
++        "the context carries no absolute path: {outer}"
++    );
 +}
 +
 +// ── the row cap (R2.12) ─────────────────────────────────────────────────────
@@ -7837,7 +8658,11 @@ index 0000000..f43d2c3
 +    )
 +    .await;
 +    let snapshot = scan(&fs).await;
-+    assert_eq!(snapshot.active.len(), 1999, "active rows come first and are all kept");
++    assert_eq!(
++        snapshot.active.len(),
++        1999,
++        "active rows come first and are all kept"
++    );
 +    assert_eq!(names(&snapshot.archived), ["2000-kept"]);
 +    assert_eq!(snapshot.not_shown, 1);
 +    assert_eq!(snapshot.active.len() + snapshot.archived.len(), MAX_ROWS);
@@ -7850,8 +8675,11 @@ index 0000000..f43d2c3
 +    for number in 1..=MAX_ROWS {
 +        stories.insert(format!("{number:04}-s"), json!({}));
 +    }
-+    fs.insert_tree(ROOT, json!({ ".epico": { "stories": Value::Object(stories) } }))
-+        .await;
++    fs.insert_tree(
++        ROOT,
++        json!({ ".epico": { "stories": Value::Object(stories) } }),
++    )
++    .await;
 +    let snapshot = scan(&fs).await;
 +    assert_eq!(snapshot.active.len(), MAX_ROWS);
 +    assert_eq!(snapshot.not_shown, 0);
@@ -7902,7 +8730,8 @@ index 0000000..f43d2c3
 +    fn write(root: &Path, relative: &str, content: &[u8]) {
 +        let file = root.join(relative);
 +        let parent = file.parent().expect("a relative file has a parent");
-+        stdfs::create_dir_all(parent).unwrap_or_else(|e| panic!("create {}: {e}", parent.display()));
++        stdfs::create_dir_all(parent)
++            .unwrap_or_else(|e| panic!("create {}: {e}", parent.display()));
 +        stdfs::write(&file, content).unwrap_or_else(|e| panic!("write {}: {e}", file.display()));
 +    }
 +
@@ -7928,7 +8757,11 @@ index 0000000..f43d2c3
 +        cx.executor().allow_parking();
 +        let temp = tempfile::tempdir().expect("temp dir");
 +        let epic = temp.path().join("project/.epico");
-+        write(&epic, "stories/060-fifo/story.md", fm(&[("status", "done")], "").as_bytes());
++        write(
++            &epic,
++            "stories/060-fifo/story.md",
++            fm(&[("status", "done")], "").as_bytes(),
++        );
 +        let fifo = epic.join("stories/060-fifo/tasks.md");
 +        let made = std::process::Command::new("mkfifo")
 +            .arg(&fifo)
@@ -7956,8 +8789,16 @@ index 0000000..f43d2c3
 +        let temp = tempfile::tempdir().expect("temp dir");
 +        let epic = temp.path().join("project/.epico");
 +        write(&epic, "stories/061-binary/tasks.md", b"- [x] a\n\xff\xfe\n");
-+        write(&epic, "stories/062-locked/story.md", fm(&[("status", "done")], "").as_bytes());
-+        write(&epic, "stories/062-locked/tasks.md", fm(&[("status", "draft")], "- [ ] a\n").as_bytes());
++        write(
++            &epic,
++            "stories/062-locked/story.md",
++            fm(&[("status", "done")], "").as_bytes(),
++        );
++        write(
++            &epic,
++            "stories/062-locked/tasks.md",
++            fm(&[("status", "draft")], "- [ ] a\n").as_bytes(),
++        );
 +        let locked = epic.join("stories/062-locked/story.md");
 +        stdfs::set_permissions(&locked, stdfs::Permissions::from_mode(0o000))
 +            .unwrap_or_else(|e| panic!("chmod {}: {e}", locked.display()));
@@ -7971,8 +8812,14 @@ index 0000000..f43d2c3
 +        let temp_text = temp.path().display().to_string();
 +        let binary = problem(row(&snapshot, "061-binary")).expect("non-UTF-8 is a problem");
 +        assert!(binary.starts_with("unreadable tasks.md: "), "{binary}");
-+        assert!(binary.contains("UTF-8"), "the root cause, not a wrapper: {binary}");
-+        assert!(!binary.contains(&temp_text), "no absolute path in the reason: {binary}");
++        assert!(
++            binary.contains("UTF-8"),
++            "the root cause, not a wrapper: {binary}"
++        );
++        assert!(
++            !binary.contains(&temp_text),
++            "no absolute path in the reason: {binary}"
++        );
 +
 +        if can_still_read {
 +            eprintln!("SKIPPED permission case: this user reads mode-000 files");
@@ -7983,7 +8830,11 @@ index 0000000..f43d2c3
 +        assert!(shown.starts_with("unreadable story.md: "), "{shown}");
 +        assert!(shown.contains("ermission denied"), "{shown}");
 +        assert!(!shown.contains(&temp_text), "{shown}");
-+        assert_eq!(status(row), "draft", "status falls back to the readable tasks.md");
++        assert_eq!(
++            status(row),
++            "draft",
++            "status falls back to the readable tasks.md"
++        );
 +    }
 +}
 diff --git a/crates/epic_panel/src/watch.rs b/crates/epic_panel/src/watch.rs
@@ -8195,10 +9046,10 @@ index 0000000..09b8ec8
 +mod watch_tests;
 diff --git a/crates/epic_panel/src/watch_tests.rs b/crates/epic_panel/src/watch_tests.rs
 new file mode 100644
-index 0000000..da6ecec
+index 0000000..075bd5c
 --- /dev/null
 +++ b/crates/epic_panel/src/watch_tests.rs
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,375 @@
 +// Story 042, task 4.1 — `EpicWatch`: debounced change notifications under `.epico/` (R5.1,
 +// R5.2, R5.3, R5.6).
 +//
@@ -8334,7 +9185,10 @@ index 0000000..da6ecec
 +#[test]
 +fn watch_constants() {
 +    assert_eq!(DEBOUNCE, Duration::from_millis(500), "R5.3");
-+    assert!(WATCH_LATENCY < DEBOUNCE, "the native latency sits inside the debounce window");
++    assert!(
++        WATCH_LATENCY < DEBOUNCE,
++        "the native latency sits inside the debounce window"
++    );
 +}
 +
 +// Hostile half: with no event there is no rescan.
@@ -8348,15 +9202,25 @@ index 0000000..da6ecec
 +}
 +
 +#[gpui::test]
-+async fn watch_reports_a_tasks_md_change_below_story_level_within_two_seconds(cx: &mut TestAppContext) {
++async fn watch_reports_a_tasks_md_change_below_story_level_within_two_seconds(
++    cx: &mut TestAppContext,
++) {
 +    let fs = corpus(cx).await;
 +    let (watch, probe) = start(&fs, cx);
-+    watch.sync_dirs(&[epic("stories/001-a"), epic("stories/002-b"), epic("archive/003-c")]);
++    watch.sync_dirs(&[
++        epic("stories/001-a"),
++        epic("stories/002-b"),
++        epic("archive/003-c"),
++    ]);
 +    cx.run_until_parked();
 +
-+    fs.insert_file(epic("stories/001-a/tasks.md"), b"- [x] a\n".to_vec()).await;
++    fs.insert_file(epic("stories/001-a/tasks.md"), b"- [x] a\n".to_vec())
++        .await;
 +    let times = advance(cx, &probe, Duration::from_secs(2));
-+    assert!(!times.is_empty(), "R5.1: a tasks.md change two levels down is reported within 2 s");
++    assert!(
++        !times.is_empty(),
++        "R5.1: a tasks.md change two levels down is reported within 2 s"
++    );
 +    drop(watch);
 +}
 +
@@ -8365,34 +9229,55 @@ index 0000000..da6ecec
 +    let fs = corpus(cx).await;
 +    let (_watch, probe) = start(&fs, cx);
 +    for round in 0..10u8 {
-+        fs.insert_file(epic("stories/001-a/tasks.md"), vec![b'-', b' ', b'[', b' ', b']', b' ', b'0' + round, b'\n'])
-+            .await;
++        fs.insert_file(
++            epic("stories/001-a/tasks.md"),
++            vec![b'-', b' ', b'[', b' ', b']', b' ', b'0' + round, b'\n'],
++        )
++        .await;
 +    }
 +    let times = advance(cx, &probe, Duration::from_secs(3));
 +    assert!(!times.is_empty(), "the burst is reported");
-+    assert!(times.len() <= 2, "ten writes at one instant cost at most two rescans: {times:?}");
++    assert!(
++        times.len() <= 2,
++        "ten writes at one instant cost at most two rescans: {times:?}"
++    );
 +    assert_spaced_by_debounce(&times);
 +}
 +
 +#[gpui::test]
-+async fn watch_sustained_changes_are_rate_limited_and_the_last_one_is_reported(cx: &mut TestAppContext) {
++async fn watch_sustained_changes_are_rate_limited_and_the_last_one_is_reported(
++    cx: &mut TestAppContext,
++) {
 +    let fs = corpus(cx).await;
 +    let (_watch, probe) = start(&fs, cx);
 +    let mut times = Vec::new();
 +    let mut last_event = cx.executor().now();
 +    for round in 0..20u32 {
-+        fs.insert_file(epic("stories/002-b/tasks.md"), format!("- [ ] {round}\n").into_bytes())
-+            .await;
++        fs.insert_file(
++            epic("stories/002-b/tasks.md"),
++            format!("- [ ] {round}\n").into_bytes(),
++        )
++        .await;
 +        last_event = cx.executor().now();
 +        times.extend(advance(cx, &probe, Duration::from_millis(100)));
 +    }
 +    times.extend(advance(cx, &probe, Duration::from_secs(2)));
 +
-+    assert!(times.len() < 20, "one rescan per event is not a debounce: {} rescans", times.len());
++    assert!(
++        times.len() < 20,
++        "one rescan per event is not a debounce: {} rescans",
++        times.len()
++    );
 +    assert_spaced_by_debounce(&times);
 +    let last_call = *times.last().expect("at least one rescan");
-+    assert!(last_call >= last_event, "R5.1: a rescan follows the last change");
-+    assert!(last_call - last_event <= Duration::from_secs(2), "R5.1: within 2 s of the last change");
++    assert!(
++        last_call >= last_event,
++        "R5.1: a rescan follows the last change"
++    );
++    assert!(
++        last_call - last_event <= Duration::from_secs(2),
++        "R5.1: within 2 s of the last change"
++    );
 +}
 +
 +#[gpui::test]
@@ -8400,13 +9285,27 @@ index 0000000..da6ecec
 +    let fs = corpus(cx).await;
 +    let (_watch, probe) = start(&fs, cx);
 +
-+    fs.insert_tree(epic("stories/004-new"), json!({ "tasks.md": "- [ ] new\n" })).await;
-+    assert!(!advance(cx, &probe, Duration::from_secs(2)).is_empty(), "R5.2 created");
++    fs.insert_tree(
++        epic("stories/004-new"),
++        json!({ "tasks.md": "- [ ] new\n" }),
++    )
++    .await;
++    assert!(
++        !advance(cx, &probe, Duration::from_secs(2)).is_empty(),
++        "R5.2 created"
++    );
 +
-+    fs.rename(&epic("stories/002-b"), &epic("archive/002-b"), Default::default())
-+        .await
-+        .expect("move a story to the archive");
-+    assert!(!advance(cx, &probe, Duration::from_secs(2)).is_empty(), "R5.2 moved");
++    fs.rename(
++        &epic("stories/002-b"),
++        &epic("archive/002-b"),
++        Default::default(),
++    )
++    .await
++    .expect("move a story to the archive");
++    assert!(
++        !advance(cx, &probe, Duration::from_secs(2)).is_empty(),
++        "R5.2 moved"
++    );
 +
 +    fs.remove_dir(
 +        &epic("stories/004-new"),
@@ -8417,7 +9316,10 @@ index 0000000..da6ecec
 +    )
 +    .await
 +    .expect("remove a story directory");
-+    assert!(!advance(cx, &probe, Duration::from_secs(2)).is_empty(), "R5.2 removed");
++    assert!(
++        !advance(cx, &probe, Duration::from_secs(2)).is_empty(),
++        "R5.2 removed"
++    );
 +}
 +
 +// Hostile half for "the watch lives as long as the value": once dropped, nothing is reported.
@@ -8427,7 +9329,8 @@ index 0000000..da6ecec
 +    let (watch, probe) = start(&fs, cx);
 +    drop(watch);
 +    cx.run_until_parked();
-+    fs.insert_file(epic("stories/001-a/tasks.md"), b"- [x] a\n".to_vec()).await;
++    fs.insert_file(epic("stories/001-a/tasks.md"), b"- [x] a\n".to_vec())
++        .await;
 +    advance(cx, &probe, Duration::from_secs(2));
 +    assert_eq!(probe.changes(), 0, "a dropped EpicWatch reports nothing");
 +}
@@ -8441,16 +9344,36 @@ index 0000000..da6ecec
 +    let (watch, probe) = start(&fs, cx);
 +    let calls = fs.watch_calls();
 +    for path in [epic(""), epic("stories"), epic("archive")] {
-+        assert!(calls.contains(&path), "{} watched: {calls:?}", path.display());
++        assert!(
++            calls.contains(&path),
++            "{} watched: {calls:?}",
++            path.display()
++        );
 +    }
 +
-+    fs.insert_tree(epic("stories/005-later"), json!({ "tasks.md": "- [ ] x\n" })).await;
++    fs.insert_tree(
++        epic("stories/005-later"),
++        json!({ "tasks.md": "- [ ] x\n" }),
++    )
++    .await;
 +    advance(cx, &probe, Duration::from_secs(1));
-+    watch.sync_dirs(&[epic("stories/001-a"), epic("stories/005-later"), epic("archive/003-c")]);
++    watch.sync_dirs(&[
++        epic("stories/001-a"),
++        epic("stories/005-later"),
++        epic("archive/003-c"),
++    ]);
 +    cx.run_until_parked();
 +    let calls = fs.watch_calls();
-+    for path in [epic("stories/001-a"), epic("stories/005-later"), epic("archive/003-c")] {
-+        assert!(calls.contains(&path), "{} watched after sync_dirs: {calls:?}", path.display());
++    for path in [
++        epic("stories/001-a"),
++        epic("stories/005-later"),
++        epic("archive/003-c"),
++    ] {
++        assert!(
++            calls.contains(&path),
++            "{} watched after sync_dirs: {calls:?}",
++            path.display()
++        );
 +    }
 +    assert!(probe.failures().is_empty(), "{:?}", probe.failures());
 +}
@@ -8459,10 +9382,18 @@ index 0000000..da6ecec
 +#[gpui::test]
 +async fn watch_a_missing_area_is_not_a_failure(cx: &mut TestAppContext) {
 +    let fs = FakeFs::new(cx.executor());
-+    fs.insert_tree("/work/project", json!({ ".epico": { "stories": { "001-a": {} } } })).await;
++    fs.insert_tree(
++        "/work/project",
++        json!({ ".epico": { "stories": { "001-a": {} } } }),
++    )
++    .await;
 +    let (_watch, probe) = start(&fs, cx);
 +    advance(cx, &probe, Duration::from_secs(1));
-+    assert!(probe.failures().is_empty(), "no archive/ yet: {:?}", probe.failures());
++    assert!(
++        probe.failures().is_empty(),
++        "no archive/ yet: {:?}",
++        probe.failures()
++    );
 +}
 +
 +#[cfg(target_os = "linux")]
@@ -8476,10 +9407,18 @@ index 0000000..da6ecec
 +    advance(cx, &probe, Duration::from_secs(1));
 +
 +    let failures = probe.failures();
-+    assert_eq!(failures.len(), 1, "R5.6: on_failure is called once: {failures:?}");
-+    assert!(!failures[0].trim().is_empty(), "the failure carries a reason");
++    assert_eq!(
++        failures.len(),
++        1,
++        "R5.6: on_failure is called once: {failures:?}"
++    );
++    assert!(
++        !failures[0].trim().is_empty(),
++        "the failure carries a reason"
++    );
 +
-+    fs.insert_file(epic("archive/003-c/tasks.md"), b"- [ ] reopened\n".to_vec()).await;
++    fs.insert_file(epic("archive/003-c/tasks.md"), b"- [ ] reopened\n".to_vec())
++        .await;
 +    assert!(
 +        !advance(cx, &probe, Duration::from_secs(2)).is_empty(),
 +        "the watch keeps going after a failed add"
@@ -8504,7 +9443,7 @@ index e6ef06b..853dc56 100644
                      }
                      // For a broken or recursive symlink, return the symlink metadata. (Or
 diff --git a/crates/zed/Cargo.toml b/crates/zed/Cargo.toml
-index 209acd7..e5315b0 100644
+index 5b4c596..6b1750f 100644
 --- a/crates/zed/Cargo.toml
 +++ b/crates/zed/Cargo.toml
 @@ -111,6 +111,7 @@ devtools_bridge.workspace = true
@@ -8516,10 +9455,10 @@ index 209acd7..e5315b0 100644
  extension.workspace = true
  extension_host.workspace = true
 diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
-index c5eb571..ba61816 100644
+index 868414d..1598bc1 100644
 --- a/crates/zed/src/main.rs
 +++ b/crates/zed/src/main.rs
-@@ -725,6 +725,7 @@ fn main() {
+@@ -726,6 +726,7 @@ fn main() {
              cx,
          );
          agent_tasks_panel::init(cx);
@@ -8528,7 +9467,7 @@ index c5eb571..ba61816 100644
  
          repl::init(app_state.fs.clone(), cx);
 diff --git a/crates/zed/src/zed.rs b/crates/zed/src/zed.rs
-index dd53675..9ff7a76 100644
+index 3fbf731..ec44d72 100644
 --- a/crates/zed/src/zed.rs
 +++ b/crates/zed/src/zed.rs
 @@ -785,6 +785,7 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
@@ -8547,7 +9486,7 @@ index dd53675..9ff7a76 100644
              initialize_agent_panel(workspace_handle.clone(), cx.clone()).map(|r| r.log_err()),
          );
  
-@@ -6322,6 +6324,7 @@ mod tests {
+@@ -6318,6 +6320,7 @@ mod tests {
                  "edit_prediction",
                  "editor",
                  "encoding_selector",

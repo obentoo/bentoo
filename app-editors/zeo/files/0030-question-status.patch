@@ -53,7 +53,7 @@ conversation waiting, and answering it clears that.
 ---
 
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 527ff0d..25d643b 100644
+index 7259d30..84a8366 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -309,6 +309,22 @@ impl Conversation {
@@ -148,7 +148,7 @@ index 527ff0d..25d643b 100644
      #[gpui::test]
      async fn test_resume_without_history_adds_notice(cx: &mut TestAppContext) {
          init_test(cx);
-@@ -18447,6 +18511,76 @@ pub(crate) mod tests {
+@@ -18461,6 +18525,76 @@ pub(crate) mod tests {
          });
      }
  
@@ -226,7 +226,7 @@ index 527ff0d..25d643b 100644
      async fn test_conversation_subagent_scoped_pending_tool_call(cx: &mut TestAppContext) {
          init_test(cx);
 diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
-index 10f7502..8a2258b 100644
+index 6064837..a574110 100644
 --- a/crates/sidebar/src/sidebar.rs
 +++ b/crates/sidebar/src/sidebar.rs
 @@ -6178,7 +6178,8 @@ impl Sidebar {
@@ -316,7 +316,7 @@ index 10f7502..8a2258b 100644
 +    }
 +}
 diff --git a/crates/sidebar/src/sidebar_tests.rs b/crates/sidebar/src/sidebar_tests.rs
-index decbc88..427f1e4 100644
+index f4de1c2..61c3e83 100644
 --- a/crates/sidebar/src/sidebar_tests.rs
 +++ b/crates/sidebar/src/sidebar_tests.rs
 @@ -689,6 +689,7 @@ pub(super) fn visible_entries_as_strings(
@@ -327,7 +327,7 @@ index decbc88..427f1e4 100644
                                  _ => "",
                              };
                              let notified = if sidebar
-@@ -4812,6 +4813,65 @@ async fn test_background_tasks_outlive_the_turn_in_the_sidebar(cx: &mut TestAppC
+@@ -4812,6 +4813,67 @@ async fn test_background_tasks_outlive_the_turn_in_the_sidebar(cx: &mut TestAppC
      );
  }
  
@@ -360,7 +360,9 @@ index decbc88..427f1e4 100644
 +                .request_elicitation_with_id(
 +                    acp_v2::CreateElicitationRequest::new(
 +                        acp_v2::ElicitationFormMode::new(
-+                            acp_v2::ElicitationSessionScope::new(acp_v2::SessionId::new(session_id.0.clone())),
++                            acp_v2::ElicitationSessionScope::new(acp_v2::SessionId::new(
++                                session_id.0.clone(),
++                            )),
 +                            acp_v2::ElicitationSchema::new().string("database", true),
 +                        ),
 +                        "Which database should the service use?",
@@ -393,7 +395,7 @@ index decbc88..427f1e4 100644
  pub(super) fn type_in_search(
      sidebar: &Entity<Sidebar>,
      query: &str,
-@@ -16244,3 +16304,34 @@ async fn test_dropped_folders_open_as_projects(cx: &mut TestAppContext) {
+@@ -16244,3 +16306,52 @@ async fn test_dropped_folders_open_as_projects(cx: &mut TestAppContext) {
          ]
      );
  }
@@ -403,18 +405,36 @@ index decbc88..427f1e4 100644
 +// ever marks an otherwise idle thread.
 +#[test]
 +fn test_thread_row_status_precedence() {
-+    use acp_thread::ThreadStatus::{Generating, Idle};
 +    use super::thread_row_status as status;
++    use acp_thread::ThreadStatus::{Generating, Idle};
 +
 +    // (tool call, question, error, thread status, background tasks) -> row
 +    let cases = [
-+        ((true, true, true, Idle, 3), AgentThreadStatus::WaitingForConfirmation),
-+        ((true, false, false, Generating, 0), AgentThreadStatus::WaitingForConfirmation),
-+        ((false, true, true, Idle, 3), AgentThreadStatus::WaitingForAnswer),
-+        ((false, true, false, Generating, 0), AgentThreadStatus::WaitingForAnswer),
++        (
++            (true, true, true, Idle, 3),
++            AgentThreadStatus::WaitingForConfirmation,
++        ),
++        (
++            (true, false, false, Generating, 0),
++            AgentThreadStatus::WaitingForConfirmation,
++        ),
++        (
++            (false, true, true, Idle, 3),
++            AgentThreadStatus::WaitingForAnswer,
++        ),
++        (
++            (false, true, false, Generating, 0),
++            AgentThreadStatus::WaitingForAnswer,
++        ),
 +        ((false, false, true, Idle, 3), AgentThreadStatus::Error),
-+        ((false, false, false, Generating, 3), AgentThreadStatus::Running),
-+        ((false, false, false, Idle, 1), AgentThreadStatus::Background),
++        (
++            (false, false, false, Generating, 3),
++            AgentThreadStatus::Running,
++        ),
++        (
++            (false, false, false, Idle, 1),
++            AgentThreadStatus::Background,
++        ),
 +        ((false, false, false, Idle, 0), AgentThreadStatus::Completed),
 +    ];
 +    for ((tool_call, question, error, thread, background), expected) in cases {

@@ -120,10 +120,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/assets/settings/default.json b/assets/settings/default.json
-index 43dca30..00a2a0b 100644
+index acc4aff..01d0d42 100644
 --- a/assets/settings/default.json
 +++ b/assets/settings/default.json
-@@ -1434,6 +1434,15 @@
+@@ -1440,6 +1440,15 @@
      //
      // Default: card
      "elicitation_placement": "card",
@@ -140,7 +140,7 @@ index 43dca30..00a2a0b 100644
      // that offers to resolve conflicts using the agent.
      //
 diff --git a/crates/agent/src/tool_permissions.rs b/crates/agent/src/tool_permissions.rs
-index 3df102d..38f6d79 100644
+index c6055ed..dd07a26 100644
 --- a/crates/agent/src/tool_permissions.rs
 +++ b/crates/agent/src/tool_permissions.rs
 @@ -608,6 +608,10 @@ mod tests {
@@ -152,10 +152,10 @@ index 3df102d..38f6d79 100644
 +                position: settings::TasksCardPosition::default(),
 +            },
              show_merge_conflict_indicator: true,
+             auto_generate_thread_titles: true,
              max_idle_retained_threads: 5,
-             threads_sidebar: agent_settings::ThreadsSidebarSettings {
 diff --git a/crates/agent_settings/src/agent_settings.rs b/crates/agent_settings/src/agent_settings.rs
-index ab76f65..fdc7287 100644
+index 9431704..4f1542e 100644
 --- a/crates/agent_settings/src/agent_settings.rs
 +++ b/crates/agent_settings/src/agent_settings.rs
 @@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
@@ -167,12 +167,13 @@ index ab76f65..fdc7287 100644
      ThinkingBlockDisplay, ToolPermissionMode, update_settings_file,
      update_settings_file_with_completion,
  };
-@@ -249,11 +249,21 @@ pub struct AgentSettings {
+@@ -249,12 +249,22 @@ pub struct AgentSettings {
      pub message_editor_min_lines: usize,
      pub show_turn_stats: bool,
      pub elicitation_placement: ElicitationPlacement,
 +    pub tasks_card: TasksCardSettings,
      pub show_merge_conflict_indicator: bool,
+     pub auto_generate_thread_titles: bool,
      pub tool_permissions: ToolPermissions,
      pub sandbox_permissions: SandboxPermissions,
  }
@@ -189,7 +190,7 @@ index ab76f65..fdc7287 100644
  #[derive(Clone, Copy, Debug)]
  pub struct ThreadsSidebarSettings {
      pub auto_open: bool,
-@@ -846,6 +856,13 @@ impl Settings for AgentSettings {
+@@ -847,6 +857,13 @@ impl Settings for AgentSettings {
              message_editor_min_lines: agent.message_editor_min_lines.unwrap(),
              show_turn_stats: agent.show_turn_stats.unwrap(),
              elicitation_placement: agent.elicitation_placement.unwrap(),
@@ -201,9 +202,9 @@ index ab76f65..fdc7287 100644
 +                }
 +            },
              show_merge_conflict_indicator: agent.show_merge_conflict_indicator.unwrap(),
+             auto_generate_thread_titles: agent.auto_generate_thread_titles.unwrap(),
              tool_permissions: compile_tool_permissions(agent.tool_permissions),
-             sandbox_permissions: compile_sandbox_permissions(agent.sandbox_permissions),
-@@ -2265,4 +2282,6 @@ mod tests {
+@@ -2267,4 +2284,6 @@ mod tests {
              assert_eq!(user_layout.project_panel_dock, Some(DockSide::Right));
          });
      }
@@ -291,7 +292,7 @@ index 0000000..54bdc62
 +    }
 +}
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index 32ff34f..4a29b83 100644
+index 2c51f9c..9bf46ce 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -39,6 +39,7 @@ use crate::ExpandMessageEditor;
@@ -577,7 +578,7 @@ index 32ff34f..4a29b83 100644
              self.serialize(cx);
              cx.emit(AgentPanelEvent::ActiveViewChanged);
              cx.notify();
-@@ -4294,6 +4454,7 @@ impl AgentPanel {
+@@ -4299,6 +4459,7 @@ impl AgentPanel {
          self.retained_threads
              .insert(thread_id, conversation_view.clone());
          self.observe_retained_thread(thread_id, conversation_view, cx);
@@ -585,7 +586,7 @@ index 32ff34f..4a29b83 100644
      }
  
      fn observe_retained_thread(
-@@ -4330,12 +4491,115 @@ impl AgentPanel {
+@@ -4335,12 +4496,115 @@ impl AgentPanel {
              .insert(thread_id, subscription);
      }
  
@@ -703,7 +704,7 @@ index 32ff34f..4a29b83 100644
          let mut potential_removals = self
              .retained_threads
              .iter()
-@@ -4362,7 +4626,7 @@ impl AgentPanel {
+@@ -4367,7 +4631,7 @@ impl AgentPanel {
              .take(n)
              .collect::<Vec<_>>();
          for id in to_remove {
@@ -712,7 +713,7 @@ index 32ff34f..4a29b83 100644
          }
      }
  
-@@ -4451,6 +4715,7 @@ impl AgentPanel {
+@@ -4456,6 +4720,7 @@ impl AgentPanel {
              }
          };
          self.serialize(cx);
@@ -720,7 +721,7 @@ index 32ff34f..4a29b83 100644
      }
  
      fn visible_surface(&self) -> VisibleSurface<'_> {
-@@ -4497,7 +4762,7 @@ impl AgentPanel {
+@@ -4502,7 +4767,7 @@ impl AgentPanel {
                              this.draft_thread = None;
                              this._draft_editor_observation = None;
                          }
@@ -729,7 +730,7 @@ index 32ff34f..4a29b83 100644
                          cx.emit(AgentPanelEvent::ThreadInteracted { thread_id });
                      }
                  },
-@@ -4573,7 +4838,7 @@ impl AgentPanel {
+@@ -4578,7 +4843,7 @@ impl AgentPanel {
              );
              return;
          }
@@ -738,7 +739,7 @@ index 32ff34f..4a29b83 100644
              self.try_make_empty_draft_ephemeral(conversation_view.clone(), cx);
              self.set_base_view(
                  BaseView::AgentThread { conversation_view },
-@@ -6684,6 +6949,7 @@ impl Render for AgentPanel {
+@@ -6698,6 +6963,7 @@ impl Render for AgentPanel {
          // - Scrolling in all views works as expected
          // - Files can be dropped into the panel
          let content = v_flex()
@@ -746,7 +747,7 @@ index 32ff34f..4a29b83 100644
              .key_context(self.key_context(cx))
              .relative()
              .size_full()
-@@ -6767,7 +7033,8 @@ impl Render for AgentPanel {
+@@ -6781,7 +7047,8 @@ impl Render for AgentPanel {
                          .child(self.render_drag_target(cx))
                  }
              })
@@ -756,7 +757,7 @@ index 32ff34f..4a29b83 100644
  
          match self.visible_font_size() {
              WhichFontSize::AgentFont => {
-@@ -6805,7 +7072,7 @@ impl AgentPanel {
+@@ -6819,7 +7086,7 @@ impl AgentPanel {
      /// Drops a thread's `ConversationView` from `retained_threads` without
      /// deleting its metadata or kvp state. Simulates the post-restart
      pub fn test_unload_retained_thread(&mut self, id: ThreadId) -> bool {
@@ -765,7 +766,7 @@ index 32ff34f..4a29b83 100644
      }
  
      /// Opens an external thread using an arbitrary AgentServer.
-@@ -9182,6 +9449,61 @@ mod tests {
+@@ -9196,6 +9463,61 @@ mod tests {
          assert_eq!(folders, Some(vec![PathBuf::from("/project")]));
      }
  
@@ -827,7 +828,7 @@ index 32ff34f..4a29b83 100644
      #[gpui::test]
      async fn test_new_draft_survives_reload_when_real_thread_is_active(cx: &mut TestAppContext) {
          init_test(cx);
-@@ -14583,8 +14905,8 @@ mod tests {
+@@ -14699,8 +15021,8 @@ mod tests {
          // directly remove from retained_threads and drop the handle
          // so on_release → close_all_sessions fires only on A.
          drop(retained_conversation_a);
@@ -839,7 +840,7 @@ index 32ff34f..4a29b83 100644
          cx.run_until_parked();
  
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index f072899..b90a0d8 100644
+index 0e9001f..b61157e 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
 @@ -26,6 +26,7 @@ mod model_selector;
@@ -859,10 +860,10 @@ index f072899..b90a0d8 100644
 +                position: settings::TasksCardPosition::default(),
 +            },
              show_merge_conflict_indicator: true,
+             auto_generate_thread_titles: true,
              max_idle_retained_threads: 5,
-             threads_sidebar: agent_settings::ThreadsSidebarSettings {
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 50c6d72..8414d5e 100644
+index 01c3b41..22a03db 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -2024,21 +2024,30 @@ impl ConversationView {
@@ -905,7 +906,7 @@ index 50c6d72..8414d5e 100644
                          active.sync_editor_mode(cx);
                          active.sync_generating_indicator(cx);
                      });
-@@ -14987,6 +14996,47 @@ pub(crate) mod tests {
+@@ -14998,6 +15007,50 @@ pub(crate) mod tests {
          }
      }
  
@@ -915,7 +916,7 @@ index 50c6d72..8414d5e 100644
 +    // it had never seen. Every entry must be synced, and nothing may panic.
 +    #[gpui::test]
 +    async fn test_entries_pushed_in_one_update_all_sync(cx: &mut TestAppContext) {
-+        use agent_client_protocol::schema::v2 as acp_v2;
++        use agent_client_protocol::v2::schema as acp_v2;
 +
 +        init_test(cx);
 +        let (conversation_view, cx) =
@@ -937,7 +938,10 @@ index 50c6d72..8414d5e 100644
 +        let synced = thread_view.read_with(cx, |view, cx| {
 +            view.entry_view_state.read(cx).synced_entry_count()
 +        });
-+        assert_eq!(synced, entries, "the view must sync every entry of the batch");
++        assert_eq!(
++            synced, entries,
++            "the view must sync every entry of the batch"
++        );
 +
 +        // The next ordinary push lands on a view that is caught up, not one behind.
 +        thread.update(cx, |thread, cx| {
@@ -951,10 +955,10 @@ index 50c6d72..8414d5e 100644
 +    }
 +
      async fn assert_unsupported_source_message_cannot_regenerate(
-         unsupported: agent_client_protocol::schema::v2::ContentBlock,
+         unsupported: agent_client_protocol::v2::schema::ContentBlock,
          cx: &mut TestAppContext,
 diff --git a/crates/agent_ui/src/entry_view_state.rs b/crates/agent_ui/src/entry_view_state.rs
-index 0009183..f2922a3 100644
+index f6d569d..1fa53ed 100644
 --- a/crates/agent_ui/src/entry_view_state.rs
 +++ b/crates/agent_ui/src/entry_view_state.rs
 @@ -259,6 +259,11 @@ impl EntryViewState {
@@ -971,7 +975,7 @@ index 0009183..f2922a3 100644
          index: usize,
 diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
 new file mode 100644
-index 0000000..a955b5d
+index 0000000..7b47b8b
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card.rs
 @@ -0,0 +1,1625 @@
@@ -993,7 +997,7 @@ index 0000000..a955b5d
 +};
 +
 +use acp_thread::{AcpThread, AcpThreadEvent, AgentTask, AgentTaskId, AgentTaskStatus};
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use agent_settings::AgentSettings;
 +use collections::{HashMap, HashSet};
 +use gpui::{
@@ -3038,7 +3042,7 @@ index 0000000..ac5de33
 +}
 diff --git a/crates/agent_ui/src/tasks_card/group_open_tests.rs b/crates/agent_ui/src/tasks_card/group_open_tests.rs
 new file mode 100644
-index 0000000..f35dd10
+index 0000000..9f5e77a
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/group_open_tests.rs
 @@ -0,0 +1,162 @@
@@ -3047,8 +3051,8 @@ index 0000000..f35dd10
 +// one (R4.8). Filter: `tasks_card::group_open`.
 +
 +use acp_thread::{AcpThread, AgentThreadEntry};
-+use agent_client_protocol::schema::v1 as acp;
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v1::schema as acp;
++use agent_client_protocol::v2::schema as acp_v2;
 +use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
 +
 +use super::test_helpers::*;
@@ -3731,7 +3735,7 @@ index 0000000..61bf722
 +}
 diff --git a/crates/agent_ui/src/tasks_card/open_tests.rs b/crates/agent_ui/src/tasks_card/open_tests.rs
 new file mode 100644
-index 0000000..3eea8da
+index 0000000..6843f2d
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/open_tests.rs
 @@ -0,0 +1,169 @@
@@ -3739,7 +3743,7 @@ index 0000000..3eea8da
 +// Filter: `tasks_card::open`.
 +
 +use acp_thread::{AcpThread, AgentThreadEntry};
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::v1::schema as acp;
 +use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
 +use serde_json::json;
 +
@@ -3906,7 +3910,7 @@ index 0000000..3eea8da
 +}
 diff --git a/crates/agent_ui/src/tasks_card/panel_close_tests.rs b/crates/agent_ui/src/tasks_card/panel_close_tests.rs
 new file mode 100644
-index 0000000..2c4f9cd
+index 0000000..db740b4
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/panel_close_tests.rs
 @@ -0,0 +1,86 @@
@@ -3947,7 +3951,7 @@ index 0000000..2c4f9cd
 +fn sessions(
 +    panel: &gpui::Entity<crate::AgentPanel>,
 +    cx: &mut gpui::VisualTestContext,
-+) -> Vec<agent_client_protocol::schema::v2::SessionId> {
++) -> Vec<agent_client_protocol::v2::schema::SessionId> {
 +    let card = card(panel, cx);
 +    rows(&card, cx)
 +        .into_iter()
@@ -3998,7 +4002,7 @@ index 0000000..2c4f9cd
 +}
 diff --git a/crates/agent_ui/src/tasks_card/placement_tests.rs b/crates/agent_ui/src/tasks_card/placement_tests.rs
 new file mode 100644
-index 0000000..96d03f4
+index 0000000..38ce6f2
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/placement_tests.rs
 @@ -0,0 +1,167 @@
@@ -4006,7 +4010,7 @@ index 0000000..96d03f4
 +// panel however small it is, and clear of the toolbar above and the message
 +// editor below. Filter: `tasks_card::placement`.
 +
-+use agent_client_protocol::schema::v1 as acp;
++use agent_client_protocol::v1::schema as acp;
 +use agent_settings::{AgentSettings, TasksCardSettings};
 +use gpui::{Bounds, Pixels, TestAppContext, VisualTestContext, px, size};
 +use settings::{Settings as _, TasksCardPosition};
@@ -4385,18 +4389,18 @@ index 0000000..49f0bb1
 +}
 diff --git a/crates/agent_ui/src/tasks_card/row_error_tests.rs b/crates/agent_ui/src/tasks_card/row_error_tests.rs
 new file mode 100644
-index 0000000..e7d807a
+index 0000000..5e8b8b2
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/row_error_tests.rs
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,188 @@
 +// Story 013 / task 5.2 — the row-error lifecycle owed by 5.1 (R4.3, R4.7).
 +// Filter: `tasks_card::row_error`.
 +
 +use std::{any::Any, rc::Rc};
 +
 +use acp_thread::{AcpThread, AgentConnection};
-+use agent_client_protocol::schema::v1 as acp;
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v1::schema as acp;
++use agent_client_protocol::v2::schema as acp_v2;
 +use anyhow::{Context as _, Result, anyhow};
 +use gpui::{App, AppContext as _, Entity, SharedString, Task, TestAppContext};
 +use project::{AgentId, Project};
@@ -4525,24 +4529,30 @@ index 0000000..e7d807a
 +                project,
 +                action_log,
 +                acp_v2::SessionId::new("tasks-card-not-running-session"),
-+                watch::Receiver::constant(agent_client_protocol::schema::v2::PromptCapabilities::new()),
++                watch::Receiver::constant(
++                    agent_client_protocol::v2::schema::PromptCapabilities::new(),
++                ),
 +                cx,
 +            )
 +        });
 +        Task::ready(Ok(thread))
 +    }
 +
-+    fn auth_methods(&self) -> &[agent_client_protocol::schema::v2::AuthMethod] {
++    fn auth_methods(&self) -> &[agent_client_protocol::v2::schema::AuthMethod] {
 +        self.inner.auth_methods()
 +    }
 +
-+    fn authenticate(&self, method: agent_client_protocol::schema::v2::AuthMethodId, cx: &mut App) -> Task<Result<()>> {
++    fn authenticate(
++        &self,
++        method: agent_client_protocol::v2::schema::AuthMethodId,
++        cx: &mut App,
++    ) -> Task<Result<()>> {
 +        self.inner.authenticate(method, cx)
 +    }
 +
 +    fn prompt(
 +        &self,
-+        params: agent_client_protocol::schema::v2::PromptRequest,
++        params: agent_client_protocol::v2::schema::PromptRequest,
 +        cx: &mut App,
 +    ) -> Task<Result<acp::PromptResponse>> {
 +        self.inner.prompt(params, cx)
@@ -4729,10 +4739,10 @@ index 0000000..54c31cc
 +}
 diff --git a/crates/agent_ui/src/tasks_card/test_helpers.rs b/crates/agent_ui/src/tasks_card/test_helpers.rs
 new file mode 100644
-index 0000000..6b2f789
+index 0000000..0208066
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/test_helpers.rs
-@@ -0,0 +1,421 @@
+@@ -0,0 +1,427 @@
 +// Story 013 — shared fixtures for the tasks card tests (patch 0033/0034).
 +//
 +// Declared in `src/tasks_card.rs` as:
@@ -4798,8 +4808,8 @@ index 0000000..6b2f789
 +};
 +
 +use acp_thread::{AcpThread, AgentConnection, StubAgentConnection};
-+use agent_client_protocol::schema::v1 as acp;
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v1::schema as acp;
++use agent_client_protocol::v2::schema as acp_v2;
 +use anyhow::{Result, anyhow};
 +use fs::FakeFs;
 +use gpui::{
@@ -4906,24 +4916,30 @@ index 0000000..6b2f789
 +                project,
 +                action_log,
 +                session_id,
-+                watch::Receiver::constant(agent_client_protocol::schema::v2::PromptCapabilities::new()),
++                watch::Receiver::constant(
++                    agent_client_protocol::v2::schema::PromptCapabilities::new(),
++                ),
 +                cx,
 +            )
 +        });
 +        Task::ready(Ok(thread))
 +    }
 +
-+    fn auth_methods(&self) -> &[agent_client_protocol::schema::v2::AuthMethod] {
++    fn auth_methods(&self) -> &[agent_client_protocol::v2::schema::AuthMethod] {
 +        &[]
 +    }
 +
-+    fn authenticate(&self, _method: agent_client_protocol::schema::v2::AuthMethodId, _cx: &mut App) -> Task<Result<()>> {
++    fn authenticate(
++        &self,
++        _method: agent_client_protocol::v2::schema::AuthMethodId,
++        _cx: &mut App,
++    ) -> Task<Result<()>> {
 +        Task::ready(Ok(()))
 +    }
 +
 +    fn prompt(
 +        &self,
-+        _params: agent_client_protocol::schema::v2::PromptRequest,
++        _params: agent_client_protocol::v2::schema::PromptRequest,
 +        _cx: &mut App,
 +    ) -> Task<Result<acp::PromptResponse>> {
 +        Task::ready(Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)))
@@ -5155,7 +5171,7 @@ index 0000000..6b2f789
 +    cx.run_until_parked();
 +}
 diff --git a/crates/settings_content/src/agent.rs b/crates/settings_content/src/agent.rs
-index 3b0c77c..47940a8 100644
+index 30636a8..ca9edb1 100644
 --- a/crates/settings_content/src/agent.rs
 +++ b/crates/settings_content/src/agent.rs
 @@ -124,6 +124,49 @@ pub enum ElicitationPlacement {

@@ -75,7 +75,7 @@ here because it sits beside this patch's tests.
 ---
 
 diff --git a/assets/keymaps/default-linux.json b/assets/keymaps/default-linux.json
-index 691c9d1..9881670 100644
+index 430ddf1..8cdb1cd 100644
 --- a/assets/keymaps/default-linux.json
 +++ b/assets/keymaps/default-linux.json
 @@ -379,6 +379,17 @@
@@ -97,10 +97,10 @@ index 691c9d1..9881670 100644
      "context": "Elicitation || (Elicitation > Editor)",
      "use_key_equivalents": true,
 diff --git a/assets/keymaps/default-macos.json b/assets/keymaps/default-macos.json
-index dc27e53..3146444 100644
+index de2a333..60d141c 100644
 --- a/assets/keymaps/default-macos.json
 +++ b/assets/keymaps/default-macos.json
-@@ -414,6 +414,17 @@
+@@ -413,6 +413,17 @@
        "enter": "editor::Newline",
      },
    },
@@ -119,7 +119,7 @@ index dc27e53..3146444 100644
      "context": "Elicitation || (Elicitation > Editor)",
      "use_key_equivalents": true,
 diff --git a/assets/keymaps/default-windows.json b/assets/keymaps/default-windows.json
-index 215e45e..5cc894f 100644
+index bef5a8a..7b4173e 100644
 --- a/assets/keymaps/default-windows.json
 +++ b/assets/keymaps/default-windows.json
 @@ -382,6 +382,17 @@
@@ -160,7 +160,7 @@ index d35f0fb..4518548 100644
    {
      "context": "SettingsWindow > NavigationMenu && !search",
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index be8d9d5..2b9616c 100644
+index 4b98f0a..63fc567 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
 @@ -339,6 +339,11 @@ actions!(
@@ -185,7 +185,7 @@ index be8d9d5..2b9616c 100644
              filter.show_action_types(skill_creator_actions.iter());
          } else {
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index b2d5bef..dd24bb1 100644
+index 73b4f3f..43f4275 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -7567,9 +7567,6 @@ pub(crate) mod tests {
@@ -198,7 +198,7 @@ index b2d5bef..dd24bb1 100644
  
          // The question is asked before the conversation registers the thread, so it never
          // sees `ElicitationRequested` -- the case `register_thread` seeds for.
-@@ -7599,6 +7596,333 @@ pub(crate) mod tests {
+@@ -7599,6 +7596,338 @@ pub(crate) mod tests {
          });
      }
  
@@ -301,7 +301,9 @@ index b2d5bef..dd24bb1 100644
 +                let action = section
 +                    .bindings()
 +                    .find(|(keystroke, _)| keystroke.as_str() == key)
-+                    .and_then(|(_, action)| settings::KeymapFile::parse_action(action).ok().flatten())
++                    .and_then(|(_, action)| {
++                        settings::KeymapFile::parse_action(action).ok().flatten()
++                    })
 +                    .map(|(name, _)| name.clone());
 +                assert_eq!(
 +                    action.as_deref(),
@@ -522,7 +524,10 @@ index b2d5bef..dd24bb1 100644
 +                    })
 +            })
 +        };
-+        assert!(pending(&thread_view, cx), "Shift-Enter must not answer the question");
++        assert!(
++            pending(&thread_view, cx),
++            "Shift-Enter must not answer the question"
++        );
 +
 +        cx.simulate_keystrokes("enter");
 +        cx.run_until_parked();
@@ -532,7 +537,7 @@ index b2d5bef..dd24bb1 100644
      #[gpui::test]
      async fn test_resume_without_history_adds_notice(cx: &mut TestAppContext) {
          init_test(cx);
-@@ -15088,6 +15412,27 @@ pub(crate) mod tests {
+@@ -15099,6 +15428,30 @@ pub(crate) mod tests {
          }
      }
  
@@ -551,7 +556,10 @@ index b2d5bef..dd24bb1 100644
 +            std::thread::sleep(std::time::Duration::from_millis(5));
 +            view.stop_turn(generation, cx);
 +            let once = view.turn_fields.session_duration;
-+            assert!(once > std::time::Duration::ZERO, "the turn's time was added");
++            assert!(
++                once > std::time::Duration::ZERO,
++                "the turn's time was added"
++            );
 +            view.stop_turn(generation, cx);
 +            assert_eq!(view.turn_fields.session_duration, once, "not added twice");
 +        });
@@ -561,7 +569,7 @@ index b2d5bef..dd24bb1 100644
      // each, all flushed after the last push. Upstream's handler synced only the last index
      // per event, so the view fell behind the thread and the next sync panicked on an index
 diff --git a/crates/agent_ui/src/conversation_view/elicitation.rs b/crates/agent_ui/src/conversation_view/elicitation.rs
-index d2d0646..9945399 100644
+index 9d09ecb..9f6c872 100644
 --- a/crates/agent_ui/src/conversation_view/elicitation.rs
 +++ b/crates/agent_ui/src/conversation_view/elicitation.rs
 @@ -62,6 +62,14 @@ pub(crate) struct ElicitationFormState {
@@ -580,10 +588,10 @@ index d2d0646..9945399 100644
          let required = schema.required.as_deref().unwrap_or_default();
          let mut fields = HashMap::default();
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index aea5f94..1a17062 100644
+index 75946c6..4a92417 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
-@@ -3525,6 +3525,17 @@ impl ThreadView {
+@@ -3550,6 +3550,17 @@ impl ThreadView {
          self.elicitation_form_states.contains_key(id)
      }
  
@@ -601,7 +609,7 @@ index aea5f94..1a17062 100644
      fn submit_elicitation(
          &mut self,
          elicitation_id: ElicitationEntryId,
-@@ -8617,6 +8628,19 @@ impl ThreadView {
+@@ -8743,6 +8754,19 @@ impl ThreadView {
          self.message_editor.read(cx).set_local_commands(commands);
      }
  
@@ -621,7 +629,7 @@ index aea5f94..1a17062 100644
      /// Whether this elicitation is drawn by the pinned card above the message
      /// editor rather than inline, in the conversation.
      ///
-@@ -14262,6 +14286,7 @@ impl Render for ThreadView {
+@@ -14436,6 +14460,7 @@ impl Render for ThreadView {
          // current availability of feedback/sharing, which can change between
          // renders (settings, connection state, feature flags).
          self.sync_local_commands(cx);
@@ -630,7 +638,7 @@ index aea5f94..1a17062 100644
          let has_messages = self.has_visible_conversation(cx);
          let list_state = self.list_state.clone();
 diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message_editor.rs
-index ba14b89..cf2e870 100644
+index 4ec9710..b20db69 100644
 --- a/crates/agent_ui/src/message_editor.rs
 +++ b/crates/agent_ui/src/message_editor.rs
 @@ -1,7 +1,7 @@
@@ -726,20 +734,22 @@ index ba14b89..cf2e870 100644
      pub fn set_session_capabilities(
          &mut self,
          session_capabilities: SharedSessionCapabilities,
-@@ -2217,6 +2255,12 @@ impl Render for MessageEditor {
+@@ -2217,6 +2255,14 @@ impl Render for MessageEditor {
              .on_action(cx.listener(Self::chat))
              .on_action(cx.listener(Self::send_immediately))
              .on_action(cx.listener(Self::chat_with_follow))
-+            .on_action(cx.listener(|this, _: &IgnoreSendWhileQuestionPending, _, cx| {
-+                // Still a no-op as far as sending goes (0043); it only makes the
-+                // composer say why nothing happened.
-+                this.swallowed_send = true;
-+                cx.notify();
-+            }))
++            .on_action(
++                cx.listener(|this, _: &IgnoreSendWhileQuestionPending, _, cx| {
++                    // Still a no-op as far as sending goes (0043); it only makes the
++                    // composer say why nothing happened.
++                    this.swallowed_send = true;
++                    cx.notify();
++                }),
++            )
              .on_action(cx.listener(Self::cancel))
              .capture_action(cx.listener(Self::copy))
              .capture_action(cx.listener(Self::cut))
-@@ -2226,6 +2270,7 @@ impl Render for MessageEditor {
+@@ -2226,6 +2272,7 @@ impl Render for MessageEditor {
                  this.toggle_preview(window, cx)
              }))
              .flex_1()
@@ -747,7 +757,7 @@ index ba14b89..cf2e870 100644
              .children(self.render_preview(window, cx))
              .child(div().flex_1().child({
                  let settings = ThemeSettings::get_global(cx);
-@@ -2256,11 +2301,13 @@ impl Render for MessageEditor {
+@@ -2256,11 +2303,13 @@ impl Render for MessageEditor {
      }
  }
  
@@ -764,7 +774,7 @@ index ba14b89..cf2e870 100644
      }
  }
  
-@@ -2278,6 +2325,9 @@ impl Addon for MessageEditorAddon {
+@@ -2278,6 +2327,9 @@ impl Addon for MessageEditorAddon {
          if settings.use_modifier_to_send {
              key_context.add("use_modifier_to_send");
          }

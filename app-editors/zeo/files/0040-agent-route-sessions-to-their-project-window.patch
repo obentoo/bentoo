@@ -75,12 +75,12 @@ never cuts short one that finishes in time.
 ---
 
 diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
-index 8b09fa1..7b1aacb 100644
+index ee71c2b..000e9a3 100644
 --- a/crates/agent_tasks_panel/src/panel.rs
 +++ b/crates/agent_tasks_panel/src/panel.rs
 @@ -14,7 +14,8 @@ use std::{cmp::Reverse, ops::Range, sync::Arc};
  use acp_thread::{AgentTask, AgentTaskId, AgentTaskStatus};
- use agent_client_protocol::schema::v2 as acp_v2;
+ use agent_client_protocol::v2::schema as acp_v2;
  use agent_ui::{
 -    AgentPanel, DEFAULT_THREAD_TITLE, TaskRecord, TasksCard, collapse_label, display_label,
 +    AgentPanel, DEFAULT_THREAD_TITLE, OpenAgentSessionOptions, OpenedAgentSession, TaskRecord,
@@ -845,10 +845,10 @@ index 0000000..83ba40c
 +    assert_eq!(notice_of(&tasks_panel_b, &session, "t", &mut b.cx), None);
 +}
 diff --git a/crates/agent_tasks_panel/src/test_helpers.rs b/crates/agent_tasks_panel/src/test_helpers.rs
-index 6ffbbfc..a6e9b4b 100644
+index bc29a16..6065b6f 100644
 --- a/crates/agent_tasks_panel/src/test_helpers.rs
 +++ b/crates/agent_tasks_panel/src/test_helpers.rs
-@@ -546,3 +546,203 @@ pub(crate) fn visible_keys(panels: &mut Panels) -> Vec<(String, String)> {
+@@ -552,3 +552,203 @@ pub(crate) fn visible_keys(panels: &mut Panels) -> Vec<(String, String)> {
          .map(|row| key_of(&row.entry))
          .collect()
  }
@@ -1054,7 +1054,7 @@ index 6ffbbfc..a6e9b4b 100644
 +}
 diff --git a/crates/agent_ui/src/agent_session_router.rs b/crates/agent_ui/src/agent_session_router.rs
 new file mode 100644
-index 0000000..9887094
+index 0000000..e42c727
 --- /dev/null
 +++ b/crates/agent_ui/src/agent_session_router.rs
 @@ -0,0 +1,477 @@
@@ -1076,7 +1076,7 @@ index 0000000..9887094
 +use std::time::Duration;
 +
 +use acp_thread::AgentTaskId;
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use anyhow::{Context as _, Result, anyhow};
 +use fs::Fs;
 +use futures::StreamExt as _;
@@ -1537,7 +1537,7 @@ index 0000000..9887094
 +mod review;
 diff --git a/crates/agent_ui/src/agent_session_router/review_tests.rs b/crates/agent_ui/src/agent_session_router/review_tests.rs
 new file mode 100644
-index 0000000..228ae97
+index 0000000..07e3bad
 --- /dev/null
 +++ b/crates/agent_ui/src/agent_session_router/review_tests.rs
 @@ -0,0 +1,447 @@
@@ -1549,7 +1549,7 @@ index 0000000..228ae97
 +use std::path::{Path, PathBuf};
 +use std::sync::Arc;
 +
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use fs::FakeFs;
 +use gpui::{
 +    AnyWindowHandle, AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle,
@@ -1990,10 +1990,10 @@ index 0000000..228ae97
 +}
 diff --git a/crates/agent_ui/src/agent_session_router/routing_tests.rs b/crates/agent_ui/src/agent_session_router/routing_tests.rs
 new file mode 100644
-index 0000000..5b85856
+index 0000000..35d6952
 --- /dev/null
 +++ b/crates/agent_ui/src/agent_session_router/routing_tests.rs
-@@ -0,0 +1,425 @@
+@@ -0,0 +1,433 @@
 +// Story 024, task 2.1 — `open_agent_session` resolves a session's window from its metadata
 +// row (R1.1, R1.2 via `open_paths`, R1.3, R1.4, R1.5, Q4). Wired in
 +// `src/agent_session_router.rs` as
@@ -2018,7 +2018,7 @@ index 0000000..5b85856
 +use std::sync::Arc;
 +
 +use acp_thread::StubAgentConnection;
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use fs::FakeFs;
 +use gpui::{
 +    AnyWindowHandle, AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle,
@@ -2410,17 +2410,25 @@ index 0000000..5b85856
 +        futures::future::pending::<()>(),
 +    ));
 +    executor.advance_clock(super::THREAD_LOAD_TIMEOUT + std::time::Duration::from_secs(1));
-+    assert_eq!(never.await, None, "a load that never comes gives up at the deadline");
++    assert_eq!(
++        never.await,
++        None,
++        "a load that never comes gives up at the deadline"
++    );
 +
 +    let quick = executor.spawn(super::before(
 +        executor.timer(super::AGENT_PANEL_TIMEOUT),
 +        async { 7 },
 +    ));
 +    executor.run_until_parked();
-+    assert_eq!(quick.await, Some(7), "an open that finishes in time keeps its result");
++    assert_eq!(
++        quick.await,
++        Some(7),
++        "an open that finishes in time keeps its result"
++    );
 +}
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index 3ba1d2a..9b41954 100644
+index f4698d8..64cf53f 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
 @@ -4,6 +4,7 @@ mod agent_diff;
@@ -2442,7 +2450,7 @@ index 3ba1d2a..9b41954 100644
  pub use crate::message_editor::MessageEditorEvent;
  pub use crate::task_label::{
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 8414d5e..44453d3 100644
+index 22a03db..72726d5 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -1975,6 +1975,14 @@ impl ConversationView {
@@ -2461,10 +2469,10 @@ index 8414d5e..44453d3 100644
          &mut self,
          thread: &Entity<AcpThread>,
 diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
-index 52d59fb..93caeab 100644
+index 1c52bfc..651f5f2 100644
 --- a/crates/zed/src/main.rs
 +++ b/crates/zed/src/main.rs
-@@ -1040,47 +1040,42 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut
+@@ -1042,47 +1042,42 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut
                  .detach_and_log_err(cx);
              }
              OpenRequestKind::AgentPanel {
@@ -2545,7 +2553,7 @@ index 52d59fb..93caeab 100644
  
                      let panels_task =
                          workspace.update(cx, |workspace, _| workspace.take_panels_task());
-@@ -1101,18 +1096,11 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut
+@@ -1103,18 +1098,11 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut
                          workspace.update(cx, |workspace, cx| {
                              if let Some(panel) = workspace.focus_panel::<AgentPanel>(window, cx) {
                                  panel.update(cx, |panel, cx| {
@@ -2569,7 +2577,7 @@ index 52d59fb..93caeab 100644
                                  });
                              } else {
                                  log::warn!(
-@@ -1421,38 +1409,6 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut
+@@ -1422,38 +1410,6 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut
      }
  }
  
@@ -2581,7 +2589,7 @@ index 52d59fb..93caeab 100644
 -/// window, which is also what a thread on a remote host gets: its folders name
 -/// paths on that host, not on this one.
 -async fn agent_session_folders(
--    session_id: &agent_client_protocol::schema::v1::SessionId,
+-    session_id: &agent_client_protocol::v1::schema::SessionId,
 -    cwd: Option<PathBuf>,
 -    cx: &mut AsyncApp,
 -) -> Option<Vec<PathBuf>> {
@@ -2609,10 +2617,10 @@ index 52d59fb..93caeab 100644
      if stdout_is_a_pty() {
          if client::IMPERSONATE_LOGIN.is_some() {
 diff --git a/crates/zed/src/zed.rs b/crates/zed/src/zed.rs
-index f13e3f8..ed63cec 100644
+index 301e338..69edcf1 100644
 --- a/crates/zed/src/zed.rs
 +++ b/crates/zed/src/zed.rs
-@@ -2930,6 +2930,10 @@ pub(crate) fn eager_load_active_theme_and_icon_theme(fs: Arc<dyn Fs>, cx: &mut A
+@@ -2926,6 +2926,10 @@ pub(crate) fn eager_load_active_theme_and_icon_theme(fs: Arc<dyn Fs>, cx: &mut A
      }
  }
  
@@ -2625,7 +2633,7 @@ index f13e3f8..ed63cec 100644
      use super::*;
 diff --git a/crates/zed/src/zed/agent_session_route_tests.rs b/crates/zed/src/zed/agent_session_route_tests.rs
 new file mode 100644
-index 0000000..ba3e09d
+index 0000000..824dde8
 --- /dev/null
 +++ b/crates/zed/src/zed/agent_session_route_tests.rs
 @@ -0,0 +1,168 @@
@@ -2645,7 +2653,7 @@ index 0000000..ba3e09d
 +
 +use std::path::PathBuf;
 +
-+use agent_client_protocol::schema::v2 as acp;
++use agent_client_protocol::v2::schema as acp;
 +use agent_ui::AgentPanel;
 +use agent_ui::thread_metadata_store::{ThreadId, ThreadMetadata, ThreadMetadataStore};
 +use gpui::{AnyWindowHandle, AppContext as _, Entity, TestAppContext};

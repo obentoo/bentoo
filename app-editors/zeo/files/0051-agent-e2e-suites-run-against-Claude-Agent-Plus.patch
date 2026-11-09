@@ -131,7 +131,7 @@ index 5711c45..d67b682 100644
                          cx,
                      );
 diff --git a/crates/agent/src/tests/mod.rs b/crates/agent/src/tests/mod.rs
-index 0ea043e..881081c 100644
+index 2e5486f..688925b 100644
 --- a/crates/agent/src/tests/mod.rs
 +++ b/crates/agent/src/tests/mod.rs
 @@ -2590,20 +2590,26 @@ async fn test_mcp_tool_truncation(cx: &mut TestAppContext) {
@@ -164,7 +164,7 @@ index 0ea043e..881081c 100644
      let mut echo_id = None;
      let mut echo_completed = false;
      while let Some(event) = events.next().await {
-@@ -2640,13 +2646,18 @@ async fn test_cancellation(cx: &mut TestAppContext) {
+@@ -2640,13 +2646,17 @@ async fn test_cancellation(cx: &mut TestAppContext) {
      // if one of the tools is still running.
      thread.update(cx, |thread, cx| thread.cancel(cx)).await;
      let events = events.collect::<Vec<_>>().await;
@@ -177,10 +177,9 @@ index 0ea043e..881081c 100644
 -            Some(Ok(ThreadEvent::Stop(acp_v2::StopReason::Cancelled)))
 -        ),
 -        "unexpected event {last_event:?}"
-+        events.iter().any(|event| matches!(
-+            event,
-+            Ok(ThreadEvent::Stop(acp_v2::StopReason::Cancelled))
-+        )),
++        events
++            .iter()
++            .any(|event| matches!(event, Ok(ThreadEvent::Stop(acp_v2::StopReason::Cancelled)))),
 +        "no Stop(Cancelled) among {events:?}"
 +    );
 +    assert!(
@@ -189,7 +188,7 @@ index 0ea043e..881081c 100644
      );
  
      // Ensure we can still send a new message after cancellation.
-@@ -5174,7 +5185,8 @@ enum TestModel {
+@@ -5247,7 +5257,8 @@ enum TestModel {
  impl TestModel {
      fn id(&self) -> LanguageModelId {
          match self {
@@ -199,7 +198,7 @@ index 0ea043e..881081c 100644
              TestModel::Fake => unreachable!(),
          }
      }
-@@ -5250,19 +5262,31 @@ async fn setup(cx: &mut TestAppContext, model: TestModel) -> ThreadTest {
+@@ -5323,19 +5334,31 @@ async fn setup(cx: &mut TestAppContext, model: TestModel) -> ThreadTest {
              if let TestModel::Fake = model {
                  Task::ready(fake.model("fake"))
              } else {
@@ -242,7 +241,7 @@ index 0ea043e..881081c 100644
              }
          })
 diff --git a/crates/agent_servers/src/agent_servers.rs b/crates/agent_servers/src/agent_servers.rs
-index 92ae407..f16459b 100644
+index 017f603..eeb6c02 100644
 --- a/crates/agent_servers/src/agent_servers.rs
 +++ b/crates/agent_servers/src/agent_servers.rs
 @@ -12,6 +12,8 @@ pub mod thread_config_store;
@@ -255,7 +254,7 @@ index 92ae407..f16459b 100644
  use client::ProxySettings;
  use collections::{HashMap, HashSet};
 diff --git a/crates/agent_servers/src/e2e_tests.rs b/crates/agent_servers/src/e2e_tests.rs
-index 9871327..2155a45 100644
+index 6e5d197..386eedc 100644
 --- a/crates/agent_servers/src/e2e_tests.rs
 +++ b/crates/agent_servers/src/e2e_tests.rs
 @@ -18,7 +18,6 @@ use std::{
@@ -290,7 +289,7 @@ index 9871327..2155a45 100644
  
      send_and_wait_for_turn(
          &thread,
-@@ -157,8 +162,14 @@ pub async fn test_tool_call_with_permission<T, F>(
+@@ -157,8 +162,16 @@ pub async fn test_tool_call_with_permission<T, F>(
      F: AsyncFn(&Arc<dyn fs::Fs>, &mut TestAppContext) -> T,
  {
      let fs = init_test(cx).await as Arc<dyn fs::Fs>;
@@ -301,13 +300,15 @@ index 9871327..2155a45 100644
 +    // fresh real directory, mirrored into the fake fs, which also keeps the agent's
 +    // writes out of /tmp.
 +    let workdir = tempfile::tempdir().unwrap();
-+    fs.as_fake().insert_tree(workdir.path(), serde_json::json!({})).await;
++    fs.as_fake()
++        .insert_tree(workdir.path(), serde_json::json!({}))
++        .await;
 +    let project = Project::test(fs.clone(), [workdir.path()], cx).await;
 +    let thread = new_test_thread(server(&fs, cx).await, project.clone(), workdir.path(), cx).await;
      let full_turn = send_and_wait_for_turn(
          &thread,
          vec![r#"Run exactly `touch hello.txt && echo "Hello, world!" | tee hello.txt` in the terminal."#.into()],
-@@ -245,8 +256,14 @@ where
+@@ -245,8 +258,16 @@ where
  {
      let fs = init_test(cx).await as Arc<dyn fs::Fs>;
  
@@ -318,13 +319,15 @@ index 9871327..2155a45 100644
 +    // fresh real directory, mirrored into the fake fs, which also keeps the agent's
 +    // writes out of /tmp.
 +    let workdir = tempfile::tempdir().unwrap();
-+    fs.as_fake().insert_tree(workdir.path(), serde_json::json!({})).await;
++    fs.as_fake()
++        .insert_tree(workdir.path(), serde_json::json!({}))
++        .await;
 +    let project = Project::test(fs.clone(), [workdir.path()], cx).await;
 +    let thread = new_test_thread(server(&fs, cx).await, project.clone(), workdir.path(), cx).await;
      let full_turn = send_and_wait_for_turn(
          &thread,
          vec![r#"Run exactly `touch hello.txt && echo "Hello, world!" | tee hello.txt` in the terminal."#.into()],
-@@ -311,7 +328,10 @@ where
+@@ -311,7 +332,10 @@ where
  {
      let fs = init_test(cx).await as Arc<dyn fs::Fs>;
      let project = Project::test(fs.clone(), [], cx).await;
@@ -336,7 +339,7 @@ index 9871327..2155a45 100644
  
      send_and_wait_for_turn(&thread, vec!["Hello from test!".into()], cx)
          .await
-@@ -492,7 +512,11 @@ pub async fn run_until_first_tool_call(
+@@ -492,7 +516,11 @@ pub async fn run_until_first_tool_call(
          cx.subscribe(thread, move |thread, _, cx| {
              for (ix, entry) in thread.read(cx).entries().iter().enumerate() {
                  if wait_until(entry) {

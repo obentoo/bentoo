@@ -97,7 +97,7 @@ the same title stay two rows: identity is the child session id. 13 tests
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 0572aee..f2f2fa5 100644
+index 92fb860..e104f7b 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
 @@ -9,6 +9,7 @@ pub mod elicitation;
@@ -117,7 +117,7 @@ index 0572aee..f2f2fa5 100644
  use std::{fmt::Display, mem, path::PathBuf, sync::Arc};
  pub use submission::*;
  use task::{Shell, ShellBuilder};
-@@ -3839,6 +3840,134 @@ const CLAUDE_RATE_LIMIT_META_KEY: &str = "_claude/rateLimit";
+@@ -3949,6 +3950,134 @@ const CLAUDE_RATE_LIMIT_META_KEY: &str = "_claude/rateLimit";
  /// `background_tasks_changed` level here, as `{ "count": n, "tasks": [...] }`.
  const CLAUDE_BACKGROUND_TASKS_META_KEY: &str = "_claude/backgroundTasks";
  
@@ -252,7 +252,7 @@ index 0572aee..f2f2fa5 100644
  pub const TOKEN_USAGE_WARNING_THRESHOLD: f32 = 0.8;
  
  impl TokenUsage {
-@@ -3945,6 +4074,10 @@ pub struct AcpThread {
+@@ -4056,6 +4185,10 @@ pub struct AcpThread {
      token_usage: Option<TokenUsage>,
      account_usage: AccountUsage,
      background_task_count: usize,
@@ -263,7 +263,7 @@ index 0572aee..f2f2fa5 100644
      cost: Option<SessionCost>,
      prompt_capabilities: acp_v2::PromptCapabilities,
      available_commands: Vec<acp_v2::AvailableCommand>,
-@@ -4101,6 +4234,11 @@ pub enum AcpThreadEvent {
+@@ -4212,6 +4345,11 @@ pub enum AcpThreadEvent {
      TokenUsageUpdated(OutputTokensUpdate),
      AccountUsageUpdated,
      BackgroundTasksUpdated,
@@ -275,7 +275,7 @@ index 0572aee..f2f2fa5 100644
      EntryUpdated(usize),
      EntriesRemoved(Range<usize>),
      ToolAuthorizationRequested(PermissionRequestId),
-@@ -4259,6 +4397,8 @@ impl AcpThread {
+@@ -4370,6 +4508,8 @@ impl AcpThread {
                  | AcpThreadEvent::TokenUsageUpdated(_)
                  | AcpThreadEvent::AccountUsageUpdated
                  | AcpThreadEvent::BackgroundTasksUpdated
@@ -284,7 +284,7 @@ index 0572aee..f2f2fa5 100644
                  | AcpThreadEvent::EntryUpdated(_)
                  | AcpThreadEvent::Retry(_)
                  | AcpThreadEvent::SubagentSpawned(_)
-@@ -4314,6 +4454,8 @@ impl AcpThread {
+@@ -4426,6 +4566,8 @@ impl AcpThread {
              token_usage: None,
              account_usage: AccountUsage::default(),
              background_task_count: 0,
@@ -293,7 +293,7 @@ index 0572aee..f2f2fa5 100644
              cost: None,
              prompt_capabilities,
              available_commands: Vec::new(),
-@@ -4782,6 +4924,9 @@ impl AcpThread {
+@@ -4935,6 +5077,9 @@ impl AcpThread {
                  }
                  _ => false,
              })
@@ -303,7 +303,7 @@ index 0572aee..f2f2fa5 100644
      }
  
      pub fn forget_submission(&mut self, id: SubmissionId, cx: &mut Context<Self>) {
-@@ -5113,6 +5258,89 @@ impl AcpThread {
+@@ -5266,6 +5411,89 @@ impl AcpThread {
          self.background_task_count
      }
  
@@ -393,7 +393,7 @@ index 0572aee..f2f2fa5 100644
      pub fn cost(&self) -> Option<&SessionCost> {
          self.cost.as_ref()
      }
-@@ -5297,6 +5525,22 @@ impl AcpThread {
+@@ -5457,6 +5685,22 @@ impl AcpThread {
                      self.background_task_count = count;
                      cx.emit(AcpThreadEvent::BackgroundTasksUpdated);
                  }
@@ -416,7 +416,7 @@ index 0572aee..f2f2fa5 100644
                  self.update_session_info(info_update, cx);
              }
              acp_v1::SessionUpdate::AvailableCommandsUpdate(acp_v1::AvailableCommandsUpdate {
-@@ -8609,6 +8853,9 @@ impl AcpThread {
+@@ -8905,6 +9149,9 @@ impl AcpThread {
      }
  
      pub fn emit_load_error(&mut self, error: LoadError, cx: &mut Context<Self>) {
@@ -426,7 +426,7 @@ index 0572aee..f2f2fa5 100644
          cx.emit(AcpThreadEvent::LoadError(error));
      }
  
-@@ -27270,4 +27517,7 @@ mod tests {
+@@ -27699,4 +27946,7 @@ mod tests {
          request.await.expect("turn should complete");
          assert_eq!(cx.active_idle_sleep_preventions(), 0);
      }
@@ -494,10 +494,10 @@ index 0000000..253e2c4
 +}
 diff --git a/crates/acp_thread/src/acp_thread_tasks_tests.rs b/crates/acp_thread/src/acp_thread_tasks_tests.rs
 new file mode 100644
-index 0000000..e5e982c
+index 0000000..5062ed9
 --- /dev/null
 +++ b/crates/acp_thread/src/acp_thread_tasks_tests.rs
-@@ -0,0 +1,783 @@
+@@ -0,0 +1,848 @@
 +// Story 012 / patch 0032 — the agent task model in `AcpThread` (R4.1–R4.9) and the
 +// `_claude/tasks` contract fixture (Q12).
 +//
@@ -595,7 +595,11 @@ index 0000000..e5e982c
 +    (thread, events)
 +}
 +
-+fn tasks_send(thread: &Entity<AcpThread>, update: acp_v1::SessionInfoUpdate, cx: &mut TestAppContext) {
++fn tasks_send(
++    thread: &Entity<AcpThread>,
++    update: acp_v1::SessionInfoUpdate,
++    cx: &mut TestAppContext,
++) {
 +    thread
 +        .update(cx, |thread, cx| {
 +            thread.handle_session_update(acp_v1::SessionUpdate::SessionInfoUpdate(update), cx)
@@ -629,7 +633,10 @@ index 0000000..e5e982c
 +    );
 +    assert_eq!(
 +        tasks_ids(&thread, cx),
-+        vec![("t1".to_string(), "running"), ("done".to_string(), "completed")]
++        vec![
++            ("t1".to_string(), "running"),
++            ("done".to_string(), "completed")
++        ]
 +    );
 +    assert_eq!(events.borrow().updated, 1);
 +
@@ -685,8 +692,14 @@ index 0000000..e5e982c
 +        assert_eq!(task.started_at, tasks_ms(1_759_500_000_000));
 +        assert_eq!(task.ended_at, None);
 +        assert!(task.usage.is_some());
-+        assert_eq!(task.last_tool.as_ref().map(|s| s.to_string()), Some("Read".to_string()));
-+        assert_eq!(task.summary.as_ref().map(|s| s.to_string()), Some("Reading".to_string()));
++        assert_eq!(
++            task.last_tool.as_ref().map(|s| s.to_string()),
++            Some("Read".to_string())
++        );
++        assert_eq!(
++            task.summary.as_ref().map(|s| s.to_string()),
++            Some("Reading".to_string())
++        );
 +    });
 +}
 +
@@ -709,23 +722,41 @@ index 0000000..e5e982c
 +    assert_eq!(events.borrow().ended, vec![("d1".to_string(), "completed")]);
 +
 +    // A title-only update rides the same notification.
-+    tasks_send(&thread, acp_v1::SessionInfoUpdate::new().title("Renamed"), cx);
++    tasks_send(
++        &thread,
++        acp_v1::SessionInfoUpdate::new().title("Renamed"),
++        cx,
++    );
 +    // So does an update carrying only patch 0029's key.
 +    let mut only_background = serde_json::Map::new();
 +    only_background.insert(
 +        CLAUDE_BACKGROUND_TASKS_META_KEY.to_string(),
 +        serde_json::json!({ "count": 0, "tasks": [] }),
 +    );
-+    tasks_send(&thread, acp_v1::SessionInfoUpdate::new().meta(only_background), cx);
++    tasks_send(
++        &thread,
++        acp_v1::SessionInfoUpdate::new().meta(only_background),
++        cx,
++    );
 +    // And an update with unrelated meta.
 +    let mut unrelated = serde_json::Map::new();
-+    unrelated.insert("_claude/other".to_string(), serde_json::json!({ "tasks": [] }));
-+    tasks_send(&thread, acp_v1::SessionInfoUpdate::new().meta(unrelated), cx);
++    unrelated.insert(
++        "_claude/other".to_string(),
++        serde_json::json!({ "tasks": [] }),
++    );
++    tasks_send(
++        &thread,
++        acp_v1::SessionInfoUpdate::new().meta(unrelated),
++        cx,
++    );
 +
 +    // Nothing changed: the running task did not "vanish" (no R4.10 interrupt either).
 +    assert_eq!(
 +        tasks_ids(&thread, cx),
-+        vec![("r1".to_string(), "running"), ("d1".to_string(), "completed")]
++        vec![
++            ("r1".to_string(), "running"),
++            ("d1".to_string(), "completed")
++        ]
 +    );
 +    assert_eq!(events.borrow().updated, 1, "no change, no notification");
 +    assert_eq!(events.borrow().ended, vec![("d1".to_string(), "completed")]);
@@ -776,7 +807,10 @@ index 0000000..e5e982c
 +        tasks_snapshot(vec![tasks_wire_task("t1", "running", 1_000)]),
 +        cx,
 +    );
-+    assert!(events.borrow().ended.is_empty(), "a running task has not ended");
++    assert!(
++        events.borrow().ended.is_empty(),
++        "a running task has not ended"
++    );
 +
 +    tasks_send(
 +        &thread,
@@ -860,7 +894,10 @@ index 0000000..e5e982c
 +    );
 +    assert_eq!(
 +        events.borrow().ended,
-+        vec![("quick".to_string(), "failed"), ("quick".to_string(), "completed")]
++        vec![
++            ("quick".to_string(), "failed"),
++            ("quick".to_string(), "completed")
++        ]
 +    );
 +}
 +
@@ -876,7 +913,11 @@ index 0000000..e5e982c
 +        CLAUDE_BACKGROUND_TASKS_META_KEY.to_string(),
 +        serde_json::json!({ "count": 2, "tasks": [] }),
 +    );
-+    tasks_send(&thread, acp_v1::SessionInfoUpdate::new().meta(only_background), cx);
++    tasks_send(
++        &thread,
++        acp_v1::SessionInfoUpdate::new().meta(only_background),
++        cx,
++    );
 +    thread.read_with(cx, |thread, _| {
 +        assert_eq!(thread.background_task_count(), 2);
 +        assert!(thread.tasks().is_empty());
@@ -889,7 +930,9 @@ index 0000000..e5e982c
 +        tasks_snapshot(vec![tasks_wire_task("t1", "running", 1_000)]),
 +        cx,
 +    );
-+    thread.read_with(cx, |thread, _| assert_eq!(thread.background_task_count(), 2));
++    thread.read_with(cx, |thread, _| {
++        assert_eq!(thread.background_task_count(), 2)
++    });
 +}
 +
 +// ---- R4.9 — running tasks keep the thread; ended ones do not ----------------------
@@ -930,9 +973,7 @@ index 0000000..e5e982c
 +// ---- R4.10 — a running task that vanishes ends once as Interrupted -----------------
 +
 +#[gpui::test]
-+async fn test_claude_tasks_vanished_running_task_ends_once_as_interrupted(
-+    cx: &mut TestAppContext,
-+) {
++async fn test_claude_tasks_vanished_running_task_ends_once_as_interrupted(cx: &mut TestAppContext) {
 +    let (thread, events) = tasks_thread(Rc::new(FakeAgentConnection::new()), cx).await;
 +    tasks_send(
 +        &thread,
@@ -958,7 +999,10 @@ index 0000000..e5e982c
 +        assert_eq!(tasks_status_word(&r1.status), "interrupted");
 +        assert!(r1.ended_at.is_some());
 +    });
-+    assert_eq!(events.borrow().ended, vec![("r1".to_string(), "interrupted")]);
++    assert_eq!(
++        events.borrow().ended,
++        vec![("r1".to_string(), "interrupted")]
++    );
 +
 +    // Once only: later snapshots without r1 announce nothing more and never revive it.
 +    tasks_send(
@@ -971,7 +1015,10 @@ index 0000000..e5e982c
 +        tasks_snapshot(vec![tasks_wire_task("r2", "running", 2_000)]),
 +        cx,
 +    );
-+    assert_eq!(events.borrow().ended, vec![("r1".to_string(), "interrupted")]);
++    assert_eq!(
++        events.borrow().ended,
++        vec![("r1".to_string(), "interrupted")]
++    );
 +    let r1_running = tasks_ids(&thread, cx)
 +        .into_iter()
 +        .any(|(id, status)| id == "r1" && status == "running");
@@ -1068,7 +1115,10 @@ index 0000000..e5e982c
 +            Some(acp_v2::ToolCallId::new("toolu_01ShellSleep20"))
 +        );
 +        assert_eq!(shell.kind.to_string(), "shell");
-+        assert_eq!(shell.description.to_string(), "Run sleep 20 in the background");
++        assert_eq!(
++            shell.description.to_string(),
++            "Run sleep 20 in the background"
++        );
 +        assert!(shell.background);
 +        assert_eq!(shell.depth, 0);
 +        assert_eq!(tasks_status_word(&shell.status), "running");
@@ -1106,7 +1156,10 @@ index 0000000..e5e982c
 +        );
 +    });
 +    assert_eq!(events.borrow().updated, 1);
-+    assert_eq!(events.borrow().ended, vec![("c9d1e2f3g".to_string(), "completed")]);
++    assert_eq!(
++        events.borrow().ended,
++        vec![("c9d1e2f3g".to_string(), "completed")]
++    );
 +}
 +
 +// ---- R4.5, R4.6, R4.7 — the thread's task actions ---------------------------------
@@ -1238,8 +1291,14 @@ index 0000000..e5e982c
 +        .expect("background succeeds");
 +
 +    assert!(moved);
-+    assert_eq!(*stop_calls.borrow(), vec![(session_id.clone(), "b1".to_string())]);
-+    assert_eq!(*background_calls.borrow(), vec![(session_id, "toolu_fg".to_string())]);
++    assert_eq!(
++        *stop_calls.borrow(),
++        vec![(session_id.clone(), "b1".to_string())]
++    );
++    assert_eq!(
++        *background_calls.borrow(),
++        vec![(session_id, "toolu_fg".to_string())]
++    );
 +}
 +
 +#[gpui::test]
@@ -1253,7 +1312,10 @@ index 0000000..e5e982c
 +        .update(cx, |thread, cx| thread.stop_task("b1", cx))
 +        .await
 +        .expect_err("the agent's error reaches the caller");
-+    assert!(error.to_string().contains("task b1 is not running"), "{error}");
++    assert!(
++        error.to_string().contains("task b1 is not running"),
++        "{error}"
++    );
 +
 +    let moved = thread
 +        .update(cx, |thread, cx| thread.background_task("toolu_none", cx))
@@ -1278,14 +1340,17 @@ index 0000000..e5e982c
 +        .expect_err("background is unsupported");
 +    for error in [stop, background] {
 +        let text = error.to_string().to_lowercase();
-+        assert!(text.contains("not supported") || text.contains("unsupported"), "{text}");
++        assert!(
++            text.contains("not supported") || text.contains("unsupported"),
++            "{text}"
++        );
 +    }
 +}
 diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
-index faa6e23..c85cd5d 100644
+index bc4e819..5b0f0b2 100644
 --- a/crates/acp_thread/src/connection.rs
 +++ b/crates/acp_thread/src/connection.rs
-@@ -158,6 +158,31 @@ pub trait AgentConnection {
+@@ -164,6 +164,31 @@ pub trait AgentConnection {
          Task::ready(Err(anyhow::Error::msg("Closing sessions is not supported")))
      }
  
@@ -1319,7 +1384,7 @@ index faa6e23..c85cd5d 100644
          false
 diff --git a/crates/acp_thread/src/subagent_rows.rs b/crates/acp_thread/src/subagent_rows.rs
 new file mode 100644
-index 0000000..26b653a
+index 0000000..75fb83f
 --- /dev/null
 +++ b/crates/acp_thread/src/subagent_rows.rs
 @@ -0,0 +1,155 @@
@@ -1329,7 +1394,7 @@ index 0000000..26b653a
 +
 +use std::time::{Instant, SystemTime};
 +
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use gpui::{App, SharedString};
 +
 +use crate::{AcpThread, ForegroundActivity};
@@ -1480,7 +1545,7 @@ index 0000000..26b653a
 +mod tests;
 diff --git a/crates/acp_thread/src/subagent_rows_identity_tests.rs b/crates/acp_thread/src/subagent_rows_identity_tests.rs
 new file mode 100644
-index 0000000..46e906b
+index 0000000..d358529
 --- /dev/null
 +++ b/crates/acp_thread/src/subagent_rows_identity_tests.rs
 @@ -0,0 +1,259 @@
@@ -1490,7 +1555,7 @@ index 0000000..46e906b
 +// subagent_rows`.
 +
 +use action_log::ActionLog;
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use gpui::{AppContext as _, TestAppContext};
 +
 +use super::test_support::*;
@@ -1745,7 +1810,7 @@ index 0000000..46e906b
 +}
 diff --git a/crates/acp_thread/src/subagent_rows_test_support.rs b/crates/acp_thread/src/subagent_rows_test_support.rs
 new file mode 100644
-index 0000000..63bf936
+index 0000000..269e378
 --- /dev/null
 +++ b/crates/acp_thread/src/subagent_rows_test_support.rs
 @@ -0,0 +1,165 @@
@@ -1762,7 +1827,7 @@ index 0000000..63bf936
 +use std::{path::Path, rc::Rc};
 +
 +use action_log::ActionLog;
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use gpui::{AppContext as _, Entity, SharedString, TestAppContext};
 +use project::{FakeFs, Project};
 +use settings::SettingsStore;
@@ -1916,7 +1981,7 @@ index 0000000..63bf936
 +}
 diff --git a/crates/acp_thread/src/subagent_rows_tests.rs b/crates/acp_thread/src/subagent_rows_tests.rs
 new file mode 100644
-index 0000000..32ddc81
+index 0000000..7cf8d08
 --- /dev/null
 +++ b/crates/acp_thread/src/subagent_rows_tests.rs
 @@ -0,0 +1,190 @@
@@ -1970,7 +2035,7 @@ index 0000000..32ddc81
 +//     Running, and loses its Stop grant; its title stays.
 +//   - a thread that names the parent but is not registered (a fork, 0070) is never a row.
 +
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use gpui::TestAppContext;
 +
 +use super::SubagentRowStatus;
@@ -2167,15 +2232,19 @@ index 0000000..3b4d6ad
 +  ]
 +}
 diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
-index ad81a82..3cdc564 100644
+index 8586a4a..bf421ab 100644
 --- a/crates/agent_servers/src/acp/v1.rs
 +++ b/crates/agent_servers/src/acp/v1.rs
-@@ -19,11 +19,11 @@ use agent_client_protocol::schema::{
- };
+@@ -14,7 +14,7 @@ use acp_thread::{
+ use action_log::ActionLog;
+ use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion};
  use agent_client_protocol::{
-     Agent, Builder, Client, ConnectionTo, HandleDispatchFrom, JsonRpcRequest, Lines, Responder,
--    V2Builder,
-+    UntypedMessage, V2Builder,
+-    Agent, Client, HandleDispatchFrom, JsonRpcRequest, Lines,
++    Agent, Client, HandleDispatchFrom, JsonRpcRequest, Lines, UntypedMessage,
+     v1::{Builder, ConnectionTo, Responder},
+     v2::Builder as V2Builder,
+ };
+@@ -24,7 +24,7 @@ use agent_client_protocol::{
  };
  use anyhow::anyhow;
  use async_channel;
@@ -2184,7 +2253,7 @@ index ad81a82..3cdc564 100644
  use feature_flags::{AcpBetaFeatureFlag, FeatureFlagAppExt as _};
  use futures::channel::mpsc;
  use futures::future::Shared;
-@@ -54,6 +54,9 @@ use crate::{CURSOR_ID, GEMINI_ID};
+@@ -55,6 +55,9 @@ use crate::{CURSOR_ID, GEMINI_ID};
  
  pub const GEMINI_TERMINAL_AUTH_METHOD_ID: &str = "spawn-gemini-cli";
  const PARAMETERIZED_MODEL_PICKER_META_KEY: &str = "parameterizedModelPicker";
@@ -2194,7 +2263,7 @@ index ad81a82..3cdc564 100644
  async fn close_session_and_drain(
      connection: &ConnectionTo<Agent>,
      session_id: acp_v2::SessionId,
-@@ -72,6 +75,25 @@ async fn close_session_and_drain(
+@@ -73,6 +76,25 @@ async fn close_session_and_drain(
      drain_foreground_queue(dispatch_tx).await
  }
  
@@ -2220,7 +2289,7 @@ index ad81a82..3cdc564 100644
  pub struct AcpConnection {
      id: AgentId,
      telemetry_id: SharedString,
-@@ -79,6 +101,9 @@ pub struct AcpConnection {
+@@ -80,6 +102,9 @@ pub struct AcpConnection {
      connection: ConnectionTo<Agent>,
      sessions: Rc<RefCell<HashMap<acp_v2::SessionId, AcpSession>>>,
      pending_sessions: RefCell<HashMap<acp_v2::SessionId, PendingAcpSession>>,
@@ -2230,7 +2299,7 @@ index ad81a82..3cdc564 100644
      auth_methods: Vec<acp_v2::AuthMethod>,
      agent_server_store: WeakEntity<AgentServerStore>,
      agent_capabilities: acp::AgentCapabilities,
-@@ -730,6 +755,7 @@ impl AcpConnection {
+@@ -735,6 +760,7 @@ impl AcpConnection {
              agent_version,
              sessions,
              pending_sessions: RefCell::new(HashMap::default()),
@@ -2238,7 +2307,7 @@ index ad81a82..3cdc564 100644
              agent_capabilities: response.agent_capabilities,
              accepts_subagent_updates,
              request_elicitations,
-@@ -775,6 +801,7 @@ impl AcpConnection {
+@@ -780,6 +806,7 @@ impl AcpConnection {
              connection,
              sessions,
              pending_sessions: RefCell::new(HashMap::default()),
@@ -2246,7 +2315,7 @@ index ad81a82..3cdc564 100644
              auth_methods: vec![],
              agent_server_store,
              agent_capabilities,
-@@ -887,6 +914,7 @@ impl AcpConnection {
+@@ -892,6 +919,7 @@ impl AcpConnection {
          cx: &mut App,
      ) {
          if self.pending_sessions.borrow().contains_key(&session_id)
@@ -2254,7 +2323,7 @@ index ad81a82..3cdc564 100644
              || !self
                  .sessions
                  .borrow()
-@@ -933,6 +961,18 @@ impl AcpConnection {
+@@ -938,6 +966,18 @@ impl AcpConnection {
          self.agent_capabilities.session_capabilities.close.is_some()
      }
  
@@ -2273,7 +2342,7 @@ index ad81a82..3cdc564 100644
      /// `rpc_call` gets a receiver that resolves once its response has been applied, and
      /// holds the agent's later messages until then (see `ordered_response`). With
      /// `replays_history`, the response ends a history replay.
-@@ -2012,6 +2052,130 @@ impl AgentConnection for AcpConnection {
+@@ -2017,6 +2057,130 @@ impl AgentConnection for AcpConnection {
          Ok(())
      }
  
@@ -2404,7 +2473,7 @@ index ad81a82..3cdc564 100644
      fn request_elicitations(&self) -> Option<Entity<ElicitationStore>> {
          Some(self.request_elicitations.clone())
      }
-@@ -2342,6 +2506,26 @@ pub mod test_support {
+@@ -2347,6 +2511,26 @@ pub mod test_support {
              self.inner.cancel(session_id, cx)
          }
  
@@ -2431,7 +2500,7 @@ index ad81a82..3cdc564 100644
          fn request_elicitations(&self) -> Option<Entity<ElicitationStore>> {
              self.inner.request_elicitations()
          }
-@@ -10163,6 +10347,8 @@ exit 7
+@@ -10303,6 +10487,8 @@ exit 7
          cx.update(|_| ());
          cx.run_until_parked();
      }
@@ -2442,10 +2511,10 @@ index ad81a82..3cdc564 100644
  fn mcp_servers_for_project(project: &Entity<Project>, cx: &App) -> Vec<acp::McpServer> {
 diff --git a/crates/agent_servers/src/acp_task_actions_tests.rs b/crates/agent_servers/src/acp_task_actions_tests.rs
 new file mode 100644
-index 0000000..47d30c8
+index 0000000..86f4c71
 --- /dev/null
 +++ b/crates/agent_servers/src/acp_task_actions_tests.rs
-@@ -0,0 +1,455 @@
+@@ -0,0 +1,505 @@
 +// Story 012 / patch 0032 — `AcpConnection::{stop_task, background_task}` against a
 +// fake ACP peer (R4.5, R4.6, R4.7, R2.7) and session close interrupting tasks (R4.11).
 +//
@@ -2461,8 +2530,11 @@ index 0000000..47d30c8
 +// `telemetry_id` (the agent's self-reported name). Filter: `cargo test -p agent_servers
 +// task_actions`.
 +
-+type TaskActionsReply =
-+    Arc<dyn Fn(&str, &serde_json::Value) -> Result<serde_json::Value, agent_client_protocol::Error> + Send + Sync>;
++type TaskActionsReply = Arc<
++    dyn Fn(&str, &serde_json::Value) -> Result<serde_json::Value, agent_client_protocol::Error>
++        + Send
++        + Sync,
++>;
 +
 +struct TaskActionsPeer {
 +    connection: Rc<AcpConnection>,
@@ -2495,8 +2567,7 @@ index 0000000..47d30c8
 +    let (client_transport, agent_transport) = agent_client_protocol::Channel::duplex();
 +    let sessions: Rc<RefCell<HashMap<acp_v2::SessionId, AcpSession>>> =
 +        Rc::new(RefCell::new(HashMap::default()));
-+    let client_session_list: Rc<RefCell<Option<Rc<AcpSessionList>>>> =
-+        Rc::new(RefCell::new(None));
++    let client_session_list: Rc<RefCell<Option<Rc<AcpSessionList>>>> = Rc::new(RefCell::new(None));
 +
 +    let mut capabilities = acp::AgentCapabilities::default().session_capabilities(
 +        acp::SessionCapabilities::default().close(acp::SessionCloseCapabilities::new()),
@@ -2508,7 +2579,7 @@ index 0000000..47d30c8
 +    }
 +    let agent_info = acp::Implementation::new(agent_name.to_string(), "1.0.0".to_string());
 +    let agent_future = Agent
-+        .builder()
++        .v1()
 +        .name("task-actions-agent")
 +        .on_receive_request(
 +            async move |req: acp::InitializeRequest, responder, _cx| {
@@ -2663,9 +2734,14 @@ index 0000000..47d30c8
 +
 +#[gpui::test]
 +async fn test_task_actions_stop_sends_the_request_and_succeeds(cx: &mut gpui::TestAppContext) {
-+    let peer =
-+        connect_task_actions_peer(PLUS_ENTRY, PLUS_NAME, tasks_capability_v(1), task_actions_ok(), cx)
-+            .await;
++    let peer = connect_task_actions_peer(
++        PLUS_ENTRY,
++        PLUS_NAME,
++        tasks_capability_v(1),
++        task_actions_ok(),
++        cx,
++    )
++    .await;
 +    let (_thread, session_id) = task_actions_session(&peer, cx).await;
 +
 +    cx.update(|cx| peer.connection.clone().stop_task(&session_id, "b1", cx))
@@ -2688,7 +2764,10 @@ index 0000000..47d30c8
 +        PLUS_NAME,
 +        tasks_capability_v(1),
 +        Arc::new(|_method, _params| {
-+            Err(agent_client_protocol::Error::new(-32602, "task b1 is not running"))
++            Err(agent_client_protocol::Error::new(
++                -32602,
++                "task b1 is not running",
++            ))
 +        }),
 +        cx,
 +    )
@@ -2720,11 +2799,19 @@ index 0000000..47d30c8
 +    let (_thread, session_id) = task_actions_session(&peer, cx).await;
 +
 +    let moved = cx
-+        .update(|cx| peer.connection.clone().background_task(&session_id, "toolu_fg", cx))
++        .update(|cx| {
++            peer.connection
++                .clone()
++                .background_task(&session_id, "toolu_fg", cx)
++        })
 +        .await
 +        .expect("background succeeds");
 +    let not_moved = cx
-+        .update(|cx| peer.connection.clone().background_task(&session_id, "toolu_other", cx))
++        .update(|cx| {
++            peer.connection
++                .clone()
++                .background_task(&session_id, "toolu_other", cx)
++        })
 +        .await
 +        .expect("false is an answer, not an error");
 +
@@ -2743,15 +2830,27 @@ index 0000000..47d30c8
 +async fn test_task_actions_background_missing_field_is_an_error_not_false(
 +    cx: &mut gpui::TestAppContext,
 +) {
-+    let peer =
-+        connect_task_actions_peer(PLUS_ENTRY, PLUS_NAME, tasks_capability_v(1), task_actions_ok(), cx)
-+            .await;
++    let peer = connect_task_actions_peer(
++        PLUS_ENTRY,
++        PLUS_NAME,
++        tasks_capability_v(1),
++        task_actions_ok(),
++        cx,
++    )
++    .await;
 +    let (_thread, session_id) = task_actions_session(&peer, cx).await;
 +
 +    let result = cx
-+        .update(|cx| peer.connection.clone().background_task(&session_id, "toolu_fg", cx))
++        .update(|cx| {
++            peer.connection
++                .clone()
++                .background_task(&session_id, "toolu_fg", cx)
++        })
 +        .await;
-+    assert!(result.is_err(), "a response without `backgrounded` must not read as false");
++    assert!(
++        result.is_err(),
++        "a response without `backgrounded` must not read as false"
++    );
 +}
 +
 +/// Both actions answer "unsupported" and nothing reaches the agent.
@@ -2761,15 +2860,25 @@ index 0000000..47d30c8
 +        .update(|cx| peer.connection.clone().stop_task(&session_id, "b1", cx))
 +        .await;
 +    let background = cx
-+        .update(|cx| peer.connection.clone().background_task(&session_id, "toolu_fg", cx))
++        .update(|cx| {
++            peer.connection
++                .clone()
++                .background_task(&session_id, "toolu_fg", cx)
++        })
 +        .await;
 +    assert!(stop.is_err());
 +    assert!(background.is_err());
 +    for error in [stop.unwrap_err(), background.unwrap_err()] {
 +        let text = error.to_string().to_lowercase();
-+        assert!(text.contains("not supported") || text.contains("unsupported"), "{text}");
++        assert!(
++            text.contains("not supported") || text.contains("unsupported"),
++            "{text}"
++        );
 +    }
-+    assert!(task_actions_requests(peer).is_empty(), "nothing reached the agent");
++    assert!(
++        task_actions_requests(peer).is_empty(),
++        "nothing reached the agent"
++    );
 +}
 +
 +// R4.7, hostile half first: an agent that LOOKS like the Claude adapter — the
@@ -2792,9 +2901,14 @@ index 0000000..47d30c8
 +
 +#[gpui::test]
 +async fn test_task_actions_unsupported_for_capability_version_zero(cx: &mut gpui::TestAppContext) {
-+    let peer =
-+        connect_task_actions_peer(PLUS_ENTRY, PLUS_NAME, tasks_capability_v(0), task_actions_ok(), cx)
-+            .await;
++    let peer = connect_task_actions_peer(
++        PLUS_ENTRY,
++        PLUS_NAME,
++        tasks_capability_v(0),
++        task_actions_ok(),
++        cx,
++    )
++    .await;
 +    assert_task_actions_unsupported(&peer, cx).await;
 +}
 +
@@ -2830,9 +2944,14 @@ index 0000000..47d30c8
 +async fn test_task_actions_close_session_interrupts_running_tasks_once(
 +    cx: &mut gpui::TestAppContext,
 +) {
-+    let peer =
-+        connect_task_actions_peer(PLUS_ENTRY, PLUS_NAME, tasks_capability_v(1), task_actions_ok(), cx)
-+            .await;
++    let peer = connect_task_actions_peer(
++        PLUS_ENTRY,
++        PLUS_NAME,
++        tasks_capability_v(1),
++        task_actions_ok(),
++        cx,
++    )
++    .await;
 +    let (thread, session_id) = task_actions_session(&peer, cx).await;
 +
 +    let ended: Rc<RefCell<Vec<(String, bool)>>> = Rc::default();
@@ -2915,10 +3034,10 @@ index 63b7ec7..2a2aa9d 100644
              | AcpThreadEvent::SubagentSpawned(_)
              | AcpThreadEvent::SubagentAssociationUpdated
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index 871cbe2..32ff34f 100644
+index 45b8ff2..2c51f9c 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
-@@ -4310,6 +4310,9 @@ impl AgentPanel {
+@@ -4315,6 +4315,9 @@ impl AgentPanel {
                          | AcpThreadEvent::SubmissionUpdated(_)
                          | AcpThreadEvent::ToolAuthorizationReceived(_)
                          | AcpThreadEvent::ElicitationResponded(_)
@@ -2928,7 +3047,7 @@ index 871cbe2..32ff34f 100644
                  ) && acp_thread.read(cx).is_idle_for_retention()
                  {
                      this.cleanup_retained_threads(cx);
-@@ -12158,6 +12161,72 @@ mod tests {
+@@ -12274,6 +12277,72 @@ mod tests {
          });
      }
  
@@ -3002,7 +3121,7 @@ index 871cbe2..32ff34f 100644
      async fn test_cleanup_retained_threads_preserves_idle_non_loadable_threads(
          cx: &mut TestAppContext,
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 77c1205..50c6d72 100644
+index 2413f58..01c3b41 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -367,6 +367,8 @@ impl Conversation {
@@ -3033,7 +3152,7 @@ index 77c1205..50c6d72 100644
                  // A redraw is all this needs: the account section is built from the thread
                  // when the tooltip opens, so there is no per-turn state to recompute.
 diff --git a/crates/agent_ui/src/conversation_view/subagent_card.rs b/crates/agent_ui/src/conversation_view/subagent_card.rs
-index d52704b..60aef71 100644
+index bc5436d..28a8c49 100644
 --- a/crates/agent_ui/src/conversation_view/subagent_card.rs
 +++ b/crates/agent_ui/src/conversation_view/subagent_card.rs
 @@ -1,3 +1,4 @@

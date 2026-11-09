@@ -81,10 +81,10 @@ columns are untouched. No code change needed.
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
-index d101e51..a1e7a29 100644
+index 392e775..0917e4b 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -465,11 +465,13 @@ dependencies = [
+@@ -466,11 +466,13 @@ dependencies = [
   "anyhow",
   "collections",
   "db",
@@ -115,13 +115,13 @@ index 6010073..aa9d9dc 100644
  ui.workspace = true
  workspace.workspace = true
 diff --git a/crates/agent_tasks_panel/src/history_db.rs b/crates/agent_tasks_panel/src/history_db.rs
-index d1666c8..f9114a0 100644
+index 8d21c8a..3c68aa6 100644
 --- a/crates/agent_tasks_panel/src/history_db.rs
 +++ b/crates/agent_tasks_panel/src/history_db.rs
 @@ -28,7 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
  
  use acp_thread::{AgentTaskId, AgentTaskStatus};
- use agent_client_protocol::schema::v2 as acp_v2;
+ use agent_client_protocol::v2::schema as acp_v2;
 -use agent_ui::TaskRecord;
 +use agent_ui::{TaskKey, TaskRecord};
  use anyhow::{Context as _, Result, anyhow};
@@ -551,12 +551,12 @@ index 0000000..daa2fb2
 +    );
 +}
 diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
-index 329d379..8b09fa1 100644
+index 4a00207..ee71c2b 100644
 --- a/crates/agent_tasks_panel/src/panel.rs
 +++ b/crates/agent_tasks_panel/src/panel.rs
 @@ -14,16 +14,17 @@ use std::{cmp::Reverse, ops::Range, sync::Arc};
  use acp_thread::{AgentTask, AgentTaskId, AgentTaskStatus};
- use agent_client_protocol::schema::v2 as acp_v2;
+ use agent_client_protocol::v2::schema as acp_v2;
  use agent_ui::{
 -    AgentPanel, DEFAULT_THREAD_TITLE, TaskRecord, TasksCard,
 +    AgentPanel, DEFAULT_THREAD_TITLE, TaskRecord, TasksCard, collapse_label, display_label,
@@ -3025,13 +3025,13 @@ index 0000000..649e96a
 +    assert_eq!(editor_text(&mut panels), None, "the editor is closed");
 +}
 diff --git a/crates/agent_tasks_panel/src/store.rs b/crates/agent_tasks_panel/src/store.rs
-index bf29be0..75b7cec 100644
+index 2dd96cd..0a7925e 100644
 --- a/crates/agent_tasks_panel/src/store.rs
 +++ b/crates/agent_tasks_panel/src/store.rs
 @@ -15,13 +15,15 @@ use std::{cmp, sync::atomic::Ordering};
  
  use acp_thread::{AgentTask, AgentTaskId};
- use agent_client_protocol::schema::v2 as acp_v2;
+ use agent_client_protocol::v2::schema as acp_v2;
 -use agent_ui::{TaskActivity, TaskRecord, TasksCard, ThreadTitleChanged};
 +use agent_ui::{
 +    TaskActivity, TaskLabels, TaskRecord, TasksCard, ThreadTitleChanged, normalize_user_label,
@@ -3428,7 +3428,7 @@ index 0000000..498f40f
 +    }
 +}
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index a812938..3ba1d2a 100644
+index e6bf264..f4698d8 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
 @@ -26,6 +26,7 @@ mod model_selector;
@@ -3552,7 +3552,7 @@ index 0000000..f27e064
 +mod tests;
 diff --git a/crates/agent_ui/src/task_label/task_label_tests.rs b/crates/agent_ui/src/task_label/task_label_tests.rs
 new file mode 100644
-index 0000000..57a3790
+index 0000000..bcf7768
 --- /dev/null
 +++ b/crates/agent_ui/src/task_label/task_label_tests.rs
 @@ -0,0 +1,239 @@
@@ -3568,7 +3568,7 @@ index 0000000..57a3790
 +// Hostile fixtures come before benign ones.
 +
 +use acp_thread::AgentTaskId;
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use gpui::SharedString;
 +
 +use crate::task_label::{
@@ -3796,7 +3796,7 @@ index 0000000..57a3790
 +    assert!(!collapsed.contains('…'));
 +}
 diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
-index ab8fd99..2d76e50 100644
+index 2f90a05..565ea07 100644
 --- a/crates/agent_ui/src/tasks_card.rs
 +++ b/crates/agent_ui/src/tasks_card.rs
 @@ -30,6 +30,7 @@ use ui::{ButtonLike, Chip, CommonAnimationExt as _, Tooltip, prelude::*};
@@ -3960,7 +3960,7 @@ index ab8fd99..2d76e50 100644
  fn card_tooltip(
 diff --git a/crates/agent_ui/src/tasks_card/label_tests.rs b/crates/agent_ui/src/tasks_card/label_tests.rs
 new file mode 100644
-index 0000000..71988c1
+index 0000000..9d03fd5
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/label_tests.rs
 @@ -0,0 +1,355 @@
@@ -4059,7 +4059,7 @@ index 0000000..71988c1
 +}
 +
 +fn set_label(
-+    key: (agent_client_protocol::schema::v2::SessionId, AgentTaskId),
++    key: (agent_client_protocol::v2::schema::SessionId, AgentTaskId),
 +    label: Option<&str>,
 +    cx: &mut VisualTestContext,
 +) {

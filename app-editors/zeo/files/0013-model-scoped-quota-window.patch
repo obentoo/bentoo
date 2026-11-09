@@ -54,10 +54,10 @@ name, beside the empty one.
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index b77fbcb..7ac1031 100644
+index d37060a..642bad0 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -3560,7 +3560,15 @@ pub struct SessionCost {
+@@ -3670,7 +3670,15 @@ pub struct SessionCost {
  /// `rate_limit_event`. They are carried to us verbatim by the ACP adapter under
  /// `_meta["_claude/rateLimit"]`; see [`AcpThread::account_usage`] for why we accumulate
  /// them rather than replacing.
@@ -74,7 +74,7 @@ index b77fbcb..7ac1031 100644
  pub enum AccountUsageWindowKind {
      /// The rolling five-hour session window.
      FiveHour,
-@@ -3570,6 +3578,19 @@ pub enum AccountUsageWindowKind {
+@@ -3680,6 +3688,19 @@ pub enum AccountUsageWindowKind {
      SevenDayOpus,
      /// The seven-day window for the Sonnet-class model specifically.
      SevenDaySonnet,
@@ -94,7 +94,7 @@ index b77fbcb..7ac1031 100644
      /// The seven-day window, counting overage the plan includes.
      SevenDayOverageIncluded,
      /// Paid overage beyond the plan's included usage.
-@@ -3577,7 +3598,14 @@ pub enum AccountUsageWindowKind {
+@@ -3687,7 +3708,14 @@ pub enum AccountUsageWindowKind {
  }
  
  impl AccountUsageWindowKind {
@@ -110,7 +110,7 @@ index b77fbcb..7ac1031 100644
          Some(match value {
              "five_hour" => Self::FiveHour,
              "seven_day" => Self::SevenDay,
-@@ -3585,22 +3613,42 @@ impl AccountUsageWindowKind {
+@@ -3695,22 +3723,42 @@ impl AccountUsageWindowKind {
              "seven_day_sonnet" => Self::SevenDaySonnet,
              "seven_day_overage_included" => Self::SevenDayOverageIncluded,
              "overage" => Self::Overage,
@@ -156,7 +156,7 @@ index b77fbcb..7ac1031 100644
      }
  }
  
-@@ -3712,10 +3760,14 @@ impl AccountUsage {
+@@ -3822,10 +3870,14 @@ impl AccountUsage {
          // `rateLimitType` and `status` are both needed to place a bar. Without the kind we
          // do not know which window moved; without the status we cannot colour it. Either
          // one missing means this event carries only the account-wide flags handled above.
@@ -172,7 +172,7 @@ index b77fbcb..7ac1031 100644
          else {
              return changed;
          };
-@@ -3739,8 +3791,8 @@ impl AccountUsage {
+@@ -3849,8 +3901,8 @@ impl AccountUsage {
              resets_at: object.get("resetsAt").and_then(|v| v.as_i64()),
          };
  
@@ -183,7 +183,7 @@ index b77fbcb..7ac1031 100644
              changed = true;
          }
          changed
-@@ -8745,7 +8797,7 @@ mod tests {
+@@ -9041,7 +9093,7 @@ mod tests {
          assert!(usage.ingest(&rate_limit("five_hour", "allowed", 0.25)));
          assert!(usage.ingest(&rate_limit("seven_day", "allowed_warning", 0.9)));
  
@@ -192,7 +192,7 @@ index b77fbcb..7ac1031 100644
          assert_eq!(
              kinds,
              vec![
-@@ -8842,6 +8894,183 @@ mod tests {
+@@ -9138,6 +9190,186 @@ mod tests {
              "a rejected window outranks a merely-full one"
          );
      }
@@ -334,12 +334,15 @@ index b77fbcb..7ac1031 100644
 +            "utilization": 0.40,
 +        })));
 +        for blank in ["", "   ", "\t\n"] {
-+            assert!(!usage.ingest(&serde_json::json!({
-+                "status": "allowed",
-+                "rateLimitType": "model_scoped",
-+                "displayName": blank,
-+                "utilization": 0.40,
-+            })), "display name {blank:?} is no name");
++            assert!(
++                !usage.ingest(&serde_json::json!({
++                    "status": "allowed",
++                    "rateLimitType": "model_scoped",
++                    "displayName": blank,
++                    "utilization": 0.40,
++                })),
++                "display name {blank:?} is no name"
++            );
 +        }
 +        assert!(
 +            usage.is_empty(),

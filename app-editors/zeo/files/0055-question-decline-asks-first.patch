@@ -61,7 +61,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/crates/agent_ui/src/conversation_view/elicitation.rs b/crates/agent_ui/src/conversation_view/elicitation.rs
-index 9945399..928140e 100644
+index 9f6c872..1c0716e 100644
 --- a/crates/agent_ui/src/conversation_view/elicitation.rs
 +++ b/crates/agent_ui/src/conversation_view/elicitation.rs
 @@ -59,6 +59,10 @@ pub(crate) struct ElicitationFormState {
@@ -419,10 +419,10 @@ index 0000000..5f74176
 +    );
 +}
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 9bb8ce6..dec3a71 100644
+index 650610a..c4bb742 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
-@@ -37,6 +37,7 @@ use crate::unicode_confusables;
+@@ -36,6 +36,7 @@ use crate::unicode_confusables;
  
  use db::kvp::KeyValueStore;
  use gpui::List;
@@ -430,7 +430,7 @@ index 9bb8ce6..dec3a71 100644
  use gpui::Stateful;
  use gpui::TaskExt;
  use heapless::Vec as ArrayVec;
-@@ -58,7 +59,7 @@ use workspace::{OpenOptions, SERIALIZATION_THROTTLE_TIME};
+@@ -57,7 +58,7 @@ use workspace::{OpenOptions, SERIALIZATION_THROTTLE_TIME};
  
  use super::elicitation::{
      ElicitationCard, ElicitationCardHandlers, ElicitationFormState, QuestionQueue,
@@ -439,7 +439,7 @@ index 9bb8ce6..dec3a71 100644
  };
  use super::subagent_card::{
      AcpSubagentCard, SubagentCardId, SubagentCardState, SubagentStatus, acp_subagent_card,
-@@ -793,6 +794,9 @@ pub struct ThreadView {
+@@ -792,6 +793,9 @@ pub struct ThreadView {
      pub new_server_version_available: Option<SharedString>,
      pub resumed_without_history: bool,
      elicitation_form_states: HashMap<ElicitationEntryId, ElicitationFormState>,
@@ -449,7 +449,7 @@ index 9bb8ce6..dec3a71 100644
      question_queue: QuestionQueue,
      pub _cancel_task: Option<Task<()>>,
      _save_task: Option<Task<()>>,
-@@ -1330,6 +1334,7 @@ impl ThreadView {
+@@ -1329,6 +1333,7 @@ impl ThreadView {
              is_loading_contents: false,
              new_server_version_available: None,
              elicitation_form_states: HashMap::default(),
@@ -457,7 +457,7 @@ index 9bb8ce6..dec3a71 100644
              question_queue: QuestionQueue::default(),
              _cancel_task: None,
              _save_task: None,
-@@ -3855,12 +3860,113 @@ impl ThreadView {
+@@ -3880,12 +3885,113 @@ impl ThreadView {
          }
      }
  
@@ -572,7 +572,7 @@ index 9bb8ce6..dec3a71 100644
          self.respond_to_elicitation(
              elicitation_id,
              acp_v2::CreateElicitationResponse::new(acp_v2::ElicitationAction::Decline),
-@@ -8051,6 +8157,10 @@ impl ThreadView {
+@@ -8177,6 +8283,10 @@ impl ThreadView {
              AgentThreadEntry::Elicitation(elicitation_id) => {
                  let thread = self.thread.read(cx);
                  if let Some((_, elicitation)) = thread.elicitation(elicitation_id)
@@ -583,7 +583,7 @@ index 9bb8ce6..dec3a71 100644
                      && should_render_elicitation(elicitation)
                      && !Self::renders_elicitation_as_card(elicitation, cx)
                  {
-@@ -8233,6 +8343,43 @@ impl ThreadView {
+@@ -8359,6 +8469,43 @@ impl ThreadView {
          .render(cx)
      }
  
@@ -627,7 +627,7 @@ index 9bb8ce6..dec3a71 100644
      fn elicitation_card_handlers(&self, cx: &Context<Self>) -> ElicitationCardHandlers {
          let view = cx.entity().downgrade();
  
-@@ -15373,6 +15520,14 @@ fn strip_leading_command(text: &str, command_name: &str) -> String {
+@@ -15569,6 +15716,14 @@ fn strip_leading_command(text: &str, command_name: &str) -> String {
  
  #[cfg(test)]
  mod tests {
@@ -644,7 +644,7 @@ index 9bb8ce6..dec3a71 100644
      use project::{FakeFs, Project};
 diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/decline_confirmation_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/decline_confirmation_tests.rs
 new file mode 100644
-index 0000000..d53eb66
+index 0000000..d57359a
 --- /dev/null
 +++ b/crates/agent_ui/src/conversation_view/thread_view/tests/decline_confirmation_tests.rs
 @@ -0,0 +1,370 @@
@@ -725,7 +725,7 @@ index 0000000..d53eb66
 +    let (view, thread, mut cx) = setup(cx).await;
 +    let q = ask(
 +        &thread,
-+        agent_client_protocol::schema::v2::ElicitationSchema::new().string("name", false),
++        agent_client_protocol::v2::schema::ElicitationSchema::new().string("name", false),
 +        "Provide a name",
 +        &mut cx,
 +    );
@@ -748,11 +748,11 @@ index 0000000..d53eb66
 +) {
 +    // Hostile: field names copied from AskUserQuestion, but no marker -- not a question.
 +    let (view, thread, mut cx) = setup(cx).await;
-+    let schema = agent_client_protocol::schema::v2::ElicitationSchema::new()
++    let schema = agent_client_protocol::v2::schema::ElicitationSchema::new()
 +        .property("question_0", choices(&["Retry", "Skip"]), false)
 +        .property(
 +            "question_0_custom",
-+            agent_client_protocol::schema::v2::StringPropertySchema::new(),
++            agent_client_protocol::v2::schema::StringPropertySchema::new(),
 +            false,
 +        );
 +    let q = ask(&thread, schema, "Retry with another model?", &mut cx);
@@ -959,9 +959,9 @@ index 0000000..d53eb66
 +    thread.update(&mut cx, |thread, cx| {
 +        thread.respond_to_elicitation(
 +            &id,
-+            agent_client_protocol::schema::v2::CreateElicitationResponse::new(
-+                agent_client_protocol::schema::v2::ElicitationAction::Accept(
-+                    agent_client_protocol::schema::v2::ElicitationAcceptAction::new(),
++            agent_client_protocol::v2::schema::CreateElicitationResponse::new(
++                agent_client_protocol::v2::schema::ElicitationAction::Accept(
++                    agent_client_protocol::v2::schema::ElicitationAcceptAction::new(),
 +                ),
 +            ),
 +            cx,
@@ -1166,7 +1166,7 @@ index 0000000..8e98f71
 +}
 diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/elicitation_decline_harness.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/elicitation_decline_harness.rs
 new file mode 100644
-index 0000000..f3b5a61
+index 0000000..87050d5
 --- /dev/null
 +++ b/crates/agent_ui/src/conversation_view/thread_view/tests/elicitation_decline_harness.rs
 @@ -0,0 +1,299 @@
@@ -1193,7 +1193,7 @@ index 0000000..f3b5a61
 +use std::{cell::RefCell, collections::BTreeMap, path::Path, rc::Rc, time::Duration};
 +
 +use acp_thread::{AcpThread, ElicitationEntryId, ElicitationStatus, StubAgentConnection};
-+use agent_client_protocol::schema::v2 as acp_v2;
++use agent_client_protocol::v2::schema as acp_v2;
 +use fs::FakeFs;
 +use gpui::{AppContext as _, Entity, TestAppContext, UpdateGlobal as _, VisualTestContext};
 +use project::Project;
@@ -1471,7 +1471,7 @@ index 0000000..f3b5a61
 +}
 diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/elicitation_skipped_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/elicitation_skipped_tests.rs
 new file mode 100644
-index 0000000..082717f
+index 0000000..b68facf
 --- /dev/null
 +++ b/crates/agent_ui/src/conversation_view/thread_view/tests/elicitation_skipped_tests.rs
 @@ -0,0 +1,224 @@
@@ -1529,9 +1529,9 @@ index 0000000..082717f
 +    thread.update(&mut cx, |thread, cx| {
 +        thread.respond_to_elicitation(
 +            &id,
-+            agent_client_protocol::schema::v2::CreateElicitationResponse::new(
-+                agent_client_protocol::schema::v2::ElicitationAction::Accept(
-+                    agent_client_protocol::schema::v2::ElicitationAcceptAction::new(),
++            agent_client_protocol::v2::schema::CreateElicitationResponse::new(
++                agent_client_protocol::v2::schema::ElicitationAction::Accept(
++                    agent_client_protocol::v2::schema::ElicitationAcceptAction::new(),
 +                ),
 +            ),
 +            cx,
@@ -1561,7 +1561,7 @@ index 0000000..082717f
 +    let (view, thread, mut cx) = setup(cx).await;
 +    let q = ask(
 +        &thread,
-+        agent_client_protocol::schema::v2::ElicitationSchema::new().property(
++        agent_client_protocol::v2::schema::ElicitationSchema::new().property(
 +            "retry",
 +            choices(&["Retry", "Skip"]),
 +            false,

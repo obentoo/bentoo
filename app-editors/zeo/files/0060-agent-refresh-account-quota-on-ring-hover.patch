@@ -50,10 +50,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 74e88da..ae1b4eb 100644
+index f25720a..5494dac 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -3711,6 +3711,11 @@ pub struct AccountUsageWindow {
+@@ -3821,6 +3821,11 @@ pub struct AccountUsageWindow {
      pub resets_at: Option<i64>,
  }
  
@@ -65,7 +65,7 @@ index 74e88da..ae1b4eb 100644
  /// Account-level quota state, accumulated across `rate_limit_event`s.
  #[derive(Debug, Clone, Default, PartialEq)]
  pub struct AccountUsage {
-@@ -4118,6 +4123,10 @@ pub struct AcpThread {
+@@ -4229,6 +4234,10 @@ pub struct AcpThread {
      reported_usage: Option<ReportedTokenUsage>,
      token_usage: Option<TokenUsage>,
      account_usage: AccountUsage,
@@ -76,7 +76,7 @@ index 74e88da..ae1b4eb 100644
      background_task_count: usize,
      tasks: Vec<AgentTask>,
      // Ids whose ending has been announced with `TaskEnded`, so a repeated snapshot does
-@@ -4498,6 +4507,8 @@ impl AcpThread {
+@@ -4610,6 +4619,8 @@ impl AcpThread {
              connection,
              token_usage: None,
              account_usage: AccountUsage::default(),
@@ -85,7 +85,7 @@ index 74e88da..ae1b4eb 100644
              background_task_count: 0,
              tasks: Vec::new(),
              announced_task_endings: HashSet::default(),
-@@ -5297,6 +5308,43 @@ impl AcpThread {
+@@ -5450,6 +5461,43 @@ impl AcpThread {
          (!self.account_usage.is_empty()).then_some(&self.account_usage)
      }
  
@@ -129,7 +129,7 @@ index 74e88da..ae1b4eb 100644
      /// How many tasks the agent reports running in the background — work that outlives
      /// the turn that launched it, so [`Self::status`] reads `Idle` while it runs.
      pub fn background_task_count(&self) -> usize {
-@@ -9189,6 +9237,66 @@ mod tests {
+@@ -9485,6 +9533,66 @@ mod tests {
          assert_eq!(utilization(150.0), Some(1.0), "clamped to the track");
      }
  
@@ -196,7 +196,7 @@ index 74e88da..ae1b4eb 100644
      /// 0011 end to end on the thread: the payload rides `_meta["_claude/rateLimit"]` of a
      /// UsageUpdate, lands in `account_usage()`, and fires AccountUsageUpdated once -- and
      /// not again for the same payload.
-@@ -22227,6 +22335,11 @@ mod tests {
+@@ -22648,6 +22756,11 @@ mod tests {
          supports_truncate: bool,
          sessions: Arc<parking_lot::Mutex<HashMap<acp_v2::SessionId, WeakEntity<AcpThread>>>>,
          set_title_calls: Rc<RefCell<Vec<SharedString>>>,
@@ -208,7 +208,7 @@ index 74e88da..ae1b4eb 100644
          on_user_message: Option<
              Rc<
                  dyn Fn(
-@@ -22248,6 +22361,9 @@ mod tests {
+@@ -22669,6 +22782,9 @@ mod tests {
                  on_user_message: None,
                  sessions: Arc::default(),
                  set_title_calls: Default::default(),
@@ -218,7 +218,7 @@ index 74e88da..ae1b4eb 100644
              }
          }
  
-@@ -22281,6 +22397,23 @@ mod tests {
+@@ -22702,6 +22818,23 @@ mod tests {
              AgentId::new("fake")
          }
  
@@ -243,10 +243,10 @@ index 74e88da..ae1b4eb 100644
              "fake".into()
          }
 diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
-index 2804d65..e96d20b 100644
+index ad80e1a..9db11be 100644
 --- a/crates/acp_thread/src/connection.rs
 +++ b/crates/acp_thread/src/connection.rs
-@@ -171,6 +171,20 @@ pub trait AgentConnection {
+@@ -177,6 +177,20 @@ pub trait AgentConnection {
          )))
      }
  
@@ -268,10 +268,10 @@ index 2804d65..e96d20b 100644
      fn stop_task(
          self: Rc<Self>,
 diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
-index 973e273..bb9084c 100644
+index ebe7af4..c9e6a7e 100644
 --- a/crates/agent_servers/src/acp/v1.rs
 +++ b/crates/agent_servers/src/acp/v1.rs
-@@ -57,6 +57,10 @@ const PARAMETERIZED_MODEL_PICKER_META_KEY: &str = "parameterizedModelPicker";
+@@ -58,6 +58,10 @@ const PARAMETERIZED_MODEL_PICKER_META_KEY: &str = "parameterizedModelPicker";
  const CLAUDE_TASKS_CAPABILITY: &str = "_claude/tasks";
  const CLAUDE_TASKS_STOP_METHOD: &str = "_claude/tasks/stop";
  const CLAUDE_TASKS_BACKGROUND_METHOD: &str = "_claude/tasks/background";
@@ -282,7 +282,7 @@ index 973e273..bb9084c 100644
  const CLAUDE_TASKS_OUTPUT_METHOD: &str = "_claude/tasks/output";
  /// The most `_claude/tasks/output` serves; the adapter clamps to the same value.
  const CLAUDE_TASKS_OUTPUT_MAX_BYTES: u64 = 1_048_576;
-@@ -78,8 +82,9 @@ async fn close_session_and_drain(
+@@ -79,8 +83,9 @@ async fn close_session_and_drain(
      drain_foreground_queue(dispatch_tx).await
  }
  
@@ -294,7 +294,7 @@ index 973e273..bb9084c 100644
  async fn send_task_request(
      connection: ConnectionTo<Agent>,
      method: &'static str,
-@@ -1008,6 +1013,18 @@ impl AcpConnection {
+@@ -1013,6 +1018,18 @@ impl AcpConnection {
          self.agent_tasks_version() >= 1
      }
  
@@ -313,7 +313,7 @@ index 973e273..bb9084c 100644
      /// `rpc_call` gets a receiver that resolves once its response has been applied, and
      /// holds the agent's later messages until then (see `ordered_response`). With
      /// `replays_history`, the response ends a history replay.
-@@ -2212,6 +2229,39 @@ impl AgentConnection for AcpConnection {
+@@ -2217,6 +2234,39 @@ impl AgentConnection for AcpConnection {
          })
      }
  
@@ -353,7 +353,7 @@ index 973e273..bb9084c 100644
      fn background_task(
          self: Rc<Self>,
          session_id: &acp_v2::SessionId,
-@@ -10432,6 +10482,7 @@ exit 7
+@@ -10572,6 +10622,7 @@ exit 7
  
      include!("../acp_task_actions_tests.rs");
      include!("../acp_task_output_tests.rs");
@@ -362,10 +362,10 @@ index 973e273..bb9084c 100644
  
  fn mcp_servers_for_project(project: &Entity<Project>, cx: &App) -> Vec<acp::McpServer> {
 diff --git a/crates/agent_servers/src/acp_task_actions_tests.rs b/crates/agent_servers/src/acp_task_actions_tests.rs
-index 47d30c8..6f19c15 100644
+index 86f4c71..2f5a6bf 100644
 --- a/crates/agent_servers/src/acp_task_actions_tests.rs
 +++ b/crates/agent_servers/src/acp_task_actions_tests.rs
-@@ -33,6 +33,20 @@ async fn connect_task_actions_peer(
+@@ -36,6 +36,20 @@ async fn connect_task_actions_peer(
      tasks_capability: Option<serde_json::Value>,
      reply: TaskActionsReply,
      cx: &mut gpui::TestAppContext,
@@ -386,7 +386,7 @@ index 47d30c8..6f19c15 100644
  ) -> TaskActionsPeer {
      cx.update(|cx| {
          let store = settings::SettingsStore::test(cx);
-@@ -53,9 +67,7 @@ async fn connect_task_actions_peer(
+@@ -55,9 +69,7 @@ async fn connect_task_actions_peer(
      let mut capabilities = acp::AgentCapabilities::default().session_capabilities(
          acp::SessionCapabilities::default().close(acp::SessionCloseCapabilities::new()),
      );
@@ -399,10 +399,10 @@ index 47d30c8..6f19c15 100644
      let agent_info = acp::Implementation::new(agent_name.to_string(), "1.0.0".to_string());
 diff --git a/crates/agent_servers/src/acp_usage_refresh_tests.rs b/crates/agent_servers/src/acp_usage_refresh_tests.rs
 new file mode 100644
-index 0000000..ce3a950
+index 0000000..46fe14a
 --- /dev/null
 +++ b/crates/agent_servers/src/acp_usage_refresh_tests.rs
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,130 @@
 +// Patch 0060 — `AcpConnection::refresh_account_usage` against a fake ACP peer.
 +//
 +// The gate is the `_claude/usage` capability the agent advertises in `initialize`
@@ -432,7 +432,11 @@ index 0000000..ce3a950
 +    let (_thread, session_id) = task_actions_session(&peer, cx).await;
 +
 +    let refreshed = cx
-+        .update(|cx| peer.connection.clone().refresh_account_usage(&session_id, cx))
++        .update(|cx| {
++            peer.connection
++                .clone()
++                .refresh_account_usage(&session_id, cx)
++        })
 +        .await
 +        .expect("refresh succeeds");
 +
@@ -459,7 +463,11 @@ index 0000000..ce3a950
 +        PLUS_NAME,
 +        usage_capability_v(1),
 +        Arc::new(move |_method, _params| {
-+            Ok(answers.lock().expect("answers mutex").pop().expect("an answer"))
++            Ok(answers
++                .lock()
++                .expect("answers mutex")
++                .pop()
++                .expect("an answer"))
 +        }),
 +        cx,
 +    )
@@ -467,11 +475,19 @@ index 0000000..ce3a950
 +    let (_thread, session_id) = task_actions_session(&peer, cx).await;
 +
 +    let nothing_published = cx
-+        .update(|cx| peer.connection.clone().refresh_account_usage(&session_id, cx))
++        .update(|cx| {
++            peer.connection
++                .clone()
++                .refresh_account_usage(&session_id, cx)
++        })
 +        .await
 +        .expect("false is an answer, not an error");
 +    let malformed = cx
-+        .update(|cx| peer.connection.clone().refresh_account_usage(&session_id, cx))
++        .update(|cx| {
++            peer.connection
++                .clone()
++                .refresh_account_usage(&session_id, cx)
++        })
 +        .await;
 +
 +    assert!(!nothing_published);
@@ -503,18 +519,25 @@ index 0000000..ce3a950
 +        .await;
 +        let (_thread, session_id) = task_actions_session(&peer, cx).await;
 +        let result = cx
-+            .update(|cx| peer.connection.clone().refresh_account_usage(&session_id, cx))
++            .update(|cx| {
++                peer.connection
++                    .clone()
++                    .refresh_account_usage(&session_id, cx)
++            })
 +            .await;
 +        let error = result.expect_err("no capability, no request");
 +        assert!(error.to_string().contains("not supported"), "{error}");
-+        assert!(task_actions_requests(&peer).is_empty(), "nothing reached the agent");
++        assert!(
++            task_actions_requests(&peer).is_empty(),
++            "nothing reached the agent"
++        );
 +    }
 +}
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index dec3a71..d398db5 100644
+index c4bb742..ef5190c 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
-@@ -6280,34 +6280,12 @@ impl ThreadView {
+@@ -6406,34 +6406,12 @@ impl ThreadView {
          let input_max_label = crate::humanize_token_count(max_input_tokens);
          let output_max_label = crate::humanize_token_count(max_output_tokens);
  
@@ -552,7 +575,7 @@ index dec3a71..d398db5 100644
                  let percentage = percentage.clone();
                  let used = used.clone();
                  let max = max.clone();
-@@ -6319,7 +6297,19 @@ impl ThreadView {
+@@ -6445,7 +6423,19 @@ impl ThreadView {
                  let workspace = workspace.clone();
                  let cost_label = cost_label.clone();
                  let account_rows = account_rows.clone();
@@ -573,7 +596,7 @@ index dec3a71..d398db5 100644
                      percentage,
                      account_rows,
                      account_credits_required,
-@@ -6359,6 +6349,7 @@ impl ThreadView {
+@@ -6485,6 +6475,7 @@ impl ThreadView {
              Some(
                  h_flex()
                      .id("split_token_usage")
@@ -581,7 +604,7 @@ index dec3a71..d398db5 100644
                      .flex_shrink_0()
                      .gap_1p5()
                      .mr_1()
-@@ -6407,6 +6398,7 @@ impl ThreadView {
+@@ -6533,6 +6524,7 @@ impl ThreadView {
              Some(
                  h_flex()
                      .id("circular_progress_tokens")
@@ -589,7 +612,7 @@ index dec3a71..d398db5 100644
                      .mt_px()
                      .mr_1()
                      .child(
-@@ -6425,6 +6417,21 @@ impl ThreadView {
+@@ -6551,6 +6543,21 @@ impl ThreadView {
          }
      }
  
@@ -611,7 +634,7 @@ index dec3a71..d398db5 100644
      fn fast_mode_available(&self, cx: &Context<Self>) -> bool {
          self.as_native_thread(cx)
              .and_then(|thread| thread.read(cx).model())
-@@ -7336,11 +7343,35 @@ impl ThreadView {
+@@ -7462,11 +7469,35 @@ impl ThreadView {
      }
  }
  
@@ -649,7 +672,7 @@ index dec3a71..d398db5 100644
  #[derive(Clone)]
  struct AccountUsageRow {
      label: SharedString,
-@@ -7350,6 +7381,7 @@ struct AccountUsageRow {
+@@ -7476,6 +7507,7 @@ struct AccountUsageRow {
  }
  
  struct TokenUsageTooltip {
