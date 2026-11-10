@@ -99,7 +99,15 @@ declare -A GIT_CRATES=(
 # in src_compile as a missing crate rather than here.
 #
 # 3.4.0, a sixth time: see the CRATES comment above for the lock diff.
-CRATES_PV="3.4.0"
+#
+# 3.4.5, a seventh time, again an autoupdate bump that moved PV alone: the
+# lock gained rusqlite 0.32 -> 0.41 (libsqlite3-sys 0.39, hashlink 0.12,
+# rsqlite-vfs, sqlite-wasm-rs), refinery 0.8 -> 0.10, rmcp 3.8 -> 3.9,
+# thiserror 2.0.18 -> 2.0.21, toml 1.2 and the digest 0.11 / sha2 0.11 stack
+# (516 -> 526), and the build died with "failed to select a version for the
+# requirement `thiserror = "^2"` (locked to 2.0.21)". Regenerated: 526 = 526
+# against the lock in both directions.
+CRATES_PV="3.4.5"
 
 # Upstream pins channel 1.95 in rust-toolchain.toml; the workspace is
 # edition 2024 and declares rust-version = "1.95".
