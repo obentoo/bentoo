@@ -2146,6 +2146,10 @@ src_prepare() {
 			"${FILESDIR}/0081-agent-ui-plan-scrollbar.patch"
 			"${FILESDIR}/0082-agent-ui-question-card-minimize.patch"
 			"${FILESDIR}/0083-agent-ui-tasks-card-start-minimized.patch"
+			# 0086 (Zeo 0.9.1): the composer's config options keep the agent's
+			# order, left to right; Zed 483b746b reversed the row, which drew
+			# Claude Agent's Mode last. Upstream code only.
+			"${FILESDIR}/0086-agent-ui-config-options-keep-agent-order.patch"
 		)
 	fi
 

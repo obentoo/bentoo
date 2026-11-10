@@ -33,10 +33,27 @@ Tests: tasks_card/dismiss_tests.rs — an ended row dismissed leaves and
 the card hides; a running row cannot be dismissed; Clear finished keeps
 the running row. The scrollbar and the Unknown-row dismissal are not
 covered by a test (Xvfb, and the native-subagent fixture). Verified 2026-11-09 in the prepared d2a4fb6 tree: cargo check --tests, cargo clippy --tests and cargo fmt --check clean, cargo test passing, on acp_thread, agent_servers, agent_ui and sidebar.
+
+Fixed in Zeo 0.9.1 (operator report, 2026-11-09): with every row dismissed,
+or nothing left running, the card stayed on screen, and minimized it showed a
+spinning "0". Two causes. rows() ordered a group by its live rows before the
+dismissal filter ran, so a group whose last live row was a dismissed Unknown
+child kept a running order with no rows, and an empty group kept the card
+visible; the order is now read after the filter, and a group with nothing
+left leaves. The pill always drew the spinner and the running count, which
+also left out running sub-threads; it now spins only while something runs,
+and otherwise counts what the card holds under a still ListTodo icon ("1
+task, none running"). Unknown rows still hold the card: a child that has not
+reported yet reads Unknown, and story 064's R1.1 shows it on spawn.
+
+Tests (native_subagent_tests.rs), each seen failing first:
+test_dismissing_the_last_unknown_row_hides_the_card and
+test_the_pill_does_not_spin_or_count_zero_while_nothing_runs; with the guard
+test_the_pill_spins_while_a_child_runs, which passed before and after.
 ---
 
 diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
-index 1bc2a51..7516766 100644
+index 1bc2a51..9a1ffff 100644
 --- a/crates/agent_ui/src/tasks_card.rs
 +++ b/crates/agent_ui/src/tasks_card.rs
 @@ -25,10 +25,13 @@ use collections::{HashMap, HashSet};
@@ -80,15 +97,15 @@ index 1bc2a51..7516766 100644
  }
  
  /// A per-row control that takes keyboard focus.
-@@ -508,7 +522,42 @@ impl TasksCard {
+@@ -508,9 +522,44 @@ impl TasksCard {
              sub_thread_rows: HashMap::default(),
              native_statuses: HashMap::default(),
              native_subscriptions: HashMap::default(),
 +            dismissed_unknown: HashSet::default(),
 +            list_scroll: ScrollHandle::new(),
-+        }
-+    }
-+
+         }
+     }
+ 
 +    /// Removes one row from the card (§5.2): an ended row leaves before its linger runs out,
 +    /// an `Unknown` row is hidden while it stays `Unknown`. Running rows have Stop instead.
 +    pub fn dismiss_row(&mut self, key: TaskKey, status: TaskRowStatus, cx: &mut Context<Self>) {
@@ -98,7 +115,7 @@ index 1bc2a51..7516766 100644
 +            self.dismissed_unknown.insert(key);
 +        } else {
 +            return;
-         }
++        }
 +        cx.notify();
 +    }
 +
@@ -120,10 +137,18 @@ index 1bc2a51..7516766 100644
 +        self.ended.clear();
 +        self.dismissed_unknown.extend(unknown);
 +        cx.notify();
-     }
- 
++    }
++
      /// Lets the card tell `zeo-systray` about endings, asking `in_view` first
-@@ -590,6 +639,12 @@ impl TasksCard {
+     /// whether the task's thread is the one the user is looking at.
+     ///
+@@ -584,13 +633,26 @@ impl TasksCard {
+                 .map(|(_, ended)| ended)
+                 .collect();
+ 
+-            let oldest_running = running.iter().map(|row| row.task.started_at).min();
+             let latest_ending = ended.iter().map(|ended| ended.sequence).max();
+             let mut rows: Vec<TaskRow> = running
                  .into_iter()
                  .chain(ended.into_iter().map(EndedRow::to_row))
                  .map(|row| self.dress(thread, row, cx))
@@ -134,9 +159,18 @@ index 1bc2a51..7516766 100644
 +                            .contains(&(session_id.clone(), row.task.id.clone()))
 +                })
                  .collect();
++            // Read after the dismissal filter: a group whose last live row was dismissed
++            // (an Unknown child) has nothing left to order by, and must not stay on the card
++            // as an empty group that keeps the card, or its "0" pill, on screen.
++            let oldest_running = rows
++                .iter()
++                .filter(|row| is_live(row))
++                .map(|row| row.task.started_at)
++                .min();
  
              let subs: Vec<SubThreadRow> = sub_threads
-@@ -1881,7 +1936,7 @@ impl TasksCard {
+                 .iter()
+@@ -1881,7 +1943,7 @@ impl TasksCard {
  }
  
  impl Render for TasksCard {
@@ -145,16 +179,77 @@ index 1bc2a51..7516766 100644
          #[cfg(test)]
          RENDERED_ARIA_LABELS.with_borrow_mut(Vec::clear);
          let groups = self.rows(cx);
-@@ -1894,7 +1949,7 @@ impl Render for TasksCard {
+@@ -1892,17 +1954,44 @@ impl Render for TasksCard {
+             return gpui::Empty.into_any_element();
+         }
          if self.is_minimized() {
-             return self.render_pill(running_count(&groups), cx);
+-            return self.render_pill(running_count(&groups), cx);
++            return self.render_pill(running_count(&groups), item_count(&groups), cx);
          }
 -        self.render_expanded(groups, cx)
 +        self.render_expanded(groups, window, cx)
      }
  }
  
-@@ -1940,9 +1995,20 @@ impl TasksCard {
+ impl TasksCard {
+-    fn render_pill(&self, running: usize, cx: &mut Context<Self>) -> AnyElement {
+-        let label = match running {
+-            1 => "1 task running".to_string(),
+-            count => format!("{count} tasks running"),
++    /// The minimized card. It spins and counts what runs while something runs; with nothing
++    /// running (ended rows lingering, Unknown children) it counts what the card holds, under
++    /// a still icon -- a spinning "0" read as work in progress (operator, 2026-11-09).
++    fn render_pill(&self, running: usize, items: usize, cx: &mut Context<Self>) -> AnyElement {
++        let label = match (running, items) {
++            (1, _) => "1 task running".to_string(),
++            (0, 1) => "1 task, none running".to_string(),
++            (0, items) => format!("{items} tasks, none running"),
++            (running, _) => format!("{running} tasks running"),
++        };
++        let (icon, count) = if running > 0 {
++            (
++                div()
++                    .debug_selector(|| "tasks-card-pill-spinner".into())
++                    .child(
++                        Icon::new(IconName::LoadCircle)
++                            .size(IconSize::Small)
++                            .color(Color::Muted)
++                            .with_rotate_animation(2),
++                    ),
++                running,
++            )
++        } else {
++            (
++                div().child(
++                    Icon::new(IconName::ListTodo)
++                        .size(IconSize::Small)
++                        .color(Color::Muted),
++                ),
++                items,
++            )
+         };
+         div()
+             .debug_selector(|| "tasks-card-pill".into())
+@@ -1919,15 +2008,10 @@ impl TasksCard {
+                     .child(
+                         h_flex()
+                             .gap_1()
+-                            .child(
+-                                Icon::new(IconName::LoadCircle)
+-                                    .size(IconSize::Small)
+-                                    .color(Color::Muted)
+-                                    .with_rotate_animation(2),
+-                            )
+-                            .child(Label::new(running.to_string()).size(LabelSize::Small)),
++                            .child(icon)
++                            .child(Label::new(count.to_string()).size(LabelSize::Small)),
+                     )
+-                    .aria_label(format!("Expand the tasks card: {label}"))
++                    .aria_label(row_aria_label(format!("Expand the tasks card: {label}")))
+                     .tooltip(card_tooltip(
+                         "pill".into(),
+                         format!("Expand Tasks Card ({label})").into(),
+@@ -1940,9 +2024,20 @@ impl TasksCard {
              .into_any_element()
      }
  
@@ -176,7 +271,7 @@ index 1bc2a51..7516766 100644
  
          let header = h_flex()
              .flex_none()
-@@ -1963,35 +2029,68 @@ impl TasksCard {
+@@ -1963,35 +2058,68 @@ impl TasksCard {
                      ),
              )
              .child(
@@ -262,7 +357,7 @@ index 1bc2a51..7516766 100644
  
          v_flex()
              .id("tasks-card")
-@@ -2299,6 +2398,34 @@ impl TasksCard {
+@@ -2299,6 +2427,34 @@ impl TasksCard {
                  .child(button)
          });
  
@@ -297,7 +392,7 @@ index 1bc2a51..7516766 100644
          let open_focus_handle = self.row_focus_handle(&key, RowControl::Open, cx);
          let open_button = IconButton::new(
              SharedString::from(format!("tasks-card-open-{element_key}")),
-@@ -2476,7 +2603,8 @@ impl TasksCard {
+@@ -2476,7 +2632,8 @@ impl TasksCard {
              .children(open_thread_button)
              .child(watch_button)
              .children(background_button)
@@ -307,6 +402,34 @@ index 1bc2a51..7516766 100644
  
          v_flex()
              .id(SharedString::from(format!("tasks-card-row-{element_key}")))
+@@ -2703,11 +2860,27 @@ impl Element for TasksCardOverlay {
+ 
+ /// The count the pill and the card's header show: ended rows on show excluded.
+ fn running_count(groups: &[ThreadGroup]) -> usize {
++    // A running sub-thread is running work too: left out, a card holding only sub-threads
++    // showed a spinning "0".
+     groups
+         .iter()
+         .flat_map(|group| &group.rows)
+         .filter(|row| row.task.status.is_running())
+         .count()
++        + groups
++            .iter()
++            .flat_map(|group| &group.sub_threads)
++            .filter(|sub| sub.running)
++            .count()
++}
++
++/// Every row and sub-thread the card holds, whatever its state: the pill's count while
++/// nothing runs.
++fn item_count(groups: &[ThreadGroup]) -> usize {
++    groups
++        .iter()
++        .map(|group| group.rows.len() + group.sub_threads.len())
++        .sum()
+ }
+ 
+ /// What an expanded row shows under its line (R4.1–R4.4): what the task runs, its
 diff --git a/crates/agent_ui/src/tasks_card/dismiss_tests.rs b/crates/agent_ui/src/tasks_card/dismiss_tests.rs
 new file mode 100644
 index 0000000..7097c7c
@@ -411,5 +534,92 @@ index 0000000..7097c7c
 +    assert_eq!(
 +        row_ids(&rows_of(&card, &session, &mut cx)),
 +        vec!["live".to_string()]
++    );
++}
+diff --git a/crates/agent_ui/src/tasks_card/native_subagent_tests.rs b/crates/agent_ui/src/tasks_card/native_subagent_tests.rs
+index 467c621..563c86d 100644
+--- a/crates/agent_ui/src/tasks_card/native_subagent_tests.rs
++++ b/crates/agent_ui/src/tasks_card/native_subagent_tests.rs
+@@ -359,3 +359,82 @@ async fn test_native_subagent_two_children_are_two_rows(cx: &mut TestAppContext)
+     let bravo_id = rig.row_of(&bravo).unwrap().task.id;
+     assert_ne!(alpha_id, bravo_id, "each row has its own key");
+ }
++
++// ── Zeo 0.9.1 — a card emptied by dismissals, and the pill with nothing running ──
++
++/// A child that has reported no state reads Unknown and can be dismissed. Dismissing the
++/// last row must hide the card: the group it emptied used to keep it on screen.
++#[gpui::test]
++async fn test_dismissing_the_last_unknown_row_hides_the_card(cx: &mut TestAppContext) {
++    let mut rig = subagent_rig(cx).await;
++    let alpha = rig.spawn_child("alpha", Some("Alpha"), true);
++    rig.cx.run_until_parked();
++    let row = rig.row_of(&alpha).expect("fixture: the child has a row");
++    assert!(
++        row.status == super::TaskRowStatus::Unknown,
++        "fixture: a child with no state reads Unknown"
++    );
++
++    let card = rig.card.clone();
++    let key = (rig.parent_session.clone(), row.task.id.clone());
++    card.update(&mut rig.cx, |card, cx| {
++        card.dismiss_row(key, row.status, cx)
++    });
++    rig.cx.run_until_parked();
++
++    assert!(rig.row_of(&alpha).is_none(), "the row left");
++    assert!(
++        !visible(&card, &mut rig.cx),
++        "nothing left on the card: it hides"
++    );
++}
++
++/// Minimized while nothing runs (one Unknown row), the pill neither spins nor says "0":
++/// it shows how many rows the card holds.
++#[gpui::test]
++async fn test_the_pill_does_not_spin_or_count_zero_while_nothing_runs(cx: &mut TestAppContext) {
++    let mut rig = subagent_rig(cx).await;
++    let _alpha = rig.spawn_child("alpha", Some("Alpha"), true);
++    rig.cx.run_until_parked();
++    let card = rig.card.clone();
++    card.update(&mut rig.cx, |card, cx| card.toggle_minimized(cx));
++    RENDERED_ARIA_LABELS.with_borrow_mut(Vec::clear);
++    rig.draw();
++
++    assert!(
++        rig.cx.debug_bounds("tasks-card-pill").is_some(),
++        "fixture: the pill is painted"
++    );
++    assert!(
++        rig.cx.debug_bounds("tasks-card-pill-spinner").is_none(),
++        "nothing runs: no spinner"
++    );
++    let labels = RENDERED_ARIA_LABELS.with_borrow(Clone::clone);
++    assert!(
++        labels
++            .iter()
++            .any(|label| label.as_ref() == "Expand the tasks card: 1 task, none running"),
++        "the pill counts the row it holds, got {labels:?}"
++    );
++}
++
++/// Running, the pill keeps its spinner and its running count.
++#[gpui::test]
++async fn test_the_pill_spins_while_a_child_runs(cx: &mut TestAppContext) {
++    let mut rig = subagent_rig(cx).await;
++    let alpha = rig.spawn_child("alpha", Some("Alpha"), true);
++    rig.report_running(&alpha);
++    let card = rig.card.clone();
++    card.update(&mut rig.cx, |card, cx| card.toggle_minimized(cx));
++    RENDERED_ARIA_LABELS.with_borrow_mut(Vec::clear);
++    rig.draw();
++
++    assert!(rig.cx.debug_bounds("tasks-card-pill-spinner").is_some());
++    let labels = RENDERED_ARIA_LABELS.with_borrow(Clone::clone);
++    assert!(
++        labels
++            .iter()
++            .any(|label| label.as_ref() == "Expand the tasks card: 1 task running"),
++        "got {labels:?}"
 +    );
 +}

@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 9 Nov 2026 22:53:01 -0300
+Subject: [PATCH] agent_ui: the composer row keeps the agent's config option
+ order
+
+Zed 483b746b reversed the composer's config option row
+(`self.selectors.iter().rev()`, "so the first one sits next to the send
+button"). Claude Agent (Plus) sends Mode first, so Zeo 0.9.0_p20261109 drew
+Mode last, beside Send, and the operator read every selector as moved
+(2026-11-09). This keeps the agent's order, left to right, as every Zeo
+before that snapshot drew it.
+
+The order now lives in `selectors_in_composer_order`, which render uses and
+the test reads: `composer_row_keeps_the_agents_option_order` builds a view
+with mode, effort and model and expects them in that order. Seen failing
+first, with ["model", "effort", "mode"].
+---
+
+diff --git a/crates/agent_ui/src/config_options.rs b/crates/agent_ui/src/config_options.rs
+index 0072048..8636bfe 100644
+--- a/crates/agent_ui/src/config_options.rs
++++ b/crates/agent_ui/src/config_options.rs
+@@ -362,13 +362,21 @@ impl Render for ConfigOptionsView {
+             .min_w_0()
+             .flex_wrap()
+             .gap_1()
+-            // Options read right to left in the order the agent sent them, so the
+-            // first one sits next to the send button.
+-            .children(self.selectors.iter().rev().cloned())
++            .children(self.selectors_in_composer_order())
+             .into_any_element()
+     }
+ }
+ 
++impl ConfigOptionsView {
++    /// The selectors left to right as the composer row draws them.
++    fn selectors_in_composer_order(&self) -> Vec<Entity<ConfigOptionSelector>> {
++        // Left to right in the order the agent sent them. Zed 483b746 reversed the row so the
++        // first option sat next to Send; Zeo keeps the agent's order, where Claude Agent puts
++        // Mode first, as every Zeo before 0.9.0_p20261109 drew it (operator, 2026-11-09).
++        self.selectors.iter().cloned().collect()
++    }
++}
++
+ struct ConfigOptionSelector {
+     config_options: Rc<dyn AgentSessionConfigOptions>,
+     config_id: acp::SessionConfigId,
+@@ -1673,6 +1681,52 @@ mod tests {
+         );
+     }
+ 
++    // Zeo 0.9.1: the composer row draws the options in the order the agent sent them, its
++    // first (Claude Agent's Mode) leftmost, as before Zed 483b746 reversed them.
++    #[gpui::test]
++    fn composer_row_keeps_the_agents_option_order(cx: &mut TestAppContext) {
++        cx.update(|cx| {
++            let settings_store = SettingsStore::test(cx);
++            cx.set_global(settings_store);
++            theme_settings::init(theme::LoadThemes::JustBase, cx);
++            editor::init(cx);
++        });
++        let select = |id: &'static str| {
++            acp::SessionConfigOption::select(
++                id,
++                id,
++                "a",
++                vec![
++                    acp::SessionConfigSelectOption::new("a", "A"),
++                    acp::SessionConfigSelectOption::new("b", "B"),
++                ],
++            )
++        };
++        let config_options = Rc::new(TestSessionConfigOptions::new(vec![
++            select("mode"),
++            select("effort"),
++            select("model"),
++        ]));
++        let agent_server = Rc::new(TestAgentServer::default());
++        let fs: Arc<dyn Fs> = FakeFs::new(cx.executor());
++        let cx = cx.add_empty_window();
++        let view = cx.update(|window, cx| {
++            let config_options: Rc<dyn AgentSessionConfigOptions> = config_options.clone();
++            let agent_server: Rc<dyn AgentServer> = agent_server.clone();
++            cx.new(|cx| ConfigOptionsView::new(config_options, agent_server, fs, window, cx))
++        });
++
++        let drawn: Vec<String> = cx.update(|_, cx| {
++            let view = view.read(cx);
++            view.selectors_in_composer_order()
++                .iter()
++                .map(|selector| selector.read(cx).config_id.0.to_string())
++                .collect()
++        });
++
++        assert_eq!(drawn, ["mode", "effort", "model"]);
++    }
++
+     #[gpui::test]
+     fn toggling_category_picker_without_select_config_option_is_unhandled(cx: &mut TestAppContext) {
+         let agent_server = Rc::new(TestAgentServer::default());

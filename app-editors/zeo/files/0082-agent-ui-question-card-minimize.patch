@@ -30,6 +30,16 @@ the question is answered. Verified 2026-11-09 in the prepared d2a4fb6
 tree: cargo check --tests, cargo clippy --tests and cargo fmt --check
 clean on agent_ui; the 79 elicitation tests still pass. The bar's look
 is for an Xvfb capture.
+
+Fixed in Zeo 0.9.1 (operator report, 2026-11-09): the minimize control was
+drawn absolutely over the pinned wrapper's top-right corner, outside the
+card's border (the card has a horizontal margin). It is now the card's own
+header control, after the "Waiting for input" label, through
+ElicitationCard::header_end; the label moves left to make room. Cards in
+the conversation pass no control and render as before.
+
+Test the_minimize_control_sits_inside_the_card_header (seen failing first)
+checks the control's bounds lie within the header's.
 ---
 
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
@@ -45,8 +55,66 @@ index c589882..f1f0799 100644
      ]
  );
  
+diff --git a/crates/agent_ui/src/conversation_view/elicitation.rs b/crates/agent_ui/src/conversation_view/elicitation.rs
+index 1c0716e..6afaab1 100644
+--- a/crates/agent_ui/src/conversation_view/elicitation.rs
++++ b/crates/agent_ui/src/conversation_view/elicitation.rs
+@@ -2741,6 +2741,7 @@ pub(crate) struct ElicitationCard<'a> {
+     handlers: ElicitationCardHandlers,
+     paginated: bool,
+     queue_position: Option<(usize, usize)>,
++    header_end: Option<AnyElement>,
+ }
+ 
+ impl<'a> ElicitationCard<'a> {
+@@ -2759,9 +2760,17 @@ impl<'a> ElicitationCard<'a> {
+             handlers,
+             paginated: false,
+             queue_position: None,
++            header_end: None,
+         }
+     }
+ 
++    /// A control drawn at the end of the header, after the status label, inside the card's
++    /// border: the pinned card's minimize (Zeo next proposal §5.5).
++    pub(crate) fn header_end(mut self, control: AnyElement) -> Self {
++        self.header_end = Some(control);
++        self
++    }
++
+     /// `(position, total)` of this card among the questions queued behind one
+     /// another. Shown only when there is more than one: a lone question has
+     /// nothing to count.
+@@ -2799,7 +2808,8 @@ impl<'a> ElicitationCard<'a> {
+         (pages.len() > 1).then(|| (state.page(), pages))
+     }
+ 
+-    pub(crate) fn render(self, cx: &App) -> Div {
++    pub(crate) fn render(mut self, cx: &App) -> Div {
++        let header_end = self.header_end.take();
+         let border_color = cx.theme().colors().border.opacity(0.8);
+         let header_background = cx
+             .theme()
+@@ -2850,6 +2860,7 @@ impl<'a> ElicitationCard<'a> {
+             .overflow_hidden()
+             .child(
+                 h_flex()
++                    .debug_selector(|| "elicitation-card-header".into())
+                     .h_8()
+                     .p_1()
+                     .w_full()
+@@ -2885,7 +2896,8 @@ impl<'a> ElicitationCard<'a> {
+                                 Label::new(status_label)
+                                     .size(LabelSize::Small)
+                                     .color(Color::Muted),
+-                            ),
++                            )
++                            .children(header_end),
+                     ),
+             )
+             .child(body)
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index cdc6dc0..7c515f7 100644
+index cdc6dc0..1ee2dce 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -804,6 +804,9 @@ pub struct ThreadView {
@@ -67,7 +135,7 @@ index cdc6dc0..7c515f7 100644
              auto_scroll_paused_at: None,
              _cancel_task: None,
              _save_task: None,
-@@ -9347,6 +9351,13 @@ impl ThreadView {
+@@ -9347,12 +9351,37 @@ impl ThreadView {
              .map(|elicitation| &elicitation.id)
              .collect::<Vec<_>>();
          let queue_position = self.question_queue.advance(&pending);
@@ -81,28 +149,39 @@ index cdc6dc0..7c515f7 100644
  
          let (ix, elicitation) = thread
              .elicitations()
-@@ -9367,11 +9378,81 @@ impl ThreadView {
+             .iter()
+             .enumerate()
+             .find(|(_, elicitation)| Self::renders_elicitation_as_card(elicitation, cx))?;
++        let minimize = div()
++            .debug_selector(|| "question-card-minimize".into())
++            .child(
++                IconButton::new("minimize-question-card", IconName::ChevronDown)
++                    .icon_size(IconSize::Small)
++                    .icon_color(Color::Muted)
++                    .aria_label("Minimize the question card")
++                    .tooltip(Tooltip::for_action_title(
++                        "Minimize Question",
++                        &crate::ToggleQuestionCard,
++                    ))
++                    .on_click(cx.listener(|this, _, _, cx| {
++                        this.toggle_question_card(&crate::ToggleQuestionCard, cx)
++                    })),
++            )
++            .into_any_element();
++        // Inside the card's header, after its status label -- not over the card's corner,
++        // where it sat outside the border (operator, 2026-11-09).
+         let card = ElicitationCard::new(
+             ix,
+             elicitation,
+@@ -9362,6 +9391,7 @@ impl ThreadView {
+         )
+         .paginated(true)
+         .queue_position(queue_position)
++        .header_end(minimize)
+         .render(cx);
+ 
          Some(
-             v_flex()
-                 .id("pinned-elicitations")
-+                .relative()
-                 .child(card)
-+                .child(
-+                    div().absolute().top_1().right_1().child(
-+                        IconButton::new("minimize-question-card", IconName::ChevronDown)
-+                            .icon_size(IconSize::Small)
-+                            .icon_color(Color::Muted)
-+                            .aria_label("Minimize the question card")
-+                            .tooltip(Tooltip::for_action_title(
-+                                "Minimize Question",
-+                                &crate::ToggleQuestionCard,
-+                            ))
-+                            .on_click(cx.listener(|this, _, _, cx| {
-+                                this.toggle_question_card(&crate::ToggleQuestionCard, cx)
-+                            })),
-+                    ),
-+                )
-                 .into_any_element(),
+@@ -9372,6 +9402,60 @@ impl ThreadView {
          )
      }
  
@@ -163,7 +242,7 @@ index cdc6dc0..7c515f7 100644
      fn render_request_elicitations(&self, cx: &Context<Self>) -> Vec<AnyElement> {
          let server_view = self.server_view.clone();
          let handlers_view = server_view.clone();
-@@ -15315,6 +15396,9 @@ impl Render for ThreadView {
+@@ -15315,6 +15399,9 @@ impl Render for ThreadView {
              .on_action(cx.listener(Self::open_permission_dropdown))
              .on_action(cx.listener(Self::open_add_context_menu))
              .on_action(cx.listener(Self::scroll_output_page_up))
@@ -173,7 +252,7 @@ index cdc6dc0..7c515f7 100644
              .on_action(cx.listener(Self::scroll_output_page_down))
              .on_action(cx.listener(Self::scroll_output_line_up))
              .on_action(cx.listener(Self::scroll_output_line_down))
-@@ -15936,6 +16020,8 @@ mod tests {
+@@ -15936,6 +16023,8 @@ mod tests {
  
      mod decline_contract_tests;
  
@@ -184,10 +263,10 @@ index cdc6dc0..7c515f7 100644
      use project::{FakeFs, Project};
 diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/question_card_minimize_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/question_card_minimize_tests.rs
 new file mode 100644
-index 0000000..4a3047e
+index 0000000..182d843
 --- /dev/null
 +++ b/crates/agent_ui/src/conversation_view/thread_view/tests/question_card_minimize_tests.rs
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,76 @@
 +// Zeo next proposal §5.5 (ask 9): the pending question card minimizes to a one-line bar and
 +// comes back; the state is per thread and returns to open once no question is pending.
 +
@@ -241,5 +320,26 @@ index 0000000..4a3047e
 +    assert!(
 +        !view.read_with(&cx, |view, _| view.question_card_minimized),
 +        "the next question must not arrive hidden"
++    );
++}
++
++/// The minimize control sits inside the card's border, in its header after "Waiting for
++/// input" -- not over the card's corner, outside the header (operator, 2026-11-09).
++#[gpui::test]
++async fn the_minimize_control_sits_inside_the_card_header(cx: &mut TestAppContext) {
++    let (_view, thread, mut cx) = setup(cx).await;
++    ask(&thread, one_question(), "Only?", &mut cx);
++    draw(&mut cx);
++
++    let header = cx
++        .debug_bounds("elicitation-card-header")
++        .expect("fixture: the card header is painted");
++    let minimize = cx
++        .debug_bounds("question-card-minimize")
++        .expect("the minimize control is painted");
++
++    assert!(
++        header.contains(&minimize.origin) && header.contains(&minimize.bottom_right()),
++        "the control lies within the header: header {header:?}, control {minimize:?}"
 +    );
 +}
