@@ -11,7 +11,7 @@ EAPI=8
 # BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-PYTHON_COMPAT=( python3_{11..15} )
+PYTHON_COMPAT=( python3_{12..15} )
 inherit python-r1 multilib-minimal
 
 DESCRIPTION="XSLT libraries and tools"
@@ -21,7 +21,7 @@ if [[ ${PV} == 9999 ]] ; then
 	inherit autotools git-r3
 else
 	inherit libtool gnome.org
-	KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~m68k ~mips ppc ppc64 ~riscv ~s390 ~sparc x86 ~arm64-macos ~x64-macos ~x64-solaris"
+	KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~m68k ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86 ~arm64-macos ~x64-macos ~x64-solaris"
 fi
 
 LICENSE="MIT"
@@ -46,6 +46,10 @@ MULTILIB_CHOST_TOOLS=(
 
 MULTILIB_WRAPPED_HEADERS=(
 	/usr/include/libxslt/xsltconfig.h
+)
+
+PATCHES=(
+	"${FILESDIR}"/${PN}-1.1.45-CVE-2026-125350.patch
 )
 
 src_prepare() {
