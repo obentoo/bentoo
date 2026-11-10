@@ -1,0 +1,44 @@
+Build the HarfBuzz shaper only with ENABLE_HARFBUZZ.
+
+harfbuzz.cpp is always in the shapers target and shaper_shim.cpp always
+includes harfbuzz.hpp, which includes <hb.h>. The HarfBuzz include path is
+only added with ENABLE_HARFBUZZ, so -DENABLE_HARFBUZZ=OFF fails with
+'hb.h: No such file or directory' (unless the headers happen to sit on the
+default search path).
+
+Bug: https://github.com/obentoo/bentoo/issues/68
+
+--- a/fontforgeexe/shapers/CMakeLists.txt
++++ b/fontforgeexe/shapers/CMakeLists.txt
+@@ -3,8 +3,6 @@
+ add_library(shapers OBJECT
+   builtin.hpp
+   builtin.cpp
+-  harfbuzz.hpp
+-  harfbuzz.cpp
+   shaper_shim.hpp
+   shaper_shim.cpp
+ )
+@@ -16,6 +14,10 @@
+ )
+ 
+ if(ENABLE_HARFBUZZ)
++  target_sources(shapers PRIVATE
++    harfbuzz.hpp
++    harfbuzz.cpp
++  )
+   target_link_libraries(shapers PRIVATE
+     PkgConfig::HarfBuzz
+   )
+--- a/fontforgeexe/shapers/shaper_shim.cpp
++++ b/fontforgeexe/shapers/shaper_shim.cpp
+@@ -28,7 +28,9 @@
+ 
+ #include "intl.h"
+ #include "builtin.hpp"
++#ifdef ENABLE_HARFBUZZ
+ #include "harfbuzz.hpp"
++#endif
+ 
+ using ff::Tag;
+ 

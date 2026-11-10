@@ -22,8 +22,8 @@ LIBREWOLF_PV="${PV/_p/-}"
 
 # Information about the bundled wasi toolchain from
 # https://github.com/WebAssembly/wasi-sdk/
-WASI_SDK_VER=32.0
-WASI_SDK_LLVM_VER=22
+WASI_SDK_VER=34.0
+WASI_SDK_LLVM_VER=23
 
 HOMEPAGE="https://librewolf.net/"
 

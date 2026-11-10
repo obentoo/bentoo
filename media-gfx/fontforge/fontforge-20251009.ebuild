@@ -16,6 +16,8 @@ EAPI=8
 # BENTOO-DIVERGENCE: RDEPEND - python3_15 added; GUI is gtk+:3 + gtkmm:3.0, X11 libs and libltdl dropped.
 # BENTOO-DIVERGENCE: BDEPEND - python3_15 added; test? pulls the reworked RDEPEND.
 # BENTOO-DIVERGENCE: PATCHES - the three 20230101 patches are upstream in 20251009.
+# BENTOO-DIVERGENCE: PATCHES - harfbuzz-optional: upstream always compiles the
+# HarfBuzz shaper, so USE="gtk -harfbuzz" died on <hb.h> (issue #68).
 # BENTOO-DIVERGENCE: KEYWORDS - bumped past ::gentoo, so overlay baseline ~amd64 only.
 PYTHON_COMPAT=( python3_{11..15} )
 inherit python-single-r1 xdg cmake
@@ -62,6 +64,7 @@ BDEPEND="
 
 PATCHES=(
 	"${FILESDIR}"/fontforge-doc-no-warn-error.patch
+	"${FILESDIR}"/${P}-harfbuzz-optional.patch
 )
 
 pkg_setup() {

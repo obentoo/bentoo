@@ -54,6 +54,9 @@ KEYWORDS="~amd64 ~arm64"
 # neural Read aloud engine (Piper voices, and the Kokoro voices added in 9.16,
 # which run on the same extension) can be offered. Off by default: it pulls in
 # onnxruntime, and the voices themselves are downloaded at first use.
+# Since 9.18 the flag also gates seq2seq, the neural grammar checker's
+# extension: it links the same onnxruntime, so without the flag it is patched
+# out too rather than adding a second flag for one shared dependency.
 #
 # The espeak-ng floor is load-bearing: piper.cpp calls
 # espeak_TextToPhonemesWithTerminator(), absent from every release up to
@@ -208,11 +211,11 @@ PATCHES=(
 )
 
 src_prepare() {
-	# Removes the piper extension from the build (and from the list of
+	# Removes the piper and seq2seq extensions from the build (and from the list of
 	# extensions calibre expects to import), so it is only wanted without
 	# the flag. setup/build_environment.py finds espeak-ng and onnxruntime
 	# through pkg-config otherwise.
-	use piper || PATCHES+=( "${FILESDIR}/${PN}-9.13.0-piper.patch" )
+	use piper || PATCHES+=( "${FILESDIR}/${PN}-9.18.0-piper.patch" )
 
 	default
 
@@ -316,6 +319,7 @@ src_test() {
 		# the extension is patched out without the flag; with it, the test
 		# runs offline (espeak-ng phonemizing, no voice model needed)
 		$(usev !piper piper)
+		$(usev !piper test_seq2seq)
 		# tests if a completely unused module is bundled
 		pycryptodome
 
