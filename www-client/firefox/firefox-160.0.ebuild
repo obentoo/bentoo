@@ -3,7 +3,7 @@
 
 EAPI=8
 
-FIREFOX_PATCHSET="firefox-159-patches-02.tar.xz"
+FIREFOX_PATCHSET="firefox-160-patches-01.tar.xz"
 
 LLVM_COMPAT=( 22 23 )
 
@@ -143,9 +143,7 @@ COMMON_DEPEND="${FF_ONLY_DEPEND}
 	x11-libs/libdrm
 	x11-libs/pango
 	x11-libs/pixman
-	dbus? (
-		sys-apps/dbus
-	)
+	dbus? ( sys-apps/dbus )
 	jack? ( virtual/jack )
 	pulseaudio? (
 		|| (
@@ -1137,7 +1135,7 @@ src_install() {
 
 	# Force hwaccel prefs if USE=hwaccel is enabled
 	if use hwaccel ; then
-		cat "${FILESDIR}"/gentoo-hwaccel-prefs.js-r6 \
+		cat "${FILESDIR}"/gentoo-hwaccel-prefs.js-r7 \
 		>>"${GENTOO_PREFS}" \
 		|| die "failed to add prefs to force hardware-accelerated rendering to all-gentoo.js"
 

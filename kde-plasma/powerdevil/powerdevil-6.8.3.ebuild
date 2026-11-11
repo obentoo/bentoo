@@ -1,12 +1,12 @@
 # Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
-# ::gentoo's 6.8.2 plus one patch, which makes powerdevil redetect monitors
+# ::gentoo's 6.8.3 plus one patch, which makes powerdevil redetect monitors
 # whose DDC/CI was not ready yet when it started (seen at login on an HDMI
 # monitor): libddcutil marks them invalid and never rechecks them, so
 # brightness control is lost for the whole session. Still needed on upstream
-# master as of 2026-10-08, and it applies cleanly to 6.8.2 (checked
-# 2026-10-27). The patch name carries no version on purpose: the
+# master as of 2026-10-08, and it applies cleanly to 6.8.3 (checked
+# 2026-11-11). The patch name carries no version on purpose: the
 # autoupdate applier never renames files/, so a versioned name breaks a bump.
 # BENTOO-DIVERGENCE: PATCHES - redetect monitors whose DDC/CI was not ready at startup.
 
