@@ -645,6 +645,16 @@ src_configure() {
 		# package does not configure at all.
 		-DWITH_DRACO="yes"
 		-DWITH_MESHOPTIMIZER="yes"
+		# 5.3 added three options that default ON and that
+		# WITH_STRICT_BUILD_OPTIONS turns into find_package(... REQUIRED), so
+		# configure died without them:
+		# - WITH_JOLT (Jolt Physics): no package exists; physics stays on Bullet.
+		# - WITH_KTX (KTX textures for the glTF add-on): no package exists.
+		# - WITH_OPENTIMELINEIO (sequencer OTIO): media-libs/opentimelineio
+		#   exists, but a USE flag for it is untested here; off until it is.
+		-DWITH_JOLT="no"
+		-DWITH_KTX="no"
+		-DWITH_OPENTIMELINEIO="no"
 
 		# Modifiers:
 		-DWITH_MOD_FLUID="$(usex fluid)"
