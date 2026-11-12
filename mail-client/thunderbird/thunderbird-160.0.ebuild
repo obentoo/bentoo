@@ -3,7 +3,7 @@
 
 EAPI=8
 
-FIREFOX_PATCHSET="firefox-159-patches-01t.tar.xz"
+FIREFOX_PATCHSET="firefox-160-patches-02.tar.xz"
 
 LLVM_COMPAT=( 22 23 )
 
@@ -539,10 +539,8 @@ src_prepare() {
 	# Clear checksums from cargo crates we've manually patched.
 	# moz_clear_vendor_checksums xyz
 	moz_clear_vendor_checksums bindgen
-	# TB-specific:
-	sed -i \
-		-e 's/\("files":{\)[^}]*/\1/' \
-		"${S}"/comm/third_party/rust/bindgen/.cargo-checksum.json || die
+	# BENTOO: 160 no longer vendors bindgen under comm/, so the TB-specific
+	# checksum clearing (and the t0001 patch it served) are gone.
 
 	# Create build dir
 	BUILD_DIR="${WORKDIR}/${PN}_build"
