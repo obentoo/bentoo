@@ -86,7 +86,7 @@ CRATES="
 	fuzzy-matcher@0.3.7
 	getrandom@0.4.3
 	globset@0.4.21
-	granit-parser@2.0.0
+	granit-parser@2.1.0
 	hashbrown@0.14.5
 	hashbrown@0.17.1
 	heck@0.5.0
@@ -167,7 +167,7 @@ CRATES="
 	schemars_derive@1.2.3
 	scopeguard@1.2.0
 	semver@1.0.28
-	serde-saphyr@2.0.0
+	serde-saphyr@2.1.1
 	serde-sarif@0.8.0
 	serde-value@0.7.0
 	serde-wasm-bindgen@0.6.5
@@ -185,7 +185,7 @@ CRATES="
 	simdutf8@0.1.5
 	similar@3.2.1
 	slab@0.4.12
-	smallvec@1.16.4
+	smallvec@1.16.5
 	streaming-iterator@0.1.9
 	strict@0.2.0
 	strsim@0.11.1
@@ -211,10 +211,10 @@ CRATES="
 	tokio-stream@0.1.19
 	tokio-util@0.7.20
 	tokio@1.54.1
-	toml_datetime@1.1.2+spec-1.1.0
-	toml_edit@0.25.17+spec-1.1.0
+	toml_datetime@1.1.3+spec-1.1.0
+	toml_edit@0.25.19+spec-1.1.0
 	toml_parser@1.1.5+spec-1.1.0
-	toml_writer@1.1.3+spec-1.1.0
+	toml_writer@1.2.0+spec-1.1.0
 	tower-layer@0.3.3
 	tower-lsp-server@0.23.0
 	tower-service@0.3.3
@@ -247,13 +247,13 @@ CRATES="
 	tree-sitter-python@0.25.0
 	tree-sitter-ruby@0.23.1
 	tree-sitter-rust@0.24.2
-	tree-sitter-scala@0.26.4
+	tree-sitter-scala@0.26.10
 	tree-sitter-solidity@1.2.13
 	tree-sitter-swift@0.7.4
 	tree-sitter-typescript@0.23.2
 	tree-sitter-yaml@0.7.2
 	tree-sitter-zig@1.1.2
-	tree-sitter@0.27.1
+	tree-sitter@0.27.2
 	typed-builder-macro@0.21.2
 	typed-builder@0.21.2
 	unicode-ident@1.0.24
