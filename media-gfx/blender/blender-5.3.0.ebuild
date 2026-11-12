@@ -360,7 +360,6 @@ PATCHES=(
 	"${FILESDIR}/${PN}-4.1.1-FindLLVM.patch"
 	"${FILESDIR}/${PN}-4.3.2-system-glog.patch"
 	"${FILESDIR}/${PN}-5.1.0-eigen-3.4-jacobiSvd.patch"
-	"${FILESDIR}/${PN}-5.2.1-cycles-explicit-instantiation.patch"
 	# OpenVDB 14 removed delayed loading and the io::File::open() argument.
 	"${FILESDIR}/${PN}-5.2.3-openvdb-14.patch"
 )
