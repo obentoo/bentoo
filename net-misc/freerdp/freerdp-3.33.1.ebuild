@@ -112,14 +112,6 @@ RDEPEND="${COMMON_DEPEND}
 	smartcard? ( app-crypt/p11-kit )
 "
 
-# BENTOO-DIVERGENCE: PATCHES - the upstream 1b67e1ef6e backport below; ::gentoo's
-# 3.32.2 predates the bug.
-PATCHES=(
-	# Upstream 1b67e1ef6e: the SDL3 event guard named 3.4.20, which lacks
-	# these events; drop when the next release ships it.
-	"${FILESDIR}"/${P}-sdl3-version-guard.patch
-)
-
 option() {
 	usex "$1" ON OFF
 }

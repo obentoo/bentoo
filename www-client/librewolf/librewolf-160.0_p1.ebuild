@@ -1011,7 +1011,7 @@ src_configure() {
 		# Avoid compressing just-built instrumented Firefox with
 		# high levels of compression. Just use tar as a container
 		# to save >=10 minutes.
-		export MOZ_PKG_FORMAT=tar
+		export MOZ_PKG_FORMAT=TAR
 
 		if use clang ; then
 			# Used in build/pgo/profileserver.py
