@@ -19,10 +19,10 @@ LICENSE="MIT"
 SLOT="0"
 KEYWORDS="~amd64"
 IUSE="+secure kde +browser +system-snapshot systemd"
-# go.mod declares go 1.27.0 with toolchain go1.27.3, but the Go that builds
-# this package decides the standard library it links: 1.27.2 carries
-# GO-2026-6809 (crypto/x509), fixed in 1.27.3.
-BDEPEND=">=dev-lang/go-1.27.3"
+# go.mod declares go 1.27.0 with toolchain go1.27.4, but the Go that builds
+# this package decides the standard library it links: 1.27.3 carries
+# GO-2026-6859 (net/http), fixed in 1.27.4.
+BDEPEND=">=dev-lang/go-1.27.4"
 
 # browser? enables the chromedp backend, which drives an already-installed
 # Chrome/Chromium over the DevTools Protocol (it does not download a browser).
