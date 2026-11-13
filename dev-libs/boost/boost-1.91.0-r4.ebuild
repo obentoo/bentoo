@@ -68,6 +68,8 @@ PATCHES=(
 	"${FILESDIR}"/${PN}-1.91.0-spirit-test.patch
 	"${FILESDIR}"/${PN}-1.91.0-uninitialised-buffer.patch
 	"${FILESDIR}"/${PN}-1.91.0-wave-test-cfg.patch
+	# https://github.com/boostorg/container/issues/334
+	"${FILESDIR}"/${PN}-1.91.0-fix-transparent-insert-overload.patch
 )
 
 create_user-config.jam() {
