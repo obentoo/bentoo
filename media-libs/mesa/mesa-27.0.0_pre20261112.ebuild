@@ -378,7 +378,9 @@ pkg_setup() {
 
 # BENTOO-DIVERGENCE: PATCHES - astc-spirv1.2, a build fix for glslang
 # enforcing SPIR-V 1.2 on the ASTC decoder shader; python-close-generated-files,
-# a build fix for Python 3.15. Drop each when upstream carries it.
+# a build fix for Python 3.15; util-rust-bindgen-wrapper-include, a build fix
+# for the Rust util crate with an out-of-tree build directory. Drop each when
+# upstream carries it.
 PATCHES=(
 	# Build fix: the ASTC decoder shader needs SPIR-V 1.2, which glslang
 	# started enforcing in 2026-08.  Drop when upstream carries it.
@@ -387,6 +389,14 @@ PATCHES=(
 	# and under Python 3.15 intel_perf_metrics.{c,h} come out truncated
 	# with exit 0.  Drop when upstream closes the files itself.
 	"${FILESDIR}"/${PN}-python-close-generated-files.patch
+	# Build fix: the bindgen wrapper util_bindings.c includes its header by
+	# a path relative to the build root, which the target compiling it
+	# does not have on its include path.  Only resolves by accident when
+	# the build directory sits inside the source tree; Portage's does not.
+	# Hits every Rust consumer (USE=opencl, VIDEO_CARDS=nvk).  Upstream
+	# since 9fc5a89863 (2026-11-11); drop when upstream adds the build root
+	# itself -- the patch stops applying then.
+	"${FILESDIR}"/${PN}-util-rust-bindgen-wrapper-include.patch
 )
 
 src_prepare() {

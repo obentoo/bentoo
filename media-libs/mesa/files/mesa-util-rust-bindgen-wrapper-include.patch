@@ -1,0 +1,37 @@
+util/rust: resolve the bindgen wrapper's include from the build root
+
+bindgen writes the wrapper for static inline functions (util_bindings.c)
+with an #include of its input header spelled relative to the directory it
+ran in, which is the build root:
+
+    #include "../mesa-<sha>/src/util/rust/util_bindgen.h"
+
+The static_library() compiling that wrapper only passes inc_util, so the
+path resolves only by accident: with a build directory inside the source
+tree it is "../src/util/rust/util_bindgen.h", and "<src>/include/.." happens
+to be the source root.  With the build directory beside the source tree, as
+Portage lays it out, nothing on the include path has the build root's
+parent as its own parent and the compile dies with "No such file or
+directory".
+
+Every other output_inline_wrapper user in the tree (compiler/rust, nvk,
+rusticl, kraid) already adds the build root to the wrapper's include
+directories.  Do the same here.
+
+Introduced by 9fc5a89863 ("util/rust: Add bindgen for
+pipe_format/util_format_*."), 2026-11-11.  Not upstream as of cca2fd7f.
+
+--- a/src/util/rust/meson.build
++++ b/src/util/rust/meson.build
+@@ -54,7 +54,10 @@
+ libutil_rust_bindgen_c = static_library(
+   'util_rust_bindgen_c',
+   _util_rust_bindgen[1],
+-  include_directories : inc_util,
++  include_directories : [
++    fs.relative_to(meson.project_build_root(), meson.current_source_dir()),
++    inc_util,
++  ],
+   dependencies : [
+     idep_mesautil.partial_dependency(compile_args : true, includes : true,
+                                      sources : true),
