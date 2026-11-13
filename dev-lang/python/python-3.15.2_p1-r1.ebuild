@@ -7,6 +7,7 @@ EAPI="8"
 # BENTOO-DIVERGENCE: IUSE_DEFAULTS - llvm-r2 defaults to the newest stable slot in LLVM_COMPAT, now 22.
 # BENTOO-DIVERGENCE: REQUIRED_USE - the jit? ( ^^ ( llvm_slot_* ) ) group follows LLVM_COMPAT.
 # BENTOO-DIVERGENCE: BDEPEND - clang/llvm :22 and :23 join :21 under jit?, from LLVM_COMPAT.
+# BENTOO-DIVERGENCE: PATCHES - python/cpython#160853 (JIT stop_tracing re-read), closed unmerged upstream.
 # Upstream pins LLVM 21 in Tools/jit/_llvm.py and only warns ("Building with
 # an LLVM version other than 21 is not supported") when LLVM_VERSION names
 # another one; src_configure passes the chosen slot. CPython 3.15.2's JIT
@@ -201,6 +202,11 @@ src_prepare() {
 
 	local PATCHES=(
 		"${WORKDIR}/${PATCHSET}"
+		# BENTOO: python/cpython#160853, closed unmerged (JIT work on hold
+		# upstream). Without it USE=jit segfaults in _PyJIT_Entry(NULL),
+		# e.g. Mozilla's packager.py at "mach install". A no-op in builds
+		# without the JIT: the label is compiled out.
+		"${FILESDIR}"/${PN}-3.15.2-jit-stop-tracing-reread.patch
 	)
 
 	default
