@@ -17,9 +17,9 @@ CRATES="
 	adler2@2.0.1
 	adler32@1.2.0
 	aes@0.8.4
-	agent-client-protocol-derive@5.0.0
-	agent-client-protocol-schema@1.15.1
-	agent-client-protocol@5.0.0
+	agent-client-protocol-derive@5.1.0
+	agent-client-protocol-schema@1.16.0
+	agent-client-protocol@5.1.0
 	ahash@0.8.12
 	aho-corasick@1.1.3
 	aliasable@0.1.3
@@ -54,7 +54,6 @@ CRATES="
 	ascii@1.1.0
 	ash@0.38.0+1.3.281
 	ashpd@0.13.5
-	async-attributes@1.1.2
 	async-broadcast@0.7.2
 	async-channel@1.9.0
 	async-channel@2.5.0
@@ -89,8 +88,8 @@ CRATES="
 	avif-serialize@0.8.6
 	aws-config@1.8.14
 	aws-credential-types@1.2.12
-	aws-lc-rs@1.18.1
-	aws-lc-sys@0.45.0
+	aws-lc-rs@1.19.0
+	aws-lc-sys@0.47.0
 	aws-runtime@1.7.0
 	aws-sdk-bedrockruntime@1.125.0
 	aws-sdk-kinesis@1.100.0
@@ -159,7 +158,7 @@ CRATES="
 	byteorder@1.5.0
 	bytes-utils@0.1.4
 	bytes@0.4.12
-	bytes@1.11.1
+	bytes@1.12.1
 	bzip2@0.6.1
 	c-enum@0.2.3
 	cached@0.56.0
@@ -561,8 +560,9 @@ CRATES="
 	jsonschema-value@0.51.0
 	jsonschema@0.51.0
 	jsonwebtoken@10.3.0
-	jupyter-protocol@1.4.0
-	jupyter-websocket-client@1.1.0
+	jupyter-protocol@2.0.3
+	jupyter-websocket-client@3.0.1
+	jupyter-zmq-client@3.0.1
 	khronos_api@3.1.0
 	kqueue-sys@1.1.2
 	kqueue@1.2.0
@@ -655,7 +655,7 @@ CRATES="
 	multimap@0.8.3
 	nanoid@0.4.0
 	native-tls@0.2.18
-	nbformat@1.2.0
+	nbformat@3.0.0
 	ndk-context@0.1.1
 	ndk-sys@0.6.0+11769913
 	ndk@0.9.0
@@ -917,7 +917,6 @@ CRATES="
 	rsa@0.9.10
 	rtoolbox@0.0.3
 	rtrb@0.3.5
-	runtimelib@1.4.0
 	rust-embed-impl@8.11.0
 	rust-embed-utils@8.11.0
 	rust-embed@8.11.0
@@ -942,9 +941,9 @@ CRATES="
 	rustybuzz@0.20.1
 	ryu-js@1.0.2
 	ryu@1.0.23
-	saa@5.4.9
+	saa@5.6.2
 	same-file@1.0.6
-	scc@3.5.6
+	scc@3.8.8
 	schannel@0.1.28
 	schemars@0.9.0
 	schemars@1.0.4
@@ -953,7 +952,7 @@ CRATES="
 	scopeguard@1.2.0
 	scroll@0.12.0
 	scroll_derive@0.12.1
-	sdd@4.6.2
+	sdd@4.8.11
 	sea-bae@0.2.2
 	sea-orm-macros@1.1.10
 	sea-orm@1.1.10
@@ -1121,7 +1120,7 @@ CRATES="
 	tokio-tungstenite@0.20.1
 	tokio-tungstenite@0.28.0
 	tokio-util@0.7.18
-	tokio@1.52.1
+	tokio@1.54.1
 	toml@0.5.11
 	toml@0.8.23
 	toml@0.9.8
@@ -1429,7 +1428,7 @@ CRATES="
 	zerofrom@0.1.6
 	zeroize@1.8.2
 	zeroize_derive@1.4.2
-	zeromq@0.5.0
+	zeromq@0.7.0
 	zerotrie@0.2.5
 	zerovec-derive@0.11.5
 	zerovec@0.11.8
