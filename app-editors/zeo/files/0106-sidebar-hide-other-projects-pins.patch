@@ -1,0 +1,149 @@
+From 17fe89af14d10bb26419629d42774bee3e0785b9 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Fri, 13 Nov 2026 19:05:27 -0300
+Subject: [PATCH] sidebar: another project's pins stay out of its group
+
+Zeo 0.10.3, the operator's correction to 0103: with two projects in a
+window, switching from A to B listed A's project pins again as ordinary
+rows of A's group, because only the active project's pins were taken
+out of the groups. An inactive project's group must list only its
+unpinned threads.
+
+Every project pin now leaves the groups, whichever project it belongs
+to. The Pinned section still lists only the active project's pins, so
+another project's pins are hidden until that project is active again.
+The group that would have listed one still claims it, so a group whose
+threads are all pinned keeps counting as having threads, and its
+notification dot ignores the hidden pins as it ignores the listed ones.
+
+Tests: sidebar_pinned_tests::project_pins::a_project_pin_shows_its_
+section_only_while_its_project_is_active now has an unpinned thread in
+each project and asserts the other project's pin has no row (Red seen
+on the 0103 code: the pin was still a group row); package(sidebar)
+368/368.
+---
+ crates/sidebar/src/project_pins.rs            |  3 ++-
+ crates/sidebar/src/sidebar.rs                 | 21 ++++++++++------
+ .../sidebar/src/sidebar_project_pins_tests.rs | 24 +++++++++++++++----
+ 3 files changed, 35 insertions(+), 13 deletions(-)
+
+diff --git a/crates/sidebar/src/project_pins.rs b/crates/sidebar/src/project_pins.rs
+index 92c7285..0182f26 100644
+--- a/crates/sidebar/src/project_pins.rs
++++ b/crates/sidebar/src/project_pins.rs
+@@ -5,7 +5,8 @@
+ //! The pin and its order are `0048`'s; the scope is `ThreadPinScopeStore`'s. A project pin of
+ //! the active project is left out of its group and of the global section
+ //! (`pinned_section::pinned_thread_ids`) and listed by [`active_project_pin_ids`]. A project pin
+-//! of any other project stays an ordinary row of its group until that project is the active one.
++//! of any other project is hidden — out of its group too — until that project is the active one
++//! (Zeo 0.10.3).
+ 
+ use agent_ui::ThreadId;
+ use agent_ui::thread_metadata_store::ThreadMetadataStore;
+diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
+index 975b047..c67f56e 100644
+--- a/crates/sidebar/src/sidebar.rs
++++ b/crates/sidebar/src/sidebar.rs
+@@ -1854,7 +1854,9 @@ impl Sidebar {
+ 
+         let global_pin_ids = pinned_section::pinned_thread_ids(cx);
+         // Zeo next §6.5: the active project's pins get a section of their own, above the
+-        // global one. A project pin of any other project stays a row of its group.
++        // global one. A project pin of any other project is hidden until its project is the
++        // active one (Zeo 0.10.3, the operator's correction: an inactive project's group lists
++        // only its unpinned threads).
+         let active_group_key = active_workspace.as_ref().and_then(|active| {
+             groups
+                 .iter()
+@@ -1867,11 +1869,16 @@ impl Sidebar {
+             .chain(&global_pin_ids)
+             .copied()
+             .collect();
+-        // Pinned threads are listed in their own section, so every group path skips them. The
+-        // first group that would have listed one claims it, as an unpinned thread is listed by the
+-        // first group that finds it, so that group still counts as having threads.
+-        seen_thread_ids.extend(&pinned_ids);
+-        let mut unclaimed_pinned_ids: HashSet<ThreadId> = pinned_ids.iter().copied().collect();
++        // Every pinned thread leaves the groups: the listed ones for their section, the other
++        // projects' pins until their project is active. The first group that would have listed
++        // one claims it, as an unpinned thread is listed by the first group that finds it, so
++        // that group still counts as having threads.
++        let group_hidden_ids: HashSet<ThreadId> = project_pins::project_pin_order(cx)
++            .into_iter()
++            .chain(pinned_ids.iter().copied())
++            .collect();
++        seen_thread_ids.extend(&group_hidden_ids);
++        let mut unclaimed_pinned_ids = group_hidden_ids.clone();
+ 
+         for group in &groups {
+             let group_key = &group.key;
+@@ -2400,7 +2407,7 @@ impl Sidebar {
+                     // notification; this header reports only the rows it would show.
+                     group_thread_ids
+                         .iter()
+-                        .filter(|id| !pinned_ids.contains(id))
++                        .filter(|id| !group_hidden_ids.contains(id))
+                         .any(|id| notified_threads.contains(id))
+                 } else {
+                     threads
+diff --git a/crates/sidebar/src/sidebar_project_pins_tests.rs b/crates/sidebar/src/sidebar_project_pins_tests.rs
+index 2d2dc4c..8bc7227 100644
+--- a/crates/sidebar/src/sidebar_project_pins_tests.rs
++++ b/crates/sidebar/src/sidebar_project_pins_tests.rs
+@@ -70,15 +70,18 @@ async fn the_default_pin_is_the_projects_and_its_section_sits_above_the_global_o
+     assert!(global_header < mid_ix);
+ }
+ 
+-/// Hostile: a project pin of a project that is not the active one is in no Pinned section; it
+-/// stays a row of its own group, and moves to the section once its project is active.
++/// Hostile: a project pin of a project that is not the active one is in no Pinned section and
++/// in no group either (Zeo 0.10.3, the operator's correction: the inactive project's group lists
++/// only its unpinned threads); it shows again, in the section, once its project is active.
+ #[gpui::test]
+ async fn a_project_pin_shows_its_section_only_while_its_project_is_active(cx: &mut TestAppContext) {
+     let (fs, multi_workspace, sidebar, cx) = alpha_window(cx).await;
+     let alpha = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+     let in_alpha = save_in("a1", "Fix login", ALPHA, 1, cx);
++    let alpha_free = save_in("a2", "Tidy docs", ALPHA, 2, cx);
+     let beta = open_in_window(BETA, &fs, &multi_workspace, cx).await;
+     let in_beta = save_in("b1", "Ship release", BETA, 1, cx);
++    let beta_free = save_in("b2", "Bump deps", BETA, 2, cx);
+     cx.run_until_parked();
+ 
+     sidebar.update(cx, |sidebar, cx| {
+@@ -90,9 +93,13 @@ async fn a_project_pin_shows_its_section_only_while_its_project_is_active(cx: &m
+     // Opening BETA made it the active project.
+     assert_eq!(pinned_headers(&sidebar, cx).len(), 1);
+     let _ = pinned_row_ix(&sidebar, in_beta, cx);
+-    let _ = group_row_ix(&sidebar, in_alpha, cx);
+-    assert_eq!(rows_of(&sidebar, in_alpha, cx), 1);
++    assert_eq!(
++        rows_of(&sidebar, in_alpha, cx),
++        0,
++        "hidden while ALPHA is not active"
++    );
+     assert_eq!(rows_of(&sidebar, in_beta, cx), 1);
++    let _ = group_row_ix(&sidebar, alpha_free, cx);
+ 
+     multi_workspace.update_in(cx, |mw, window, cx| {
+         mw.activate(alpha.clone(), None, window, cx)
+@@ -100,7 +107,14 @@ async fn a_project_pin_shows_its_section_only_while_its_project_is_active(cx: &m
+     cx.run_until_parked();
+     assert_eq!(pinned_headers(&sidebar, cx).len(), 1);
+     let _ = pinned_row_ix(&sidebar, in_alpha, cx);
+-    let _ = group_row_ix(&sidebar, in_beta, cx);
++    assert_eq!(rows_of(&sidebar, in_alpha, cx), 1);
++    assert_eq!(
++        rows_of(&sidebar, in_beta, cx),
++        0,
++        "hidden while BETA is not active"
++    );
++    let _ = group_row_ix(&sidebar, beta_free, cx);
++    let _ = group_row_ix(&sidebar, alpha_free, cx);
+     drop(beta);
+ }
+ 
+-- 
+2.56.1
+

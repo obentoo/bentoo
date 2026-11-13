@@ -2210,6 +2210,8 @@ src_prepare() {
 			# 0105 (Zeo 0.10.2): the sub-thread menu entries are "Fork to a sub-thread"
 			# and "Open to a new sub-thread". Labels only. On 0070.
 			"${FILESDIR}/0105-agent-ui-sub-thread-menu-labels.patch"
+			# 0106 (Zeo 0.10.3): another project's pins stay out of its group. On 0103.
+			"${FILESDIR}/0106-sidebar-hide-other-projects-pins.patch"
 		)
 	fi
 
