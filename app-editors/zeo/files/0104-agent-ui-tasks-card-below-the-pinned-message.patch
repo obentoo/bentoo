@@ -1,0 +1,172 @@
+From 750126a6fb7aae3ea80c176496f2070ce44ec0b9 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 13 Nov 2026 16:12:24 -0300
+Subject: [PATCH] agent_ui: the tasks card sits below the pinned user message
+
+Zeo 0.10.2, from the operator's session on 0.10.1. The tasks card's
+free area is the conversation's viewport (0037, 0088), and 0102's
+pinned user message floats over the top of that same viewport, so in
+its top corners the card was drawn over the header.
+
+What floats over the top of the conversation now says where it ends:
+ThreadView::top_overlay_bottom, a cell the overlay writes at prepaint
+from its own bounds -- its height is only known there: minimized,
+expanded, or wrapped at the panel's width -- and render clears before
+the overlay is built again, so a header that is gone leaves nothing
+behind. The panel's free-area closure runs in the card's deferred
+prepaint, after the thread's, and takes that strip off the top through
+tasks_card::below_top_overlay, clamped to the area so a stray value
+can never move the card over the toolbar or the editor.
+
+The mechanism is not the pinned message's: any later overlay at the
+top of a conversation -- the operator named a sub-thread's bar -- sets
+the same cell.
+
+Tests: tasks_card::placement (the free area starts below an overlay at
+its top; an overlay outside the area never moves it out). Seen failing
+with the clamp replaced by a plain minimum.
+---
+
+diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
+index c73a080..d0ba7e9 100644
+--- a/crates/agent_ui/src/agent_panel.rs
++++ b/crates/agent_ui/src/agent_panel.rs
+@@ -5040,7 +5040,11 @@ impl AgentPanel {
+                 // header bars and the callouts and editor stacked under it.
+                 let viewport = thread_view.list_state.viewport_bounds();
+                 if !viewport.is_empty() {
+-                    return viewport;
++                    // Minus whatever floats over the viewport's top in this frame.
++                    return crate::tasks_card::below_top_overlay(
++                        viewport,
++                        thread_view.top_overlay_bottom.get(),
++                    );
+                 }
+             } else if let Some(editor) = thread_view
+                 .message_editor
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index a74bc20..a9f50ce 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -815,6 +815,10 @@ pub struct ThreadView {
+     /// The pinned user message shown whole, by entry index (Zeo next §6.3); any other pinned
+     /// message shows minimized.
+     pinned_message_expanded: Option<usize>,
++    /// The bottom edge, in window coordinates, of whatever floats over the top of the
++    /// conversation in the frame being drawn -- today the pinned user message -- or `None`.
++    /// Written at prepaint by the overlay itself; the tasks card reads it to sit below.
++    pub(crate) top_overlay_bottom: std::rc::Rc<std::cell::Cell<Option<Pixels>>>,
+     pub _cancel_task: Option<Task<()>>,
+     _save_task: Option<Task<()>>,
+     _draft_resolve_task: Option<Task<()>>,
+@@ -1359,6 +1363,7 @@ impl ThreadView {
+             question_card_minimized: false,
+             auto_scroll_paused_at: None,
+             pinned_message_expanded: None,
++            top_overlay_bottom: Default::default(),
+             _cancel_task: None,
+             _save_task: None,
+             _draft_resolve_task: None,
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
+index d01a3ea..9e5c4d6 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
+@@ -7,7 +7,7 @@
+ //! message; the chevron expands it in place.
+ 
+ use acp_thread::AgentThreadEntry;
+-use gpui::{AnyElement, Context, ListOffset, px};
++use gpui::{AnyElement, Context, ListOffset, canvas, px};
+ use ui::{IconButton, IconName, IconSize, Label, LabelSize, Tooltip, prelude::*};
+ 
+ use super::ThreadView;
+@@ -40,6 +40,8 @@ pub(super) fn first_line(text: &str) -> &str {
+ 
+ impl ThreadView {
+     pub(super) fn render_pinned_user_message(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
++        // Nothing floats over the top until the header below is prepainted again.
++        self.top_overlay_bottom.set(None);
+         let thread = self.thread.read(cx);
+         let entries = thread.entries();
+         let ix = pinned_user_message_ix(
+@@ -127,6 +129,20 @@ impl ThreadView {
+                                 })),
+                         ),
+                 )
++                // The header reports where it ends, so what shares the top of the conversation
++                // with it -- the tasks card -- sits below instead of over it. Its height is
++                // only known here: minimized, expanded, or wrapped at the panel's width.
++                .child({
++                    let top_overlay_bottom = self.top_overlay_bottom.clone();
++                    canvas(
++                        move |bounds, _, _| top_overlay_bottom.set(Some(bounds.bottom())),
++                        |_, _, _, _| {},
++                    )
++                    .absolute()
++                    .top_0()
++                    .left_0()
++                    .size_full()
++                })
+                 .into_any_element(),
+         )
+     }
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index 8276b67..9399eef 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -3035,6 +3035,20 @@ fn card_tooltip(
+     }
+ }
+ 
++/// `area` without the strip an overlay takes at its top: the thread's pinned user message
++/// floats over the first lines of the conversation, and the card shares that corner. An
++/// overlay that ends above the area, or past its bottom, never moves the area outside itself.
++pub(crate) fn below_top_overlay(
++    area: Bounds<Pixels>,
++    overlay_bottom: Option<Pixels>,
++) -> Bounds<Pixels> {
++    let Some(overlay_bottom) = overlay_bottom else {
++        return area;
++    };
++    let top = overlay_bottom.clamp(area.top(), area.bottom());
++    Bounds::from_corners(point(area.left(), top), area.bottom_right())
++}
++
+ /// Places the tasks card in its corner of the free area of the agent panel.
+ ///
+ /// The free area is only known once the panel's content has been laid out — the
+diff --git a/crates/agent_ui/src/tasks_card/placement_tests.rs b/crates/agent_ui/src/tasks_card/placement_tests.rs
+index f8b3ea1..40f86bb 100644
+--- a/crates/agent_ui/src/tasks_card/placement_tests.rs
++++ b/crates/agent_ui/src/tasks_card/placement_tests.rs
+@@ -239,3 +239,30 @@ async fn test_the_card_keeps_clear_of_a_child_threads_titlebar(cx: &mut TestAppC
+         );
+     }
+ }
++
++// ── The pinned user message (Zeo 0.10.2) ───────────────────────────────────
++
++fn area() -> Bounds<Pixels> {
++    Bounds::new(gpui::point(px(10.), px(100.)), size(px(300.), px(400.)))
++}
++
++#[test]
++fn the_free_area_starts_below_an_overlay_at_its_top() {
++    let below = crate::tasks_card::below_top_overlay(area(), Some(px(130.)));
++    assert_eq!(below.top(), px(130.));
++    assert_eq!(below.bottom(), area().bottom());
++    assert_eq!(below.left(), area().left());
++    assert_eq!(below.size.width, area().size.width);
++    assert_eq!(crate::tasks_card::below_top_overlay(area(), None), area());
++}
++
++/// Hostile: an overlay reported above the area or past its end never moves the area outside
++/// itself, so the card cannot be laid out over the toolbar or the editor.
++#[test]
++fn an_overlay_outside_the_area_never_moves_it_out() {
++    let above = crate::tasks_card::below_top_overlay(area(), Some(px(40.)));
++    assert_eq!(above, area());
++    let past = crate::tasks_card::below_top_overlay(area(), Some(px(900.)));
++    assert_eq!(past.top(), area().bottom());
++    assert_eq!(past.size.height, px(0.));
++}

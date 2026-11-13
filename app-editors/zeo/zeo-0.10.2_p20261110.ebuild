@@ -2204,6 +2204,12 @@ src_prepare() {
 			# default, or globally; the active project's pins have a Pinned section
 			# above the global one (Zeo 0.10.1). On 0048, 0049, 0096.
 			"${FILESDIR}/0103-sidebar-pins-per-project.patch"
+			# 0104 (Zeo 0.10.2): the tasks card sits below the pinned user message.
+			# On 0037, 0088 and 0102.
+			"${FILESDIR}/0104-agent-ui-tasks-card-below-the-pinned-message.patch"
+			# 0105 (Zeo 0.10.2): the sub-thread menu entries are "Fork to a sub-thread"
+			# and "Open to a new sub-thread". Labels only. On 0070.
+			"${FILESDIR}/0105-agent-ui-sub-thread-menu-labels.patch"
 		)
 	fi
 

@@ -1,0 +1,88 @@
+From eae47b2a873b6c4f1fdef2606b6c1587abcbc123 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 13 Nov 2026 16:12:24 -0300
+Subject: [PATCH] agent_ui: the sub-thread menu entries say what they do
+
+Zeo 0.10.2, on the operator's request: in an agent message's context
+menu (0070), "Sub-thread with context" becomes "Fork to a sub-thread"
+and "Clean sub-thread" becomes "Open to a new sub-thread". Labels
+only; ForkKind, the log values and the behaviour are unchanged.
+
+Tests: sub_thread_tests::menu, ::menu_subagent and ::header follow the
+new labels.
+---
+
+diff --git a/crates/agent_ui/src/sub_thread/message_menu.rs b/crates/agent_ui/src/sub_thread/message_menu.rs
+index 5966c0c..0e18ef6 100644
+--- a/crates/agent_ui/src/sub_thread/message_menu.rs
++++ b/crates/agent_ui/src/sub_thread/message_menu.rs
+@@ -12,10 +12,10 @@ use crate::thread_organization::ForkKind;
+ /// R1.6's tooltip, shown beside the disabled entry the way upstream's menus explain theirs.
+ const WAIT_FOR_TURN: &str = "Wait for the turn to end";
+ 
+-/// Adds "Clean sub-thread" and, when the agent can fork a session and open the fork, "Sub-thread
+-/// with context" after a separator. `offers_sub_threads` is the caller's word that the menu belongs
+-/// to an agent's message (not a thinking block, R1.5); `excerpt` is the selection, as Markdown when
+-/// it has some. Anything else leaves the menu as it was (R1.4, R1.7).
++/// Adds "Open to a new sub-thread" and, when the agent can fork a session and open the fork,
++/// "Fork to a sub-thread" after a separator. `offers_sub_threads` is the caller's word that the
++/// menu belongs to an agent's message (not a thinking block, R1.5); `excerpt` is the selection,
++/// as Markdown when it has some. Anything else leaves the menu as it was (R1.4, R1.7).
+ pub(crate) fn menu_entries(
+     menu: ContextMenu,
+     thread_view: &Entity<ThreadView>,
+@@ -45,9 +45,9 @@ pub(crate) fn menu_entries(
+         })
+     };
+     menu.separator()
+-        .item(entry("Clean sub-thread", ForkKind::Clean))
++        .item(entry("Open to a new sub-thread", ForkKind::Clean))
+         .when(offers_fork, |menu| {
+-            let fork = entry("Sub-thread with context", ForkKind::WithContext);
++            let fork = entry("Fork to a sub-thread", ForkKind::WithContext);
+             menu.item(if turn_running {
+                 fork.disabled(true)
+                     .documentation_aside(DocumentationSide::Left, |_| {
+diff --git a/crates/agent_ui/src/sub_thread_tests/header.rs b/crates/agent_ui/src/sub_thread_tests/header.rs
+index 7da88f6..be86cc3 100644
+--- a/crates/agent_ui/src/sub_thread_tests/header.rs
++++ b/crates/agent_ui/src/sub_thread_tests/header.rs
+@@ -74,7 +74,7 @@ async fn header_hostile_the_count_is_taken_at_the_moment_of_the_fork(cx: &mut Te
+     let parent = open_parent(&h, vec![agent_says(REPLY)], &mut cx);
+     select_word("message-content-1-0-0", &mut cx);
+     right_click("message-content-1-0-0", &mut cx);
+-    click_menu("Sub-thread with context", &mut cx);
++    click_menu("Fork to a sub-thread", &mut cx);
+     let child = active_id(&h, &cx);
+     assert!(
+         painted(&counted_band(2, PARENT_TITLE), &mut cx),
+diff --git a/crates/agent_ui/src/sub_thread_tests/menu.rs b/crates/agent_ui/src/sub_thread_tests/menu.rs
+index 2cde5b3..397066c 100644
+--- a/crates/agent_ui/src/sub_thread_tests/menu.rs
++++ b/crates/agent_ui/src/sub_thread_tests/menu.rs
+@@ -31,8 +31,8 @@ use agent_client_protocol::v1::schema as acp_v1;
+ 
+ const REPLY: &str = "**Quincunx**";
+ const LEAF: &str = "message-content-1-0-0";
+-const CLEAN: &str = "Clean sub-thread";
+-const FORK: &str = "Sub-thread with context";
++const CLEAN: &str = "Open to a new sub-thread";
++const FORK: &str = "Fork to a sub-thread";
+ 
+ fn forking() -> StubAgentConnection {
+     StubAgentConnection::new()
+diff --git a/crates/agent_ui/src/sub_thread_tests/menu_subagent.rs b/crates/agent_ui/src/sub_thread_tests/menu_subagent.rs
+index 00d1d40..85ba511 100644
+--- a/crates/agent_ui/src/sub_thread_tests/menu_subagent.rs
++++ b/crates/agent_ui/src/sub_thread_tests/menu_subagent.rs
+@@ -31,8 +31,8 @@ const ROOT_LEAF: &str = "message-content-1-0-0";
+ /// The subagent's reply is its thread's first entry.
+ const SUBAGENT_LEAF: &str = "message-content-0-0-0";
+ const SUBAGENT_SESSION: &str = "subagent-session";
+-const CLEAN: &str = "Clean sub-thread";
+-const FORK: &str = "Sub-thread with context";
++const CLEAN: &str = "Open to a new sub-thread";
++const FORK: &str = "Fork to a sub-thread";
+ 
+ fn forking() -> StubAgentConnection {
+     StubAgentConnection::new()
