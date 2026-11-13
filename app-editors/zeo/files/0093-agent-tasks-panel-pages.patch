@@ -1,0 +1,665 @@
+From 7cc360a0a3deae1301366acb250e6bb1914895a4 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 10 Nov 2026 11:14:05 -0300
+Subject: [PATCH] agent_tasks_panel: list the rows in pages, 10 by default,
+ size changeable
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.20 (ask 40). The panel's list is virtualized, so a
+long history never cost render time, but the operator asked for visible
+pages: 10 rows a page, with the size changeable.
+
+A footer under the list: ‹ and › with "11–20 of 134" between them, and a
+"10 per page" menu offering 10, 25, 50 and 100. A page counts task rows,
+not thread headers; a thread whose rows cross a page break shows its
+header on both pages, so no row is drawn without its thread. Pages slice
+what the filters chose, in the panel's newest-first order, so a task that
+starts lands on page 1. A filter change, typed or toggled, returns to page
+1; a page past the end (rows deleted under it) clamps to the last; a turn
+scrolls the list to its top. The size is saved with the panel's state
+under its own key, beside the dock position, and a saved size the menu no
+longer offers falls back to 10.
+
+groups() stays the whole filtered list: bulk actions and the selection
+read it, so a selection can span pages. shown_groups() is the page.
+
+Two existing tests read a list longer than the dock and now ask for a
+100-row page, which still holds all their rows (rename_vanish: 120 rows,
+the assertion now ">= 100 lines"; scrollbar: 60 rows). Without that, the
+scrollbar tests still passed, but no longer for the reason they state.
+
+Tests: panel::pagination::tests (a split thread's header repeats and a
+page counts rows; past the end is the last page; an empty list; a saved
+size the menu does not offer) and panel::pagination_tests (10, 10 and 3
+of 23; a filter change returns to page 1; the footer's › turns the page;
+a new size returns to page 1). The three that depend on slicing were seen
+failing with paginate made to return every row.
+---
+
+diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
+index 96f158b..87d5c56 100644
+--- a/crates/agent_tasks_panel/src/panel.rs
++++ b/crates/agent_tasks_panel/src/panel.rs
+@@ -31,8 +31,8 @@ use gpui::{
+ };
+ use settings::SettingsStore;
+ use ui::{
+-    Banner, ButtonLike, ButtonStyle, ScrollAxes, Scrollbars, Severity, TintColor, Tooltip,
+-    WithScrollbar, prelude::*,
++    Banner, ButtonLike, ButtonStyle, ContextMenu, PopoverMenu, ScrollAxes, Scrollbars, Severity,
++    TintColor, Tooltip, WithScrollbar, prelude::*,
+ };
+ use workspace::{
+     Workspace,
+@@ -41,6 +41,7 @@ use workspace::{
+ 
+ use crate::{Availability, HistoryEntry, TaskHistoryStore, TaskKey, TaskOrigin};
+ 
++mod pagination;
+ mod sub_thread_row;
+ 
+ /// What a native subagent row says when only its parent could be shown (R2.4).
+@@ -357,6 +358,13 @@ pub struct AgentTasksPanel {
+     scroll_handle: UniformListScrollHandle,
+     /// The lines of the last render, read by the `uniform_list` callback.
+     entries: Vec<ListEntry>,
++    /// The page on show and how many rows a page holds (Zeo next §6.20). The index is
++    /// clamped on render, so a deletion under the last page cannot leave it past the end;
++    /// the size is saved with the panel's state, like its dock.
++    page_index: usize,
++    page_size: usize,
++    /// The latest write of the page size; a newer change replaces (and so cancels) it.
++    _save_page_size: Task<()>,
+     /// The latest write of the dock position; a newer move replaces (and so cancels) it.
+     _save_position: Task<()>,
+     _subscriptions: Vec<Subscription>,
+@@ -374,9 +382,21 @@ impl AgentTasksPanel {
+         cx.spawn(async move |cx| {
+             let kvp = cx.update(|_, cx| KeyValueStore::global(cx))?;
+             let saved = cx
+-                .background_spawn(async move { kvp.read_kvp(<Self as Panel>::panel_key()) })
++                .background_spawn({
++                    let kvp = kvp.clone();
++                    async move { kvp.read_kvp(<Self as Panel>::panel_key()) }
++                })
+                 .await;
+             let position = saved_position(saved);
++            let saved_page_size = cx
++                .background_spawn(async move { kvp.read_kvp(PAGE_SIZE_KEY) })
++                .await;
++            let page_size = pagination::page_size_or_default(
++                saved_page_size
++                    .ok()
++                    .flatten()
++                    .and_then(|text| text.parse().ok()),
++            );
+             workspace.update_in(cx, |workspace, window, cx| {
+                 let store = TaskHistoryStore::try_global(cx).ok_or_else(|| {
+                     anyhow!("agent_tasks_panel::init must run before the Agent Tasks panel loads")
+@@ -384,7 +404,10 @@ impl AgentTasksPanel {
+                 let agent_panel = workspace.panel::<AgentPanel>(cx);
+                 let workspace_entity = cx.entity();
+                 Ok(cx.new(|cx| {
+-                    Self::new(store, position, &workspace_entity, agent_panel, window, cx)
++                    let mut panel =
++                        Self::new(store, position, &workspace_entity, agent_panel, window, cx);
++                    panel.page_size = page_size;
++                    panel
+                 }))
+             })?
+         })
+@@ -417,6 +440,7 @@ impl AgentTasksPanel {
+                 |panel, editor, event: &EditorEvent, _window, cx| {
+                     if let EditorEvent::BufferEdited = event {
+                         panel.filter_query = editor.read(cx).text(cx).into();
++                        panel.page_index = 0;
+                         cx.notify();
+                     }
+                 },
+@@ -466,6 +490,9 @@ impl AgentTasksPanel {
+             renaming: None,
+             scroll_handle: UniformListScrollHandle::new(),
+             entries: Vec::new(),
++            page_index: 0,
++            page_size: pagination::DEFAULT_PAGE_SIZE,
++            _save_page_size: Task::ready(()),
+             _save_position: Task::ready(()),
+             _subscriptions: subscriptions,
+         };
+@@ -547,6 +574,7 @@ impl AgentTasksPanel {
+         }
+         if self.filter_query.as_ref() != query {
+             self.filter_query = SharedString::from(query.to_string());
++            self.page_index = 0;
+             cx.notify();
+         }
+     }
+@@ -587,9 +615,137 @@ impl AgentTasksPanel {
+             return;
+         }
+         self.filters.set(filter, enabled);
++        self.page_index = 0;
++        cx.notify();
++    }
++
++    /// The rows of the page on show, under their threads' headers (Zeo next §6.20).
++    /// `groups` stays the whole filtered list: bulk actions and the selection read it.
++    pub fn shown_groups(&self, cx: &App) -> Vec<PanelGroup> {
++        pagination::paginate(self.groups(cx), self.page_index, self.page_size).0
++    }
++
++    /// Where the list stands: page, size, rows.
++    pub fn page_label(&self, cx: &App) -> String {
++        pagination::paginate(self.groups(cx), self.page_index, self.page_size)
++            .1
++            .range_label()
++    }
++
++    pub fn page_size(&self) -> usize {
++        self.page_size
++    }
++
++    /// Moves `delta` pages, staying inside the list; render clamps past the end.
++    pub fn turn_page(&mut self, delta: isize, cx: &mut Context<Self>) {
++        let index = self.page_index.saturating_add_signed(delta);
++        if index != self.page_index {
++            self.page_index = index;
++            self.scroll_handle
++                .scroll_to_item(0, gpui::ScrollStrategy::Top);
++            cx.notify();
++        }
++    }
++
++    /// Changes how many rows a page holds, back to page 1, and saves it.
++    pub fn set_page_size(&mut self, size: usize, cx: &mut Context<Self>) {
++        let size = pagination::page_size_or_default(Some(size));
++        if size == self.page_size {
++            return;
++        }
++        self.page_size = size;
++        self.page_index = 0;
++        let kvp = KeyValueStore::global(cx);
++        self._save_page_size = cx.background_spawn(async move {
++            if let Err(error) = kvp
++                .write_kvp(PAGE_SIZE_KEY.to_string(), size.to_string())
++                .await
++            {
++                log::error!("agent tasks panel: saving the page size failed: {error:#}");
++            }
++        });
+         cx.notify();
+     }
+ 
++    /// The footer under the list: previous, the range, next, and the page size.
++    fn render_pager(&self, page: pagination::Page, cx: &mut Context<Self>) -> impl IntoElement {
++        let panel = cx.weak_entity();
++        let size = self.page_size;
++        h_flex()
++            .debug_selector(|| "agent-tasks-pager".to_string())
++            .flex_none()
++            .justify_between()
++            .gap_2()
++            .px_2()
++            .py_0p5()
++            .border_t_1()
++            .border_color(cx.theme().colors().border_variant)
++            .child(
++                h_flex()
++                    .gap_1()
++                    .child(
++                        div()
++                            .debug_selector(|| "agent-tasks-page-previous".to_string())
++                            .child(
++                                IconButton::new("agent-tasks-page-previous", IconName::ChevronLeft)
++                                    .icon_size(IconSize::Small)
++                                    .disabled(!page.has_previous())
++                                    .tooltip(Tooltip::text("Previous Page"))
++                                    .on_click(
++                                        cx.listener(|panel, _, _, cx| panel.turn_page(-1, cx)),
++                                    ),
++                            ),
++                    )
++                    .child(
++                        div()
++                            .debug_selector(|| "agent-tasks-page-range".to_string())
++                            .child(Label::new(page.range_label()).size(LabelSize::Small)),
++                    )
++                    .child(
++                        div()
++                            .debug_selector(|| "agent-tasks-page-next".to_string())
++                            .child(
++                                IconButton::new("agent-tasks-page-next", IconName::ChevronRight)
++                                    .icon_size(IconSize::Small)
++                                    .disabled(!page.has_next())
++                                    .tooltip(Tooltip::text("Next Page"))
++                                    .on_click(
++                                        cx.listener(|panel, _, _, cx| panel.turn_page(1, cx)),
++                                    ),
++                            ),
++                    ),
++            )
++            .child(
++                PopoverMenu::new("agent-tasks-page-size")
++                    .trigger(
++                        Button::new("agent-tasks-page-size-button", format!("{size} per page"))
++                            .label_size(LabelSize::Small)
++                            .color(Color::Muted)
++                            .end_icon(Icon::new(IconName::ChevronDown).size(IconSize::XSmall)),
++                    )
++                    .menu(move |window, cx| {
++                        let panel = panel.clone();
++                        Some(ContextMenu::build(window, cx, move |mut menu, _, _| {
++                            for option in pagination::PAGE_SIZES {
++                                let panel = panel.clone();
++                                menu = menu.toggleable_entry(
++                                    format!("{option} per page"),
++                                    option == size,
++                                    IconPosition::End,
++                                    None,
++                                    move |_, cx| {
++                                        panel
++                                            .update(cx, |panel, cx| panel.set_page_size(option, cx))
++                                            .ok();
++                                    },
++                                );
++                            }
++                            menu
++                        }))
++                    }),
++            )
++    }
++
+     /// Adds `key`'s row to the selection, or takes it out, and makes it the range anchor.
+     pub fn toggle_selected(&mut self, key: &TaskKey, cx: &mut Context<Self>) {
+         if let Some(index) = self.selection.iter().position(|selected| selected == key) {
+@@ -2274,7 +2430,8 @@ impl Render for AgentTasksPanel {
+         // group header, never a row — more than once to measure it.
+         #[cfg(test)]
+         RENDERED_ARIA_LABELS.with_borrow_mut(Vec::clear);
+-        let groups = self.groups(cx);
++        let (groups, page) = pagination::paginate(self.groups(cx), self.page_index, self.page_size);
++        self.page_index = page.index;
+         self.entries = self.list_entries(groups, cx);
+         self.discard_unlisted_rename(window, cx);
+         let entry_count = self.entries.len();
+@@ -2359,9 +2516,15 @@ impl Render for AgentTasksPanel {
+                     )
+                 }
+             })
++            .when(page.total_rows > 0, |this| {
++                this.child(self.render_pager(page, cx))
++            })
+     }
+ }
+ 
++/// Where the page size is saved, beside the dock position under the panel's own key.
++const PAGE_SIZE_KEY: &str = "AgentTasksPanelPageSize";
++
+ impl Panel for AgentTasksPanel {
+     fn persistent_name() -> &'static str {
+         "AgentTasksPanel"
+@@ -2431,6 +2594,10 @@ impl Panel for AgentTasksPanel {
+ #[path = "panel/list_tests.rs"]
+ mod list;
+ 
++#[cfg(test)]
++#[path = "panel/pagination_tests.rs"]
++mod pagination_tests;
++
+ #[cfg(test)]
+ #[path = "panel/multi_window_tests.rs"]
+ mod multi_window;
+diff --git a/crates/agent_tasks_panel/src/panel/pagination.rs b/crates/agent_tasks_panel/src/panel/pagination.rs
+new file mode 100644
+index 0000000..0aa0e12
+--- /dev/null
++++ b/crates/agent_tasks_panel/src/panel/pagination.rs
+@@ -0,0 +1,191 @@
++//! Zeo next proposal §6.20 (ask 40): the Agent Tasks panel lists its rows in visible pages,
++//! 10 per page by default, with the size changeable. A page counts task rows, not thread
++//! headers: a thread whose rows run across a page break shows its header on both pages, so
++//! no row is ever drawn without the thread it belongs to.
++//!
++//! Pages slice what the filters already chose, in the order the panel already sorts it --
++//! newest first -- so a task that starts lands on page 1. The store still loads every row;
++//! this is about the reader, not the memory.
++
++use super::PanelGroup;
++
++/// The page sizes the footer offers, smallest first.
++pub(crate) const PAGE_SIZES: [usize; 4] = [10, 25, 50, 100];
++pub(crate) const DEFAULT_PAGE_SIZE: usize = PAGE_SIZES[0];
++
++/// Where the list stands: which page, how big, out of how many rows.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct Page {
++    /// Zero-based, and always a page that exists (clamped).
++    pub index: usize,
++    pub size: usize,
++    pub total_rows: usize,
++}
++
++impl Page {
++    /// How many pages there are; one, even for an empty list.
++    pub(crate) fn count(&self) -> usize {
++        self.total_rows.div_ceil(self.size).max(1)
++    }
++
++    pub(crate) fn has_previous(&self) -> bool {
++        self.index > 0
++    }
++
++    pub(crate) fn has_next(&self) -> bool {
++        self.index + 1 < self.count()
++    }
++
++    /// "11–20 of 134"; "0 of 0" for nothing.
++    pub(crate) fn range_label(&self) -> String {
++        if self.total_rows == 0 {
++            return "0 of 0".to_string();
++        }
++        let first = self.index * self.size + 1;
++        let last = ((self.index + 1) * self.size).min(self.total_rows);
++        format!("{first}\u{2013}{last} of {}", self.total_rows)
++    }
++}
++
++/// A saved size the footer still offers, else the default: a value from an older or
++/// hand-edited store must not leave the picker showing nothing.
++pub(crate) fn page_size_or_default(saved: Option<usize>) -> usize {
++    saved
++        .filter(|size| PAGE_SIZES.contains(size))
++        .unwrap_or(DEFAULT_PAGE_SIZE)
++}
++
++/// The rows of page `index` (clamped to the last page), each under its thread's header.
++pub(crate) fn paginate(
++    groups: Vec<PanelGroup>,
++    index: usize,
++    size: usize,
++) -> (Vec<PanelGroup>, Page) {
++    let size = size.max(1);
++    let total_rows = groups.iter().map(|group| group.rows.len()).sum();
++    let mut page = Page {
++        index,
++        size,
++        total_rows,
++    };
++    page.index = page.index.min(page.count() - 1);
++    let start = page.index * size;
++    let end = start + size;
++
++    let mut seen = 0;
++    let mut shown = Vec::new();
++    for mut group in groups {
++        let group_start = seen;
++        seen += group.rows.len();
++        if seen <= start || group_start >= end {
++            continue;
++        }
++        let from = start.saturating_sub(group_start);
++        let to = (end - group_start).min(group.rows.len());
++        group.rows = group.rows.drain(from..to).collect();
++        shown.push(group);
++    }
++    (shown, page)
++}
++
++#[cfg(test)]
++mod tests {
++    use acp_thread::AgentTaskStatus;
++
++    use super::*;
++    use crate::test_helpers::{record, sid};
++    use crate::{HistoryEntry, TaskOrigin};
++
++    fn group(session: &str, rows: usize) -> PanelGroup {
++        PanelGroup {
++            session_id: sid(session),
++            title: session.to_string().into(),
++            rows: (0..rows)
++                .map(|ix| {
++                    let entry = HistoryEntry {
++                        record: record(
++                            session,
++                            &format!("{session}{ix}"),
++                            AgentTaskStatus::Completed,
++                            ix as i64,
++                        ),
++                        archived: false,
++                        label: None,
++                        log_bytes: None,
++                        origin: TaskOrigin::Adapter,
++                    };
++                    super::super::panel_row(&entry, None, false, None, None)
++                })
++                .collect(),
++        }
++    }
++
++    fn shape(groups: &[PanelGroup]) -> Vec<(String, Vec<String>)> {
++        groups
++            .iter()
++            .map(|group| {
++                (
++                    group.session_id.to_string(),
++                    group
++                        .rows
++                        .iter()
++                        .map(|row| row.entry.record.task_id.as_ref().to_string())
++                        .collect(),
++                )
++            })
++            .collect()
++    }
++
++    /// Hostile: a thread across the break shows its header on both pages, and a page counts
++    /// rows, never headers.
++    #[test]
++    fn a_page_counts_rows_and_repeats_a_split_threads_header() {
++        let groups = vec![group("a", 3), group("b", 4), group("c", 2)];
++        let (first, page) = paginate(groups.clone(), 0, 5);
++        assert_eq!(
++            shape(&first),
++            vec![
++                ("a".into(), vec!["a0".into(), "a1".into(), "a2".into()]),
++                ("b".into(), vec!["b0".into(), "b1".into()]),
++            ]
++        );
++        assert_eq!(
++            (page.count(), page.range_label()),
++            (2, "1\u{2013}5 of 9".to_string())
++        );
++        let (second, page) = paginate(groups, 1, 5);
++        assert_eq!(
++            shape(&second),
++            vec![
++                ("b".into(), vec!["b2".into(), "b3".into()]),
++                ("c".into(), vec!["c0".into(), "c1".into()]),
++            ]
++        );
++        assert_eq!(page.range_label(), "6\u{2013}9 of 9");
++        assert!(page.has_previous() && !page.has_next());
++    }
++
++    /// A page past the end -- rows were deleted under it -- shows the last page.
++    #[test]
++    fn a_page_past_the_end_is_the_last_page() {
++        let (shown, page) = paginate(vec![group("a", 12)], 7, 10);
++        assert_eq!(page.index, 1);
++        assert_eq!(shown[0].rows.len(), 2);
++    }
++
++    #[test]
++    fn an_empty_list_is_one_empty_page() {
++        let (shown, page) = paginate(Vec::new(), 3, 10);
++        assert!(shown.is_empty());
++        assert_eq!((page.index, page.count()), (0, 1));
++        assert_eq!(page.range_label(), "0 of 0");
++        assert!(!page.has_previous() && !page.has_next());
++    }
++
++    #[test]
++    fn a_saved_size_the_footer_does_not_offer_falls_back_to_ten() {
++        assert_eq!(page_size_or_default(Some(25)), 25);
++        assert_eq!(page_size_or_default(Some(7)), 10);
++        assert_eq!(page_size_or_default(None), 10);
++    }
++}
+diff --git a/crates/agent_tasks_panel/src/panel/pagination_tests.rs b/crates/agent_tasks_panel/src/panel/pagination_tests.rs
+new file mode 100644
+index 0000000..47cb1ff
+--- /dev/null
++++ b/crates/agent_tasks_panel/src/panel/pagination_tests.rs
+@@ -0,0 +1,108 @@
++// Zeo next proposal §6.20 (ask 40): the panel lists its rows in pages, 10 by default, with
++// a footer to turn them and to change the size. GPUI integration tests over the real store.
++
++use acp_thread::AgentTaskStatus;
++use gpui::{Modifiers, TestAppContext};
++
++use crate::TaskFilter;
++use crate::test_helpers::*;
++
++async fn seed(db: &crate::AgentTaskHistoryDb, count: usize) {
++    for ix in 0..count {
++        let finished = record(
++            "s",
++            &format!("t{ix:02}"),
++            AgentTaskStatus::Completed,
++            ix as i64 * 1_000,
++        );
++        let mut running = finished.clone();
++        running.status = AgentTaskStatus::Running;
++        running.ended_at_ms = None;
++        running.tokens = None;
++        running.tool_uses = None;
++        db.insert_started(&running).await.unwrap();
++        db.update_ended(&finished).await.unwrap();
++    }
++}
++
++fn shown_count(panels: &mut Panels) -> usize {
++    panels.tasks_panel.update(&mut panels.cx, |panel, cx| {
++        panel
++            .shown_groups(cx)
++            .iter()
++            .map(|group| group.rows.len())
++            .sum()
++    })
++}
++
++fn label(panels: &mut Panels) -> String {
++    panels
++        .tasks_panel
++        .update(&mut panels.cx, |panel, cx| panel.page_label(cx))
++}
++
++/// Hostile: 23 rows are 10, 10 and 3 -- never all 23, and never a page past the end.
++#[gpui::test]
++async fn the_panel_shows_ten_rows_a_page_and_turns_pages(cx: &mut TestAppContext) {
++    let db = init_base(cx);
++    seed(&db, 23).await;
++    let mut panels = open_panels(cx).await;
++
++    assert_eq!(
++        visible_keys(&mut panels).len(),
++        23,
++        "the filters still list all"
++    );
++    assert_eq!(shown_count(&mut panels), 10);
++    assert_eq!(label(&mut panels), "1\u{2013}10 of 23");
++
++    for _ in 0..5 {
++        panels
++            .tasks_panel
++            .update(&mut panels.cx, |panel, cx| panel.turn_page(1, cx));
++    }
++    panels.cx.update(|window, _| window.refresh());
++    panels.cx.run_until_parked();
++    assert_eq!(shown_count(&mut panels), 3, "clamped to the last page");
++    assert_eq!(label(&mut panels), "21\u{2013}23 of 23");
++
++    // A filter change returns to page 1.
++    panels.tasks_panel.update(&mut panels.cx, |panel, cx| {
++        panel.set_filter(TaskFilter::Failed, true, cx)
++    });
++    panels.cx.run_until_parked();
++    assert_eq!(label(&mut panels), "1\u{2013}10 of 23");
++}
++
++/// The footer's buttons turn the page, and the size changes back to page 1.
++#[gpui::test]
++async fn the_pager_turns_pages_and_changes_the_size(cx: &mut TestAppContext) {
++    let db = init_base(cx);
++    seed(&db, 23).await;
++    let mut panels = open_panels(cx).await;
++    panels
++        .workspace
++        .update_in(&mut panels.cx, |workspace, window, cx| {
++            workspace.focus_panel::<crate::AgentTasksPanel>(window, cx);
++        });
++    panels.cx.update(|window, _| window.refresh());
++    panels.cx.run_until_parked();
++
++    let next = panels
++        .cx
++        .debug_bounds("agent-tasks-page-next")
++        .expect("the pager is painted");
++    panels.cx.simulate_click(next.center(), Modifiers::none());
++    panels.cx.run_until_parked();
++    assert_eq!(label(&mut panels), "11\u{2013}20 of 23");
++
++    panels
++        .tasks_panel
++        .update(&mut panels.cx, |panel, cx| panel.set_page_size(25, cx));
++    panels.cx.run_until_parked();
++    assert_eq!(label(&mut panels), "1\u{2013}23 of 23");
++    assert_eq!(shown_count(&mut panels), 23);
++    panels
++        .tasks_panel
++        .update(&mut panels.cx, |panel, _| assert_eq!(panel.page_size(), 25));
++}
+diff --git a/crates/agent_tasks_panel/src/panel/rename_vanish_tests.rs b/crates/agent_tasks_panel/src/panel/rename_vanish_tests.rs
+index 649e96a..0afcad6 100644
+--- a/crates/agent_tasks_panel/src/panel/rename_vanish_tests.rs
++++ b/crates/agent_tasks_panel/src/panel/rename_vanish_tests.rs
+@@ -267,6 +267,11 @@ async fn panel_actions_rename_vanish_row_scrolled_out_of_view_keeps_the_previous
+         .collect();
+     send_tasks(&thread, tasks, &mut panels.cx);
+     let session = session_of(&thread, &panels.cx).to_string();
++    // Zeo next §6.20 pages the list, 10 rows by default; the largest page still holds far
++    // more than any dock shows, which is what this test needs.
++    panels
++        .tasks_panel
++        .update(&mut panels.cx, |panel, cx| panel.set_page_size(100, cx));
+     show_panel(&panels.workspace, &mut panels.cx);
+ 
+     rename_to(&mut panels, &session, "t119", "Old");
+@@ -280,7 +285,7 @@ async fn panel_actions_rename_vanish_row_scrolled_out_of_view_keeps_the_previous
+     let last = panels.tasks_panel.update(&mut panels.cx, |panel, _| {
+         panel.entries.len().saturating_sub(1)
+     });
+-    assert!(last > 100, "every row is a line of the list");
++    assert!(last >= 100, "every row of the page is a line of the list");
+     panels.tasks_panel.update(&mut panels.cx, |panel, _| {
+         panel
+             .scroll_handle
+diff --git a/crates/agent_tasks_panel/src/panel/scrollbar_tests.rs b/crates/agent_tasks_panel/src/panel/scrollbar_tests.rs
+index 398ec39..465be3e 100644
+--- a/crates/agent_tasks_panel/src/panel/scrollbar_tests.rs
++++ b/crates/agent_tasks_panel/src/panel/scrollbar_tests.rs
+@@ -49,6 +49,11 @@ fn draw(cx: &mut VisualTestContext) {
+ fn show_panel(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) {
+     workspace.update_in(cx, |workspace, window, cx| {
+         workspace.focus_panel::<AgentTasksPanel>(window, cx);
++        // Zeo next §6.20 pages the list, 10 rows by default. These tests are about a list
++        // longer than the dock, so they read one page of 100, which holds all their rows.
++        if let Some(panel) = workspace.panel::<AgentTasksPanel>(cx) {
++            panel.update(cx, |panel, cx| panel.set_page_size(100, cx));
++        }
+     });
+     draw(cx);
+ }

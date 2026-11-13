@@ -1,0 +1,722 @@
+From 8a85e680e1a66404e4f4b65c23a9ebb482fa7d3b Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 13 Nov 2026 06:40:42 -0300
+Subject: [PATCH] sidebar, agent_ui: a thread pins to its project as well as
+ globally
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.5 (ask 12): a pin is global, as 0049 made it, or
+belongs to the thread's project. A project pin heads its project's
+group in the threads sidebar; the Pinned section keeps the global
+ones.
+
+The pin itself -- whether a thread is pinned, and the order of pins --
+stays where 0048 keeps it. Only the scope is new, and it lives in a
+database domain of its own (ThreadPinScopeDb, one table,
+thread_pin_scope) for the reason 0096 gives: 0048's migration list is
+appended to by 0063 under a USE flag, so a step appended there by an
+earlier patch would sit at a different index with and without the
+flag. A row means "pinned to its project"; no row means global. The
+project is the thread's own, read from its metadata when the sidebar
+groups it, so it is not stored twice. Like the organization, the scope
+belongs to a saved thread (admit) and goes with a deleted one (forget).
+
+In the sidebar, pinned_section::pinned_thread_ids leaves project pins
+out of the Pinned section, so their group lists them like any thread,
+and project_pins::hoist_project_pins then moves them to the top of the
+group in pin order -- after the group's sort and 0048's manual order,
+which would otherwise undo it. The thread menu offers "Pin to Project"
+to an unpinned thread, before "Pin Thread" so the entries after that
+one keep their place; a pinned thread still offers "Unpin Thread"
+alone, whichever its scope. The scope is written only after the
+organization accepted the toggle: a refused toggle changes nothing and
+still warns once. An unpin clears the scope, so a later global pin
+does not inherit it.
+
+Tests: pin_scope::tests (a migration list of its own; a project pin
+survives a restart and global clears it; a draft has none; a deleted
+thread's is forgotten), project_pins::tests (project pins go first in
+pin order and the rest keep theirs; absent pins and threadless rows
+are left alone) and sidebar_pinned_tests::project_pins (a project pin
+heads its group and skips the Pinned section; unpinning clears the
+scope). Seen failing under three probes: the restart, the hoist and
+the unpin's scope.
+---
+
+diff --git a/crates/agent_ui/src/thread_organization.rs b/crates/agent_ui/src/thread_organization.rs
+index 8df252c..1d5eb6f 100644
+--- a/crates/agent_ui/src/thread_organization.rs
++++ b/crates/agent_ui/src/thread_organization.rs
+@@ -32,6 +32,7 @@ const MAX_LIST_NAME_CHARS: usize = 64;
+ const MAX_TAGS_PER_THREAD: usize = 20;
+ 
+ pub mod description;
++pub mod pin_scope;
+ 
+ struct ThreadOrganizationDb(ThreadSafeConnection);
+ 
+@@ -311,6 +312,7 @@ pub fn init(cx: &mut App) {
+     let store = cx.new(|cx| ThreadOrganizationStore::new(db, cx));
+     cx.set_global(GlobalThreadOrganizationStore(store));
+     description::init(cx);
++    pin_scope::init(cx);
+ }
+ 
+ /// Called by `ThreadMetadataStore::delete` while that store is being updated, so this must not
+@@ -320,6 +322,7 @@ pub fn forget(thread_id: ThreadId, cx: &mut App) {
+         store.update(cx, |store, cx| store.forget_thread(thread_id, cx));
+     }
+     description::forget(thread_id, cx);
++    pin_scope::forget(thread_id, cx);
+ }
+ 
+ pub struct ThreadOrganizationStore {
+diff --git a/crates/agent_ui/src/thread_organization/pin_scope.rs b/crates/agent_ui/src/thread_organization/pin_scope.rs
+new file mode 100644
+index 0000000..0e1a835
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/pin_scope.rs
+@@ -0,0 +1,193 @@
++//! Zeo next proposal §6.5 (ask 12): a pin is global or belongs to its thread's project. A
++//! project pin heads that project's group in the threads sidebar; the Pinned section keeps the
++//! global ones.
++//!
++//! The pin itself -- whether a thread is pinned, and the order of pins -- stays where `0048`
++//! keeps it. Only the scope lives here, in a domain of its own for the reason `description`
++//! gives: `0048`'s migration list is appended to by `0063` under a USE flag, so a step appended
++//! by an earlier patch would sit at a different index with and without the flag. A row in
++//! `thread_pin_scope` means "pinned to its project"; no row means global. The project is the
++//! thread's own, read from its metadata when the sidebar groups it, so it is not stored twice.
++//!
++//! Like the organization, the scope belongs to a saved thread (`admit`), and a deleted thread's
++//! goes with it (`forget`).
++
++use std::collections::HashSet;
++use std::sync::atomic::Ordering;
++
++use anyhow::{Context as _, Result};
++use db::{
++    sqlez::{domain::Domain, thread_safe_connection::ThreadSafeConnection},
++    sqlez_macros::sql,
++};
++use futures::{StreamExt as _, channel::mpsc};
++use gpui::{App, AppContext as _, Context, Entity, Global, Task};
++
++use super::{OrganizeError, admit};
++use crate::thread_metadata_store::ThreadId;
++
++pub(crate) struct ThreadPinScopeDb(ThreadSafeConnection);
++
++static PIN_SCOPE_MIGRATIONS: [&str; 1] = ["CREATE TABLE thread_pin_scope(
++    thread_id BLOB PRIMARY KEY NOT NULL
++) STRICT;"];
++
++impl Domain for ThreadPinScopeDb {
++    const NAME: &str = stringify!(ThreadPinScopeDb);
++    const MIGRATIONS: &[&str] = &PIN_SCOPE_MIGRATIONS;
++}
++
++db::static_connection!(ThreadPinScopeDb, []);
++
++struct GlobalThreadPinScopeStore(Entity<ThreadPinScopeStore>);
++
++impl Global for GlobalThreadPinScopeStore {}
++
++pub fn init(cx: &mut App) {
++    let db = ThreadPinScopeDb::global(cx);
++    let store = cx.new(|cx| ThreadPinScopeStore::new(db, cx));
++    cx.set_global(GlobalThreadPinScopeStore(store));
++}
++
++/// Called with `thread_organization::forget`, inside a `ThreadMetadataStore` update.
++pub fn forget(thread_id: ThreadId, cx: &mut App) {
++    if let Some(store) = ThreadPinScopeStore::try_global(cx) {
++        store.update(cx, |store, cx| store.forget_thread(thread_id, cx));
++    }
++}
++
++enum Write {
++    Project(ThreadId),
++    Global(ThreadId),
++}
++
++pub struct ThreadPinScopeStore {
++    project_pins: HashSet<ThreadId>,
++    /// `None` when loading failed or the database is the in-memory fallback: the session's
++    /// scopes stay in memory.
++    writes: Option<mpsc::UnboundedSender<Write>>,
++    _writer: Task<()>,
++}
++
++impl ThreadPinScopeStore {
++    pub fn global(cx: &App) -> Entity<Self> {
++        cx.global::<GlobalThreadPinScopeStore>().0.clone()
++    }
++
++    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
++        cx.try_global::<GlobalThreadPinScopeStore>()
++            .map(|global| global.0.clone())
++    }
++
++    fn new(db: ThreadPinScopeDb, cx: &mut Context<Self>) -> Self {
++        let on_fallback = db::ALL_FILE_DB_FAILED.load(Ordering::Acquire);
++        Self::with_fallback_flag(db, on_fallback, cx)
++    }
++
++    pub(super) fn with_fallback_flag(
++        db: ThreadPinScopeDb,
++        on_fallback: bool,
++        cx: &mut Context<Self>,
++    ) -> Self {
++        let mut store = Self {
++            project_pins: HashSet::default(),
++            writes: None,
++            _writer: Task::ready(()),
++        };
++        if on_fallback {
++            log::warn!("thread_pin_scope: database unavailable, pin scopes will not persist");
++        }
++        match load(&db) {
++            Ok(project_pins) => store.project_pins = project_pins,
++            Err(error) => {
++                log::warn!(
++                    "thread_pin_scope: loading failed, pin scopes will not persist this \
++                     session: {error:#}"
++                );
++                return store;
++            }
++        }
++        let (writes, mut queue) = mpsc::unbounded::<Write>();
++        store.writes = Some(writes);
++        store._writer = cx.background_spawn(async move {
++            while let Some(write) = queue.next().await {
++                let (operation, thread_id) = match &write {
++                    Write::Project(thread_id) => ("project", *thread_id),
++                    Write::Global(thread_id) => ("global", *thread_id),
++                };
++                if let Err(error) = db.write(move |connection| apply(connection, write)).await {
++                    log::error!(
++                        "thread_pin_scope: setting {operation} failed for thread {}: {error:#}",
++                        thread_id.to_key_string()
++                    );
++                }
++            }
++        });
++        store
++    }
++
++    /// Whether `thread_id`'s pin, if it has one, belongs to its project.
++    pub fn is_project_pin(&self, thread_id: ThreadId) -> bool {
++        self.project_pins.contains(&thread_id)
++    }
++
++    /// Scopes a saved thread's pin to its project, or back to global.
++    pub fn set_project_pin(
++        &mut self,
++        thread_id: ThreadId,
++        project: bool,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        admit(thread_id, cx)?;
++        let changed = if project {
++            self.project_pins.insert(thread_id)
++        } else {
++            self.project_pins.remove(&thread_id)
++        };
++        if changed {
++            let write = if project {
++                Write::Project(thread_id)
++            } else {
++                Write::Global(thread_id)
++            };
++            self.commit(write, cx);
++        }
++        Ok(())
++    }
++
++    fn forget_thread(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) {
++        if self.project_pins.remove(&thread_id) {
++            self.commit(Write::Global(thread_id), cx);
++        }
++    }
++
++    fn commit(&mut self, write: Write, cx: &mut Context<Self>) {
++        if let Some(writes) = &self.writes
++            && let Err(error) = writes.unbounded_send(write)
++        {
++            log::error!("thread_pin_scope: the writer stopped, a change was not saved: {error}");
++        }
++        cx.notify();
++    }
++}
++
++fn apply(connection: &db::sqlez::connection::Connection, write: Write) -> Result<()> {
++    match write {
++        Write::Project(thread_id) => connection.exec_bound::<ThreadId>(sql!(
++            INSERT INTO thread_pin_scope(thread_id) VALUES (?) ON CONFLICT(thread_id) DO NOTHING
++        ))?(thread_id),
++        Write::Global(thread_id) => connection.exec_bound::<ThreadId>(sql!(
++            DELETE FROM thread_pin_scope WHERE thread_id = ?
++        ))?(thread_id),
++    }
++}
++
++fn load(db: &ThreadPinScopeDb) -> Result<HashSet<ThreadId>> {
++    let rows = db.select::<ThreadId>(sql!(SELECT thread_id FROM thread_pin_scope))?()
++        .context("reading thread_pin_scope")?;
++    Ok(rows.into_iter().collect())
++}
++
++#[cfg(test)]
++#[path = "pin_scope_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/thread_organization/pin_scope_tests.rs b/crates/agent_ui/src/thread_organization/pin_scope_tests.rs
+new file mode 100644
+index 0000000..f3dd742
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/pin_scope_tests.rs
+@@ -0,0 +1,120 @@
++// Zeo next proposal §6.5 (ask 12): a pin's scope, global or its project. Filter:
++// `thread_organization::pin_scope::tests`.
++
++use db::sqlez::connection::Connection;
++use gpui::{Entity, TestAppContext};
++
++use super::super::ThreadOrganizationDb;
++use super::super::test_helpers::{PROJECT_A, delete_thread, draft_in, init, thread};
++use super::*;
++
++async fn open_db(name: &'static str) -> ThreadPinScopeDb {
++    ThreadPinScopeDb::open_test_db(name).await
++}
++
++fn open_store(db: &ThreadPinScopeDb, cx: &mut TestAppContext) -> Entity<ThreadPinScopeStore> {
++    let db = db.clone();
++    let store = cx.new(|cx| ThreadPinScopeStore::with_fallback_flag(db, false, cx));
++    cx.run_until_parked();
++    store
++}
++
++fn set(
++    store: &Entity<ThreadPinScopeStore>,
++    thread_id: ThreadId,
++    project: bool,
++    cx: &mut TestAppContext,
++) -> Result<(), OrganizeError> {
++    let result = store.update(cx, |store, cx| {
++        store.set_project_pin(thread_id, project, cx)
++    });
++    cx.run_until_parked();
++    result
++}
++
++fn is_project(store: &Entity<ThreadPinScopeStore>, id: ThreadId, cx: &TestAppContext) -> bool {
++    store.read_with(cx, |store, _| store.is_project_pin(id))
++}
++
++fn reopen(
++    store: Entity<ThreadPinScopeStore>,
++    db: &ThreadPinScopeDb,
++    cx: &mut TestAppContext,
++) -> Entity<ThreadPinScopeStore> {
++    cx.run_until_parked();
++    drop(store);
++    open_store(db, cx)
++}
++
++/// Hostile: the scope must not share 0048's migration list, whose steps land at different
++/// indexes with and without the `devtools-panel` USE flag (0063).
++#[test]
++fn the_pin_scope_has_a_migration_list_of_its_own() {
++    assert_ne!(ThreadPinScopeDb::NAME, ThreadOrganizationDb::NAME);
++    assert!(
++        ThreadOrganizationDb::MIGRATIONS
++            .iter()
++            .all(|step| !step.contains("pin_scope")),
++        "no step of thread_organization mentions it"
++    );
++    let connection = Connection::open_memory(Some("thread_pin_scope_migration"));
++    connection
++        .migrate(
++            ThreadPinScopeDb::NAME,
++            ThreadPinScopeDb::MIGRATIONS,
++            &mut |_, _, _| false,
++        )
++        .expect("the pin scope migration applies");
++}
++
++#[gpui::test]
++async fn a_project_pin_survives_a_restart_and_global_clears_it(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("pin_scope_restart").await;
++    let store = open_store(&db, cx);
++    let thread_id = thread(cx);
++    assert!(!is_project(&store, thread_id, cx), "global by default");
++
++    set(&store, thread_id, true, cx).expect("a saved thread");
++    let store = reopen(store, &db, cx);
++    assert!(is_project(&store, thread_id, cx));
++
++    set(&store, thread_id, false, cx).expect("back to global");
++    let store = reopen(store, &db, cx);
++    assert!(!is_project(&store, thread_id, cx), "cleared on disk");
++}
++
++/// Hostile: a draft is refused, as the organization refuses it.
++#[gpui::test]
++async fn a_draft_has_no_pin_scope(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("pin_scope_draft").await;
++    let store = open_store(&db, cx);
++    let draft = draft_in(PROJECT_A, cx);
++    assert!(matches!(
++        set(&store, draft, true, cx),
++        Err(OrganizeError::Draft { .. })
++    ));
++    assert!(!is_project(&store, draft, cx));
++}
++
++/// A deleted thread's scope goes with it, through thread_organization::forget.
++#[gpui::test]
++async fn a_deleted_threads_pin_scope_is_forgotten(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("pin_scope_forget").await;
++    let store = open_store(&db, cx);
++    cx.update(|cx| cx.set_global(GlobalThreadPinScopeStore(store.clone())));
++    let thread_id = thread(cx);
++    set(&store, thread_id, true, cx).expect("a saved thread");
++    assert!(
++        is_project(&store, thread_id, cx),
++        "precondition: there is something to forget"
++    );
++    delete_thread(thread_id, cx);
++    assert!(!is_project(&store, thread_id, cx));
++    drop(store);
++    cx.update(|cx| cx.remove_global::<GlobalThreadPinScopeStore>());
++    let store = open_store(&db, cx);
++    assert!(!is_project(&store, thread_id, cx), "and from disk");
++}
+diff --git a/crates/sidebar/src/pinned_section.rs b/crates/sidebar/src/pinned_section.rs
+index 2951952..6e3dc8f 100644
+--- a/crates/sidebar/src/pinned_section.rs
++++ b/crates/sidebar/src/pinned_section.rs
+@@ -28,7 +28,14 @@ use crate::{
+ /// the sidebar exactly as it was before pinning existed.
+ pub(crate) fn pinned_thread_ids(cx: &App) -> Vec<ThreadId> {
+     ThreadOrganizationStore::try_global(cx)
+-        .map(|store| store.read(cx).pinned().collect())
++        .map(|store| {
++            store
++                .read(cx)
++                .pinned()
++                // A project pin heads its project's group instead (Zeo next §6.5).
++                .filter(|thread_id| crate::project_pins::is_global_pin(*thread_id, cx))
++                .collect()
++        })
+         .unwrap_or_default()
+ }
+ 
+diff --git a/crates/sidebar/src/project_pins.rs b/crates/sidebar/src/project_pins.rs
+new file mode 100644
+index 0000000..8bee2df
+--- /dev/null
++++ b/crates/sidebar/src/project_pins.rs
+@@ -0,0 +1,77 @@
++//! Project pins (Zeo next proposal §6.5, ask 12): a thread pinned to its project heads that
++//! project's group instead of joining the Pinned section, which keeps the global pins.
++//!
++//! The pin and its order are `0048`'s; the scope is `ThreadPinScopeStore`'s. A project pin is
++//! left out of the Pinned section (`pinned_section::pinned_thread_ids`), so its group lists it
++//! like any thread, and [`hoist_project_pins`] then moves it to the top, after the group's own
++//! sort and manual order, which would otherwise undo it.
++
++use agent_ui::ThreadId;
++use agent_ui::thread_organization::ThreadOrganizationStore;
++use agent_ui::thread_organization::pin_scope::ThreadPinScopeStore;
++use gpui::App;
++
++use crate::ListEntry;
++
++/// The project pins, in pin order: pinned in the organization and scoped to their project.
++pub(crate) fn project_pin_order(cx: &App) -> Vec<ThreadId> {
++    let Some(scope) = ThreadPinScopeStore::try_global(cx) else {
++        return Vec::new();
++    };
++    let scope = scope.read(cx);
++    ThreadOrganizationStore::try_global(cx)
++        .map(|store| {
++            store
++                .read(cx)
++                .pinned()
++                .filter(|thread_id| scope.is_project_pin(*thread_id))
++                .collect()
++        })
++        .unwrap_or_default()
++}
++
++/// Whether a pinned thread belongs in the Pinned section: every pin but a project one.
++pub(crate) fn is_global_pin(thread_id: ThreadId, cx: &App) -> bool {
++    ThreadPinScopeStore::try_global(cx)
++        .is_none_or(|scope| !scope.read(cx).is_project_pin(thread_id))
++}
++
++/// Moves a group's project pins to its top, in pin order; every other row keeps its place
++/// relative to the rest.
++pub(crate) fn hoist_project_pins(rows: &mut Vec<ListEntry>, cx: &App) {
++    let order = project_pin_order(cx);
++    hoist_by(
++        rows,
++        |entry| match entry {
++            ListEntry::Thread(thread) => Some(thread.metadata.thread_id),
++            _ => None,
++        },
++        &order,
++    );
++}
++
++/// The rows whose key is in `order` first, in `order`'s order, then the rest as they were.
++pub(crate) fn hoist_by<T>(
++    rows: &mut Vec<T>,
++    key: impl Fn(&T) -> Option<ThreadId>,
++    order: &[ThreadId],
++) {
++    if order.is_empty() {
++        return;
++    }
++    let mut hoisted: Vec<(usize, T)> = Vec::new();
++    let mut rest: Vec<T> = Vec::new();
++    for row in rows.drain(..) {
++        match key(&row).and_then(|id| order.iter().position(|pinned| *pinned == id)) {
++            Some(rank) => hoisted.push((rank, row)),
++            None => rest.push(row),
++        }
++    }
++    hoisted.sort_by_key(|(rank, _)| *rank);
++    rows.extend(hoisted.into_iter().map(|(_, row)| row));
++    rows.extend(rest);
++}
++
++#[cfg(test)]
++#[path = "project_pins_tests.rs"]
++mod tests;
+diff --git a/crates/sidebar/src/project_pins_tests.rs b/crates/sidebar/src/project_pins_tests.rs
+new file mode 100644
+index 0000000..fc8397b
+--- /dev/null
++++ b/crates/sidebar/src/project_pins_tests.rs
+@@ -0,0 +1,33 @@
++// Zeo next proposal §6.5: the order a group's rows take once its project pins are hoisted.
++// Filter: `project_pins::tests`.
++
++use agent_ui::ThreadId;
++
++use super::hoist_by;
++
++fn ids(n: usize) -> Vec<ThreadId> {
++    (0..n).map(|_| ThreadId::new()).collect()
++}
++
++#[test]
++fn project_pins_go_first_in_pin_order_and_the_rest_keep_theirs() {
++    let t = ids(5);
++    let mut rows = t.clone();
++    hoist_by(&mut rows, |id| Some(*id), &[t[3], t[1]]);
++    assert_eq!(rows, vec![t[3], t[1], t[0], t[2], t[4]]);
++}
++
++/// Hostile: a pin of another project (absent from this group) and rows with no thread change
++/// nothing; no pins is the identity.
++#[test]
++fn absent_pins_and_threadless_rows_are_left_alone() {
++    let t = ids(3);
++    let other = ThreadId::new();
++    let mut rows: Vec<Option<ThreadId>> = vec![Some(t[0]), None, Some(t[1]), Some(t[2])];
++    hoist_by(&mut rows, |row| *row, &[other, t[2]]);
++    assert_eq!(rows, vec![Some(t[2]), Some(t[0]), None, Some(t[1])]);
++
++    let mut unchanged = t.clone();
++    hoist_by(&mut unchanged, |id| Some(*id), &[]);
++    assert_eq!(unchanged, t);
++}
+diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
+index 037c21b..85255f2 100644
+--- a/crates/sidebar/src/sidebar.rs
++++ b/crates/sidebar/src/sidebar.rs
+@@ -1,4 +1,5 @@
+ mod pinned_section;
++mod project_pins;
+ mod thread_switcher;
+ 
+ use acp_thread::ThreadStatus;
+@@ -1092,6 +1093,15 @@ impl Sidebar {
+         {
+             cx.observe(&store, |_, _store, cx| cx.notify()).detach();
+         }
++        // And for pin scopes (Zeo next §6.5): a project pin moves a row between sections.
++        if let Some(store) =
++            agent_ui::thread_organization::pin_scope::ThreadPinScopeStore::try_global(cx)
++        {
++            cx.observe(&store, |this, _store, cx| {
++                this.schedule_update_entries(false, cx);
++            })
++            .detach();
++        }
+ 
+         cx.observe(&ThreadMetadataStore::global(cx), |this, _store, cx| {
+             this.schedule_update_entries(false, cx);
+@@ -1198,11 +1208,42 @@ impl Sidebar {
+                 store.pin(thread_id, cx)
+             }
+         });
++        // Pinning here is global, and an unpin leaves no scope behind (Zeo next §6.5). Only after
++        // the store accepted the toggle: a refused one changes nothing and warns once.
++        if result.is_ok() {
++            Self::set_pin_scope(thread_id, false, cx);
++        }
+         if let Err(error) = result {
+             log::warn!("sidebar: pin toggle refused for thread {thread_id:?}: {error}");
+         }
+     }
+ 
++    /// Pins `thread_id` to its project (Zeo next §6.5): pinned as any thread, and scoped so it
++    /// heads its project's group rather than the Pinned section.
++    fn pin_to_project(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) {
++        let Some(store) = ThreadOrganizationStore::try_global(cx) else {
++            return;
++        };
++        if let Err(error) = store.update(cx, |store, cx| store.pin(thread_id, cx)) {
++            log::warn!("sidebar: project pin refused for thread {thread_id:?}: {error}");
++            return;
++        }
++        Self::set_pin_scope(thread_id, true, cx);
++    }
++
++    fn set_pin_scope(thread_id: ThreadId, project: bool, cx: &mut App) {
++        let Some(scope) =
++            agent_ui::thread_organization::pin_scope::ThreadPinScopeStore::try_global(cx)
++        else {
++            return;
++        };
++        if let Err(error) = scope.update(cx, |scope, cx| {
++            scope.set_project_pin(thread_id, project, cx)
++        }) {
++            log::warn!("sidebar: pin scope refused for thread {thread_id:?}: {error}");
++        }
++    }
++
+     /// Whether `thread_id` is pinned, as every pin entry point must read it to name and perform
+     /// the toggle: by its `pinned_position`, never by which section its row is in.
+     fn is_pinned_in(
+@@ -6448,6 +6489,8 @@ impl Sidebar {
+         let mut row_entries: Vec<ListEntry> = row_entries.collect();
+         // After the final sort, which would otherwise undo it.
+         organization::order_manually(&mut row_entries, group_key, cx);
++        // Zeo next §6.5: a thread pinned to this project heads its group.
++        project_pins::hoist_project_pins(&mut row_entries, cx);
+ 
+         for entry in row_entries {
+             if let ListEntry::Thread(thread) = &entry {
+@@ -7270,6 +7313,20 @@ impl Sidebar {
+                             });
+                         }
+ 
++                        // Zeo next §6.5: an unpinned thread can pin to its project too, offered
++                        // before "Pin Thread" so the entries after that one keep their place.
++                        if pin_entry_label == Some("Pin Thread") {
++                            menu = menu.entry("Pin to Project", None, {
++                                let sidebar = sidebar.clone();
++                                move |_window, cx| {
++                                    sidebar
++                                        .update(cx, |sidebar, cx| {
++                                            sidebar.pin_to_project(thread_id, cx);
++                                        })
++                                        .ok();
++                                }
++                            });
++                        }
+                         if let Some(label) = pin_entry_label {
+                             menu = menu.entry(label, None, {
+                                 let sidebar = sidebar.clone();
+diff --git a/crates/sidebar/src/sidebar_pinned_tests.rs b/crates/sidebar/src/sidebar_pinned_tests.rs
+index b5c1302..f197370 100644
+--- a/crates/sidebar/src/sidebar_pinned_tests.rs
++++ b/crates/sidebar/src/sidebar_pinned_tests.rs
+@@ -2118,3 +2118,6 @@ mod markdown;
+ 
+ #[path = "sidebar_pinned_background_tests.rs"]
+ mod background;
++
++#[path = "sidebar_project_pins_tests.rs"]
++mod project_pins;
+diff --git a/crates/sidebar/src/sidebar_project_pins_tests.rs b/crates/sidebar/src/sidebar_project_pins_tests.rs
+new file mode 100644
+index 0000000..cba8d2f
+--- /dev/null
++++ b/crates/sidebar/src/sidebar_project_pins_tests.rs
+@@ -0,0 +1,64 @@
++// Zeo next proposal §6.5 (ask 12): "Pin to Project" heads the project's group and stays out of
++// the Pinned section, which keeps the global pins; unpinning clears the scope. Filter:
++// `sidebar_pinned_tests::project_pins`.
++
++use super::*;
++use pretty_assertions::assert_eq;
++
++#[gpui::test]
++async fn a_project_pin_heads_its_group_and_skips_the_pinned_section(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    let old = save_in("s1", "Oldest", ALPHA, 1, cx);
++    let mid = save_in("s2", "Middle", ALPHA, 2, cx);
++    let new = save_in("s3", "Newest", ALPHA, 3, cx);
++    cx.run_until_parked();
++    assert!(
++        group_row_ix(&sidebar, new, cx) < group_row_ix(&sidebar, old, cx),
++        "by time first"
++    );
++
++    sidebar.update(cx, |sidebar, cx| sidebar.pin_to_project(old, cx));
++    cx.run_until_parked();
++    assert_eq!(
++        pinned_header_ix(&sidebar, cx),
++        None,
++        "no Pinned section for a project pin"
++    );
++    assert_eq!(rows_of(&sidebar, old, cx), 1, "listed once, in its group");
++    assert!(
++        group_row_ix(&sidebar, old, cx) < group_row_ix(&sidebar, new, cx),
++        "the project pin heads its group"
++    );
++    assert_eq!(stored_pins(cx), vec![old], "it is a pin like any other");
++
++    // A global pin still goes to the Pinned section, beside the project pin in its group.
++    toggle_pin(&sidebar, mid, cx);
++    assert!(pinned_header_ix(&sidebar, cx).is_some());
++    let _ = pinned_row_ix(&sidebar, mid, cx);
++    assert!(group_row_ix(&sidebar, old, cx) < group_row_ix(&sidebar, new, cx));
++}
++
++/// Hostile: unpinning a project pin clears its scope, so a later plain pin is global.
++#[gpui::test]
++async fn unpinning_clears_the_scope(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    let old = save_in("s1", "Oldest", ALPHA, 1, cx);
++    let new = save_in("s3", "Newest", ALPHA, 3, cx);
++    cx.run_until_parked();
++
++    sidebar.update(cx, |sidebar, cx| sidebar.pin_to_project(old, cx));
++    cx.run_until_parked();
++    toggle_pin(&sidebar, old, cx);
++    assert!(stored_pins(cx).is_empty(), "unpinned");
++    assert!(
++        group_row_ix(&sidebar, new, cx) < group_row_ix(&sidebar, old, cx),
++        "back in time order"
++    );
++
++    toggle_pin(&sidebar, old, cx);
++    assert!(
++        pinned_header_ix(&sidebar, cx).is_some(),
++        "a plain pin is global again"
++    );
++    let _ = pinned_row_ix(&sidebar, old, cx);
++}

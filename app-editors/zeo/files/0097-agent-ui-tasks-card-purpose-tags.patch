@@ -1,0 +1,235 @@
+From 8498e13c88439a1a05280970bff6f4c09f89a21f Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Wed, 11 Nov 2026 00:31:55 -0300
+Subject: [PATCH] agent_ui: a background task carries a purpose tag
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.2 (ask 30). The tasks card told a task's kind
+and whether it ran in the foreground or the background, and its
+description, but not what it was for: a `cargo test` and a
+`gh run watch` in the background looked alike. A shell task now
+carries a chip beside its Foreground/Background one -- CI, Test, Build
+or Watch.
+
+The tag is decided by Claude Agent (Plus), not here. Plus reads the
+command with a small rule table (task-purpose.ts: whole words, after
+`cd … &&`, `VAR=value` and `sudo`; a CI run beats what it runs, a
+watcher beats the test or build it repeats) and sends only the word,
+under `purpose` on the `_claude/tasks` entry. The command itself never
+reaches Zeo, because a command line can carry a secret, and keeping it
+in the adapter keeps the feed's rule that no command goes on the wire.
+An unclassified task has no field at all, so its bytes are unchanged.
+
+AgentTaskPurpose knows four words. WireTask reads the field raw, as it
+does child_session_id: a word this build does not know (a newer
+adapter's) or a value of the wrong type is dropped on its own task
+instead of failing the whole snapshot, which is what a typed field of
+the wrong type would do. A subagent row built from the subagents RFD
+(merge.rs) has no command and carries none.
+
+Tests: tasks_card::purpose (the chip appears for "test" and "ci", not
+for an unknown word nor for a task that sent none, and the snapshot
+still parses with the unknown word in it; the row's AgentTask holds
+AgentTaskPurpose::Test). Seen failing with parse() made to return None.
+---
+
+diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
+index ebe0ef1..348897b 100644
+--- a/crates/acp_thread/src/acp_thread.rs
++++ b/crates/acp_thread/src/acp_thread.rs
+@@ -4028,6 +4028,40 @@ pub struct AgentTaskUsage {
+     pub duration: Duration,
+ }
+ 
++/// What a task is for, as the agent tagged it from its command (Zeo next §6.2). Claude Agent
++/// (Plus) reads the command and sends only the tag; the command never reaches Zeo.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum AgentTaskPurpose {
++    Ci,
++    Test,
++    Build,
++    Watch,
++}
++
++impl AgentTaskPurpose {
++    /// The wire's word; `None` for one this build does not know (a newer adapter's), which is
++    /// dropped on its own task.
++    fn parse(text: &str) -> Option<Self> {
++        match text {
++            "ci" => Some(Self::Ci),
++            "test" => Some(Self::Test),
++            "build" => Some(Self::Build),
++            "watch" => Some(Self::Watch),
++            _ => None,
++        }
++    }
++
++    /// The chip's text.
++    pub fn label(self) -> &'static str {
++        match self {
++            Self::Ci => "CI",
++            Self::Test => "Test",
++            Self::Build => "Build",
++            Self::Watch => "Watch",
++        }
++    }
++}
++
+ /// A unit of agent work that can outlive the turn that started it: a background shell,
+ /// a subagent, a monitor.
+ #[derive(Debug, Clone, PartialEq)]
+@@ -4053,6 +4087,8 @@ pub struct AgentTask {
+     /// `_claude/tasks` version 3: the ACP session of the subagent this entry describes, so
+     /// the task surfaces show one row per child whichever source names it (story 064).
+     pub child_session_id: Option<acp_v2::SessionId>,
++    /// The agent's tag for the task, if it sent one this build knows (Zeo next §6.2).
++    pub purpose: Option<AgentTaskPurpose>,
+ }
+ 
+ /// The end of a task's output, as `_claude/tasks/output` answers it.
+@@ -4094,6 +4130,10 @@ struct WireTask {
+     // of failing the whole snapshot, which is what a wrong-typed `tail` does.
+     #[serde(default)]
+     child_session_id: Option<serde_json::Value>,
++    // Zeo next §6.2, optional. Raw for the same reason as `child_session_id`: a value of the
++    // wrong type, or a word this build does not know, is dropped on its own task.
++    #[serde(default)]
++    purpose: Option<serde_json::Value>,
+ }
+ 
+ #[derive(Deserialize)]
+@@ -4165,6 +4205,11 @@ impl From<WireTask> for AgentTask {
+                 .tail
+                 .map(|lines| lines.into_iter().map(SharedString::from).collect()),
+             child_session_id,
++            purpose: task
++                .purpose
++                .as_ref()
++                .and_then(serde_json::Value::as_str)
++                .and_then(AgentTaskPurpose::parse),
+         }
+     }
+ }
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index 8b1506b..2360bbc 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -87,6 +87,10 @@ mod dock_bottom;
+ #[cfg(test)]
+ mod output_connection_support;
+ 
++#[cfg(test)]
++#[path = "tasks_card/purpose_tests.rs"]
++mod purpose;
++
+ #[cfg(test)]
+ #[path = "tasks_card/preview_tests.rs"]
+ mod preview_rows;
+@@ -2877,6 +2881,16 @@ impl TasksCard {
+                     ))
+                     .child(Chip::new(chip_label).label_size(LabelSize::XSmall)),
+             )
++            // §6.2: what the task is for, as the agent tagged it from its command.
++            .children(task.purpose.map(|purpose| {
++                div()
++                    .debug_selector({
++                        let task_id = task_id.clone();
++                        move || format!("tasks-card-purpose-{task_id}")
++                    })
++                    .flex_none()
++                    .child(Chip::new(purpose.label()).label_size(LabelSize::XSmall))
++            }))
+             .children(timing)
+             .child(open_button)
+             .children(open_log_button)
+diff --git a/crates/agent_ui/src/tasks_card/merge.rs b/crates/agent_ui/src/tasks_card/merge.rs
+index ab3d0d3..b7440c2 100644
+--- a/crates/agent_ui/src/tasks_card/merge.rs
++++ b/crates/agent_ui/src/tasks_card/merge.rs
+@@ -66,6 +66,8 @@ fn native_row(row: &SubagentRow) -> TaskRow {
+             has_output: false,
+             tail: None,
+             child_session_id: Some(row.child_session_id.clone()),
++            // A subagent has no command to read a purpose from (§6.2).
++            purpose: None,
+         },
+         source: TaskSource::AcpSubagent {
+             child: row.child_session_id.clone(),
+diff --git a/crates/agent_ui/src/tasks_card/merge_tests.rs b/crates/agent_ui/src/tasks_card/merge_tests.rs
+index 8a84722..95f3ee0 100644
+--- a/crates/agent_ui/src/tasks_card/merge_tests.rs
++++ b/crates/agent_ui/src/tasks_card/merge_tests.rs
+@@ -94,6 +94,7 @@ fn feed_task(
+         has_output: false,
+         tail: None,
+         child_session_id: child.map(acp_v2::SessionId::new),
++        purpose: None,
+     }
+ }
+ 
+diff --git a/crates/agent_ui/src/tasks_card/purpose_tests.rs b/crates/agent_ui/src/tasks_card/purpose_tests.rs
+new file mode 100644
+index 0000000..80b125c
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/purpose_tests.rs
+@@ -0,0 +1,58 @@
++// Zeo next proposal §6.2 (ask 30): a task carries a purpose tag -- CI, Test, Build or Watch --
++// that Claude Agent (Plus) reads from the command (the command itself never reaches Zeo). The
++// card shows it as a chip beside the Foreground/Background one. Filter: `tasks_card::purpose`.
++
++use gpui::{TestAppContext, VisualTestContext};
++
++use super::test_helpers::*;
++
++fn draw(cx: &mut VisualTestContext) {
++    cx.update(|window, _| window.refresh());
++    cx.run_until_parked();
++}
++
++fn tagged(id: &str, purpose: serde_json::Value) -> serde_json::Value {
++    let mut task = wire_task(id, "running", true, 1_000);
++    task["purpose"] = purpose;
++    task
++}
++
++/// Hostile: an unknown purpose (a newer adapter's) is dropped on its own task, without failing
++/// the snapshot, and a task without one gets no chip.
++#[gpui::test]
++async fn test_purpose_shows_as_a_chip_and_an_unknown_one_is_ignored(cx: &mut TestAppContext) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    let connection = TaskActionsConnection::new();
++    let a = open_titled_thread(&panel, &connection, "A", &mut cx);
++    send_tasks(
++        &a,
++        vec![
++            tagged("t1", serde_json::json!("test")),
++            tagged("t2", serde_json::json!("deploy")),
++            wire_task("t3", "running", true, 1_002),
++            tagged("t4", serde_json::json!("ci")),
++        ],
++        &mut cx,
++    );
++    draw(&mut cx);
++
++    let sa = session_of(&a, &cx);
++    let card = card(&panel, &cx);
++    assert_eq!(
++        rows_of(&card, &sa, &mut cx).len(),
++        4,
++        "the snapshot still parsed"
++    );
++    assert!(cx.debug_bounds("tasks-card-purpose-t1").is_some(), "Test");
++    assert!(cx.debug_bounds("tasks-card-purpose-t4").is_some(), "CI");
++    assert!(
++        cx.debug_bounds("tasks-card-purpose-t2").is_none(),
++        "unknown: no chip"
++    );
++    assert!(
++        cx.debug_bounds("tasks-card-purpose-t3").is_none(),
++        "none sent: no chip"
++    );
++    let purpose = find_row(&card, &sa, "t1", &mut cx).unwrap().task.purpose;
++    assert_eq!(purpose, Some(acp_thread::AgentTaskPurpose::Test));
++}

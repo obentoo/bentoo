@@ -1,0 +1,1424 @@
+From 5861aa216b3ea79ed7b1833c560bbfd0bcd1127b Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Wed, 11 Nov 2026 04:21:10 -0300
+Subject: [PATCH] agent_tasks_panel: follow a running task's log in a tab of
+ the panel
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.1 and §6.27 (asks 3, 13, 47). A running task's
+output could be glanced at -- the card's tail, the eye's preview of a
+dozen lines -- or, once the task ended, opened as a saved file in the
+editor. Following a long build while it ran meant neither. A running
+task with output now has "Follow Log" on its row in the Agent Tasks
+panel, which opens its log in a tab of the panel itself.
+
+The list is the first tab, "Tasks"; each log tab carries the task's
+label and an X. One tab per task: opening it again focuses it. The tab
+reads the log every second while the task runs, scrolls to the end as
+lines arrive, and stops following when the wheel turns up to read
+earlier lines -- "Follow" resumes. Once the task has ended, one last
+read takes its end and the tab says "Task ended" and asks no more.
+The text is bounded to 10,000 lines; older ones are dropped and
+counted ("N earlier lines not kept"). A line redrawn with carriage
+returns shows its last state, as a terminal does.
+
+The reads are incremental. The first asks for the end of the file;
+each later one sends `fromByte`, where the last read ended, and gets
+back `startByte`, where its content begins (Claude Agent (Plus)
+0.37.0). The tab appends a read only when it starts exactly where the
+last ended, and starts over otherwise -- a truncated or replaced file,
+or an adapter older than `fromByte`, which answers with the end of the
+file and no `startByte`; the tab then replaces its text on each read,
+slower but never doubled. A read cut at the adapter's cap is followed
+at once rather than a second later. No capability bump: an older
+adapter ignores the field, an older Zeo ignores the answer's.
+
+Plumbing: TaskOutput gains start_byte; AgentConnection gains
+fetch_task_output_from, whose default asks for the end of the file so
+every connection keeps working; the ACP connection sends fromByte and
+reads startByte (absent: None; present but not an offset: an error
+naming it). AcpThread::fetch_task_output_from. TasksCard::held_thread
+is public, so the panel reaches the thread a card holds. The card's
+own read when a task ends (story 041's saved log) is untouched.
+
+The panel's render is split: the list tab (filters, selection toolbar,
+list, preview, pager) moved into render_task_list unchanged, so a log
+tab can stand in its place. The new code lives in panel/log_tabs.rs.
+
+Tests: panel::log_tabs::log_buffer_tests (appends a read that
+continues; joins a line split across reads; starts over when a read
+does not continue; replaces on every read without startByte; keeps
+the last state of a carriage-return line; drops the oldest past the
+cap and counts them). panel::log_tabs_tests (the button only on a
+running task with output; the tab replaces the list, shows the end and
+reads on from where it stopped -- reads [end, fromByte 8]; one tab per
+task, and closing returns to the list; an ended task is read once more
+then not again; a scroll up pauses following and Follow resumes it).
+agent_servers: fromByte on the wire and startByte read; no startByte
+reads as None; a malformed startByte is refused by name. The fake
+connection serves output by offset, as plus does: a queue of answers
+was consumed by the card's own end-of-task read. Seen failing with
+the button hidden, the offset ignored, the end never stopping reads,
+LogBuffer always starting over, the scroll pause a no-op, and the
+connection not sending fromByte.
+---
+
+diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
+index 0a1f9f6..1f96dfa 100644
+--- a/crates/acp_thread/src/acp_thread.rs
++++ b/crates/acp_thread/src/acp_thread.rs
+@@ -4103,6 +4103,9 @@ pub struct TaskOutput {
+     pub content: String,
+     pub total_bytes: u64,
+     pub truncated: bool,
++    /// The file offset `content` begins at (Zeo next §6.1, §6.27). `None` from an agent older
++    /// than incremental reads: `content` is then the end of the file, to replace, not append.
++    pub start_byte: Option<u64>,
+ }
+ 
+ #[derive(Deserialize)]
+@@ -5750,6 +5753,20 @@ impl AcpThread {
+             .fetch_task_output(self.session_id(), task_id, cx)
+     }
+ 
++    /// What follows `from_byte` in a task's output, for a log that follows a running task
++    /// (Zeo next §6.1, §6.27). An agent without incremental reads answers with the end of the
++    /// file and no `start_byte`.
++    pub fn fetch_task_output_from(
++        &self,
++        task_id: &AgentTaskId,
++        from_byte: u64,
++        cx: &mut App,
++    ) -> Task<Result<TaskOutput>> {
++        self.connection
++            .clone()
++            .fetch_task_output_from(self.session_id(), task_id, from_byte, cx)
++    }
++
+     /// Resolves to `false` when the agent had nothing to move to the background.
+     pub fn background_task(&self, tool_call_id: &str, cx: &mut App) -> Task<Result<bool>> {
+         self.connection
+diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
+index 46e6085..b48610d 100644
+--- a/crates/acp_thread/src/connection.rs
++++ b/crates/acp_thread/src/connection.rs
+@@ -195,6 +195,19 @@ pub trait AgentConnection {
+         )))
+     }
+ 
++    /// What follows `from_byte` in a task's output (`fromByte`, Zeo next §6.1, §6.27). The
++    /// default asks for the end of the file instead, which a follower reads as a fresh start
++    /// because it carries no `start_byte`; a connection that can read on overrides it.
++    fn fetch_task_output_from(
++        self: Rc<Self>,
++        session_id: &acp_v2::SessionId,
++        task_id: &str,
++        _from_byte: u64,
++        cx: &mut App,
++    ) -> Task<Result<TaskOutput>> {
++        self.fetch_task_output(session_id, task_id, cx)
++    }
++
+     /// Ask the agent to re-read the account quota now and publish it to the session
+     /// (`_claude/usage/refresh`). The windows arrive as the usual `usage_update`
+     /// notifications; `Ok(false)` means the agent answered but had nothing to publish.
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index 6ff2ec7..47068ac 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -121,13 +121,65 @@ fn parse_task_output(response: &serde_json::Value) -> Result<acp_thread::TaskOut
+     let truncated = field("truncated")?
+         .as_bool()
+         .ok_or_else(|| anyhow!("`truncated` is not a boolean"))?;
++    // Optional: an adapter older than `fromByte` sends none. Present, it must be an offset;
++    // a wrong type is an adapter bug, not an old adapter.
++    let start_byte = match response.get("startByte") {
++        None | Some(serde_json::Value::Null) => None,
++        Some(value) => Some(
++            value
++                .as_u64()
++                .ok_or_else(|| anyhow!("`startByte` is not a non-negative integer"))?,
++        ),
++    };
+     Ok(acp_thread::TaskOutput {
+         content,
+         total_bytes,
+         truncated,
++        start_byte,
+     })
+ }
+ 
++impl AcpConnection {
++    /// `_claude/tasks/output` for one task: the end of its output, or what follows `from_byte`
++    /// when given (Zeo next §6.1, §6.27). An adapter older than `fromByte` ignores the field
++    /// and answers with the end of the file and no `startByte`, which the caller reads as such.
++    fn request_task_output(
++        self: Rc<Self>,
++        session_id: &acp_v2::SessionId,
++        task_id: &str,
++        from_byte: Option<u64>,
++        cx: &mut App,
++    ) -> Task<Result<acp_thread::TaskOutput>> {
++        let version = self.agent_tasks_version();
++        if version < 2 {
++            return Task::ready(Err(anyhow!(
++                "Reading agent task output is not supported: the agent advertises \
++                 {CLAUDE_TASKS_CAPABILITY} version {version}"
++            )));
++        }
++        let mut params = serde_json::json!({
++            "sessionId": session_id,
++            "taskId": task_id,
++            "maxBytes": CLAUDE_TASKS_OUTPUT_MAX_BYTES,
++        });
++        if let Some(from_byte) = from_byte {
++            params["fromByte"] = from_byte.into();
++        }
++        let request = send_task_request(
++            self.connection.clone(),
++            CLAUDE_TASKS_OUTPUT_METHOD,
++            params,
++            task_id.to_string(),
++        );
++        let task_id = task_id.to_string();
++        cx.foreground_executor().spawn(async move {
++            let response = request.await?;
++            parse_task_output(&response)
++                .with_context(|| format!("{CLAUDE_TASKS_OUTPUT_METHOD} answered for {task_id}"))
++        })
++    }
++}
++
+ pub struct AcpConnection {
+     id: AgentId,
+     telemetry_id: SharedString,
+@@ -2473,30 +2525,17 @@ impl AgentConnection for AcpConnection {
+         task_id: &str,
+         cx: &mut App,
+     ) -> Task<Result<acp_thread::TaskOutput>> {
+-        let version = self.agent_tasks_version();
+-        if version < 2 {
+-            return Task::ready(Err(anyhow!(
+-                "Reading agent task output is not supported: the agent advertises \
+-                 {CLAUDE_TASKS_CAPABILITY} version {version}"
+-            )));
+-        }
+-        let params = serde_json::json!({
+-            "sessionId": session_id,
+-            "taskId": task_id,
+-            "maxBytes": CLAUDE_TASKS_OUTPUT_MAX_BYTES,
+-        });
+-        let request = send_task_request(
+-            self.connection.clone(),
+-            CLAUDE_TASKS_OUTPUT_METHOD,
+-            params,
+-            task_id.to_string(),
+-        );
+-        let task_id = task_id.to_string();
+-        cx.foreground_executor().spawn(async move {
+-            let response = request.await?;
+-            parse_task_output(&response)
+-                .with_context(|| format!("{CLAUDE_TASKS_OUTPUT_METHOD} answered for {task_id}"))
+-        })
++        self.request_task_output(session_id, task_id, None, cx)
++    }
++
++    fn fetch_task_output_from(
++        self: Rc<Self>,
++        session_id: &acp_v2::SessionId,
++        task_id: &str,
++        from_byte: u64,
++        cx: &mut App,
++    ) -> Task<Result<acp_thread::TaskOutput>> {
++        self.request_task_output(session_id, task_id, Some(from_byte), cx)
+     }
+ 
+     fn refresh_account_usage(
+diff --git a/crates/agent_servers/src/acp_task_output_tests.rs b/crates/agent_servers/src/acp_task_output_tests.rs
+index 46ca0c4..98a7ee1 100644
+--- a/crates/agent_servers/src/acp_task_output_tests.rs
++++ b/crates/agent_servers/src/acp_task_output_tests.rs
+@@ -246,3 +246,91 @@ async fn test_tasks_task_output_thread_delegates_to_the_connection(cx: &mut gpui
+     assert!(output.truncated);
+     assert_eq!(task_actions_requests(&peer).len(), 1);
+ }
++
++// ---- Zeo next §6.1, §6.27 — reading on from an offset -----------------------------------------
++
++/// `fromByte` goes on the wire only when a follower asks for it, and `startByte` comes back.
++#[gpui::test]
++async fn test_tasks_task_output_from_byte_sends_the_offset_and_reads_start_byte(
++    cx: &mut gpui::TestAppContext,
++) {
++    let peer = connect_task_actions_peer(
++        PLUS_ENTRY,
++        PLUS_NAME,
++        tasks_capability_v(2),
++        task_output_reply(serde_json::json!({
++            "content": "more\n", "totalBytes": 15, "truncated": false, "startByte": 10,
++        })),
++        cx,
++    )
++    .await;
++    let (_thread, session_id) = task_actions_session(&peer, cx).await;
++
++    let output = cx
++        .update(|cx| {
++            peer.connection
++                .clone()
++                .fetch_task_output_from(&session_id, "b1", 10, cx)
++        })
++        .await
++        .expect("served");
++    assert_eq!(output.start_byte, Some(10));
++    assert_eq!(output.content, "more\n");
++    assert_eq!(
++        task_actions_requests(&peer),
++        vec![(
++            "_claude/tasks/output".to_string(),
++            serde_json::json!({
++                "sessionId": session_id.to_string(),
++                "taskId": "b1",
++                "maxBytes": 1_048_576,
++                "fromByte": 10,
++            }),
++        )]
++    );
++}
++
++/// An adapter older than `fromByte` answers without `startByte`: the content is the end of the
++/// file, and `None` tells the follower to replace rather than append.
++#[gpui::test]
++async fn test_tasks_task_output_without_start_byte_reads_as_none(cx: &mut gpui::TestAppContext) {
++    let peer = connect_task_actions_peer(
++        PLUS_ENTRY,
++        PLUS_NAME,
++        tasks_capability_v(2),
++        task_output_reply(task_output_fixture()),
++        cx,
++    )
++    .await;
++    let (_thread, session_id) = task_actions_session(&peer, cx).await;
++    let output = cx
++        .update(|cx| {
++            peer.connection
++                .clone()
++                .fetch_task_output_from(&session_id, "b1", 10, cx)
++        })
++        .await
++        .expect("served");
++    assert_eq!(output.start_byte, None);
++}
++
++/// Hostile: a `startByte` that is not an offset is an adapter bug, refused by name.
++#[gpui::test]
++async fn test_tasks_task_output_refuses_a_malformed_start_byte(cx: &mut gpui::TestAppContext) {
++    let peer = connect_task_actions_peer(
++        PLUS_ENTRY,
++        PLUS_NAME,
++        tasks_capability_v(2),
++        task_output_reply(serde_json::json!({
++            "content": "x", "totalBytes": 1, "truncated": false, "startByte": "0",
++        })),
++        cx,
++    )
++    .await;
++    let (_thread, session_id) = task_actions_session(&peer, cx).await;
++    let text = format!(
++        "{:#}",
++        fetch(&peer, &session_id, "b1", cx).await.unwrap_err()
++    );
++    assert!(text.contains("startByte"), "{text}");
++}
+diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
+index 13891e8..e9db93a 100644
+--- a/crates/agent_tasks_panel/src/panel.rs
++++ b/crates/agent_tasks_panel/src/panel.rs
+@@ -41,6 +41,7 @@ use workspace::{
+ 
+ use crate::{Availability, HistoryEntry, TaskHistoryStore, TaskKey, TaskOrigin};
+ 
++mod log_tabs;
+ mod pagination;
+ mod sub_thread_row;
+ 
+@@ -227,6 +228,8 @@ pub struct PanelRow {
+     pub can_open_log: bool,
+     /// A running foreground task with a tool call: the card's ↓ applies (Zeo next §6.21).
+     pub can_background: bool,
++    /// A running task with output can follow its log in a tab of the panel (§6.1, §6.27).
++    pub can_follow_log: bool,
+     /// The card's eye is on for it (Zeo next §6.21).
+     pub watched: bool,
+     /// The row is in the panel's selection (story 034 R5).
+@@ -259,6 +262,8 @@ struct RowFocus {
+     open: FocusHandle,
+     rename: FocusHandle,
+     open_log: FocusHandle,
++    /// Follow Log, which opens the running task's log in a tab of the panel (§6.27).
++    follow_log: FocusHandle,
+     /// The card's buttons on the panel row (Zeo next §6.21).
+     watch: FocusHandle,
+     open_at_task: FocusHandle,
+@@ -276,6 +281,7 @@ impl RowFocus {
+             open: control_focus_handle(cx),
+             rename: control_focus_handle(cx),
+             open_log: control_focus_handle(cx),
++            follow_log: control_focus_handle(cx),
+             watch: control_focus_handle(cx),
+             open_at_task: control_focus_handle(cx),
+             background: control_focus_handle(cx),
+@@ -377,6 +383,10 @@ pub struct AgentTasksPanel {
+     /// The task whose preview shows under the list, while the card watches it (Zeo next
+     /// §6.21). One at a time; the card's eye on another row moves it there.
+     previewing: Option<TaskKey>,
++    /// The log tabs beside the list, in the order they opened (Zeo next §6.1, §6.27).
++    log_tabs: Vec<log_tabs::LogTab>,
++    /// The log tab on show; `None` shows the list.
++    active_log: Option<TaskKey>,
+     /// The latest write of the page size; a newer change replaces (and so cancels) it.
+     _save_page_size: Task<()>,
+     /// The latest write of the dock position; a newer move replaces (and so cancels) it.
+@@ -507,6 +517,8 @@ impl AgentTasksPanel {
+             page_index: 0,
+             page_size: pagination::DEFAULT_PAGE_SIZE,
+             previewing: None,
++            log_tabs: Vec::new(),
++            active_log: None,
+             _save_page_size: Task::ready(()),
+             _save_position: Task::ready(()),
+             _subscriptions: subscriptions,
+@@ -2184,6 +2196,30 @@ fn render_row(
+                 })),
+             )
+     });
++    // Zeo next §6.1, §6.27: a running task's log, followed in a tab of this panel.
++    let follow_log_button = row.can_follow_log.then(|| {
++        div()
++            .debug_selector({
++                let task_id = record.task_id.clone();
++                move || format!("agent-tasks-follow-log-{task_id}")
++            })
++            .child(
++                action_button(
++                    control_id("follow-log"),
++                    IconName::Terminal,
++                    format!("Follow log: {shown_label}"),
++                    "Follow Log in a Tab",
++                    &focus.follow_log,
++                )
++                .on_click(cx.listener({
++                    let key = key.clone();
++                    move |panel, _, _, cx| {
++                        cx.stop_propagation();
++                        panel.open_log_tab(&key, cx)
++                    }
++                })),
++            )
++    });
+     // Zeo next §6.21: the card's eye, ↑ and ↓, with the card's icons and conditions.
+     let watch_button = row.can_stop.then(|| {
+         let (icon, tooltip) = if row.watched {
+@@ -2327,6 +2363,7 @@ fn render_row(
+         .child(rename_button)
+         .child(open_at_task_button)
+         .children(open_log_button)
++        .children(follow_log_button)
+         .children(watch_button)
+         .children(background_button)
+         .children(stop_button)
+@@ -2537,6 +2574,7 @@ fn panel_row(
+     let can_background = live
+         .as_ref()
+         .is_some_and(|live| can_send_to_background(&live.task));
++    let can_follow_log = live.as_ref().is_some_and(|live| live.task.has_output);
+     let watched = live.as_ref().is_some_and(|live| live.watched);
+     if let Some(LiveTask { task, waiting, .. }) = live {
+         let record = &mut entry.record;
+@@ -2547,6 +2585,7 @@ fn panel_row(
+         record.tool_uses = task.usage.as_ref().map(|usage| usage.tool_uses);
+     }
+     PanelRow {
++        can_follow_log,
+         can_stop,
+         can_archive: !entry.archived && !entry.record.status.is_running(),
+         can_open_log: entry.log_bytes.is_some(),
+@@ -2684,6 +2723,25 @@ impl Render for AgentTasksPanel {
+             .size_full()
+             .bg(cx.theme().colors().panel_background)
+             .child(self.render_toolbar(cx))
++            .children(self.render_log_tab_strip(cx))
++            .when_some(self.render_log_tab(cx), |panel, log| panel.child(log))
++            .when(self.active_log_tab().is_none(), |panel| {
++                self.render_task_list(panel, entry_count, page, window, cx)
++            })
++    }
++}
++
++impl AgentTasksPanel {
++    /// The list tab: filters, selection toolbar, list or empty message, preview and pager.
++    fn render_task_list(
++        &self,
++        panel: gpui::Div,
++        entry_count: usize,
++        page: pagination::Page,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> gpui::Div {
++        panel
+             .child(self.render_filters(cx))
+             .children(self.render_selection_toolbar(cx))
+             .when_some(self.status_message(cx), |panel, message| {
+@@ -2843,6 +2901,10 @@ mod pagination_tests;
+ #[path = "panel/card_buttons_tests.rs"]
+ mod card_buttons;
+ 
++#[cfg(test)]
++#[path = "panel/log_tabs_tests.rs"]
++mod log_tabs_tests;
++
+ #[cfg(test)]
+ #[path = "panel/multi_window_tests.rs"]
+ mod multi_window;
+diff --git a/crates/agent_tasks_panel/src/panel/log_buffer_tests.rs b/crates/agent_tasks_panel/src/panel/log_buffer_tests.rs
+new file mode 100644
+index 0000000..0a55272
+--- /dev/null
++++ b/crates/agent_tasks_panel/src/panel/log_buffer_tests.rs
+@@ -0,0 +1,84 @@
++// Zeo next proposal §6.1, §6.27: the text of a log tab. It appends only a read that starts where
++// the last one ended, starts over otherwise, joins a line split across reads, and stays bounded.
++// Filter: `log_buffer_tests`.
++
++use acp_thread::TaskOutput;
++
++use super::{LOG_TAB_MAX_LINES, LogBuffer};
++
++fn out(content: &str, start_byte: Option<u64>) -> TaskOutput {
++    TaskOutput {
++        content: content.to_string(),
++        total_bytes: start_byte.unwrap_or(0) + content.len() as u64,
++        truncated: false,
++        start_byte,
++    }
++}
++
++fn shown(buffer: &LogBuffer) -> Vec<String> {
++    buffer.lines().collect()
++}
++
++#[test]
++fn appends_a_read_that_starts_where_the_last_ended() {
++    let mut buffer = LogBuffer::default();
++    buffer.apply(&out("one\ntwo\n", Some(100)));
++    assert_eq!(buffer.next_byte(), Some(108));
++    buffer.apply(&out("three\n", Some(108)));
++    assert_eq!(shown(&buffer), ["one", "two", "three"]);
++    assert_eq!(buffer.next_byte(), Some(114));
++}
++
++#[test]
++fn joins_a_line_split_across_two_reads() {
++    let mut buffer = LogBuffer::default();
++    buffer.apply(&out("Compiling ser", Some(0)));
++    assert_eq!(
++        shown(&buffer),
++        ["Compiling ser"],
++        "the line being written shows"
++    );
++    buffer.apply(&out("de v1.0\nnext", Some(13)));
++    assert_eq!(shown(&buffer), ["Compiling serde v1.0", "next"]);
++}
++
++/// Hostile: a read that does not continue -- the file was truncated or replaced -- must not be
++/// glued onto the old text.
++#[test]
++fn starts_over_when_a_read_does_not_continue() {
++    let mut buffer = LogBuffer::default();
++    buffer.apply(&out("old\n", Some(0)));
++    buffer.apply(&out("new\n", Some(0)));
++    assert_eq!(shown(&buffer), ["new"]);
++}
++
++/// An adapter older than `fromByte` sends the end of the file every time, with no `startByte`:
++/// each read replaces the text, so it never doubles.
++#[test]
++fn replaces_on_every_read_without_start_byte() {
++    let mut buffer = LogBuffer::default();
++    buffer.apply(&out("a\nb\n", None));
++    buffer.apply(&out("a\nb\nc\n", None));
++    assert_eq!(shown(&buffer), ["a", "b", "c"]);
++    assert_eq!(buffer.next_byte(), None, "no offset to read on from");
++}
++
++#[test]
++fn keeps_the_last_state_of_a_line_redrawn_with_carriage_returns() {
++    let mut buffer = LogBuffer::default();
++    buffer.apply(&out("10%\r50%\r100%\ndone\n", Some(0)));
++    assert_eq!(shown(&buffer), ["100%", "done"]);
++}
++
++/// Hostile: a long-running task must not grow the tab without bound.
++#[test]
++fn drops_the_oldest_lines_past_the_cap_and_counts_them() {
++    let mut buffer = LogBuffer::default();
++    let text: String = (0..LOG_TAB_MAX_LINES + 5)
++        .map(|n| format!("line {n}\n"))
++        .collect();
++    buffer.apply(&out(&text, Some(0)));
++    assert_eq!(buffer.line_count(), LOG_TAB_MAX_LINES);
++    assert_eq!(buffer.dropped(), 5);
++    assert_eq!(shown(&buffer).first().map(String::as_str), Some("line 5"));
++}
+diff --git a/crates/agent_tasks_panel/src/panel/log_tabs.rs b/crates/agent_tasks_panel/src/panel/log_tabs.rs
+new file mode 100644
+index 0000000..3d1080d
+--- /dev/null
++++ b/crates/agent_tasks_panel/src/panel/log_tabs.rs
+@@ -0,0 +1,459 @@
++//! Log tabs in the Agent Tasks panel (Zeo next proposal §6.1, §6.27): "Follow Log" on a running
++//! task's row opens its output in a tab of the panel, beside the list, and keeps it current while
++//! the task runs. The list stays the first tab; one tab per task, and opening it again focuses it.
++//!
++//! The log is read incrementally: the first read takes the end of the file, and each later one
++//! asks only for what follows (`fromByte`, Claude Agent (Plus) 0.37.0). An older adapter answers
++//! without `startByte`, and the tab then replaces its text with the end of the file on every read
++//! instead of appending -- slower, still correct. Memory is bounded to [`LOG_TAB_MAX_LINES`].
++
++use std::collections::VecDeque;
++use std::time::Duration;
++
++use acp_thread::{AcpThread, AgentTaskId, TaskOutput};
++use anyhow::Result;
++use gpui::{
++    AnyElement, App, Context, Entity, ScrollEvent, ScrollStrategy, SharedString, Task,
++    UniformListScrollHandle, prelude::*, uniform_list,
++};
++use ui::{
++    ButtonCommon, Clickable, IconButton, IconName, IconSize, Label, LabelSize, Tooltip, prelude::*,
++};
++
++use super::AgentTasksPanel;
++use crate::TaskKey;
++
++/// The most lines a log tab keeps; older ones are dropped and counted.
++pub(crate) const LOG_TAB_MAX_LINES: usize = 10_000;
++
++/// How long a following tab waits between reads of a running task.
++pub(crate) const LOG_TAB_POLL_INTERVAL: Duration = Duration::from_secs(1);
++
++/// The text of one log tab: whole lines, the line still being written, and where the next read
++/// starts. Pure, so the follow rules can be tested without a window.
++#[derive(Debug, Default, Clone, PartialEq)]
++pub struct LogBuffer {
++    lines: VecDeque<String>,
++    /// The last line, until its newline arrives.
++    partial: String,
++    /// Where the next read starts; `None` before the first read and with an adapter that does
++    /// not say where its content begins.
++    next_byte: Option<u64>,
++    /// Lines dropped from the front to stay under [`LOG_TAB_MAX_LINES`].
++    dropped: usize,
++}
++
++impl LogBuffer {
++    /// Folds one answer of `_claude/tasks/output` in. Appended only when it starts exactly
++    /// where the last read ended; anything else -- the first read, a file that was truncated or
++    /// replaced, an adapter with no `startByte` -- starts the text over.
++    pub fn apply(&mut self, output: &TaskOutput) {
++        let continues = output.start_byte.is_some() && output.start_byte == self.next_byte;
++        if !continues {
++            *self = Self::default();
++        }
++        self.push_text(&output.content);
++        self.next_byte = output
++            .start_byte
++            .map(|start| start + output.content.len() as u64);
++    }
++
++    fn push_text(&mut self, text: &str) {
++        let joined = std::mem::take(&mut self.partial) + text;
++        let mut parts = joined.split('\n').collect::<Vec<_>>();
++        self.partial = parts.pop().unwrap_or_default().to_string();
++        for part in parts {
++            self.lines.push_back(terminal_line(part));
++        }
++        while self.lines.len() > LOG_TAB_MAX_LINES {
++            self.lines.pop_front();
++            self.dropped += 1;
++        }
++    }
++
++    /// Where the next read should start, if the adapter said where this one began.
++    pub fn next_byte(&self) -> Option<u64> {
++        self.next_byte
++    }
++
++    /// Lines dropped from the front to stay bounded.
++    pub fn dropped(&self) -> usize {
++        self.dropped
++    }
++
++    /// Every line on show, the one still being written last.
++    pub fn lines(&self) -> impl Iterator<Item = String> + '_ {
++        self.lines
++            .iter()
++            .cloned()
++            .chain((!self.partial.is_empty()).then(|| terminal_line(&self.partial)))
++    }
++
++    pub fn line_count(&self) -> usize {
++        self.lines.len() + usize::from(!self.partial.is_empty())
++    }
++}
++
++/// A line as a terminal leaves it: what follows the last carriage return, so a progress bar
++/// redrawn in place shows its last state rather than every frame.
++fn terminal_line(line: &str) -> String {
++    line.rsplit('\r').next().unwrap_or_default().to_string()
++}
++
++/// One open log tab.
++pub struct LogTab {
++    pub(crate) key: TaskKey,
++    pub(crate) title: SharedString,
++    pub(crate) buffer: LogBuffer,
++    /// Whether new lines scroll the view to the end; a scroll up turns it off.
++    pub(crate) follow: bool,
++    /// The task is over and its last output was read: nothing more will come.
++    pub(crate) ended: bool,
++    pub(crate) error: Option<SharedString>,
++    pub(crate) scroll: UniformListScrollHandle,
++    _poll: Task<()>,
++}
++
++impl AgentTasksPanel {
++    /// Opens `key`'s log in a tab of the panel, or focuses the tab already open for it.
++    pub fn open_log_tab(&mut self, key: &TaskKey, cx: &mut Context<Self>) {
++        if self.log_tabs.iter().any(|tab| &tab.key == key) {
++            self.active_log = Some(key.clone());
++            cx.notify();
++            return;
++        }
++        let title = self
++            .store
++            .read(cx)
++            .live_task(&key.0, &key.1, cx)
++            .map(|(_, task)| agent_ui::display_label(&agent_ui::collapse_label(&task.description)))
++            .unwrap_or_else(|| key.1.to_string().into());
++        log::info!(
++            "agent_task_log event=tab_opened session_id={} task_id={} source=agent_tasks_panel",
++            key.0,
++            key.1
++        );
++        let poll = cx.spawn({
++            let key = key.clone();
++            async move |panel, cx| {
++                loop {
++                    let Ok(Some((fetch, running))) =
++                        panel.update(cx, |panel, cx| panel.start_log_read(&key, cx))
++                    else {
++                        return;
++                    };
++                    let result = fetch.await;
++                    let Ok(more) = panel.update(cx, |panel, cx| {
++                        panel.finish_log_read(&key, result, running, cx)
++                    }) else {
++                        return;
++                    };
++                    match more {
++                        LogReadNext::Now => {}
++                        LogReadNext::Later => {
++                            cx.background_executor().timer(LOG_TAB_POLL_INTERVAL).await
++                        }
++                        LogReadNext::Stop => return,
++                    }
++                }
++            }
++        });
++        self.log_tabs.push(LogTab {
++            key: key.clone(),
++            title,
++            buffer: LogBuffer::default(),
++            follow: true,
++            ended: false,
++            error: None,
++            scroll: UniformListScrollHandle::new(),
++            _poll: poll,
++        });
++        self.active_log = Some(key.clone());
++        cx.notify();
++    }
++
++    /// Closes `key`'s tab, which stops its reads; the list shows again if it was on show.
++    pub fn close_log_tab(&mut self, key: &TaskKey, cx: &mut Context<Self>) {
++        self.log_tabs.retain(|tab| &tab.key != key);
++        if self.active_log.as_ref() == Some(key) {
++            self.active_log = None;
++        }
++        cx.notify();
++    }
++
++    /// Shows the list tab.
++    pub fn show_task_list(&mut self, cx: &mut Context<Self>) {
++        self.active_log = None;
++        cx.notify();
++    }
++
++    /// The tab on show, if a log tab is.
++    pub fn active_log_tab(&self) -> Option<&LogTab> {
++        let key = self.active_log.as_ref()?;
++        self.log_tabs.iter().find(|tab| &tab.key == key)
++    }
++
++    pub fn log_tab_keys(&self) -> Vec<TaskKey> {
++        self.log_tabs.iter().map(|tab| tab.key.clone()).collect()
++    }
++
++    /// Turns following back on and jumps to the end.
++    pub fn resume_log_follow(&mut self, key: &TaskKey, cx: &mut Context<Self>) {
++        if let Some(tab) = self.log_tabs.iter_mut().find(|tab| &tab.key == key) {
++            tab.follow = true;
++            scroll_to_end(tab);
++            cx.notify();
++        }
++    }
++
++    fn pause_log_follow(&mut self, key: &TaskKey, cx: &mut Context<Self>) {
++        if let Some(tab) = self.log_tabs.iter_mut().find(|tab| &tab.key == key)
++            && tab.follow
++        {
++            tab.follow = false;
++            cx.notify();
++        }
++    }
++
++    /// The thread that can serve `key`'s output, from whichever card holds it.
++    fn log_thread(&self, key: &TaskKey, cx: &App) -> Option<Entity<AcpThread>> {
++        self.store
++            .read(cx)
++            .cards()
++            .find_map(|card| card.read(cx).held_thread(&key.0))
++    }
++
++    /// Starts one read of `key`'s log, and says whether the task was still running when it
++    /// started -- a read that begins after the task ended is its last.
++    fn start_log_read(
++        &mut self,
++        key: &TaskKey,
++        cx: &mut Context<Self>,
++    ) -> Option<(Task<Result<TaskOutput>>, bool)> {
++        let tab = self.log_tabs.iter().find(|tab| &tab.key == key)?;
++        let next_byte = tab.buffer.next_byte();
++        let Some(thread) = self.log_thread(key, cx) else {
++            let tab = self.log_tabs.iter_mut().find(|tab| &tab.key == key)?;
++            tab.error = Some("The task's thread is no longer open".into());
++            tab.ended = true;
++            cx.notify();
++            return None;
++        };
++        let task_id: &AgentTaskId = &key.1;
++        let running = thread
++            .read(cx)
++            .tasks()
++            .iter()
++            .any(|task| &task.id == task_id && task.status.is_running());
++        let fetch = thread.update(cx, |thread, cx| match next_byte {
++            Some(from_byte) => thread.fetch_task_output_from(task_id, from_byte, cx),
++            None => thread.fetch_task_output(task_id, cx),
++        });
++        Some((fetch, running))
++    }
++
++    fn finish_log_read(
++        &mut self,
++        key: &TaskKey,
++        result: Result<TaskOutput>,
++        was_running: bool,
++        cx: &mut Context<Self>,
++    ) -> LogReadNext {
++        let Some(tab) = self.log_tabs.iter_mut().find(|tab| &tab.key == key) else {
++            return LogReadNext::Stop;
++        };
++        let next = match result {
++            Ok(output) => {
++                tab.error = None;
++                tab.buffer.apply(&output);
++                if tab.follow {
++                    scroll_to_end(tab);
++                }
++                if output.truncated && output.start_byte.is_some() {
++                    // The cap stopped the read before the end: catch up at once.
++                    LogReadNext::Now
++                } else if was_running {
++                    LogReadNext::Later
++                } else {
++                    tab.ended = true;
++                    LogReadNext::Stop
++                }
++            }
++            Err(error) => {
++                log::warn!(
++                    "agent_task_log event=tab_read_failed session_id={} task_id={} \
++                     source=agent_tasks_panel error={error:#}",
++                    key.0,
++                    key.1
++                );
++                tab.error = Some(format!("Could not read the log: {error:#}").into());
++                if was_running {
++                    LogReadNext::Later
++                } else {
++                    tab.ended = true;
++                    LogReadNext::Stop
++                }
++            }
++        };
++        cx.notify();
++        next
++    }
++
++    /// The tab strip above the panel's content, while any log tab is open.
++    pub(super) fn render_log_tab_strip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
++        if self.log_tabs.is_empty() {
++            return None;
++        }
++        let list_active = self.active_log.is_none();
++        let strip = h_flex()
++            .debug_selector(|| "agent-tasks-log-tabs".to_string())
++            .flex_none()
++            .gap_1()
++            .px_1()
++            .py_0p5()
++            .overflow_x_hidden()
++            .border_b_1()
++            .border_color(cx.theme().colors().border_variant)
++            .child(
++                Button::new("agent-tasks-tab-list", "Tasks")
++                    .label_size(LabelSize::Small)
++                    .toggle_state(list_active)
++                    .on_click(cx.listener(|panel, _, _, cx| panel.show_task_list(cx))),
++            )
++            .children(self.log_tabs.iter().enumerate().map(|(ix, tab)| {
++                let active = self.active_log.as_ref() == Some(&tab.key);
++                let task_id = tab.key.1.clone();
++                h_flex()
++                    .debug_selector(move || format!("agent-tasks-log-tab-{task_id}"))
++                    .gap_0p5()
++                    .child(
++                        Button::new(("agent-tasks-tab", ix), tab.title.clone())
++                            .label_size(LabelSize::Small)
++                            .toggle_state(active)
++                            .truncate(true)
++                            .on_click(cx.listener({
++                                let key = tab.key.clone();
++                                move |panel, _, _, cx| panel.open_log_tab(&key, cx)
++                            })),
++                    )
++                    .child(
++                        IconButton::new(("agent-tasks-tab-close", ix), IconName::Close)
++                            .icon_size(IconSize::XSmall)
++                            .tooltip(Tooltip::text("Close Log Tab"))
++                            .on_click(cx.listener({
++                                let key = tab.key.clone();
++                                move |panel, _, _, cx| panel.close_log_tab(&key, cx)
++                            })),
++                    )
++            }));
++        Some(strip.into_any_element())
++    }
++
++    /// The log tab on show: a status line, then its lines in a list that follows the end.
++    pub(super) fn render_log_tab(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
++        let tab = self.active_log_tab()?;
++        let key = tab.key.clone();
++        let status: SharedString = if let Some(error) = &tab.error {
++            error.clone()
++        } else if tab.ended {
++            "Task ended".into()
++        } else if tab.follow {
++            "Following".into()
++        } else {
++            "Paused".into()
++        };
++        let lines: Vec<String> = tab.buffer.lines().collect();
++        let count = lines.len();
++        Some(
++            v_flex()
++                .debug_selector(|| "agent-tasks-log-view".to_string())
++                .flex_1()
++                .min_h_0()
++                .child(
++                    h_flex()
++                        .flex_none()
++                        .justify_between()
++                        .px_2()
++                        .py_0p5()
++                        .child(Label::new(status).size(LabelSize::XSmall).color(
++                            if tab.error.is_some() {
++                                Color::Warning
++                            } else {
++                                Color::Muted
++                            },
++                        ))
++                        .children((tab.buffer.dropped() > 0).then(|| {
++                            Label::new(format!("{} earlier lines not kept", tab.buffer.dropped()))
++                                .size(LabelSize::XSmall)
++                                .color(Color::Muted)
++                        }))
++                        .children((!tab.follow && !tab.ended).then(|| {
++                            div()
++                                .debug_selector(|| "agent-tasks-log-follow".to_string())
++                                .child(
++                                    Button::new("agent-tasks-log-follow", "Follow")
++                                        .label_size(LabelSize::XSmall)
++                                        .on_click(cx.listener({
++                                            let key = key.clone();
++                                            move |panel, _, _, cx| panel.resume_log_follow(&key, cx)
++                                        })),
++                                )
++                        })),
++                )
++                .child(
++                    div()
++                        .id("agent-tasks-log-body")
++                        .flex_1()
++                        .min_h_0()
++                        .bg(cx.theme().colors().editor_background)
++                        .on_scroll(cx.listener({
++                            move |panel, event: &ScrollEvent, window, cx| {
++                                // A wheel turned up reads earlier lines: stop following.
++                                if event.delta.pixel_delta(window.line_height()).y > gpui::px(0.) {
++                                    panel.pause_log_follow(&key, cx);
++                                }
++                            }
++                        }))
++                        .child(
++                            uniform_list("agent-tasks-log-lines", count, move |range, _, cx| {
++                                range
++                                    .map(|ix| {
++                                        Label::new(lines[ix].clone())
++                                            .size(LabelSize::XSmall)
++                                            .buffer_font(cx)
++                                            .single_line()
++                                            .into_any_element()
++                                    })
++                                    .collect()
++                            })
++                            .px_2()
++                            .size_full()
++                            .track_scroll(&tab.scroll),
++                        ),
++                )
++                .into_any_element(),
++        )
++    }
++}
++
++fn scroll_to_end(tab: &LogTab) {
++    let count = tab.buffer.line_count();
++    if count > 0 {
++        tab.scroll.scroll_to_item(count - 1, ScrollStrategy::Bottom);
++    }
++}
++
++/// What a log tab's read loop does after one read.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum LogReadNext {
++    /// The read stopped at the cap: read again at once.
++    Now,
++    /// The task runs: read again after [`LOG_TAB_POLL_INTERVAL`].
++    Later,
++    /// The task is over and its end was read, or the tab closed.
++    Stop,
++}
++
++#[cfg(test)]
++#[path = "log_buffer_tests.rs"]
++mod log_buffer_tests;
+diff --git a/crates/agent_tasks_panel/src/panel/log_tabs_tests.rs b/crates/agent_tasks_panel/src/panel/log_tabs_tests.rs
+new file mode 100644
+index 0000000..3d218cd
+--- /dev/null
++++ b/crates/agent_tasks_panel/src/panel/log_tabs_tests.rs
+@@ -0,0 +1,244 @@
++// Zeo next proposal §6.1, §6.27 (asks 3, 13, 47): "Follow Log" on a running task's row opens its
++// output in a tab of the Agent Tasks panel. The list is the first tab; one tab per task; the tab
++// reads on from where it stopped while the task runs, and stops reading once it has ended.
++// GPUI integration tests over the real card. Filter: `log_tabs_tests`.
++
++use gpui::{Modifiers, TestAppContext};
++
++use crate::test_helpers::*;
++
++use super::log_tabs::LOG_TAB_POLL_INTERVAL;
++
++fn show(panels: &mut Panels) {
++    panels
++        .workspace
++        .update_in(&mut panels.cx, |workspace, window, cx| {
++            workspace.focus_panel::<crate::AgentTasksPanel>(window, cx);
++        });
++    redraw(panels);
++}
++
++fn redraw(panels: &mut Panels) {
++    panels.cx.update(|window, _| window.refresh());
++    panels.cx.run_until_parked();
++}
++
++fn painted(panels: &mut Panels, selector: &str) -> bool {
++    let selector: &'static str = Box::leak(selector.to_string().into_boxed_str());
++    panels.cx.debug_bounds(selector).is_some()
++}
++
++fn click(panels: &mut Panels, selector: &str) {
++    let selector: &'static str = Box::leak(selector.to_string().into_boxed_str());
++    let bounds = panels
++        .cx
++        .debug_bounds(selector)
++        .unwrap_or_else(|| panic!("{selector} is painted"));
++    panels.cx.simulate_click(bounds.center(), Modifiers::none());
++    redraw(panels);
++}
++
++fn task(id: &str, status: &str, has_output: bool) -> serde_json::Value {
++    let mut task = wire_task(id, status, 2_000, None);
++    task["hasOutput"] = serde_json::json!(has_output);
++    task
++}
++
++fn write(connection: &StopConnection, text: &str) {
++    *connection.output_file.lock().unwrap() = Some(text.to_string());
++}
++
++fn tab_lines(panels: &mut Panels) -> Vec<String> {
++    panels.tasks_panel.read_with(&panels.cx, |panel, _| {
++        panel
++            .active_log_tab()
++            .map(|tab| tab.buffer.lines().collect())
++            .unwrap_or_default()
++    })
++}
++
++/// Hostile: only a running task that has output is offered the button.
++#[gpui::test]
++async fn follow_log_is_offered_only_on_a_running_task_with_output(cx: &mut TestAppContext) {
++    init_base(cx);
++    let mut panels = open_panels(cx).await;
++    let thread = open_live_thread(&mut panels, "Live");
++    send_tasks(
++        &thread,
++        vec![
++            task("out", "running", true),
++            task("quiet", "running", false),
++            task("done", "completed", true),
++        ],
++        &mut panels.cx,
++    );
++    show(&mut panels);
++    assert!(painted(&mut panels, "agent-tasks-follow-log-out"));
++    assert!(
++        !painted(&mut panels, "agent-tasks-follow-log-quiet"),
++        "no output yet"
++    );
++    assert!(
++        !painted(&mut panels, "agent-tasks-follow-log-done"),
++        "ended"
++    );
++}
++
++/// The tab replaces the list, shows the end of the log, then reads on from where it stopped.
++#[gpui::test]
++async fn a_log_tab_shows_the_log_and_reads_on_from_where_it_stopped(cx: &mut TestAppContext) {
++    init_base(cx);
++    let mut panels = open_panels(cx).await;
++    let connection = StopConnection::new();
++    write(&connection, "one\ntwo\n");
++    let thread = open_thread_on(
++        &panels.agent_panel,
++        connection.clone(),
++        "Live",
++        &mut panels.cx,
++    );
++    send_tasks(&thread, vec![task("run", "running", true)], &mut panels.cx);
++    show(&mut panels);
++    assert!(
++        !painted(&mut panels, "agent-tasks-log-tabs"),
++        "no strip before a tab"
++    );
++
++    click(&mut panels, "agent-tasks-follow-log-run");
++    assert!(painted(&mut panels, "agent-tasks-log-tabs"));
++    assert!(painted(&mut panels, "agent-tasks-log-tab-run"));
++    assert!(painted(&mut panels, "agent-tasks-log-view"));
++    assert!(
++        !painted(&mut panels, "agent-tasks-list"),
++        "the tab replaces the list"
++    );
++    assert_eq!(tab_lines(&mut panels), ["one", "two"]);
++
++    write(&connection, "one\ntwo\nthree\n");
++    panels.cx.executor().advance_clock(LOG_TAB_POLL_INTERVAL);
++    redraw(&mut panels);
++    assert_eq!(tab_lines(&mut panels), ["one", "two", "three"]);
++    let reads = connection.output_reads.lock().unwrap().clone();
++    assert_eq!(
++        &reads[..2],
++        &[None, Some(8)],
++        "the end first, then on from its end"
++    );
++}
++
++/// One tab per task: opening it again focuses it; the list tab comes back, and closing the tab
++/// returns to the list with no strip left.
++#[gpui::test]
++async fn one_tab_per_task_and_closing_returns_to_the_list(cx: &mut TestAppContext) {
++    init_base(cx);
++    let mut panels = open_panels(cx).await;
++    let connection = StopConnection::new();
++    write(&connection, "x\n");
++    let thread = open_thread_on(&panels.agent_panel, connection, "Live", &mut panels.cx);
++    send_tasks(&thread, vec![task("run", "running", true)], &mut panels.cx);
++    show(&mut panels);
++
++    click(&mut panels, "agent-tasks-follow-log-run");
++    panels
++        .tasks_panel
++        .update(&mut panels.cx, |panel, cx| panel.show_task_list(cx));
++    redraw(&mut panels);
++    assert!(painted(&mut panels, "agent-tasks-list"), "the list tab");
++    click(&mut panels, "agent-tasks-follow-log-run");
++    let keys = panels
++        .tasks_panel
++        .read_with(&panels.cx, |panel, _| panel.log_tab_keys());
++    assert_eq!(keys.len(), 1, "focused, not opened twice");
++    assert!(painted(&mut panels, "agent-tasks-log-view"));
++
++    let key = keys[0].clone();
++    panels
++        .tasks_panel
++        .update(&mut panels.cx, |panel, cx| panel.close_log_tab(&key, cx));
++    redraw(&mut panels);
++    assert!(painted(&mut panels, "agent-tasks-list"));
++    assert!(!painted(&mut panels, "agent-tasks-log-tabs"));
++}
++
++/// Hostile: once the task has ended, one last read takes its end and the tab stops asking.
++#[gpui::test]
++async fn an_ended_task_is_read_once_more_then_not_again(cx: &mut TestAppContext) {
++    init_base(cx);
++    let mut panels = open_panels(cx).await;
++    let connection = StopConnection::new();
++    write(&connection, "a\n");
++    let thread = open_thread_on(
++        &panels.agent_panel,
++        connection.clone(),
++        "Live",
++        &mut panels.cx,
++    );
++    send_tasks(&thread, vec![task("run", "running", true)], &mut panels.cx);
++    show(&mut panels);
++    click(&mut panels, "agent-tasks-follow-log-run");
++    assert_eq!(tab_lines(&mut panels), ["a"], "the first read");
++
++    write(&connection, "a\nb\n");
++    send_tasks(
++        &thread,
++        vec![task("run", "completed", true)],
++        &mut panels.cx,
++    );
++    panels.cx.executor().advance_clock(LOG_TAB_POLL_INTERVAL);
++    redraw(&mut panels);
++    let after_end = connection.output_reads.lock().unwrap().len();
++    panels
++        .cx
++        .executor()
++        .advance_clock(LOG_TAB_POLL_INTERVAL * 3);
++    redraw(&mut panels);
++    assert_eq!(
++        connection.output_reads.lock().unwrap().len(),
++        after_end,
++        "no reads after the last"
++    );
++    assert_eq!(tab_lines(&mut panels), ["a", "b"]);
++    let ended = panels.tasks_panel.read_with(&panels.cx, |panel, _| {
++        panel.active_log_tab().is_some_and(|tab| tab.ended)
++    });
++    assert!(ended, "the tab says the task ended");
++}
++
++/// A wheel turned up reads earlier lines: following pauses, and "Follow" resumes it.
++#[gpui::test]
++async fn scrolling_up_pauses_following_and_follow_resumes_it(cx: &mut TestAppContext) {
++    init_base(cx);
++    let mut panels = open_panels(cx).await;
++    let connection = StopConnection::new();
++    let text: String = (0..200).map(|n| format!("line {n}\n")).collect();
++    write(&connection, &text);
++    let thread = open_thread_on(&panels.agent_panel, connection, "Live", &mut panels.cx);
++    send_tasks(&thread, vec![task("run", "running", true)], &mut panels.cx);
++    show(&mut panels);
++    click(&mut panels, "agent-tasks-follow-log-run");
++    assert!(
++        !painted(&mut panels, "agent-tasks-log-follow"),
++        "following: no button"
++    );
++
++    let bounds = panels
++        .cx
++        .debug_bounds("agent-tasks-log-view")
++        .expect("the log view is painted");
++    panels.cx.simulate_event(gpui::ScrollEvent {
++        position: bounds.center(),
++        delta: gpui::ScrollDelta::Lines(gpui::point(0., 3.)),
++        ..Default::default()
++    });
++    redraw(&mut panels);
++    let following = |panels: &mut Panels| {
++        panels.tasks_panel.read_with(&panels.cx, |panel, _| {
++            panel.active_log_tab().is_some_and(|tab| tab.follow)
++        })
++    };
++    assert!(!following(&mut panels), "paused by the scroll up");
++    assert!(painted(&mut panels, "agent-tasks-log-follow"));
++
++    click(&mut panels, "agent-tasks-log-follow");
++    assert!(following(&mut panels), "resumed");
++}
+diff --git a/crates/agent_tasks_panel/src/test_helpers.rs b/crates/agent_tasks_panel/src/test_helpers.rs
+index 6c3189d..8a2243b 100644
+--- a/crates/agent_tasks_panel/src/test_helpers.rs
++++ b/crates/agent_tasks_panel/src/test_helpers.rs
+@@ -243,6 +243,11 @@ pub(crate) struct StopConnection {
+     pub stop_error: Arc<Mutex<Option<&'static str>>>,
+     /// (session, tool call) of every "Send to Background" (Zeo next §6.21).
+     pub backgrounds: Arc<Mutex<Vec<(String, String)>>>,
++    /// The task's output file as `_claude/tasks/output` serves it (§6.1, §6.27): the end is the
++    /// whole text from 0, `fromByte` what follows it -- as Claude Agent (Plus) answers.
++    pub output_file: Arc<Mutex<Option<String>>>,
++    /// The offset of every read: `None` for the end of the file, `Some(n)` for `fromByte`.
++    pub output_reads: Arc<Mutex<Vec<Option<u64>>>>,
+ }
+ 
+ impl StopConnection {
+@@ -253,6 +258,8 @@ impl StopConnection {
+             stops: Arc::default(),
+             stop_error: Arc::default(),
+             backgrounds: Arc::default(),
++            output_file: Arc::default(),
++            output_reads: Arc::default(),
+         }
+     }
+ 
+@@ -353,11 +360,48 @@ impl AgentConnection for StopConnection {
+         Task::ready(Ok(true))
+     }
+ 
++    fn fetch_task_output(
++        self: Rc<Self>,
++        _session_id: &acp_v2::SessionId,
++        _task_id: &str,
++        _cx: &mut App,
++    ) -> Task<Result<acp_thread::TaskOutput>> {
++        Task::ready(self.serve_output(None))
++    }
++
++    fn fetch_task_output_from(
++        self: Rc<Self>,
++        _session_id: &acp_v2::SessionId,
++        _task_id: &str,
++        from_byte: u64,
++        _cx: &mut App,
++    ) -> Task<Result<acp_thread::TaskOutput>> {
++        Task::ready(self.serve_output(Some(from_byte)))
++    }
++
+     fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
+         self
+     }
+ }
+ 
++impl StopConnection {
++    fn serve_output(&self, from_byte: Option<u64>) -> Result<acp_thread::TaskOutput> {
++        self.output_reads.lock().unwrap().push(from_byte);
++        let file = self.output_file.lock().unwrap();
++        let text = file.as_ref().ok_or_else(|| anyhow!("no output staged"))?;
++        let start = match from_byte {
++            Some(from) if from as usize <= text.len() => from as usize,
++            _ => 0,
++        };
++        Ok(acp_thread::TaskOutput {
++            content: text[start..].to_string(),
++            total_bytes: text.len() as u64,
++            truncated: false,
++            start_byte: Some(start as u64),
++        })
++    }
++}
++
+ // ── Workspace rigs ─────────────────────────────────────────────────────────
+ 
+ /// Settings, the isolated per-test app database, and the agent globals — everything before
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index 2360bbc..cc7fdea 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -1985,7 +1985,7 @@ impl TasksCard {
+     }
+ 
+     /// A live thread of `session_id` that the card holds, whatever its tasks.
+-    pub(crate) fn held_thread(&self, session_id: &acp_v2::SessionId) -> Option<Entity<AcpThread>> {
++    pub fn held_thread(&self, session_id: &acp_v2::SessionId) -> Option<Entity<AcpThread>> {
+         self.held_threads()
+             .filter(|held| &held.session_id == session_id)
+             .find_map(|held| held.thread.upgrade())
+diff --git a/crates/agent_ui/src/tasks_card/open_log_remote_tests.rs b/crates/agent_ui/src/tasks_card/open_log_remote_tests.rs
+index a919ef9..0b7d4b0 100644
+--- a/crates/agent_ui/src/tasks_card/open_log_remote_tests.rs
++++ b/crates/agent_ui/src/tasks_card/open_log_remote_tests.rs
+@@ -350,6 +350,7 @@ fn out(content: &str) -> TaskOutput {
+         content: content.to_string(),
+         total_bytes: content.len() as u64,
+         truncated: false,
++        start_byte: None,
+     }
+ }
+ 
+diff --git a/crates/agent_ui/src/tasks_card/open_log_tests.rs b/crates/agent_ui/src/tasks_card/open_log_tests.rs
+index d87191f..94c930c 100644
+--- a/crates/agent_ui/src/tasks_card/open_log_tests.rs
++++ b/crates/agent_ui/src/tasks_card/open_log_tests.rs
+@@ -112,6 +112,7 @@ fn out(content: &str, truncated: bool) -> TaskOutput {
+             content.len() as u64
+         },
+         truncated,
++        start_byte: None,
+     }
+ }
+ 
+diff --git a/crates/agent_ui/src/tasks_card/preview_tests.rs b/crates/agent_ui/src/tasks_card/preview_tests.rs
+index 3386561..dd5f185 100644
+--- a/crates/agent_ui/src/tasks_card/preview_tests.rs
++++ b/crates/agent_ui/src/tasks_card/preview_tests.rs
+@@ -36,6 +36,7 @@ fn output(content: &str) -> TaskOutput {
+         content: content.to_string(),
+         total_bytes: content.len() as u64,
+         truncated: false,
++        start_byte: None,
+     }
+ }
+ 
+diff --git a/crates/agent_ui/src/tasks_card/task_log_tests.rs b/crates/agent_ui/src/tasks_card/task_log_tests.rs
+index 76acc2a..721a481 100644
+--- a/crates/agent_ui/src/tasks_card/task_log_tests.rs
++++ b/crates/agent_ui/src/tasks_card/task_log_tests.rs
+@@ -91,6 +91,7 @@ fn output(content: &str, total_bytes: u64, truncated: bool) -> TaskOutput {
+         content: content.to_string(),
+         total_bytes,
+         truncated,
++        start_byte: None,
+     }
+ }
+ 

@@ -1,0 +1,137 @@
+From 105d1ce3e82651a05dad0917bfa7f4d2d3522580 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 10 Nov 2026 06:00:44 -0300
+Subject: [PATCH] agent_ui: the tasks card keeps clear of a child thread's
+ titlebar
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.14 (ask 34). In a subagent's thread, opened from
+the tasks card, the card sat on the subagent titlebar's Stop Subagent
+and Minimize Subagent buttons.
+
+render_tasks_card measured the card's free area from
+active_thread_view(), which is the conversation's root thread. While a
+child is shown, only the child's list is laid out, so the root's
+viewport_bounds() is the last one it had: it starts right under the
+toolbar, which is where the child's titlebar is drawn. The card now
+measures the conversation's visible thread (active_thread()), so it
+starts below the child's titlebar and covers only the child's entries.
+
+Test, seen failing first: tasks_card::placement::
+test_the_card_keeps_clear_of_a_child_threads_titlebar (the root thread
+is laid out first, then a child opened from the card's Open; the card's
+top corners must clear the titlebar's Stop button and stay inside the
+child's viewport). Before the fix the card's top was 36px, over the
+Stop button at 33px.
+---
+
+diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
+index bda14ef..9670223 100644
+--- a/crates/agent_ui/src/agent_panel.rs
++++ b/crates/agent_ui/src/agent_panel.rs
+@@ -5083,8 +5083,14 @@ impl AgentPanel {
+             return None;
+         }
+         let toolbar_height = Tab::container_height(cx);
++        // The thread on screen, which is a child's while one is shown, not the
++        // root's: only the visible view's list was laid out this frame, and a
++        // root measured under a child is a stale viewport that starts right under
++        // the toolbar, on the child's titlebar (Zeo next §6.14).
+         let thread_view = match self.visible_surface() {
+-            VisibleSurface::AgentThread(_) => self.active_thread_view(cx),
++            VisibleSurface::AgentThread(_) => self
++                .active_conversation_view()
++                .and_then(|view| view.read(cx).active_thread().cloned()),
+             VisibleSurface::Uninitialized | VisibleSurface::Terminal(_) => None,
+         };
+         // The card keeps clear of the toolbar above and of the message editor
+diff --git a/crates/agent_ui/src/tasks_card/placement_tests.rs b/crates/agent_ui/src/tasks_card/placement_tests.rs
+index 4723a32..f8b3ea1 100644
+--- a/crates/agent_ui/src/tasks_card/placement_tests.rs
++++ b/crates/agent_ui/src/tasks_card/placement_tests.rs
+@@ -8,6 +8,7 @@ use gpui::{Bounds, Pixels, TestAppContext, VisualTestContext, px, size};
+ use settings::{Settings as _, TasksCardPosition};
+ use workspace::dock::PanelSizeState;
+ 
++use super::native_subagent_support::{selector, subagent_rig};
+ use super::test_helpers::*;
+ use crate::AgentPanel;
+ 
+@@ -166,3 +167,75 @@ async fn test_the_card_sits_over_the_conversation(cx: &mut TestAppContext) {
+         );
+     }
+ }
++
++/// Zeo next §6.14 (ask 34). In a child's thread the card keeps clear of the child's
++/// titlebar — its Stop Subagent and Minimize Subagent buttons — and sits over the
++/// child's own conversation. Hostile: the root thread was laid out first, so a card
++/// measured from the root's last viewport lands right under the toolbar, on the
++/// titlebar.
++#[gpui::test]
++async fn test_the_card_keeps_clear_of_a_child_threads_titlebar(cx: &mut TestAppContext) {
++    let mut rig = subagent_rig(cx).await;
++    rig.parent
++        .update(&mut rig.cx, |thread, cx| {
++            thread.handle_session_update(
++                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
++                    "a response long enough to be an entry".into(),
++                )),
++                cx,
++            )
++        })
++        .expect("the agent message applies");
++    let child = rig.spawn_child("alpha", Some("Alpha"), true);
++    rig.report_running(&child);
++    rig.draw();
++
++    let id = rig.row_of(&child).expect("the child has a row").task.id;
++    let open = rig
++        .cx
++        .debug_bounds(selector(format!("tasks-card-open-{id}")))
++        .expect("Open is painted");
++    rig.cx
++        .simulate_click(open.center(), gpui::Modifiers::none());
++    rig.cx.run_until_parked();
++    child
++        .update(&mut rig.cx, |thread, cx| {
++            thread.handle_session_update(
++                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
++                    "the child's own entry".into(),
++                )),
++                cx,
++            )
++        })
++        .expect("the child's message applies");
++    rig.draw();
++    rig.draw();
++
++    let stop = rig
++        .cx
++        .debug_bounds("subagent-titlebar-stop")
++        .expect("the child's titlebar is painted");
++    let viewport = rig.panel.read_with(&rig.cx, |panel, cx| {
++        let view = panel
++            .active_conversation_view()
++            .and_then(|view| view.read(cx).active_thread().cloned())
++            .expect("the child is shown");
++        view.read(cx).list_state.viewport_bounds()
++    });
++    assert!(
++        !viewport.is_empty(),
++        "the child's conversation was laid out"
++    );
++    for position in [TasksCardPosition::TopRight, TasksCardPosition::TopLeft] {
++        set_position(position, &mut rig.cx);
++        let card = rig.cx.debug_bounds("tasks-card").expect("card painted");
++        assert!(
++            card.top() >= stop.bottom(),
++            "{position:?}: card {card:?} covers the child's titlebar {stop:?}"
++        );
++        assert!(
++            contains(viewport, card),
++            "{position:?}: card {card:?} outside the child's conversation {viewport:?}"
++        );
++    }
++}

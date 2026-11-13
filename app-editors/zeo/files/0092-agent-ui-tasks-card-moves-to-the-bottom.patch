@@ -1,0 +1,453 @@
+From e801dcaa000ad8655401c922f81f25145d27151e Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 10 Nov 2026 11:05:41 -0300
+Subject: [PATCH] agent_ui: the tasks card moves to a bar at the bottom of the
+ conversation
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.19 (ask 39). The card's Minimize collapses it to a
+floating pill with a counter and a spinner. The operator asked for what
+the question card (0082) and the plan do instead: a "v" that sends it to
+the bottom of the content area.
+
+A ChevronDown in the card's header, "Move Tasks Card to the Bottom",
+turns the card into a full-width bar: the pill's icon and label ("2 tasks
+running", spinning while work runs) and a ChevronUp that brings the card
+back, open. The bar is drawn the way the question card's bar is.
+
+The card floats as a panel-level overlay, but the bar is not one. The
+thread view on screen hosts the card entity in its own layout, in the
+slot above the question card's, so the bar takes its own space instead
+of covering the last entries; when both show, they stack. The panel
+hands its card to each conversation view when it syncs them
+(ConversationView::tasks_card), its overlay steps aside while the card
+is docked, and its observation of the card also notifies the thread view
+on screen, whose view is cached like the panel's. The state is kept for
+the session, like minimized.
+
+Tests: tasks_card::dock_bottom (the bar replaces the floating card and
+the pill, sits above the message editor and spans the panel, and ^
+brings the card back; the bar spins and is not "minimized"). Both seen
+failing with set_docked_bottom made a no-op.
+---
+
+diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
+index de59d52..e462659 100644
+--- a/crates/agent_ui/src/agent_panel.rs
++++ b/crates/agent_ui/src/agent_panel.rs
+@@ -1169,6 +1169,7 @@ pub struct AgentPanel {
+     tasks_card_sync_pending: bool,
+     /// Whether the tasks card was visible when it last notified.
+     tasks_card_visible: bool,
++    tasks_card_docked: bool,
+     _tasks_card_observation: Subscription,
+     _tasks_card_subscription: Subscription,
+ 
+@@ -1570,9 +1571,19 @@ impl AgentPanel {
+         // only showing and hiding need the panel.
+         let _tasks_card_observation = cx.observe(&tasks_card, |panel, card, cx| {
+             let visible = card.read(cx).is_visible(cx);
+-            if visible != panel.tasks_card_visible {
++            let docked = card.read(cx).is_docked_bottom();
++            if visible != panel.tasks_card_visible || docked != panel.tasks_card_docked {
+                 panel.tasks_card_visible = visible;
++                panel.tasks_card_docked = docked;
+                 cx.notify();
++                // Docked, the card is drawn by the thread on screen (Zeo next
++                // §6.19), whose view is cached like this panel's: it is told too.
++                let thread_view = panel
++                    .active_conversation_view()
++                    .and_then(|view| view.read(cx).active_thread().cloned());
++                if let Some(thread_view) = thread_view {
++                    thread_view.update(cx, |_, cx| cx.notify());
++                }
+             }
+         });
+         let _tasks_card_subscription = cx.subscribe_in(
+@@ -1671,6 +1682,7 @@ impl AgentPanel {
+             tasks_card,
+             tasks_card_sync_pending: false,
+             tasks_card_visible: false,
++            tasks_card_docked: false,
+             _tasks_card_observation,
+             _tasks_card_subscription,
+             is_active: false,
+@@ -5072,6 +5084,11 @@ impl AgentPanel {
+                     panel
+                         .tasks_card
+                         .update(cx, |card, cx| card.sync_threads(views.iter(), cx));
++                    // Each conversation can host the card at its bottom (§6.19).
++                    for view in &views {
++                        let card = panel.tasks_card.clone();
++                        view.update(cx, |view, _| view.tasks_card = Some(card));
++                    }
+                 })
+                 .ok();
+         });
+@@ -5083,7 +5100,8 @@ impl AgentPanel {
+     /// Deferred so it paints after — over — the conversation and its own floating
+     /// controls; an absolute child alone is covered by any later sibling.
+     fn render_tasks_card(&self, cx: &App) -> Option<impl IntoElement> {
+-        if !self.tasks_card.read(cx).is_visible(cx) {
++        // Docked at the bottom, the thread on screen draws the card (§6.19).
++        if !self.tasks_card.read(cx).is_visible(cx) || self.tasks_card.read(cx).is_docked_bottom() {
+             return None;
+         }
+         let toolbar_height = Tab::container_height(cx);
+diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
+index f1b829b..b00e4e1 100644
+--- a/crates/agent_ui/src/conversation_view.rs
++++ b/crates/agent_ui/src/conversation_view.rs
+@@ -865,6 +865,9 @@ pub struct ConversationView {
+     pub(crate) code_span_resolver: AgentCodeSpanResolver,
+     request_elicitation_form_states: HashMap<ElicitationEntryId, ElicitationFormState>,
+     pub(crate) sub_thread: crate::sub_thread::SubThreadViewState,
++    /// The panel's tasks card, which this conversation's thread on screen draws at its
++    /// bottom while the card is docked there (Zeo next §6.19). Set by the panel.
++    pub(crate) tasks_card: Option<Entity<crate::tasks_card::TasksCard>>,
+     _subscriptions: Vec<Subscription>,
+ }
+ 
+@@ -1236,6 +1239,7 @@ impl ConversationView {
+             code_span_resolver,
+             request_elicitation_form_states: HashMap::default(),
+             sub_thread: Default::default(),
++            tasks_card: None,
+             _subscriptions: subscriptions,
+             focus_handle: cx.focus_handle(),
+         }
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index a2fd7fb..b4784c0 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -10005,6 +10005,18 @@ impl ThreadView {
+ 
+     /// The minimized question card: one line above the composer (§5.5). The questions stay
+     /// pending and 0043's Enter rule is unchanged; this only frees the space they took.
++    /// The panel's tasks card while it is docked at the bottom (Zeo next §6.19): in the
++    /// thread's layout, above the question card's slot, so it takes its own space
++    /// instead of covering the last entries. Both bars stack when both show.
++    fn render_docked_tasks_card(&self, cx: &Context<Self>) -> Option<AnyElement> {
++        let card = self.server_view.upgrade()?.read(cx).tasks_card.clone()?;
++        let docked = {
++            let card = card.read(cx);
++            card.is_docked_bottom() && card.is_visible(cx)
++        };
++        docked.then(|| card.into_any_element())
++    }
++
+     fn render_question_card_bar(pending_count: usize, cx: &Context<Self>) -> AnyElement {
+         let label = if pending_count == 1 {
+             "Question pending".to_string()
+@@ -16244,6 +16256,7 @@ impl Render for ThreadView {
+                 |this, version| this.child(self.render_new_version_callout(&version, cx)),
+             )
+             .children(self.render_token_limit_callout(cx))
++            .children(self.render_docked_tasks_card(cx))
+             .children(self.render_pinned_elicitations(cx))
+             .children(self.render_request_elicitations(cx))
+             .child(self.render_message_editor(window, cx))
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index 988237c..737f1e7 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -79,6 +79,10 @@ mod render;
+ #[path = "tasks_card/placement_tests.rs"]
+ mod placement;
+ 
++#[cfg(test)]
++#[path = "tasks_card/dock_bottom_tests.rs"]
++mod dock_bottom;
++
+ #[cfg(test)]
+ #[path = "tasks_card/accessibility_tests.rs"]
+ mod accessibility;
+@@ -365,6 +369,9 @@ pub struct TasksCard {
+     views: Vec<HeldView>,
+     /// Kept for the whole Zeo session, never persisted (R2.5).
+     minimized: bool,
++    /// Moved to a bar at the bottom of the conversation, above the message editor
++    /// (Zeo next §6.19). Kept for the session, like `minimized`.
++    docked_bottom: bool,
+     /// In memory only, so a restart starts with nothing watched (R3.3).
+     watched: HashSet<TaskKey>,
+     /// Rows opened with their disclosure; in memory only, like `watched` (R4.8).
+@@ -503,6 +510,7 @@ impl TasksCard {
+             views: Vec::new(),
+             // §5.10: the setting picks how the card starts; Minimize still toggles it after.
+             minimized: AgentSettings::get_global(cx).tasks_card.start_minimized,
++            docked_bottom: false,
+             watched: HashSet::default(),
+             expanded: HashSet::default(),
+             ended: HashMap::default(),
+@@ -716,6 +724,25 @@ impl TasksCard {
+         self.minimized
+     }
+ 
++    /// Whether the card shows as a bar in the thread's layout instead of floating
++    /// (Zeo next §6.19). The thread view hosts it then; the panel's overlay does not.
++    pub fn is_docked_bottom(&self) -> bool {
++        self.docked_bottom
++    }
++
++    pub fn set_docked_bottom(&mut self, docked: bool, cx: &mut Context<Self>) {
++        if self.docked_bottom == docked {
++            return;
++        }
++        self.docked_bottom = docked;
++        // Back from the bar, the card opens: the bar's ^ asks for the card itself.
++        if !docked {
++            self.minimized = false;
++        }
++        self.update_tick(cx);
++        cx.notify();
++    }
++
+     /// A task as its thread reports it while it runs (R2.3 of story 014); `None`
+     /// once it has ended, or when no held thread of `session_id` lists it.
+     pub fn live_task(
+@@ -1958,6 +1985,9 @@ impl Render for TasksCard {
+         if !AgentSettings::get_global(cx).tasks_card.enabled || groups.is_empty() {
+             return gpui::Empty.into_any_element();
+         }
++        if self.is_docked_bottom() {
++            return self.render_bottom_bar(running_count(&groups), item_count(&groups), cx);
++        }
+         if self.is_minimized() {
+             return self.render_pill(running_count(&groups), item_count(&groups), cx);
+         }
+@@ -1966,16 +1996,71 @@ impl Render for TasksCard {
+ }
+ 
+ impl TasksCard {
++    /// The card moved to the bottom (Zeo next §6.19): a full-width bar above the message
++    /// editor, drawn as the question card's bar is -- the same label as the pill, and a
++    /// ChevronUp that brings the card back.
++    fn render_bottom_bar(
++        &self,
++        running: usize,
++        items: usize,
++        cx: &mut Context<Self>,
++    ) -> AnyElement {
++        let label = pill_label(running, items);
++        let icon = if running > 0 {
++            div()
++                .debug_selector(|| "tasks-card-bar-spinner".into())
++                .child(
++                    Icon::new(IconName::LoadCircle)
++                        .size(IconSize::Small)
++                        .color(Color::Muted)
++                        .with_rotate_animation(2),
++                )
++        } else {
++            div().child(
++                Icon::new(IconName::ListTodo)
++                    .size(IconSize::Small)
++                    .color(Color::Muted),
++            )
++        };
++        h_flex()
++            .id("tasks-card-bar")
++            .debug_selector(|| "tasks-card-bar".into())
++            .w_full()
++            .px_2()
++            .py_1()
++            .gap_2()
++            .justify_between()
++            .border_t_1()
++            .border_color(cx.theme().colors().border)
++            .bg(cx.theme().colors().editor_background)
++            .child(
++                h_flex()
++                    .gap_1p5()
++                    .child(icon)
++                    .child(Label::new(label.clone()).size(LabelSize::Small)),
++            )
++            .child(
++                div()
++                    .debug_selector(|| "tasks-card-bar-expand".into())
++                    .child(
++                        IconButton::new("tasks-card-bar-expand", IconName::ChevronUp)
++                            .icon_size(IconSize::Small)
++                            .icon_color(Color::Muted)
++                            .aria_label(row_aria_label(format!("Show the tasks card: {label}")))
++                            .tooltip(card_tooltip("bar-expand".into(), "Show Tasks Card".into()))
++                            .on_click(
++                                cx.listener(|card, _, _, cx| card.set_docked_bottom(false, cx)),
++                            ),
++                    ),
++            )
++            .into_any_element()
++    }
++
+     /// The minimized card. It spins and counts what runs while something runs; with nothing
+     /// running (ended rows lingering, Unknown children) it counts what the card holds, under
+     /// a still icon -- a spinning "0" read as work in progress (operator, 2026-11-09).
+     fn render_pill(&self, running: usize, items: usize, cx: &mut Context<Self>) -> AnyElement {
+-        let label = match (running, items) {
+-            (1, _) => "1 task running".to_string(),
+-            (0, 1) => "1 task, none running".to_string(),
+-            (0, items) => format!("{items} tasks, none running"),
+-            (running, _) => format!("{running} tasks running"),
+-        };
++        let label = pill_label(running, items);
+         let (icon, count) = if running > 0 {
+             (
+                 div()
+@@ -2083,6 +2168,23 @@ impl TasksCard {
+                                 ),
+                         )
+                     })
++                    .child(
++                        div()
++                            .debug_selector(|| "tasks-card-dock-bottom".into())
++                            .child(
++                                IconButton::new("tasks-card-dock-bottom", IconName::ChevronDown)
++                                    .icon_size(IconSize::Small)
++                                    .icon_color(Color::Muted)
++                                    .aria_label("Move the tasks card to the bottom")
++                                    .tooltip(card_tooltip(
++                                        "dock-bottom".into(),
++                                        "Move Tasks Card to the Bottom".into(),
++                                    ))
++                                    .on_click(cx.listener(|card, _, _, cx| {
++                                        card.set_docked_bottom(true, cx)
++                                    })),
++                            ),
++                    )
+                     .child(
+                         div().debug_selector(|| "tasks-card-minimize".into()).child(
+                             IconButton::new("tasks-card-minimize", IconName::Minimize)
+@@ -2864,6 +2966,17 @@ impl Element for TasksCardOverlay {
+ }
+ 
+ /// The count the pill and the card's header show: ended rows on show excluded.
++/// What the pill and the bottom bar say: what runs, or what the card holds when nothing
++/// runs -- a spinning "0" read as work in progress (operator, 2026-11-09).
++fn pill_label(running: usize, items: usize) -> String {
++    match (running, items) {
++        (1, _) => "1 task running".to_string(),
++        (0, 1) => "1 task, none running".to_string(),
++        (0, items) => format!("{items} tasks, none running"),
++        (running, _) => format!("{running} tasks running"),
++    }
++}
++
+ fn running_count(groups: &[ThreadGroup]) -> usize {
+     // A running sub-thread is running work too: left out, a card holding only sub-threads
+     // showed a spinning "0".
+diff --git a/crates/agent_ui/src/tasks_card/dock_bottom_tests.rs b/crates/agent_ui/src/tasks_card/dock_bottom_tests.rs
+new file mode 100644
+index 0000000..38a0927
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/dock_bottom_tests.rs
+@@ -0,0 +1,107 @@
++// Zeo next proposal §6.19 (ask 39): a "v" in the card's header moves the tasks card to a
++// full-width bar at the bottom of the conversation, above the message editor, as the
++// question card's bar does. The bar is part of the thread's layout, so it takes its own
++// space instead of covering the last entries; a "^" brings the card back.
++
++use gpui::{Modifiers, TestAppContext, VisualTestContext};
++
++use super::test_helpers::*;
++
++fn draw(cx: &mut VisualTestContext) {
++    cx.update(|window, _| window.refresh());
++    cx.run_until_parked();
++}
++
++fn click(selector: &'static str, cx: &mut VisualTestContext) {
++    let bounds = cx
++        .debug_bounds(selector)
++        .unwrap_or_else(|| panic!("{selector} is painted"));
++    cx.simulate_click(bounds.center(), Modifiers::none());
++    draw(cx);
++}
++
++/// Hostile: the bar must not be the old floating pill moved down -- it sits between the
++/// conversation and the message editor, and the floating card is gone while it shows.
++#[gpui::test]
++async fn test_the_card_moves_to_a_bar_above_the_message_editor(cx: &mut TestAppContext) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    let connection = TaskActionsConnection::new();
++    let a = open_titled_thread(&panel, &connection, "A", &mut cx);
++    send_tasks(&a, vec![wire_task("t1", "running", true, 1_000)], &mut cx);
++    draw(&mut cx);
++    assert!(
++        cx.debug_bounds("tasks-card").is_some(),
++        "the floating card shows"
++    );
++
++    click("tasks-card-dock-bottom", &mut cx);
++
++    assert!(
++        cx.debug_bounds("tasks-card").is_none(),
++        "the floating card is gone while the bar shows"
++    );
++    assert!(
++        cx.debug_bounds("tasks-card-pill").is_none(),
++        "not the floating pill"
++    );
++    let bar = cx
++        .debug_bounds("tasks-card-bar")
++        .expect("the bar is painted");
++    let panel_bounds = cx.debug_bounds("agent-panel").expect("panel painted");
++    let editor = panel.read_with(&cx, |panel, cx| {
++        panel
++            .active_thread_view(cx)
++            .and_then(|view| {
++                view.read(cx)
++                    .message_editor
++                    .read(cx)
++                    .editor()
++                    .read(cx)
++                    .last_bounds()
++                    .copied()
++            })
++            .expect("the message editor was painted")
++    });
++    assert!(
++        bar.bottom() <= editor.top(),
++        "the bar {bar:?} sits above the editor {editor:?}"
++    );
++    assert!(
++        bar.size.width >= panel_bounds.size.width * 0.9,
++        "the bar spans the panel: {bar:?} in {panel_bounds:?}"
++    );
++
++    click("tasks-card-bar-expand", &mut cx);
++    assert!(cx.debug_bounds("tasks-card").is_some(), "the card is back");
++    assert!(
++        cx.debug_bounds("tasks-card-bar").is_none(),
++        "the bar is gone"
++    );
++}
++
++/// The bar says what runs, as the pill does.
++#[gpui::test]
++async fn test_the_bar_counts_what_runs(cx: &mut TestAppContext) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    let connection = TaskActionsConnection::new();
++    let a = open_titled_thread(&panel, &connection, "A", &mut cx);
++    send_tasks(
++        &a,
++        vec![
++            wire_task("t1", "running", true, 1_000),
++            wire_task("t2", "running", true, 1_001),
++        ],
++        &mut cx,
++    );
++    draw(&mut cx);
++    click("tasks-card-dock-bottom", &mut cx);
++    let card = card(&panel, &cx);
++    card.read_with(&cx, |card, _| {
++        assert!(card.is_docked_bottom());
++        assert!(!card.is_minimized(), "docking is not minimizing");
++    });
++    assert!(
++        cx.debug_bounds("tasks-card-bar-spinner").is_some(),
++        "it spins while work runs"
++    );
++}

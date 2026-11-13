@@ -1,0 +1,765 @@
+From 8d545d7be893c5ac75687fc798286cda4599e1e0 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Wed, 11 Nov 2026 00:48:45 -0300
+Subject: [PATCH] zed, install_cli, title_bar: "Install CLI" only while zeo is
+ not reachable
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.25. The app menu showed "Install CLI" always, and
+on Linux it installed nothing: it opened a prompt saying the CLI
+"should already be installed", in Zed's words, naming zeditor and
+zedit. Both packages (app-editors/zeo, zeo-bin) put the command at
+/usr/bin/zeo, so on a packaged install the item was always noise.
+
+At startup, before the menus are first built, CliPresence looks for an
+executable `zeo` in the PATH's absolute directories and then in
+~/.local/bin, which a desktop session's PATH often lacks. A relative
+PATH entry is skipped: it resolves against whatever directory the
+editor started in, which is not the command a shell would run. The
+lookup is synchronous on purpose -- a handful of stat calls -- because
+the menus read the answer right after it; a background lookup would
+build them once with the stale item. Found, app_menus drops the item,
+matched by its action rather than its label. Only a file can be seen:
+a shell `alias zeo=…` lives in an rc file, not in the GUI's
+environment, and is not detected.
+
+On Linux the item now does something: it links ~/.local/bin/zeo to the
+command beside the editor in the release layout (<prefix>/libexec/
+zeo-editor, <prefix>/bin/zeo), with no root. A file already there is
+left alone unless it is that same link -- it may be the operator's own
+wrapper. On success the menus are rebuilt without the item and a toast
+says where the link is, adding a PATH hint when ~/.local/bin is not on
+it; on failure a prompt says why and that a package installs
+/usr/bin/zeo. macOS keeps upstream's flow and Windows has no item.
+
+The title bar's application menu (Linux) holds a copy of the menus
+taken when it was built, and re-read them only when disable_ai
+changed, so set_menus alone left the item on screen. It now also
+observes CliPresence. That makes title_bar depend on install_cli; the
+three Cargo.lock lines are the new edges and nothing else.
+
+Logs: one JSON line at startup (cli_presence, with the path found)
+and one per install attempt (cli_linked / cli_link_failed).
+
+Tests: install_cli cli_presence::tests (found on the PATH; a symlink in
+~/.local/bin found off the PATH; a non-executable file, a dangling
+link, a directory and another name are not; a relative PATH entry is
+not; the link is made, found and idempotent; an existing file is left
+alone; no link when no command sits beside the editor; marking
+installed rebuilds the menus once). zed::app_menus::cli_tests (the
+item shows with no lookup and when not found, goes when found; it is
+dropped from a submenu without its neighbours). title_bar
+test_entries_refresh_when_cli_presence_changes. Seen failing with
+drop_install_cli a no-op, the title bar's observer not rebuilding, and
+find_cli neither adding ~/.local/bin nor skipping relative entries.
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index be6ec7d..99ac89c 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -9033,7 +9033,9 @@ dependencies = [
+  "gpui",
+  "log",
+  "release_channel",
++ "serde_json",
+  "smol",
++ "tempfile",
+  "util",
+  "workspace",
+ ]
+@@ -18553,6 +18555,7 @@ dependencies = [
+  "git_ui_core",
+  "gpui",
+  "icons",
++ "install_cli",
+  "livekit_client",
+  "path",
+  "platform_title_bar",
+diff --git a/crates/install_cli/Cargo.toml b/crates/install_cli/Cargo.toml
+index aa31950..445d32e 100644
+--- a/crates/install_cli/Cargo.toml
++++ b/crates/install_cli/Cargo.toml
+@@ -10,7 +10,6 @@ workspace = true
+ 
+ [lib]
+ path = "src/install_cli.rs"
+-test = false
+ doctest = false
+ 
+ [features]
+@@ -22,8 +21,13 @@ client.workspace = true
+ gpui.workspace = true
+ log.workspace = true
+ release_channel.workspace = true
++serde_json.workspace = true
+ smol.workspace = true
+ util.workspace = true
+ 
+ [target.'cfg(not(target_os = "windows"))'.dependencies]
+ workspace.workspace = true
++
++[dev-dependencies]
++gpui = { workspace = true, features = ["test-support"] }
++tempfile.workspace = true
+diff --git a/crates/install_cli/src/cli_presence.rs b/crates/install_cli/src/cli_presence.rs
+new file mode 100644
+index 0000000..0591f1f
+--- /dev/null
++++ b/crates/install_cli/src/cli_presence.rs
+@@ -0,0 +1,160 @@
++//! Whether the `zeo` command is already reachable, so the menu offers "Install CLI" only
++//! while it is not (Zeo next proposal §6.25).
++//!
++//! Upstream shows the item unconditionally, and on Linux it installed nothing: it opened a
++//! prompt saying the CLI "should already be installed". A package (`app-editors/zeo`,
++//! `zeo-bin`) puts `zeo` in `/usr/bin`, so there the item was always noise.
++//!
++//! Only a file can be seen from here. A shell `alias zeo=…` lives in a shell's rc file, not in
++//! the GUI process's environment, so it is not detected; a symlink or a copy on the PATH is.
++
++use gpui::{App, Global};
++use std::ffi::OsStr;
++use std::path::{Path, PathBuf};
++
++/// The CLI's file name, as the packages and the official layout install it.
++pub const CLI_NAME: &str = "zeo";
++
++/// Whether `zeo` was found, and how to rebuild the menus when that changes.
++///
++/// Absent on platforms that never run [`CliPresence::init`] (macOS keeps upstream's install
++/// flow, Windows has no item), which reads as "not found" and keeps the item.
++#[derive(Clone, Copy)]
++pub struct CliPresence {
++    on_path: bool,
++    reload_menus: fn(&mut App),
++}
++
++impl Global for CliPresence {}
++
++impl CliPresence {
++    /// Looks for `zeo` once, at startup, and stores the answer before the menus are built.
++    ///
++    /// Synchronous on purpose: a handful of `stat` calls, and the menus read the answer right
++    /// after this returns, so a background lookup would build them once with a stale item.
++    pub fn init(cx: &mut App, reload_menus: fn(&mut App)) {
++        if !cfg!(any(target_os = "linux", target_os = "freebsd")) {
++            return;
++        }
++        let home = std::env::var_os("HOME").map(PathBuf::from);
++        let found = find_cli(std::env::var_os("PATH").as_deref(), home.as_deref());
++        log::info!(
++            "{}",
++            serde_json::json!({
++                "event": "cli_presence",
++                "on_path": found.is_some(),
++                "path": found.as_ref().map(|path| path.display().to_string()),
++            })
++        );
++        cx.set_global(Self {
++            on_path: found.is_some(),
++            reload_menus,
++        });
++    }
++
++    /// A presence that rebuilds nothing, for tests that read the menus.
++    #[cfg(any(test, feature = "test-support"))]
++    pub fn for_tests(on_path: bool) -> Self {
++        Self {
++            on_path,
++            reload_menus: |_| {},
++        }
++    }
++
++    /// True once `zeo` is known to be reachable: found at startup, or just installed.
++    pub fn on_path(cx: &App) -> bool {
++        cx.try_global::<Self>()
++            .is_some_and(|presence| presence.on_path)
++    }
++
++    /// Records a successful install and rebuilds the menus, so the item goes at once.
++    pub fn mark_installed(cx: &mut App) {
++        let Some(presence) = cx.try_global::<Self>().copied() else {
++            return;
++        };
++        if presence.on_path {
++            return;
++        }
++        cx.set_global(Self {
++            on_path: true,
++            ..presence
++        });
++        (presence.reload_menus)(cx);
++    }
++}
++
++/// The first executable `zeo` in the PATH's directories, then in `~/.local/bin`.
++///
++/// `~/.local/bin` is searched even when the PATH lacks it: a session started from the desktop
++/// often has a narrower PATH than a terminal's, and it is where "Install CLI" links the command.
++pub fn find_cli(path_var: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
++    let mut dirs: Vec<PathBuf> = path_var
++        .map(|path| std::env::split_paths(path).collect())
++        .unwrap_or_default();
++    if let Some(home) = home {
++        dirs.push(user_bin_dir(home));
++    }
++    dirs.into_iter()
++        .filter(|dir| dir.is_absolute())
++        .map(|dir| dir.join(CLI_NAME))
++        .find(|candidate| is_executable(candidate))
++}
++
++/// Where "Install CLI" links the command on Linux: the XDG user executable directory.
++pub fn user_bin_dir(home: &Path) -> PathBuf {
++    home.join(".local").join("bin")
++}
++
++/// The `zeo` command shipped beside this editor, in the release layout: the editor at
++/// `<prefix>/libexec/zeo-editor`, the command at `<prefix>/bin/zeo`. Both packages and the
++/// release tarball use it.
++pub fn bundled_cli(editor: &Path) -> Option<PathBuf> {
++    let candidate = editor.parent()?.parent()?.join("bin").join(CLI_NAME);
++    is_executable(&candidate).then_some(candidate)
++}
++
++/// Links `~/.local/bin/zeo` to the command beside `editor`, creating the directory. No root is
++/// needed, which is why this replaces upstream's "should already be installed" prompt.
++///
++/// A file already there is left alone unless it is this same link: it may be the operator's
++/// own wrapper, and replacing it would be a surprise nobody asked for.
++#[cfg(unix)]
++pub fn link_cli(editor: &Path, home: &Path) -> anyhow::Result<PathBuf> {
++    use anyhow::Context as _;
++    let bundled = bundled_cli(editor).with_context(|| {
++        format!(
++            "no {CLI_NAME} command beside {} (expected ../bin/{CLI_NAME})",
++            editor.display()
++        )
++    })?;
++    let dir = user_bin_dir(home);
++    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
++    let link = dir.join(CLI_NAME);
++    if link.symlink_metadata().is_ok() {
++        if std::fs::read_link(&link).is_ok_and(|target| target == bundled) {
++            return Ok(link);
++        }
++        anyhow::bail!("{} already exists and was left alone", link.display());
++    }
++    std::os::unix::fs::symlink(&bundled, &link)
++        .with_context(|| format!("linking {} to {}", link.display(), bundled.display()))?;
++    Ok(link)
++}
++
++/// A regular file (after following links) with an execute bit. A dangling link is not one.
++pub(crate) fn is_executable(path: &Path) -> bool {
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::PermissionsExt;
++        std::fs::metadata(path)
++            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
++    }
++    #[cfg(not(unix))]
++    {
++        path.is_file()
++    }
++}
++
++#[cfg(all(test, unix))]
++#[path = "cli_presence_tests.rs"]
++mod tests;
+diff --git a/crates/install_cli/src/cli_presence_tests.rs b/crates/install_cli/src/cli_presence_tests.rs
+new file mode 100644
+index 0000000..6d18f31
+--- /dev/null
++++ b/crates/install_cli/src/cli_presence_tests.rs
+@@ -0,0 +1,164 @@
++// Zeo next proposal §6.25: "Install CLI" shows only while `zeo` is not reachable. These pin the
++// lookup the menu reads. Filter: `cli_presence`.
++
++use super::*;
++use std::os::unix::fs::{PermissionsExt, symlink};
++
++fn executable(path: &Path) {
++    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
++    std::fs::write(path, "#!/bin/sh\n").unwrap();
++    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
++}
++
++fn path_of(dirs: &[&Path]) -> std::ffi::OsString {
++    std::env::join_paths(dirs).unwrap()
++}
++
++#[test]
++fn finds_zeo_on_the_path() {
++    let root = tempfile::tempdir().unwrap();
++    let empty = root.path().join("empty");
++    let bin = root.path().join("bin");
++    std::fs::create_dir_all(&empty).unwrap();
++    executable(&bin.join("zeo"));
++
++    let path = path_of(&[&empty, &bin]);
++    assert_eq!(find_cli(Some(&path), None), Some(bin.join("zeo")));
++}
++
++#[test]
++fn finds_a_symlink_in_local_bin_even_off_the_path() {
++    let root = tempfile::tempdir().unwrap();
++    let home = root.path().join("home");
++    let real = root.path().join("opt/zeo/bin/zeo");
++    executable(&real);
++    std::fs::create_dir_all(user_bin_dir(&home)).unwrap();
++    symlink(&real, user_bin_dir(&home).join("zeo")).unwrap();
++
++    let path = path_of(&[&root.path().join("nowhere")]);
++    assert_eq!(
++        find_cli(Some(&path), Some(&home)),
++        Some(user_bin_dir(&home).join("zeo")),
++        "a desktop session's PATH may lack ~/.local/bin"
++    );
++}
++
++/// Hostile: none of these makes the command reachable, so none may hide the item.
++#[test]
++fn ignores_what_cannot_run() {
++    let root = tempfile::tempdir().unwrap();
++    let not_exec = root.path().join("a");
++    std::fs::create_dir_all(&not_exec).unwrap();
++    std::fs::write(not_exec.join("zeo"), "").unwrap();
++
++    let dangling = root.path().join("b");
++    std::fs::create_dir_all(&dangling).unwrap();
++    symlink(root.path().join("gone"), dangling.join("zeo")).unwrap();
++
++    let a_dir = root.path().join("c");
++    std::fs::create_dir_all(a_dir.join("zeo")).unwrap();
++
++    let other_name = root.path().join("d");
++    executable(&other_name.join("zed"));
++
++    let path = path_of(&[&not_exec, &dangling, &a_dir, &other_name]);
++    assert_eq!(find_cli(Some(&path), None), None);
++    assert_eq!(find_cli(None, None), None, "no PATH at all");
++}
++
++/// Hostile: a relative PATH entry ("" or ".") resolves against whatever directory the
++/// editor was started from, so a `zeo` there is not the command a shell would run.
++#[test]
++fn ignores_relative_path_entries() {
++    let root = tempfile::tempdir().unwrap();
++    let relative = std::ffi::OsString::from("relative-bin");
++    executable(&root.path().join("relative-bin/zeo"));
++    std::env::set_current_dir(root.path()).unwrap();
++    assert_eq!(find_cli(Some(&relative), None), None);
++}
++
++#[gpui::test]
++fn marking_installed_rebuilds_the_menus_once(cx: &mut gpui::TestAppContext) {
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    static RELOADS: AtomicUsize = AtomicUsize::new(0);
++    fn reload(_: &mut App) {
++        RELOADS.fetch_add(1, Ordering::SeqCst);
++    }
++
++    cx.update(|cx| {
++        assert!(!CliPresence::on_path(cx), "no global: the item stays");
++        CliPresence::mark_installed(cx);
++        assert_eq!(RELOADS.load(Ordering::SeqCst), 0, "nothing to rebuild yet");
++
++        cx.set_global(CliPresence {
++            on_path: false,
++            reload_menus: reload,
++        });
++        CliPresence::mark_installed(cx);
++        assert!(CliPresence::on_path(cx));
++        CliPresence::mark_installed(cx);
++        assert_eq!(
++            RELOADS.load(Ordering::SeqCst),
++            1,
++            "a second install changes nothing"
++        );
++    });
++}
++
++fn release_layout(root: &Path) -> PathBuf {
++    let editor = root.join("zeo.app/libexec/zeo-editor");
++    executable(&editor);
++    executable(&root.join("zeo.app/bin/zeo"));
++    editor
++}
++
++#[test]
++fn links_the_bundled_cli_into_local_bin() {
++    let root = tempfile::tempdir().unwrap();
++    let editor = release_layout(root.path());
++    let home = root.path().join("home");
++
++    let link = link_cli(&editor, &home).unwrap();
++    assert_eq!(link, user_bin_dir(&home).join("zeo"));
++    assert_eq!(
++        std::fs::read_link(&link).unwrap(),
++        root.path().join("zeo.app/bin/zeo")
++    );
++    assert_eq!(find_cli(None, Some(&home)), Some(link.clone()), "now found");
++    assert_eq!(
++        link_cli(&editor, &home).unwrap(),
++        link,
++        "a second run is a no-op"
++    );
++}
++
++/// Hostile: an existing `~/.local/bin/zeo` that is not this link is somebody's own file.
++#[test]
++fn leaves_an_existing_file_alone() {
++    let root = tempfile::tempdir().unwrap();
++    let editor = release_layout(root.path());
++    let home = root.path().join("home");
++    let mine = user_bin_dir(&home).join("zeo");
++    std::fs::create_dir_all(user_bin_dir(&home)).unwrap();
++    std::fs::write(&mine, "#!/bin/sh\nexec my-wrapper\n").unwrap();
++
++    let error = link_cli(&editor, &home).unwrap_err().to_string();
++    assert!(error.contains("left alone"), "{error}");
++    assert_eq!(
++        std::fs::read_to_string(&mine).unwrap(),
++        "#!/bin/sh\nexec my-wrapper\n"
++    );
++}
++
++#[test]
++fn refuses_when_no_cli_sits_beside_the_editor() {
++    let root = tempfile::tempdir().unwrap();
++    let editor = root.path().join("cargo/target/debug/zeo");
++    executable(&editor);
++    let home = root.path().join("home");
++    assert!(link_cli(&editor, &home).is_err());
++    assert!(
++        !user_bin_dir(&home).join("zeo").exists(),
++        "no link to nothing"
++    );
++}
+diff --git a/crates/install_cli/src/install_cli.rs b/crates/install_cli/src/install_cli.rs
+index 2810690..db53164 100644
+--- a/crates/install_cli/src/install_cli.rs
++++ b/crates/install_cli/src/install_cli.rs
+@@ -1,7 +1,9 @@
++mod cli_presence;
+ #[cfg(not(target_os = "windows"))]
+ mod install_cli_binary;
+ mod register_zed_scheme;
+ 
+ #[cfg(not(target_os = "windows"))]
+ pub use install_cli_binary::{InstallCliBinary, install_cli_binary};
++pub use cli_presence::{CLI_NAME, CliPresence};
+ pub use register_zed_scheme::{RegisterZedScheme, register_zed_scheme};
+diff --git a/crates/install_cli/src/install_cli_binary.rs b/crates/install_cli/src/install_cli_binary.rs
+index c17c2dc..18f2c40 100644
+--- a/crates/install_cli/src/install_cli_binary.rs
++++ b/crates/install_cli/src/install_cli_binary.rs
+@@ -80,17 +80,64 @@ async fn install_script(cx: &AsyncApp) -> Result<Option<PathBuf>> {
+ }
+ 
+ pub fn install_cli_binary(window: &mut Window, cx: &mut Context<Workspace>) {
+-    const LINUX_PROMPT_DETAIL: &str = "If you installed Zed from our official release add ~/.local/bin to your PATH.\n\nIf you installed Zed from a different source like your package manager, then you may need to create an alias/symlink manually.\n\nDepending on your package manager, the CLI might be named zeditor, zedit, zed-editor or something else.";
+-
+     cx.spawn_in(window, async move |workspace, cx| {
++        // Zeo next proposal §6.25: on Linux the item links ~/.local/bin/zeo to the command
++        // beside the editor, instead of upstream's prompt saying it should already be there.
+         if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+-            let prompt = cx.prompt(
+-                PromptLevel::Warning,
+-                "CLI should already be installed",
+-                Some(LINUX_PROMPT_DETAIL),
+-                &["OK"],
+-            );
+-            cx.background_spawn(prompt).detach();
++            let linked = std::env::current_exe()
++                .map_err(anyhow::Error::from)
++                .and_then(|editor| {
++                    let home = std::env::var_os("HOME")
++                        .ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
++                    crate::cli_presence::link_cli(&editor, Path::new(&home))
++                });
++            match linked {
++                Ok(link) => {
++                    log::info!(
++                        "{}",
++                        serde_json::json!({"event": "cli_linked", "path": link.display().to_string()})
++                    );
++                    let dir = link.parent().map(Path::to_path_buf).unwrap_or_default();
++                    let on_path = std::env::var_os("PATH")
++                        .is_some_and(|path| std::env::split_paths(&path).any(|entry| entry == dir));
++                    workspace.update(cx, |workspace, cx| {
++                        crate::CliPresence::mark_installed(cx);
++                        struct LinkedZeoCli;
++                        let hint = if on_path {
++                            String::new()
++                        } else {
++                            format!(" Add {} to your PATH to run it.", dir.display())
++                        };
++                        workspace.show_toast(
++                            Toast::new(
++                                NotificationId::unique::<LinkedZeoCli>(),
++                                format!(
++                                    "Linked `{}` at {}.{hint}",
++                                    crate::CLI_NAME,
++                                    link.display()
++                                ),
++                            ),
++                            cx,
++                        )
++                    })?;
++                }
++                Err(error) => {
++                    log::warn!(
++                        "{}",
++                        serde_json::json!({"event": "cli_link_failed", "error": format!("{error:#}")})
++                    );
++                    let detail = format!(
++                        "{error:#}.\n\nA package (app-editors/zeo, zeo-bin) installs the command as /usr/bin/zeo. Otherwise, link it into a directory on your PATH yourself."
++                    );
++                    let prompt = cx.prompt(
++                        PromptLevel::Warning,
++                        "Couldn't link the zeo command",
++                        Some(&detail),
++                        &["OK"],
++                    );
++                    cx.background_spawn(prompt).detach();
++                }
++            }
+             return Ok(());
+         }
+         let path = match install_script(cx.deref()).await {
+diff --git a/crates/title_bar/Cargo.toml b/crates/title_bar/Cargo.toml
+index 002f18a..f61af39 100644
+--- a/crates/title_bar/Cargo.toml
++++ b/crates/title_bar/Cargo.toml
+@@ -45,6 +45,7 @@ db.workspace = true
+ git_ui_core.workspace = true
+ gpui = { workspace = true, features = ["screen-capture"] }
+ icons.workspace = true
++install_cli.workspace = true
+ livekit_client.workspace = true
+ path.workspace = true
+ project.workspace = true
+@@ -66,6 +67,7 @@ zed_actions.workspace = true
+ arrayvec = "0.7.6"
+ 
+ [dev-dependencies]
++install_cli = { workspace = true, features = ["test-support"] }
+ call = { workspace = true, features = ["test-support"] }
+ client = { workspace = true, features = ["test-support"] }
+ gpui = { workspace = true, features = ["test-support"] }
+diff --git a/crates/title_bar/src/application_menu.rs b/crates/title_bar/src/application_menu.rs
+index 9dbeabc..8ae542e 100644
+--- a/crates/title_bar/src/application_menu.rs
++++ b/crates/title_bar/src/application_menu.rs
+@@ -48,6 +48,7 @@ pub struct ApplicationMenu {
+     entries: SmallVec<[MenuEntry; 8]>,
+     pending_menu_open: Option<String>,
+     _settings_subscription: Subscription,
++    _cli_subscription: Subscription,
+ }
+ 
+ impl ApplicationMenu {
+@@ -72,10 +73,20 @@ impl ApplicationMenu {
+                 cx.notify();
+             });
+ 
++        // Zeo next proposal §6.25: "Install CLI" leaves the menus once `zeo` is linked, and
++        // these entries are a copy taken here -- re-read them when that answer changes.
++        let cli_subscription =
++            cx.observe_global::<install_cli::CliPresence>(|application_menu, cx| {
++                let menus = cx.get_menus().unwrap_or_default();
++                application_menu.entries = Self::build_entries(menus);
++                cx.notify();
++            });
++
+         Self {
+             entries,
+             pending_menu_open: None,
+             _settings_subscription: settings_subscription,
++            _cli_subscription: cli_subscription,
+         }
+     }
+ 
+@@ -605,4 +616,32 @@ mod tests {
+             });
+         }
+     }
++
++    /// Zeo next proposal §6.25: linking `zeo` rebuilds the menus without "Install CLI", and
++    /// the title bar's copy of them must follow, or the item stays on screen.
++    #[gpui::test]
++    fn test_entries_refresh_when_cli_presence_changes(cx: &mut TestAppContext) {
++        init_test(cx);
++        cx.update(|cx| cx.set_menus(vec![view_menu(true)]));
++        let (app_menu, cx) = cx.add_window_view(|window, cx| ApplicationMenu::new(window, cx));
++        assert!(app_menu.read_with(cx, |app_menu, _| has_item(
++            &app_menu.entries,
++            "View",
++            "Agent Panel"
++        )));
++
++        cx.update(|_, cx| {
++            cx.set_menus(vec![view_menu(false)]);
++            cx.set_global(install_cli::CliPresence::for_tests(true));
++        });
++
++        assert!(
++            !app_menu.read_with(cx, |app_menu, _| has_item(
++                &app_menu.entries,
++                "View",
++                "Agent Panel"
++            )),
++            "the entries were re-read from the new menus"
++        );
++    }
+ }
+diff --git a/crates/zed/Cargo.toml b/crates/zed/Cargo.toml
+index 28d43be..2c70cee 100644
+--- a/crates/zed/Cargo.toml
++++ b/crates/zed/Cargo.toml
+@@ -267,6 +267,7 @@ image.workspace = true
+ pkg-config = "0.3.22"
+ 
+ [dev-dependencies]
++install_cli = { workspace = true, features = ["test-support"] }
+ activity_indicator = { workspace = true, features = ["test-support"] }
+ call = { workspace = true, features = ["test-support"] }
+ editor = { workspace = true, features = ["test-support"] }
+diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
+index 80076c4..19f3cbe 100644
+--- a/crates/zed/src/main.rs
++++ b/crates/zed/src/main.rs
+@@ -878,6 +878,13 @@ fn main() {
+         #[cfg(debug_assertions)]
+         watch_languages(fs.clone(), app_state.languages.clone(), cx);
+ 
++        // Zeo next proposal §6.25: look for `zeo` before the menus are built, so "Install
++        // CLI" is left out when it is already reachable.
++        #[cfg(not(target_os = "windows"))]
++        install_cli::CliPresence::init(cx, |cx| {
++            let menus = app_menus(cx);
++            cx.set_menus(menus);
++        });
+         let menus = app_menus(cx);
+         cx.set_menus(menus);
+ 
+diff --git a/crates/zed/src/zed/app_menus.rs b/crates/zed/src/zed/app_menus.rs
+index 4746b0f..71eca2c 100644
+--- a/crates/zed/src/zed/app_menus.rs
++++ b/crates/zed/src/zed/app_menus.rs
+@@ -69,7 +69,7 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
+         view_items.push(MenuItem::separator());
+     }
+ 
+-    vec![
++    let mut menus = vec![
+         Menu {
+             name: app_name.into(),
+             disabled: false,
+@@ -340,5 +340,32 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
+                 ),
+             ],
+         },
+-    ]
++    ];
++    // Zeo next proposal §6.25: "Install CLI" only while `zeo` is not reachable.
++    #[cfg(not(target_os = "windows"))]
++    if install_cli::CliPresence::on_path(cx) {
++        drop_install_cli(&mut menus);
++    }
++    menus
++}
++
++/// Removes the "Install CLI" item wherever it sits, matched by its action rather than its
++/// label, so a renamed item is still found.
++#[cfg(not(target_os = "windows"))]
++fn drop_install_cli(menus: &mut [Menu]) {
++    for menu in menus {
++        menu.items.retain(|item| {
++            !matches!(item, MenuItem::Action { action, .. }
++                if action.partial_eq(&install_cli::InstallCliBinary))
++        });
++        for item in &mut menu.items {
++            if let MenuItem::Submenu(submenu) = item {
++                drop_install_cli(std::slice::from_mut(submenu));
++            }
++        }
++    }
+ }
++
++#[cfg(all(test, not(target_os = "windows")))]
++#[path = "app_menus_cli_tests.rs"]
++mod cli_tests;
+diff --git a/crates/zed/src/zed/app_menus_cli_tests.rs b/crates/zed/src/zed/app_menus_cli_tests.rs
+new file mode 100644
+index 0000000..c656662
+--- /dev/null
++++ b/crates/zed/src/zed/app_menus_cli_tests.rs
+@@ -0,0 +1,62 @@
++// Zeo next proposal §6.25: the app menu offers "Install CLI" only while `zeo` is not reachable.
++// Filter: `app_menus::cli_tests`.
++
++use super::*;
++use gpui::TestAppContext;
++
++fn has_install_cli(menus: &[Menu]) -> bool {
++    menus.iter().any(|menu| {
++        menu.items.iter().any(|item| match item {
++            MenuItem::Action { action, .. } => action.partial_eq(&install_cli::InstallCliBinary),
++            MenuItem::Submenu(submenu) => has_install_cli(std::slice::from_ref(submenu)),
++            _ => false,
++        })
++    })
++}
++
++fn set_presence(cx: &mut App, on_path: bool) {
++    cx.set_global(install_cli::CliPresence::for_tests(on_path));
++}
++
++#[gpui::test]
++fn install_cli_shows_until_the_command_is_reachable(cx: &mut TestAppContext) {
++    crate::zed::tests::init_test(cx);
++    cx.update(|cx| {
++        assert!(
++            has_install_cli(&app_menus(cx)),
++            "no lookup ran: upstream's menu"
++        );
++
++        set_presence(cx, false);
++        assert!(has_install_cli(&app_menus(cx)), "not found: offered");
++
++        set_presence(cx, true);
++        assert!(!has_install_cli(&app_menus(cx)), "found: gone");
++    });
++}
++
++#[test]
++fn the_item_is_dropped_from_a_submenu_too() {
++    let mut menus = vec![Menu {
++        name: "Zeo".into(),
++        items: vec![
++            MenuItem::action("Extensions", zed_actions::Extensions::default()),
++            MenuItem::submenu(Menu {
++                name: "Tools".into(),
++                items: vec![MenuItem::action(
++                    "Install CLI",
++                    install_cli::InstallCliBinary,
++                )],
++                disabled: false,
++            }),
++        ],
++        disabled: false,
++    }];
++    drop_install_cli(&mut menus);
++    assert!(!has_install_cli(&menus));
++    assert_eq!(
++        menus[0].items.len(),
++        2,
++        "only the item goes, not its neighbours"
++    );
++}

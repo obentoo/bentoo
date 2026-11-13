@@ -1,0 +1,222 @@
+From e1dd7019bd511d30df50a969b54b71967826f00c Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 10 Nov 2026 06:11:48 -0300
+Subject: [PATCH] zed: the About window names Zeo's stage, the packaged commit
+ and both repositories
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.18 (ask 38), on 0047. Before:
+
+    Zeo 0.9.1
+    Version: 0.9.1_p20261109
+    Zed: 1.29.0+zeo
+
+After, for a Zeo package:
+
+    Zeo (αlpha)
+    Version: 0.9.1_p20261109
+    Zed: 1.29.0+f0d896f
+    [Zeo] [Zed]   -- links to github.com/zeo-workspace/zeo and
+                     github.com/zed-industries/zed
+
+The title names the release stage instead of repeating the version,
+which has its own row. The Zed row shows Zed's X.Y.Z with the packaged
+upstream commit, shortened to 7 characters, from a new build-time
+variable ZEO_UPSTREAM_COMMIT that the ebuild sets from EGIT_COMMIT.
+ZED_COMMIT_SHA is deliberately not reused: it would also rewrite
+AppVersion's build metadata, which extensions check compatibility
+against, and feed AppCommitSha. Without the variable the row keeps
+AppVersion as it is ("1.29.0+zeo"), and a development build without
+RELEASE_VERSION keeps upstream's title and rows. Copy appends both
+URLs. The window does not resize, so it grows by 32px for the links.
+
+Test, seen failing first against stubs: zed::tests::
+test_about_window_title_and_zed_row (the title for a package and for a
+development build; the commit shortened; no commit and an empty
+variable keep AppVersion).
+---
+
+diff --git a/crates/zed/src/zed.rs b/crates/zed/src/zed.rs
+index 4c6d8e5..c0426ff 100644
+--- a/crates/zed/src/zed.rs
++++ b/crates/zed/src/zed.rs
+@@ -90,7 +90,7 @@ use std::{
+ use terminal_view::terminal_panel::{self, TerminalPanel};
+ use theme::{ActiveTheme, SystemAppearance, ThemeRegistry};
+ use theme_settings::{ThemeSettings, load_user_theme};
+-use ui::{Navigable, NavigableEntry, PopoverMenuHandle, TintColor, prelude::*};
++use ui::{Navigable, NavigableEntry, PopoverMenuHandle, TintColor, Tooltip, prelude::*};
+ use util::markdown::MarkdownString;
+ use util::rel_path::RelPath;
+ use util::{ResultExt, asset_str, maybe};
+@@ -1553,6 +1553,40 @@ fn package_version_for(
+     release_version.filter(|version| !version.is_empty() && release_channel == ReleaseChannel::Zeo)
+ }
+ 
++/// Zeo's release stage, which the About window's title names (Zeo next §6.18).
++const ZEO_STAGE: &str = "\u{3b1}lpha";
++const ZEO_REPOSITORY_URL: &str = "https://github.com/zeo-workspace/zeo";
++const ZED_REPOSITORY_URL: &str = "https://github.com/zed-industries/zed";
++
++/// The About window's title: `Zeo (αlpha)` for a Zeo package, whose version has a row
++/// of its own, else the channel and the version as upstream shows them.
++fn about_title(channel_name: &str, package_version: Option<&str>, version: &str) -> String {
++    match package_version {
++        Some(_) => format!("{channel_name} ({ZEO_STAGE})"),
++        None => format!("{channel_name} {version}"),
++    }
++}
++
++/// The About window's Zed row: Zed's `X.Y.Z` with the packaged upstream commit,
++/// shortened (`1.29.0+f0d896f`), when the package passes ZEO_UPSTREAM_COMMIT; else
++/// AppVersion as it is (`1.29.0+zeo`). AppVersion itself is left alone: extensions
++/// check compatibility against it.
++fn upstream_version_label(app_version: &semver::Version, upstream_commit: Option<&str>) -> String {
++    match upstream_commit
++        .map(str::trim)
++        .filter(|commit| !commit.is_empty())
++    {
++        Some(commit) => format!(
++            "{}.{}.{}+{}",
++            app_version.major,
++            app_version.minor,
++            app_version.patch,
++            commit.chars().take(7).collect::<String>()
++        ),
++        None => app_version.to_string(),
++    }
++}
++
+ /// The `X.Y.Z` the About window's title line shows for a package version: the part
+ /// before the snapshot suffix (`0.2.1_p20261008` -> `0.2.1`).
+ fn short_version(package_version: &str) -> &str {
+@@ -1596,7 +1630,7 @@ fn open_about_window(cx: &mut App) {
+         fn new(cx: &mut Context<Self>) -> Self {
+             let release_channel = ReleaseChannel::global(cx);
+             let release_channel_name = release_channel.display_name();
+-            let app_version: SharedString = AppVersion::global(cx).to_string().into();
++            let app_version = AppVersion::global(cx);
+             // Zeo's version names this build. Zed's keeps a row of its own rather
+             // than being replaced, because AppVersion is what extensions check
+             // compatibility against.
+@@ -1605,9 +1639,12 @@ fn open_about_window(cx: &mut App) {
+                 Some(package_version) => short_version(package_version),
+                 None => env!("CARGO_PKG_VERSION"),
+             };
++            // The packaged upstream commit, which the ebuild passes from EGIT_COMMIT.
++            let upstream_version: SharedString =
++                upstream_version_label(&app_version, option_env!("ZEO_UPSTREAM_COMMIT")).into();
+             let (full_version, upstream_version) = match package_version {
+-                Some(package_version) => (package_version.into(), Some(app_version)),
+-                None => (app_version, None),
++                Some(package_version) => (package_version.into(), Some(upstream_version)),
++                None => (app_version.to_string().into(), None),
+             };
+ 
+             let debug = if cfg!(debug_assertions) {
+@@ -1615,7 +1652,13 @@ fn open_about_window(cx: &mut App) {
+             } else {
+                 ""
+             };
+-            let message: SharedString = format!("{release_channel_name} {version} {debug}").into();
++            let message: SharedString = format!(
++                "{} {debug}",
++                about_title(release_channel_name, package_version, version)
++            )
++            .trim_end()
++            .to_string()
++            .into();
+             let commit = AppCommitSha::try_global(cx)
+                 .map(|sha| sha.full())
+                 .filter(|commit| !commit.is_empty())
+@@ -1645,6 +1688,7 @@ fn open_about_window(cx: &mut App) {
+             };
+             if let Some(upstream_version) = &self.upstream_version {
+                 content.push_str(&format!("\nZed: {upstream_version}"));
++                content.push_str(&format!("\n{ZEO_REPOSITORY_URL}\n{ZED_REPOSITORY_URL}"));
+             }
+             cx.write_to_clipboard(ClipboardItem::new_string(content));
+             window.remove_window();
+@@ -1700,6 +1744,20 @@ fn open_about_window(cx: &mut App) {
+                                         .size(LabelSize::XSmall),
+                                 )
+                                 .child(Label::new(upstream_version).size(LabelSize::Small))
++                                .child(
++                                    h_flex()
++                                        .gap_1()
++                                        .child(about_link(
++                                            "zeo-repository",
++                                            "Zeo",
++                                            ZEO_REPOSITORY_URL,
++                                        ))
++                                        .child(about_link(
++                                            "zed-repository",
++                                            "Zed",
++                                            ZED_REPOSITORY_URL,
++                                        )),
++                                )
+                             }),
+                     )
+                     .child(
+@@ -1752,6 +1810,16 @@ fn open_about_window(cx: &mut App) {
+         }
+     }
+ 
++    /// A repository link under the version rows (Zeo next §6.18).
++    fn about_link(id: &'static str, label: &'static str, url: &'static str) -> Button {
++        Button::new(id, label)
++            .style(ButtonStyle::Subtle)
++            .label_size(LabelSize::Small)
++            .start_icon(Icon::new(IconName::Github).size(IconSize::Small))
++            .tooltip(Tooltip::text(url))
++            .on_click(move |_, _, cx| cx.open_url(url))
++    }
++
+     impl Focusable for AboutWindow {
+         fn focus_handle(&self, _cx: &App) -> FocusHandle {
+             self.ok_entry.focus_handle.clone()
+@@ -1776,7 +1844,8 @@ fn open_about_window(cx: &mut App) {
+     // The window does not resize, so the row naming Zed's version makes room
+     // for itself; without it the OK and Copy buttons fall below the edge.
+     let zed_row_height = if zeo_package_version(ReleaseChannel::global(cx)).is_some() {
+-        52.
++        // 52 for the Zed row, 32 for the repository links under it.
++        84.
+     } else {
+         0.
+     };
+@@ -6297,6 +6366,32 @@ mod tests {
+         assert_eq!(short_version("0.2.1"), "0.2.1");
+     }
+ 
++    /// Zeo next §6.18: the title names the stage, and the Zed row the packaged commit.
++    #[test]
++    fn test_about_window_title_and_zed_row() {
++        use super::{about_title, upstream_version_label};
++        assert_eq!(
++            about_title("Zeo", Some("0.9.1_p20261109"), "0.9.1"),
++            "Zeo (\u{3b1}lpha)"
++        );
++        assert_eq!(
++            about_title("Zeo", None, "0.9.1"),
++            "Zeo 0.9.1",
++            "a development build keeps its version in the title"
++        );
++        let version: semver::Version = "1.29.0+zeo".parse().expect("fixture");
++        assert_eq!(
++            upstream_version_label(&version, Some("f0d896f2c18a543335eb155f729d36b624695591")),
++            "1.29.0+f0d896f"
++        );
++        assert_eq!(upstream_version_label(&version, None), "1.29.0+zeo");
++        assert_eq!(
++            upstream_version_label(&version, Some("")),
++            "1.29.0+zeo",
++            "an empty variable is no commit"
++        );
++    }
++
+     #[gpui::test]
+     async fn test_action_namespaces(cx: &mut gpui::TestAppContext) {
+         use itertools::Itertools;

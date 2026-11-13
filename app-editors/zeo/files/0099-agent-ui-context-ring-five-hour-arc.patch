@@ -1,0 +1,263 @@
+From 74f243ab74c2a8fe07ea4d68b9f870d051707e5e Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Wed, 11 Nov 2026 01:12:42 -0300
+Subject: [PATCH] agent_ui: the context ring draws the 5-hour quota window as
+ an outer arc
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.26 (ask 46). The ring's tooltip already listed
+every quota window the agent reported, but the ring itself drew only
+the context: the 5-hour limit, the one that runs out within a working
+session, took a hover to see. The ring now carries it as a thin outer
+arc, info-coloured, warning-coloured when the agent flags the window.
+
+It is drawn only when a five_hour window has arrived. Plans differ in
+which windows their usage report fills -- on this machine's the
+report carries seven_day alone -- and Claude Agent (Plus) already
+forwards only the windows the report fills (toQuotaWindow drops a
+null or absent one). So the window's presence is the rule, not the
+plan's name: the SDK names plans pro/max/team/enterprise, and a rule
+on a name breaks the day a plan is renamed. A window that came without
+a utilization has nothing to draw and gets no arc, as the tooltip
+shows it as a dash.
+
+Without the window the ring is returned untouched, at its 16 px, so
+nothing moves for a plan that has none. With it, the two arcs share a
+20 px box: the context ring keeps its radius (ring_size / 2 -
+stroke_width, as CircularProgress derives it) and the outer arc sits
+2 px outside it. Only the single-ring branch gains it; the split
+input/output rings are the native agent's, which reports no quota.
+
+AccountUsage gains window(kind), a lookup the arc reads.
+
+Tests: thread_view::tests::five_hour_arc_tests (no window, no arc; a
+reported window draws its fill and its flag; an unmeasured window
+draws nothing and an off-scale one is clamped);
+acp_thread tests::account_usage_finds_a_window_by_kind. Seen failing
+with five_hour_arc and window() returning None.
+---
+
+diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
+index 348897b..0a1f9f6 100644
+--- a/crates/acp_thread/src/acp_thread.rs
++++ b/crates/acp_thread/src/acp_thread.rs
+@@ -3887,6 +3887,12 @@ impl AccountUsage {
+         self.windows.is_empty()
+     }
+ 
++    /// One window by kind, if the agent has reported it. The context ring draws the 5-hour
++    /// window as an outer arc only when this returns it (Zeo next §6.26).
++    pub fn window(&self, kind: &AccountUsageWindowKind) -> Option<&AccountUsageWindow> {
++        self.windows.get(kind)
++    }
++
+     /// The window closest to its limit, which is the one worth surfacing when there is
+     /// room for only one.
+     pub fn most_constrained(&self) -> Option<&AccountUsageWindow> {
+@@ -9948,6 +9954,19 @@ mod tests {
+         assert_eq!(window.utilization, Some(0.85));
+     }
+ 
++    #[test]
++    fn account_usage_finds_a_window_by_kind() {
++        let mut usage = AccountUsage::default();
++        usage.ingest(&rate_limit("seven_day", "allowed", 0.4));
++        assert!(
++            usage.window(&AccountUsageWindowKind::FiveHour).is_none(),
++            "a plan whose report has no 5-hour window has none to draw"
++        );
++        usage.ingest(&rate_limit("five_hour", "allowed", 0.25));
++        let window = usage.window(&AccountUsageWindowKind::FiveHour).unwrap();
++        assert_eq!(window.utilization, Some(0.25));
++    }
++
+     #[test]
+     fn account_usage_reports_no_change_when_nothing_moved() {
+         let mut usage = AccountUsage::default();
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index b4784c0..d9aea93 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -6832,14 +6832,19 @@ impl ThreadView {
+                     .mt_px()
+                     .mr_1()
+                     .child(
+-                        CircularProgress::new(
+-                            usage.used_tokens as f32,
+-                            usage.max_tokens as f32,
++                        self.render_context_ring_with_five_hour_arc(
++                            CircularProgress::new(
++                                usage.used_tokens as f32,
++                                usage.max_tokens as f32,
++                                ring_size,
++                                cx,
++                            )
++                            .stroke_width(stroke_width)
++                            .progress_color(progress_color(progress_ratio)),
+                             ring_size,
++                            stroke_width,
+                             cx,
+-                        )
+-                        .stroke_width(stroke_width)
+-                        .progress_color(progress_color(progress_ratio)),
++                        ),
+                     )
+                     .hoverable_tooltip(build_tooltip)
+                     .into_any_element(),
+@@ -6847,6 +6852,56 @@ impl ThreadView {
+         }
+     }
+ 
++    /// The context ring, with the 5-hour quota window as a thin outer arc when the agent has
++    /// reported that window (Zeo next §6.26). Without it, the ring is returned as it was, at
++    /// its own size, so a plan with no 5-hour window looks exactly as before.
++    fn render_context_ring_with_five_hour_arc(
++        &self,
++        ring: CircularProgress,
++        ring_size: Pixels,
++        stroke_width: Pixels,
++        cx: &Context<Self>,
++    ) -> AnyElement {
++        let thread = self.thread.read(cx);
++        let five_hour = thread
++            .account_usage()
++            .and_then(|usage| usage.window(&acp_thread::AccountUsageWindowKind::FiveHour));
++        let Some(arc) = five_hour_arc(five_hour) else {
++            return ring.into_any_element();
++        };
++        // The outer arc sits 2 px outside the ring: a 20 px box around a ring of radius
++        // `ring_size / 2 - stroke_width`, as CircularProgress derives it, left unchanged.
++        let arc_stroke = px(1.5);
++        let box_size = ring_size + px(4.);
++        let arc_color = if arc.elevated {
++            cx.theme().status().warning
++        } else {
++            cx.theme().status().info
++        };
++        div()
++            .debug_selector(|| "context-ring-five-hour-arc".to_string())
++            .relative()
++            .size(box_size)
++            .flex_none()
++            .child(
++                div().absolute().top_0().left_0().child(
++                    CircularProgress::new(arc.ratio, 1.0, box_size, cx)
++                        .stroke_width(arc_stroke)
++                        .radius(box_size / 2. - arc_stroke)
++                        .bg_color(cx.theme().colors().border_variant.opacity(0.5))
++                        .progress_color(arc_color),
++                ),
++            )
++            .child(
++                div()
++                    .absolute()
++                    .top_0()
++                    .left_0()
++                    .child(ring.size(box_size).radius(ring_size / 2. - stroke_width)),
++            )
++            .into_any_element()
++    }
++
+     /// Entering the context ring asks the agent for the account quota now, so the
+     /// tooltip's 5-hour, weekly and model-scoped rows are current while it is read.
+     /// `AcpThread::refresh_account_usage` bounds how often that reaches the agent.
+@@ -7819,6 +7874,23 @@ fn account_refresh_line(status: acp_thread::AccountUsageRefreshStatus) -> Option
+     }
+ }
+ 
++/// The 5-hour window as the context ring's outer arc: how full it is, and whether the agent
++/// flagged it. `None` when the window was never reported -- a plan without one -- or came
++/// without a utilization, which the tooltip shows as a dash and the arc cannot draw.
++#[derive(Debug, Clone, Copy, PartialEq)]
++struct FiveHourArc {
++    ratio: f32,
++    elevated: bool,
++}
++
++fn five_hour_arc(window: Option<&acp_thread::AccountUsageWindow>) -> Option<FiveHourArc> {
++    let window = window?;
++    Some(FiveHourArc {
++        ratio: window.utilization?.clamp(0.0, 1.0),
++        elevated: !matches!(window.status, AccountUsageStatus::Allowed),
++    })
++}
++
+ fn account_usage_rows(thread: &AcpThread) -> (Vec<AccountUsageRow>, bool) {
+     let Some(account) = thread.account_usage() else {
+         return (Vec::new(), false);
+@@ -16670,6 +16742,7 @@ mod tests {
+     mod message_time_tests;
+ 
+     mod account_refresh_line_tests;
++    mod five_hour_arc_tests;
+ 
+     use super::*;
+     use gpui::UpdateGlobal;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/five_hour_arc_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/five_hour_arc_tests.rs
+new file mode 100644
+index 0000000..389560c
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/tests/five_hour_arc_tests.rs
+@@ -0,0 +1,60 @@
++// Zeo next proposal §6.26 (ask 46): the context ring gains a thin outer arc for the 5-hour quota
++// window, drawn only when the agent reported that window. Filter: `five_hour_arc_tests`.
++
++use acp_thread::{AccountUsageStatus, AccountUsageWindow, AccountUsageWindowKind};
++
++use super::super::{FiveHourArc, five_hour_arc};
++
++fn window(status: AccountUsageStatus, utilization: Option<f32>) -> AccountUsageWindow {
++    AccountUsageWindow {
++        kind: AccountUsageWindowKind::FiveHour,
++        status,
++        utilization,
++        resets_at: None,
++    }
++}
++
++#[test]
++fn no_window_no_arc() {
++    assert_eq!(
++        five_hour_arc(None),
++        None,
++        "a plan whose report has no 5-hour window looks as before"
++    );
++}
++
++#[test]
++fn a_reported_window_draws_its_fill_and_flag() {
++    assert_eq!(
++        five_hour_arc(Some(&window(AccountUsageStatus::Allowed, Some(0.42)))),
++        Some(FiveHourArc {
++            ratio: 0.42,
++            elevated: false
++        })
++    );
++    assert_eq!(
++        five_hour_arc(Some(&window(AccountUsageStatus::Warning, Some(0.9)))),
++        Some(FiveHourArc {
++            ratio: 0.9,
++            elevated: true
++        }),
++        "a flagged window takes the warning colour"
++    );
++}
++
++/// Hostile: a window with no utilization has nothing to draw, and a value off the scale is
++/// clamped rather than drawn past a full circle.
++#[test]
++fn an_unmeasured_or_off_scale_window() {
++    assert_eq!(
++        five_hour_arc(Some(&window(AccountUsageStatus::Allowed, None))),
++        None
++    );
++    assert_eq!(
++        five_hour_arc(Some(&window(AccountUsageStatus::Rejected, Some(1.7)))),
++        Some(FiveHourArc {
++            ratio: 1.0,
++            elevated: true
++        })
++    );
++}

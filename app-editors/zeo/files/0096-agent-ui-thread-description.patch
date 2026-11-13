@@ -1,0 +1,933 @@
+From 60104465021b5791de89e6c2b9d718fc84161f29 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 10 Nov 2026 12:22:50 -0300
+Subject: [PATCH] agent_ui, sidebar: a thread carries a description
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.6 (ask 19). A thread had a title and nothing to say
+what it is for. It gains a description: one line, up to 280 characters,
+edited from "Edit Description…" in the agent menu's Current Thread
+section and in the thread's menu in the threads sidebar, beside "Tags…".
+The modal is prefilled with the current text; Enter saves, a blank line
+clears it, Escape keeps it.
+
+It shows as an Info icon whose tooltip reads it: in the agent panel's
+toolbar right after the title view, and after the title on the thread's
+sidebar row (ThreadItem's badge). The proposal asked for a subtitle in
+the header; the toolbar is one line high, so the icon carries it instead.
+The icon sits beside the title view, not inside it: on an opaque window
+the title view lays a fade over its right end, and the first version,
+drawn inside, was covered by it. A GPUI test cannot see that (its window
+is not opaque); the Xvfb proof did. The sidebar's badge is placed below
+0063's devtools badge in the builder chain, out of that hunk's context.
+
+Stored in a domain of its own, ThreadDescriptionDb, not as a column of
+0048's thread_organization as the proposal planned. That table's
+migrations are a list two patches append to -- 0063 adds devtools_root
+under the devtools-panel USE flag -- and a step appended by an earlier
+patch lands at a different index with and without that flag, which
+sqlez refuses on the next start. A domain of its own has its own list,
+whatever the flags. The rules are the organization's: a draft is
+refused (admit), and a deleted thread's description goes with it
+(thread_organization::forget calls description::forget). Writes go
+through one queued writer; a failed load keeps the session in memory.
+
+Tests: agent_panel::tests::description_header_tests (the icon appears
+beside the title once a description is set, and the panel reads it);
+thread_organization::description::tests (whitespace collapsed,
+blank clears, the 280-character cut; its own migration list, which no
+thread_organization step mentions; a saved thread's description
+survives a restart and a blank one is cleared on disk; a draft is
+refused; a deleted thread's is forgotten, on disk too; the modal is
+prefilled, saves, and clears). The restart and modal tests were seen
+failing with set_description made a no-op; the forget test passed under
+that probe, so it now checks its precondition first.
+---
+
+diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
+index e462659..0d5607e 100644
+--- a/crates/agent_ui/src/agent_panel.rs
++++ b/crates/agent_ui/src/agent_panel.rs
+@@ -49,7 +49,9 @@ use crate::terminals_minimized::{
+     TERMINALS_MINIMIZED_MENU_LABEL, set_terminals_minimized_by_default,
+     terminals_minimized_by_default,
+ };
++use crate::thread_description_modal::{EDIT_DESCRIPTION_MENU_LABEL, ThreadDescriptionModal};
+ use crate::thread_metadata_store::{ThreadId, ThreadMetadataStore, ThreadMetadataStoreEvent};
++use crate::thread_organization::description::ThreadDescriptionStore;
+ use crate::{
+     Agent, AgentInitialContent, AgentThreadSource, ExternalSourcePrompt, NewExternalAgentThread,
+     NewNativeAgentThreadFromSummary,
+@@ -1171,6 +1173,7 @@ pub struct AgentPanel {
+     tasks_card_visible: bool,
+     tasks_card_docked: bool,
+     _tasks_card_observation: Subscription,
++    _description_observation: Option<Subscription>,
+     _tasks_card_subscription: Subscription,
+ 
+     is_active: bool,
+@@ -1569,6 +1572,9 @@ impl AgentPanel {
+         // all, so the card's own notify would never reach the screen: whether it
+         // shows is decided here, in `render`. Once shown, the card repaints itself;
+         // only showing and hiding need the panel.
++        // §6.6: the description beside the title follows the store.
++        let _description_observation = ThreadDescriptionStore::try_global(cx)
++            .map(|store| cx.observe(&store, |_, _, cx| cx.notify()));
+         let _tasks_card_observation = cx.observe(&tasks_card, |panel, card, cx| {
+             let visible = card.read(cx).is_visible(cx);
+             let docked = card.read(cx).is_docked_bottom();
+@@ -1684,6 +1690,7 @@ impl AgentPanel {
+             tasks_card_visible: false,
+             tasks_card_docked: false,
+             _tasks_card_observation,
++            _description_observation,
+             _tasks_card_subscription,
+             is_active: false,
+         };
+@@ -6512,6 +6519,39 @@ impl AgentPanel {
+         });
+     }
+ 
++    /// The thread's description as an icon whose tooltip reads it (Zeo next §6.6). Beside
++    /// the title view, not inside it: on an opaque window the title view lays a fade over
++    /// its right end, which covered the icon (seen on Xvfb); the toolbar is one line high,
++    /// so there is no subtitle.
++    fn render_thread_description_icon(&self, cx: &Context<Self>) -> Option<AnyElement> {
++        let description = self.visible_thread_description(cx)?;
++        Some(
++            div()
++                .debug_selector(|| "agent-panel-thread-description".into())
++                .id("agent-panel-thread-description")
++                .flex_none()
++                .child(
++                    Icon::new(IconName::Info)
++                        .size(IconSize::Small)
++                        .color(Color::Muted),
++                )
++                .tooltip(Tooltip::text(description))
++                .into_any_element(),
++        )
++    }
++
++    /// The description of the agent thread on screen, if it has one (Zeo next §6.6).
++    pub(crate) fn visible_thread_description(&self, cx: &App) -> Option<SharedString> {
++        let VisibleSurface::AgentThread(conversation_view) = self.visible_surface() else {
++            return None;
++        };
++        let thread_id = conversation_view.read(cx).thread_id;
++        ThreadDescriptionStore::try_global(cx)?
++            .read(cx)
++            .description(thread_id)
++            .cloned()
++    }
++
+     fn handle_regenerate_thread_title(
+         conversation_view: Entity<ConversationView>,
+         workspace: WeakEntity<Workspace>,
+@@ -6654,6 +6694,23 @@ impl AgentPanel {
+                                     });
+                                 }
+ 
++                                // Zeo next §6.6: the thread's description.
++                                menu = menu.entry(EDIT_DESCRIPTION_MENU_LABEL, None, {
++                                    let thread_id = conversation_view.read(cx).thread_id;
++                                    let workspace = workspace.clone();
++                                    move |window, cx| {
++                                        workspace
++                                            .update(cx, |workspace, cx| {
++                                                workspace.toggle_modal(window, cx, |window, cx| {
++                                                    ThreadDescriptionModal::new(
++                                                        thread_id, window, cx,
++                                                    )
++                                                });
++                                            })
++                                            .ok();
++                                    }
++                                });
++
+                                 let root_thread_view =
+                                     conversation_view.read(cx).root_thread_view();
+                                 if let Some(thread_view) = root_thread_view {
+@@ -7217,7 +7274,8 @@ impl AgentPanel {
+                         .child(match empty_thread_title {
+                             Some(title) => title,
+                             None => self.render_title_view(window, cx),
+-                        }),
++                        })
++                        .children(self.render_thread_description_icon(cx)),
+                 )
+                 .child(
+                     h_flex()
+@@ -8051,6 +8109,8 @@ mod tests {
+     mod run_prompt_validation_tests;
+ 
+     mod slash_command_run_tests;
++
++    mod description_header_tests;
+     use crate::NewWorktreeBranchTarget;
+     use crate::conversation_view::tests::{StubAgentServer, init_test};
+     use crate::test_support::{
+diff --git a/crates/agent_ui/src/agent_panel/tests/description_header_tests.rs b/crates/agent_ui/src/agent_panel/tests/description_header_tests.rs
+new file mode 100644
+index 0000000..2f0108c
+--- /dev/null
++++ b/crates/agent_ui/src/agent_panel/tests/description_header_tests.rs
+@@ -0,0 +1,67 @@
++// Zeo next proposal §6.6 (ask 19): a thread's description shows as an icon beside its title in
++// the agent panel's toolbar, and follows an edit at once.
++
++use super::*;
++use crate::thread_organization::description::ThreadDescriptionStore;
++
++#[gpui::test]
++async fn test_the_description_shows_beside_the_title(cx: &mut TestAppContext) {
++    init_test(cx);
++    cx.update(|cx| {
++        agent::ThreadStore::init_global(cx);
++        language_model::LanguageModelRegistry::test(cx);
++        if ThreadDescriptionStore::try_global(cx).is_none() {
++            crate::thread_organization::init(cx);
++        }
++    });
++    let fs = FakeFs::new(cx.executor());
++    let project = Project::test(fs, [], cx).await;
++    let multi_workspace =
++        cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
++    let workspace = multi_workspace
++        .read_with(cx, |multi_workspace, _cx| {
++            multi_workspace.workspace().clone()
++        })
++        .unwrap();
++    let cx = &mut VisualTestContext::from_window(multi_workspace.into(), cx);
++    cx.simulate_resize(size(px(900.), px(700.)));
++    let panel = workspace.update_in(cx, |workspace, window, cx| {
++        let panel = cx.new(|cx| AgentPanel::new(workspace, window, cx));
++        workspace.add_panel(panel.clone(), window, cx);
++        workspace.focus_panel::<AgentPanel>(window, cx);
++        panel
++    });
++    open_thread_with_connection(&panel, StubAgentConnection::new(), cx);
++    send_message(&panel, cx);
++    cx.run_until_parked();
++    assert!(
++        cx.debug_bounds("agent-panel-thread-description").is_none(),
++        "no description yet"
++    );
++
++    let thread_id = panel.read_with(cx, |panel, cx| {
++        panel
++            .active_conversation_view()
++            .expect("a thread is open")
++            .read(cx)
++            .thread_id
++    });
++    cx.update(|_, cx| {
++        ThreadDescriptionStore::global(cx).update(cx, |store, cx| {
++            store
++                .set_description(thread_id, "Ship the Wave 3 release", cx)
++                .expect("a saved thread")
++        })
++    });
++    cx.run_until_parked();
++    cx.update(|window, _| window.refresh());
++    cx.run_until_parked();
++    assert_eq!(
++        panel.read_with(cx, |panel, cx| panel.visible_thread_description(cx)),
++        Some("Ship the Wave 3 release".into())
++    );
++    assert!(
++        cx.debug_bounds("agent-panel-thread-description").is_some(),
++        "the icon is drawn beside the title"
++    );
++}
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index 23fe256..a2d9300 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -52,6 +52,7 @@ pub mod test_support;
+ mod thread_import;
+ pub mod thread_metadata_store;
+ pub mod thread_organization;
++pub mod thread_description_modal;
+ pub mod thread_tag_filter;
+ pub mod thread_tags_picker;
+ pub mod thread_worktree_archive;
+diff --git a/crates/agent_ui/src/thread_description_modal.rs b/crates/agent_ui/src/thread_description_modal.rs
+new file mode 100644
+index 0000000..37cc680
+--- /dev/null
++++ b/crates/agent_ui/src/thread_description_modal.rs
+@@ -0,0 +1,115 @@
++//! Zeo next proposal §6.6 (ask 19): the modal that edits a thread's description. One line,
++//! prefilled with the current text; Enter saves (a blank line clears it), Escape keeps what
++//! was there. Opened from the agent menu and from the thread's menu in the sidebar.
++
++use editor::Editor;
++use gpui::{
++    App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Render, SharedString,
++    Window,
++};
++use ui::prelude::*;
++use workspace::ModalView;
++
++use crate::thread_metadata_store::ThreadId;
++use crate::thread_organization::description::{MAX_DESCRIPTION_CHARS, ThreadDescriptionStore};
++
++/// The entry's label in both menus.
++pub const EDIT_DESCRIPTION_MENU_LABEL: &str = "Edit Description\u{2026}";
++
++pub struct ThreadDescriptionModal {
++    thread_id: ThreadId,
++    editor: Entity<Editor>,
++    /// Why the last Enter saved nothing (a draft), until the next one.
++    error: Option<SharedString>,
++}
++
++impl ThreadDescriptionModal {
++    pub fn new(thread_id: ThreadId, window: &mut Window, cx: &mut Context<Self>) -> Self {
++        let current = ThreadDescriptionStore::try_global(cx)
++            .and_then(|store| store.read(cx).description(thread_id).cloned());
++        let editor = cx.new(|cx| {
++            let mut editor = Editor::single_line(window, cx);
++            editor.set_placeholder_text("What is this thread for?", window, cx);
++            if let Some(current) = &current {
++                editor.set_text(current.as_ref(), window, cx);
++            }
++            editor
++        });
++        Self {
++            thread_id,
++            editor,
++            error: None,
++        }
++    }
++
++    pub fn editor(&self) -> &Entity<Editor> {
++        &self.editor
++    }
++
++    /// Saves the editor's text; closes on success, says why on a refusal.
++    pub fn confirm(&mut self, cx: &mut Context<Self>) {
++        let Some(store) = ThreadDescriptionStore::try_global(cx) else {
++            log::warn!("thread description: no store to save into");
++            cx.emit(DismissEvent);
++            return;
++        };
++        let text = self.editor.read(cx).text(cx);
++        let thread_id = self.thread_id;
++        match store.update(cx, |store, cx| store.set_description(thread_id, &text, cx)) {
++            Ok(()) => cx.emit(DismissEvent),
++            Err(error) => {
++                self.error = Some(format!("Not saved: {error}").into());
++                cx.notify();
++            }
++        }
++    }
++}
++
++impl ModalView for ThreadDescriptionModal {}
++
++impl EventEmitter<DismissEvent> for ThreadDescriptionModal {}
++
++impl Focusable for ThreadDescriptionModal {
++    fn focus_handle(&self, cx: &App) -> FocusHandle {
++        self.editor.focus_handle(cx)
++    }
++}
++
++impl Render for ThreadDescriptionModal {
++    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++        v_flex()
++            .key_context("ThreadDescriptionModal")
++            .debug_selector(|| "thread-description-modal".into())
++            .on_action(cx.listener(|this, _: &menu::Confirm, _, cx| this.confirm(cx)))
++            .on_action(cx.listener(|_, _: &menu::Cancel, _, cx| cx.emit(DismissEvent)))
++            .elevation_3(cx)
++            .w(rems(32.))
++            .p_2()
++            .gap_1()
++            .child(Label::new("Thread Description").size(LabelSize::Small))
++            .child(
++                div()
++                    .px_1()
++                    .py_0p5()
++                    .rounded_sm()
++                    .border_1()
++                    .border_color(cx.theme().colors().border)
++                    .child(self.editor.clone()),
++            )
++            .child(
++                Label::new(format!(
++                    "Enter saves, a blank line clears it, Escape cancels. Up to \
++                     {MAX_DESCRIPTION_CHARS} characters, on one line."
++                ))
++                .size(LabelSize::XSmall)
++                .color(Color::Muted),
++            )
++            .when_some(self.error.clone(), |this, error| {
++                this.child(
++                    Label::new(error)
++                        .size(LabelSize::XSmall)
++                        .color(Color::Error),
++                )
++            })
++    }
++}
+diff --git a/crates/agent_ui/src/thread_organization.rs b/crates/agent_ui/src/thread_organization.rs
+index 11b7ea1..8df252c 100644
+--- a/crates/agent_ui/src/thread_organization.rs
++++ b/crates/agent_ui/src/thread_organization.rs
+@@ -31,6 +31,8 @@ const MAX_TAG_CHARS: usize = 32;
+ const MAX_LIST_NAME_CHARS: usize = 64;
+ const MAX_TAGS_PER_THREAD: usize = 20;
+ 
++pub mod description;
++
+ struct ThreadOrganizationDb(ThreadSafeConnection);
+ 
+ // One `static` so the list registered with `inventory` and `MIGRATIONS` are the same allocation.
+@@ -308,6 +310,7 @@ pub fn init(cx: &mut App) {
+     let db = ThreadOrganizationDb::global(cx);
+     let store = cx.new(|cx| ThreadOrganizationStore::new(db, cx));
+     cx.set_global(GlobalThreadOrganizationStore(store));
++    description::init(cx);
+ }
+ 
+ /// Called by `ThreadMetadataStore::delete` while that store is being updated, so this must not
+@@ -316,6 +319,7 @@ pub fn forget(thread_id: ThreadId, cx: &mut App) {
+     if let Some(store) = ThreadOrganizationStore::try_global(cx) {
+         store.update(cx, |store, cx| store.forget_thread(thread_id, cx));
+     }
++    description::forget(thread_id, cx);
+ }
+ 
+ pub struct ThreadOrganizationStore {
+diff --git a/crates/agent_ui/src/thread_organization/description.rs b/crates/agent_ui/src/thread_organization/description.rs
+new file mode 100644
+index 0000000..b67cb67
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/description.rs
+@@ -0,0 +1,418 @@
++//! Zeo next proposal §6.6 (ask 19): a thread carries a description, a line saying what it is
++//! for, shown beside its title in the agent panel and in the threads sidebar.
++//!
++//! It is stored in a domain of its own rather than as a column of `thread_organization`
++//! (0048). That table's migrations are a list that two patches append to -- 0063 adds
++//! `devtools_root` under the `devtools-panel` USE flag -- and a step appended by an earlier
++//! patch would land at a different index with and without that flag, which sqlez refuses
++//! on the next start. A domain of its own has its own list, whatever the flags.
++//!
++//! Like the organization, a description belongs to a saved thread: a draft is refused
++//! (`admit`), and a deleted thread's description goes with it (`forget`).
++
++use std::collections::HashMap;
++use std::sync::atomic::Ordering;
++
++use anyhow::{Context as _, Result};
++use db::{
++    sqlez::{domain::Domain, thread_safe_connection::ThreadSafeConnection},
++    sqlez_macros::sql,
++};
++use futures::{StreamExt as _, channel::mpsc};
++use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global, SharedString, Task};
++
++use super::{OrganizeError, admit};
++use crate::thread_metadata_store::ThreadId;
++
++/// Long enough for a sentence or two, short enough for a tooltip.
++pub const MAX_DESCRIPTION_CHARS: usize = 280;
++
++pub(crate) struct ThreadDescriptionDb(ThreadSafeConnection);
++
++static DESCRIPTION_MIGRATIONS: [&str; 1] = ["CREATE TABLE thread_descriptions(
++    thread_id BLOB PRIMARY KEY NOT NULL,
++    description TEXT NOT NULL
++) STRICT;"];
++
++impl Domain for ThreadDescriptionDb {
++    const NAME: &str = stringify!(ThreadDescriptionDb);
++    const MIGRATIONS: &[&str] = &DESCRIPTION_MIGRATIONS;
++}
++
++db::static_connection!(ThreadDescriptionDb, []);
++
++/// A description as stored: whitespace collapsed to single spaces (it shows on one line),
++/// trimmed, and cut at [`MAX_DESCRIPTION_CHARS`]; `None` when nothing is left, which clears it.
++pub fn normalize_description(input: &str) -> Option<SharedString> {
++    let collapsed = input.split_whitespace().collect::<Vec<_>>().join(" ");
++    if collapsed.is_empty() {
++        return None;
++    }
++    Some(
++        collapsed
++            .chars()
++            .take(MAX_DESCRIPTION_CHARS)
++            .collect::<String>()
++            .into(),
++    )
++}
++
++pub enum ThreadDescriptionEvent {
++    Changed(ThreadId),
++}
++
++struct GlobalThreadDescriptionStore(Entity<ThreadDescriptionStore>);
++
++impl Global for GlobalThreadDescriptionStore {}
++
++pub fn init(cx: &mut App) {
++    let db = ThreadDescriptionDb::global(cx);
++    let store = cx.new(|cx| ThreadDescriptionStore::new(db, cx));
++    cx.set_global(GlobalThreadDescriptionStore(store));
++}
++
++/// Called with `thread_organization::forget`, inside a `ThreadMetadataStore` update.
++pub fn forget(thread_id: ThreadId, cx: &mut App) {
++    if let Some(store) = ThreadDescriptionStore::try_global(cx) {
++        store.update(cx, |store, cx| store.forget_thread(thread_id, cx));
++    }
++}
++
++enum Write {
++    Upsert(ThreadId, SharedString),
++    Delete(ThreadId),
++}
++
++pub struct ThreadDescriptionStore {
++    descriptions: HashMap<ThreadId, SharedString>,
++    /// `None` when loading failed or the database is the in-memory fallback: the session's
++    /// descriptions stay in memory.
++    writes: Option<mpsc::UnboundedSender<Write>>,
++    _writer: Task<()>,
++}
++
++impl EventEmitter<ThreadDescriptionEvent> for ThreadDescriptionStore {}
++
++impl ThreadDescriptionStore {
++    pub fn global(cx: &App) -> Entity<Self> {
++        cx.global::<GlobalThreadDescriptionStore>().0.clone()
++    }
++
++    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
++        cx.try_global::<GlobalThreadDescriptionStore>()
++            .map(|global| global.0.clone())
++    }
++
++    fn new(db: ThreadDescriptionDb, cx: &mut Context<Self>) -> Self {
++        let on_fallback = db::ALL_FILE_DB_FAILED.load(Ordering::Acquire);
++        Self::with_fallback_flag(db, on_fallback, cx)
++    }
++
++    pub(super) fn with_fallback_flag(
++        db: ThreadDescriptionDb,
++        on_fallback: bool,
++        cx: &mut Context<Self>,
++    ) -> Self {
++        let mut store = Self {
++            descriptions: HashMap::default(),
++            writes: None,
++            _writer: Task::ready(()),
++        };
++        if on_fallback {
++            log::warn!("thread_description: database unavailable, descriptions will not persist");
++        }
++        match load(&db) {
++            Ok(descriptions) => store.descriptions = descriptions,
++            Err(error) => {
++                log::warn!(
++                    "thread_description: loading failed, descriptions will not persist this \
++                     session: {error:#}"
++                );
++                return store;
++            }
++        }
++        let (writes, mut queue) = mpsc::unbounded::<Write>();
++        store.writes = Some(writes);
++        store._writer = cx.background_spawn(async move {
++            while let Some(write) = queue.next().await {
++                let (operation, thread_id) = match &write {
++                    Write::Upsert(thread_id, _) => ("set", *thread_id),
++                    Write::Delete(thread_id) => ("clear", *thread_id),
++                };
++                if let Err(error) = db.write(move |connection| apply(connection, write)).await {
++                    log::error!(
++                        "thread_description: {operation} failed for thread {}: {error:#}",
++                        thread_id.to_key_string()
++                    );
++                }
++            }
++        });
++        store
++    }
++
++    pub fn description(&self, thread_id: ThreadId) -> Option<&SharedString> {
++        self.descriptions.get(&thread_id)
++    }
++
++    /// Sets a saved thread's description, or clears it when `input` normalizes to nothing.
++    pub fn set_description(
++        &mut self,
++        thread_id: ThreadId,
++        input: &str,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        admit(thread_id, cx)?;
++        let write = match normalize_description(input) {
++            Some(description) => {
++                if self.descriptions.get(&thread_id) == Some(&description) {
++                    return Ok(());
++                }
++                self.descriptions.insert(thread_id, description.clone());
++                Write::Upsert(thread_id, description)
++            }
++            None => {
++                if self.descriptions.remove(&thread_id).is_none() {
++                    return Ok(());
++                }
++                Write::Delete(thread_id)
++            }
++        };
++        self.commit(write, thread_id, cx);
++        Ok(())
++    }
++
++    fn forget_thread(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) {
++        if self.descriptions.remove(&thread_id).is_some() {
++            self.commit(Write::Delete(thread_id), thread_id, cx);
++        }
++    }
++
++    fn commit(&mut self, write: Write, thread_id: ThreadId, cx: &mut Context<Self>) {
++        if let Some(writes) = &self.writes
++            && let Err(error) = writes.unbounded_send(write)
++        {
++            log::error!("thread_description: the writer stopped, a change was not saved: {error}");
++        }
++        cx.emit(ThreadDescriptionEvent::Changed(thread_id));
++        cx.notify();
++    }
++}
++
++fn apply(connection: &db::sqlez::connection::Connection, write: Write) -> Result<()> {
++    match write {
++        Write::Upsert(thread_id, description) => {
++            connection.exec_bound::<(ThreadId, String)>(sql!(
++                INSERT INTO thread_descriptions(thread_id, description) VALUES (?, ?)
++                ON CONFLICT(thread_id) DO UPDATE SET description = excluded.description
++            ))?((thread_id, description.to_string()))
++        }
++        Write::Delete(thread_id) => connection.exec_bound::<ThreadId>(sql!(
++            DELETE FROM thread_descriptions WHERE thread_id = ?
++        ))?(thread_id),
++    }
++}
++
++fn load(db: &ThreadDescriptionDb) -> Result<HashMap<ThreadId, SharedString>> {
++    let rows = db.select::<(ThreadId, String)>(sql!(
++        SELECT thread_id, description FROM thread_descriptions
++    ))?()
++    .context("reading thread_descriptions")?;
++    Ok(rows
++        .into_iter()
++        .map(|(thread_id, description)| (thread_id, description.into()))
++        .collect())
++}
++
++#[cfg(test)]
++mod tests {
++    use db::sqlez::connection::Connection;
++    use gpui::{Entity, TestAppContext};
++
++    use super::super::ThreadOrganizationDb;
++    use super::super::test_helpers::{PROJECT_A, delete_thread, draft_in, init, thread};
++    use super::*;
++
++    async fn open_db(name: &'static str) -> ThreadDescriptionDb {
++        ThreadDescriptionDb::open_test_db(name).await
++    }
++
++    fn open_store(
++        db: &ThreadDescriptionDb,
++        cx: &mut TestAppContext,
++    ) -> Entity<ThreadDescriptionStore> {
++        let db = db.clone();
++        let store = cx.new(|cx| ThreadDescriptionStore::with_fallback_flag(db, false, cx));
++        cx.run_until_parked();
++        store
++    }
++
++    fn set(
++        store: &Entity<ThreadDescriptionStore>,
++        thread_id: ThreadId,
++        text: &str,
++        cx: &mut TestAppContext,
++    ) -> Result<(), OrganizeError> {
++        let result = store.update(cx, |store, cx| store.set_description(thread_id, text, cx));
++        cx.run_until_parked();
++        result
++    }
++
++    fn read(
++        store: &Entity<ThreadDescriptionStore>,
++        thread_id: ThreadId,
++        cx: &TestAppContext,
++    ) -> Option<String> {
++        store.read_with(cx, |store, _| {
++            store.description(thread_id).map(|d| d.to_string())
++        })
++    }
++
++    #[test]
++    fn a_description_is_one_trimmed_line_and_blank_clears_it() {
++        assert_eq!(
++            normalize_description("  Fix the\n  release   build \t").as_deref(),
++            Some("Fix the release build")
++        );
++        assert_eq!(normalize_description(" \n\t "), None);
++        let long = "x".repeat(MAX_DESCRIPTION_CHARS + 40);
++        assert_eq!(
++            normalize_description(&long).map(|d| d.chars().count()),
++            Some(MAX_DESCRIPTION_CHARS)
++        );
++    }
++
++    /// Hostile: the description must not share 0048's migration list, whose steps land at
++    /// different indexes with and without the `devtools-panel` USE flag (0063).
++    #[test]
++    fn the_description_has_a_migration_list_of_its_own() {
++        assert_ne!(ThreadDescriptionDb::NAME, ThreadOrganizationDb::NAME);
++        assert!(
++            ThreadOrganizationDb::MIGRATIONS
++                .iter()
++                .all(|step| !step.contains("description")),
++            "no step of thread_organization mentions it"
++        );
++        let connection = Connection::open_memory(Some("thread_description_migration"));
++        connection
++            .migrate(
++                ThreadDescriptionDb::NAME,
++                ThreadDescriptionDb::MIGRATIONS,
++                &mut |_, _, _| false,
++            )
++            .expect("the description migration applies");
++    }
++
++    #[gpui::test]
++    async fn a_saved_threads_description_survives_a_restart(cx: &mut TestAppContext) {
++        init(cx);
++        let db = open_db("description_restart").await;
++        let store = open_store(&db, cx);
++        let thread_id = thread(cx);
++        set(&store, thread_id, "Ship the 0.10.0 release", cx).expect("a saved thread");
++        assert_eq!(
++            read(&store, thread_id, cx).as_deref(),
++            Some("Ship the 0.10.0 release")
++        );
++
++        cx.run_until_parked();
++        drop(store);
++        let store = open_store(&db, cx);
++        assert_eq!(
++            read(&store, thread_id, cx).as_deref(),
++            Some("Ship the 0.10.0 release")
++        );
++
++        set(&store, thread_id, "   ", cx).expect("clearing");
++        let store = {
++            cx.run_until_parked();
++            drop(store);
++            open_store(&db, cx)
++        };
++        assert_eq!(
++            read(&store, thread_id, cx),
++            None,
++            "a blank description is cleared on disk"
++        );
++    }
++
++    /// Hostile: a draft is refused, as the organization refuses it.
++    #[gpui::test]
++    async fn a_draft_has_no_description(cx: &mut TestAppContext) {
++        init(cx);
++        let db = open_db("description_draft").await;
++        let store = open_store(&db, cx);
++        let draft = draft_in(PROJECT_A, cx);
++        assert!(matches!(
++            set(&store, draft, "Never stored", cx),
++            Err(OrganizeError::Draft { .. })
++        ));
++        assert_eq!(read(&store, draft, cx), None);
++    }
++
++    /// A deleted thread's description goes with it, through thread_organization::forget.
++    #[gpui::test]
++    async fn a_deleted_threads_description_is_forgotten(cx: &mut TestAppContext) {
++        init(cx);
++        let db = open_db("description_forget").await;
++        let store = open_store(&db, cx);
++        cx.update(|cx| cx.set_global(GlobalThreadDescriptionStore(store.clone())));
++        let thread_id = thread(cx);
++        set(&store, thread_id, "Doomed", cx).expect("a saved thread");
++        assert_eq!(
++            read(&store, thread_id, cx).as_deref(),
++            Some("Doomed"),
++            "precondition: there is something to forget"
++        );
++        delete_thread(thread_id, cx);
++        assert_eq!(read(&store, thread_id, cx), None);
++        drop(store);
++        cx.update(|cx| cx.remove_global::<GlobalThreadDescriptionStore>());
++        let store = open_store(&db, cx);
++        assert_eq!(read(&store, thread_id, cx), None, "and from disk");
++    }
++
++    /// The modal (§6.6): prefilled with the current description; Enter saves the new one and
++    /// closes; a blank line clears it.
++    #[gpui::test]
++    async fn the_modal_edits_and_clears_the_description(cx: &mut TestAppContext) {
++        init(cx);
++        let db = open_db("description_modal").await;
++        let store = open_store(&db, cx);
++        cx.update(|cx| cx.set_global(GlobalThreadDescriptionStore(store.clone())));
++        let thread_id = thread(cx);
++        set(&store, thread_id, "Old purpose", cx).expect("a saved thread");
++
++        let (modal, cx) = cx.add_window_view(|window, cx| {
++            crate::thread_description_modal::ThreadDescriptionModal::new(thread_id, window, cx)
++        });
++        let prefilled = modal.read_with(cx, |modal, cx| modal.editor().read(cx).text(cx));
++        assert_eq!(prefilled, "Old purpose");
++
++        modal.update_in(cx, |modal, window, cx| {
++            modal
++                .editor()
++                .update(cx, |editor, cx| editor.set_text("New purpose", window, cx));
++            modal.confirm(cx);
++        });
++        cx.run_until_parked();
++        assert_eq!(
++            store.read_with(cx, |store, _| store
++                .description(thread_id)
++                .map(|d| d.to_string())),
++            Some("New purpose".to_string())
++        );
++
++        modal.update_in(cx, |modal, window, cx| {
++            modal
++                .editor()
++                .update(cx, |editor, cx| editor.set_text("  ", window, cx));
++            modal.confirm(cx);
++        });
++        cx.run_until_parked();
++        assert_eq!(
++            store.read_with(cx, |store, _| store.description(thread_id).cloned()),
++            None,
++            "a blank line clears it"
++        );
++    }
++}
+diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
+index 89f796c..037c21b 100644
+--- a/crates/sidebar/src/sidebar.rs
++++ b/crates/sidebar/src/sidebar.rs
+@@ -111,6 +111,7 @@ mod sidebar_tags_filter_tests;
+ mod sidebar_tags_notify_tests;
+ #[cfg(test)]
+ mod sidebar_tags_tests;
++mod thread_description;
+ mod thread_tags;
+ 
+ #[cfg(test)]
+@@ -1085,6 +1086,12 @@ impl Sidebar {
+             })
+             .detach();
+         }
++        // The same for descriptions (Zeo next §6.6): an edit anywhere shows on every row.
++        if let Some(store) =
++            agent_ui::thread_organization::description::ThreadDescriptionStore::try_global(cx)
++        {
++            cx.observe(&store, |_, _store, cx| cx.notify()).detach();
++        }
+ 
+         cx.observe(&ThreadMetadataStore::global(cx), |this, _store, cx| {
+             this.schedule_update_entries(false, cx);
+@@ -6946,6 +6953,11 @@ impl Sidebar {
+             .tags(thread_tags::tag_chips_for(thread.metadata.thread_id, cx))
+             .timestamp(timestamp)
+             .highlight_positions(thread.highlight_positions.to_vec())
++            // Zeo next §6.6, kept out of 0063's devtools-badge context, which it would shift.
++            .when_some(
++                thread_description::description_for(thread.metadata.thread_id, cx),
++                |this, description| this.badge(IconName::Info, description),
++            )
+             .title_generating(title_generating)
+             .notified(has_notification)
+             .when(thread.diff_stats.lines_added > 0, |this| {
+@@ -7271,6 +7283,12 @@ impl Sidebar {
+                             });
+                         }
+                         menu = thread_tags::tags_menu_entry(menu, thread_id, sidebar.clone(), _cx);
++                        menu = thread_description::description_menu_entry(
++                            menu,
++                            thread_id,
++                            sidebar.clone(),
++                            _cx,
++                        );
+                         menu =
+                             lists_view::move_to_list_submenu(menu, sidebar.clone(), thread_id, _cx);
+ 
+diff --git a/crates/sidebar/src/thread_description.rs b/crates/sidebar/src/thread_description.rs
+new file mode 100644
+index 0000000..c24ec9f
+--- /dev/null
++++ b/crates/sidebar/src/thread_description.rs
+@@ -0,0 +1,47 @@
++//! A thread's description in the threads sidebar (Zeo next proposal §6.6): an icon after the
++//! title whose tooltip reads it, and "Edit Description…" in the thread's menu, beside "Tags…".
++//! `sidebar.rs` only calls into it through one-line hooks.
++
++use agent_ui::ThreadId;
++use agent_ui::thread_description_modal::{EDIT_DESCRIPTION_MENU_LABEL, ThreadDescriptionModal};
++use agent_ui::thread_organization::description::ThreadDescriptionStore;
++use gpui::{App, SharedString, WeakEntity};
++use ui::ContextMenu;
++
++use crate::Sidebar;
++
++/// The thread's description, if it has one; `None` without the store.
++pub(crate) fn description_for(thread_id: ThreadId, cx: &App) -> Option<SharedString> {
++    ThreadDescriptionStore::try_global(cx)?
++        .read(cx)
++        .description(thread_id)
++        .cloned()
++}
++
++/// "Edit Description…" for the thread's menu, offered only when the store is installed.
++pub(crate) fn description_menu_entry(
++    menu: ContextMenu,
++    thread_id: ThreadId,
++    sidebar: WeakEntity<Sidebar>,
++    cx: &App,
++) -> ContextMenu {
++    if ThreadDescriptionStore::try_global(cx).is_none() {
++        return menu;
++    }
++    menu.entry(EDIT_DESCRIPTION_MENU_LABEL, None, move |window, cx| {
++        // Resolved on click: the active workspace can change while the menu is open.
++        let workspace = sidebar
++            .read_with(cx, |sidebar, cx| sidebar.active_workspace(cx))
++            .ok()
++            .flatten();
++        let Some(workspace) = workspace else {
++            log::warn!("sidebar: no workspace to edit the description of thread {thread_id:?}");
++            return;
++        };
++        workspace.update(cx, |workspace, cx| {
++            workspace.toggle_modal(window, cx, |window, cx| {
++                ThreadDescriptionModal::new(thread_id, window, cx)
++            });
++        });
++    })
++}

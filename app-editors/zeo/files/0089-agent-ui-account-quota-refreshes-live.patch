@@ -1,0 +1,568 @@
+From aeddabc3b6b04424d48e43c3e635c0f82572ad47 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 10 Nov 2026 06:00:44 -0300
+Subject: [PATCH] agent_ui, acp_thread: the ring's quota rows refresh live and
+ say so
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.16 (ask 36). Hovering the context ring asked
+Claude Agent (Plus) for the account quota at most once every 5 s, and
+the tooltip showed the cached rows with no sign of what they were, so
+the Weekly bar looked late. Three changes:
+
+- The hover interval is 1 s. The agent's shared sample (5 s in plus)
+  already absorbs a tighter loop, so this costs no extra report.
+- A click on the ring asks even inside that interval, for a pointer
+  that cannot hover. A request in flight still absorbs it.
+- A line under the quota rows says what they are: "Refreshing…" while
+  the agent answers, "Updated at HH:MM:SS" (local time) once a window
+  arrives -- an unchanged window too, so the time moves -- and
+  "Refreshes when the turn ends" while a turn runs.
+
+Nothing is asked during a turn. Plus answers `refreshed: false` then on
+purpose: SDK control requests are serialized, and an interrupt queued
+behind a usage request would delay Stop. Asking only cost a round
+trip; the turn's own end refreshes the rows.
+
+The tooltip now reads the quota rows when it is built, not when the
+ring was drawn. It opens after the hover delay, and the refresh the
+hover asked for usually lands inside that delay, so rows captured at
+render time showed the previous sample, with no later notification to
+correct them. Measured on Xvfb against a stub agent: the agent sent
+43% on the hover and 44% on the click, and the tooltip drew 42% and
+43%; with the fix, 43% and 44%.
+
+AcpThread gains account_usage_refresh_status() and a `force` argument
+on refresh_account_usage. The tooltip reads the status where it already
+re-reads the rows.
+
+Tests, each seen failing first against stubs:
+acp_thread_account_refresh_tests.rs (a click skips the interval but not
+a request in flight; a hover asks again after 1 s; Refreshing then
+Updated; nothing asked during a turn, AfterTurn until it ends) and
+thread_view/tests/account_refresh_line_tests.rs (the line's wording).
+---
+
+diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
+index 1239995..ebe0ef1 100644
+--- a/crates/acp_thread/src/acp_thread.rs
++++ b/crates/acp_thread/src/acp_thread.rs
+@@ -3846,10 +3846,26 @@ pub struct AccountUsageWindow {
+     pub resets_at: Option<i64>,
+ }
+ 
+-/// The shortest gap between two on-demand quota refreshes of one thread. Hovering in
+-/// and out of the ring must not turn into a request per pointer movement; the agent
+-/// also keeps a shared sample, so a tighter loop would read the same numbers.
+-pub const ACCOUNT_USAGE_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(5);
++/// The shortest gap between two hover refreshes of one thread. Hovering in and out of
++/// the ring must not turn into a request per pointer movement. One second, not five
++/// (Zeo next §6.16): a hover is read as asking for the numbers now, and the agent's
++/// shared sample (5 s in Claude Agent (Plus)) already absorbs a tighter loop. A click
++/// skips it.
++pub const ACCOUNT_USAGE_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(1);
++
++/// What the context ring's quota rows are, for the tooltip to say (Zeo next §6.16).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum AccountUsageRefreshStatus {
++    /// No quota window has arrived and none is being asked for.
++    Unknown,
++    /// A refresh was asked for and the agent has not answered yet.
++    Refreshing,
++    /// A turn is running: the agent answers no usage request until it ends, so its
++    /// Stop button never waits behind one. The turn's own end refreshes the rows.
++    AfterTurn,
++    /// The rows are the windows that arrived at this time.
++    Updated(chrono::DateTime<chrono::Utc>),
++}
+ 
+ /// Account-level quota state, accumulated across `rate_limit_event`s.
+ #[derive(Debug, Clone, Default, PartialEq)]
+@@ -4270,6 +4286,9 @@ pub struct AcpThread {
+     // being answered. See `refresh_account_usage`.
+     account_usage_refreshed_at: Option<Instant>,
+     account_usage_refreshing: bool,
++    // When a quota window last arrived, whether or not it changed a value: what the
++    // tooltip's "Updated" line says.
++    account_usage_received_at: Option<chrono::DateTime<chrono::Utc>>,
+     background_task_count: usize,
+     tasks: Vec<AgentTask>,
+     // Ids whose ending has been announced with `TaskEnded`, so a repeated snapshot does
+@@ -4655,6 +4674,7 @@ impl AcpThread {
+             account_usage: AccountUsage::default(),
+             account_usage_refreshed_at: None,
+             account_usage_refreshing: false,
++            account_usage_received_at: None,
+             background_task_count: 0,
+             tasks: Vec::new(),
+             announced_task_endings: HashSet::default(),
+@@ -5587,24 +5607,47 @@ impl AcpThread {
+         (!self.account_usage.is_empty()).then_some(&self.account_usage)
+     }
+ 
++    /// What the quota rows are right now: see [`AccountUsageRefreshStatus`].
++    pub fn account_usage_refresh_status(&self) -> AccountUsageRefreshStatus {
++        if self.running_turn.is_some() {
++            AccountUsageRefreshStatus::AfterTurn
++        } else if self.account_usage_refreshing {
++            AccountUsageRefreshStatus::Refreshing
++        } else if let Some(at) = self.account_usage_received_at {
++            AccountUsageRefreshStatus::Updated(at)
++        } else {
++            AccountUsageRefreshStatus::Unknown
++        }
++    }
++
+     /// Ask the agent for the account quota now, rather than at its next poll.
+     ///
+     /// Called when the pointer enters the context ring, so it is bounded twice: a
+     /// request still in flight absorbs the next one, and a new request waits
+-    /// [`ACCOUNT_USAGE_REFRESH_MIN_INTERVAL`] after the previous one was sent. An agent
+-    /// without the capability answers with an error, which is logged at debug level
+-    /// and otherwise ignored -- the ring keeps showing what the agent last pushed.
+-    pub fn refresh_account_usage(&mut self, cx: &mut Context<Self>) {
++    /// [`ACCOUNT_USAGE_REFRESH_MIN_INTERVAL`] after the previous one was sent, unless
++    /// `force` (a click on the ring) skips that wait. Nothing is asked while a turn
++    /// runs. An agent without the capability answers with an error, which is logged at
++    /// debug level and otherwise ignored -- the ring keeps showing what the agent last
++    /// pushed.
++    pub fn refresh_account_usage(&mut self, force: bool, cx: &mut Context<Self>) {
++        // The agent answers no usage request while a turn runs (its Stop must not
++        // queue behind one), so asking would only cost a round trip; the status says
++        // the rows wait for the turn's end instead.
++        if self.running_turn.is_some() {
++            return;
++        }
+         let now = cx.background_executor().now();
+         if self.account_usage_refreshing
+-            || self.account_usage_refreshed_at.is_some_and(|at| {
+-                now.saturating_duration_since(at) < ACCOUNT_USAGE_REFRESH_MIN_INTERVAL
+-            })
++            || (!force
++                && self.account_usage_refreshed_at.is_some_and(|at| {
++                    now.saturating_duration_since(at) < ACCOUNT_USAGE_REFRESH_MIN_INTERVAL
++                }))
+         {
+             return;
+         }
+         self.account_usage_refreshing = true;
+         self.account_usage_refreshed_at = Some(now);
++        cx.notify();
+         let session_id = self.session_id().clone();
+         let request = self
+             .connection
+@@ -5618,8 +5661,11 @@ impl AcpThread {
+                     session_id.0
+                 );
+             }
+-            this.update(cx, |this, _| this.account_usage_refreshing = false)
+-                .ok();
++            this.update(cx, |this, cx| {
++                this.account_usage_refreshing = false;
++                cx.notify();
++            })
++            .ok();
+         })
+         .detach();
+     }
+@@ -7191,11 +7237,17 @@ impl AcpThread {
+         // The account quota rides in `_meta` on the same notification. Absent for
+         // every agent but the Claude adapter, so its absence is the normal case
+         // and must stay silent.
+-        let account_changed = update
++        let account_payload = update
+             .meta
+             .as_ref()
+-            .and_then(|meta| meta.get(CLAUDE_RATE_LIMIT_META_KEY))
+-            .is_some_and(|payload| self.account_usage.ingest(payload));
++            .and_then(|meta| meta.get(CLAUDE_RATE_LIMIT_META_KEY));
++        if account_payload.is_some() {
++            self.account_usage_received_at = Some(chrono::Utc::now());
++            // An unchanged window still moves the "Updated" time an open tooltip shows.
++            cx.notify();
++        }
++        let account_changed =
++            account_payload.is_some_and(|payload| self.account_usage.ingest(payload));
+         cx.emit(AcpThreadEvent::TokenUsageUpdated(
+             OutputTokensUpdate::Unchanged,
+         ));
+@@ -9720,7 +9772,7 @@ mod tests {
+             .await
+             .unwrap();
+         let refresh = |cx: &mut TestAppContext| {
+-            thread.update(cx, |thread, cx| thread.refresh_account_usage(cx));
++            thread.update(cx, |thread, cx| thread.refresh_account_usage(false, cx));
+             cx.run_until_parked();
+         };
+ 
+@@ -28315,4 +28367,5 @@ mod tests {
+     include!("acp_thread_tasks_child_session_tests.rs");
+     include!("acp_thread_tasks_turn_end_tests.rs");
+     include!("acp_thread_message_times_tests.rs");
++    include!("acp_thread_account_refresh_tests.rs");
+ }
+diff --git a/crates/acp_thread/src/acp_thread_account_refresh_tests.rs b/crates/acp_thread/src/acp_thread_account_refresh_tests.rs
+new file mode 100644
+index 0000000..e1d3c94
+--- /dev/null
++++ b/crates/acp_thread/src/acp_thread_account_refresh_tests.rs
+@@ -0,0 +1,170 @@
++// Zeo next proposal §6.16 (ask 36): the Weekly bar refreshes live.
++//
++// Hovering the context ring asks the agent for the quota; a click asks even inside the
++// minimum interval, for a pointer without hover. The tooltip says what the rows are: being
++// refreshed, refreshed at a time, or waiting for the turn to end -- the agent refuses a
++// usage request while a turn runs, so its Stop button never waits behind one.
++//
++// Included at the end of `mod tests` in `acp_thread.rs`.
++
++async fn account_refresh_thread(
++    connection: Rc<FakeAgentConnection>,
++    cx: &mut TestAppContext,
++) -> Entity<AcpThread> {
++    init_test(cx);
++    let fs = FakeFs::new(cx.executor());
++    let project = Project::test(fs, [], cx).await;
++    cx.update(|cx| connection.new_session(project, PathList::new(&[Path::new(path!("/test"))]), cx))
++        .await
++        .unwrap()
++}
++
++fn account_refresh_window(thread: &Entity<AcpThread>, cx: &mut TestAppContext) {
++    let mut meta = serde_json::Map::new();
++    meta.insert(
++        CLAUDE_RATE_LIMIT_META_KEY.to_string(),
++        rate_limit("seven_day", "allowed", 0.42),
++    );
++    thread
++        .update(cx, |thread, cx| {
++            thread.handle_session_update(
++                acp_v1::SessionUpdate::UsageUpdate(
++                    acp_v1::UsageUpdate::new(1000, 10000).meta(meta),
++                ),
++                cx,
++            )
++        })
++        .unwrap();
++}
++
++/// Hostile: a click inside the interval still asks; a hover there does not. A click does
++/// not stack a second request on one in flight.
++#[gpui::test]
++async fn account_refresh_a_click_skips_the_interval_but_not_a_request_in_flight(
++    cx: &mut TestAppContext,
++) {
++    let connection = Rc::new(FakeAgentConnection::new());
++    let thread = account_refresh_thread(connection.clone(), cx).await;
++    let refresh = |force: bool, cx: &mut TestAppContext| {
++        thread.update(cx, |thread, cx| thread.refresh_account_usage(force, cx));
++        cx.run_until_parked();
++    };
++
++    refresh(false, cx);
++    refresh(false, cx);
++    assert_eq!(
++        connection.usage_refreshes.get(),
++        1,
++        "a hover inside the interval"
++    );
++    refresh(true, cx);
++    assert_eq!(
++        connection.usage_refreshes.get(),
++        2,
++        "a click inside the interval"
++    );
++
++    connection.hold_usage_refreshes.set(true);
++    refresh(true, cx);
++    refresh(true, cx);
++    assert_eq!(connection.usage_refreshes.get(), 3, "one request in flight");
++}
++
++/// The interval a hover waits is one second, not five.
++#[gpui::test]
++async fn account_refresh_a_hover_asks_again_after_one_second(cx: &mut TestAppContext) {
++    let connection = Rc::new(FakeAgentConnection::new());
++    let thread = account_refresh_thread(connection.clone(), cx).await;
++    thread.update(cx, |thread, cx| thread.refresh_account_usage(false, cx));
++    cx.run_until_parked();
++    cx.executor().advance_clock(Duration::from_secs(1));
++    thread.update(cx, |thread, cx| thread.refresh_account_usage(false, cx));
++    cx.run_until_parked();
++    assert_eq!(connection.usage_refreshes.get(), 2);
++}
++
++/// The status follows the request: refreshing while it is answered, then the time the
++/// windows arrived.
++#[gpui::test]
++async fn account_refresh_status_is_refreshing_then_updated(cx: &mut TestAppContext) {
++    let connection = Rc::new(FakeAgentConnection::new());
++    let thread = account_refresh_thread(connection.clone(), cx).await;
++    thread.read_with(cx, |thread, _| {
++        assert_eq!(
++            thread.account_usage_refresh_status(),
++            AccountUsageRefreshStatus::Unknown
++        );
++    });
++
++    connection.hold_usage_refreshes.set(true);
++    thread.update(cx, |thread, cx| thread.refresh_account_usage(false, cx));
++    cx.run_until_parked();
++    thread.read_with(cx, |thread, _| {
++        assert_eq!(
++            thread.account_usage_refresh_status(),
++            AccountUsageRefreshStatus::Refreshing
++        );
++    });
++
++    let before = chrono::Utc::now();
++    account_refresh_window(&thread, cx);
++    for tx in connection.held_usage_refreshes.borrow_mut().drain(..) {
++        tx.send(()).ok();
++    }
++    cx.run_until_parked();
++    thread.read_with(cx, |thread, _| {
++        match thread.account_usage_refresh_status() {
++            AccountUsageRefreshStatus::Updated(at) => assert!(at >= before, "stamped on arrival"),
++            other => panic!("expected Updated, got {other:?}"),
++        }
++    });
++}
++
++/// Hostile: during a turn nothing is asked -- the agent would refuse it -- and the status
++/// says the rows wait for the turn's end, even when windows arrived before.
++#[gpui::test]
++async fn account_refresh_waits_for_the_turn_to_end(cx: &mut TestAppContext) {
++    let (release, released) = oneshot::channel::<()>();
++    let released = Rc::new(RefCell::new(Some(released)));
++    let connection = Rc::new(FakeAgentConnection::new().on_user_message(move |_, _, _| {
++        let released = released.borrow_mut().take();
++        async move {
++            if let Some(released) = released {
++                released.await.ok();
++            }
++            Ok(acp_v1::PromptResponse::new(acp_v1::StopReason::EndTurn))
++        }
++        .boxed_local()
++    }));
++    let thread = account_refresh_thread(connection.clone(), cx).await;
++    account_refresh_window(&thread, cx);
++    let turn = thread.update(cx, |thread, cx| thread.send_raw("question", cx));
++    cx.run_until_parked();
++
++    thread.update(cx, |thread, cx| thread.refresh_account_usage(true, cx));
++    cx.run_until_parked();
++    assert_eq!(
++        connection.usage_refreshes.get(),
++        0,
++        "nothing asked during a turn"
++    );
++    thread.read_with(cx, |thread, _| {
++        assert_eq!(
++            thread.account_usage_refresh_status(),
++            AccountUsageRefreshStatus::AfterTurn
++        );
++    });
++
++    release.send(()).ok();
++    turn.await.ok();
++    cx.run_until_parked();
++    thread.read_with(cx, |thread, _| {
++        assert!(
++            matches!(
++                thread.account_usage_refresh_status(),
++                AccountUsageRefreshStatus::Updated(_)
++            ),
++            "back to the last arrival once the turn ends"
++        );
++    });
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index e50198e..a2fd7fb 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -6697,7 +6697,6 @@ impl ThreadView {
+         let input_max_label = crate::humanize_token_count(max_input_tokens);
+         let output_max_label = crate::humanize_token_count(max_output_tokens);
+ 
+-        let (account_rows, account_credits_required) = account_usage_rows(thread);
+         let thread_entity = self.thread.clone();
+ 
+         let build_tooltip = {
+@@ -6713,7 +6712,13 @@ impl ThreadView {
+                 let project_entry_ids = project_entry_ids.clone();
+                 let workspace = workspace.clone();
+                 let cost_label = cost_label.clone();
+-                let account_rows = account_rows.clone();
++                // Read when the tooltip is built, not when the ring was drawn: the
++                // tooltip opens after the hover delay, and the refresh the hover asked
++                // for usually lands inside it, so rows captured at render time showed
++                // the previous sample with no later notification to correct them (Zeo
++                // next §6.16, measured on Xvfb).
++                let (account_rows, account_credits_required) =
++                    account_usage_rows(thread_entity.read(cx));
+                 cx.new(move |cx| TokenUsageTooltip {
+                     // The quota rows follow the thread while the tooltip is open, so a
+                     // refresh the hover asked for lands in front of the reader instead
+@@ -6724,12 +6729,18 @@ impl ThreadView {
+                             let (rows, credits_required) = account_usage_rows(thread.read(cx));
+                             tooltip.account_rows = rows;
+                             tooltip.account_credits_required = credits_required;
++                            tooltip.account_refresh_line = account_refresh_line(
++                                thread.read(cx).account_usage_refresh_status(),
++                            );
+                             cx.notify();
+                         },
+                     ),
+                     percentage,
+                     account_rows,
+                     account_credits_required,
++                    account_refresh_line: account_refresh_line(
++                        thread_entity.read(cx).account_usage_refresh_status(),
++                    ),
+                     used,
+                     max,
+                     input_tokens: input_tokens_label,
+@@ -6767,6 +6778,7 @@ impl ThreadView {
+                 h_flex()
+                     .id("split_token_usage")
+                     .on_hover(cx.listener(Self::refresh_account_usage_on_hover))
++                    .on_click(cx.listener(Self::refresh_account_usage_on_click))
+                     .flex_shrink_0()
+                     .gap_1p5()
+                     .mr_1()
+@@ -6816,6 +6828,7 @@ impl ThreadView {
+                 h_flex()
+                     .id("circular_progress_tokens")
+                     .on_hover(cx.listener(Self::refresh_account_usage_on_hover))
++                    .on_click(cx.listener(Self::refresh_account_usage_on_click))
+                     .mt_px()
+                     .mr_1()
+                     .child(
+@@ -6845,10 +6858,22 @@ impl ThreadView {
+     ) {
+         if *hovered {
+             self.thread
+-                .update(cx, |thread, cx| thread.refresh_account_usage(cx));
++                .update(cx, |thread, cx| thread.refresh_account_usage(false, cx));
+         }
+     }
+ 
++    /// A click on the ring asks for the quota even inside the hover interval, for a
++    /// pointer that cannot hover (Zeo next §6.16).
++    fn refresh_account_usage_on_click(
++        &mut self,
++        _event: &ClickEvent,
++        _window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        self.thread
++            .update(cx, |thread, cx| thread.refresh_account_usage(true, cx));
++    }
++
+     fn fast_mode_available(&self, cx: &Context<Self>) -> bool {
+         self.as_native_thread(cx)
+             .and_then(|thread| thread.read(cx).model())
+@@ -7780,6 +7805,20 @@ impl ThreadView {
+ /// credits. Only the Claude adapter reports quota today: it forwards the SDK's
+ /// `rate_limit_event` in `_meta`, which ACP itself has no field for. Every other agent
+ /// yields no rows and the section does not render.
++/// The line under the tooltip's quota rows that says what they are (Zeo next §6.16).
++fn account_refresh_line(status: acp_thread::AccountUsageRefreshStatus) -> Option<String> {
++    use acp_thread::AccountUsageRefreshStatus as Status;
++    match status {
++        Status::Unknown => None,
++        Status::Refreshing => Some("Refreshing\u{2026}".to_string()),
++        Status::AfterTurn => Some("Refreshes when the turn ends".to_string()),
++        Status::Updated(at) => Some(format!(
++            "Updated at {}",
++            at.with_timezone(&chrono::Local).format("%H:%M:%S")
++        )),
++    }
++}
++
+ fn account_usage_rows(thread: &AcpThread) -> (Vec<AccountUsageRow>, bool) {
+     let Some(account) = thread.account_usage() else {
+         return (Vec::new(), false);
+@@ -7818,6 +7857,7 @@ struct TokenUsageTooltip {
+     percentage: String,
+     account_rows: Vec<AccountUsageRow>,
+     account_credits_required: bool,
++    account_refresh_line: Option<String>,
+     used: String,
+     max: String,
+     input_tokens: String,
+@@ -7847,6 +7887,7 @@ impl Render for TokenUsageTooltip {
+         let cost_label = self.cost_label.clone();
+         let account_rows = self.account_rows.clone();
+         let account_credits_required = self.account_credits_required;
++        let account_refresh_line = self.account_refresh_line.clone();
+         let global_agents_md_loaded = self.global_agents_md_loaded;
+         let project_rules_count = self.project_rules_count;
+         let project_entry_ids = self.project_entry_ids.clone();
+@@ -7967,6 +8008,13 @@ impl Render for TokenUsageTooltip {
+                                             .size(LabelSize::Small)
+                                             .color(Color::Warning),
+                                     )
++                                })
++                                .when_some(account_refresh_line, |this, line| {
++                                    this.child(
++                                        Label::new(line)
++                                            .size(LabelSize::XSmall)
++                                            .color(Color::Muted),
++                                    )
+                                 }),
+                         )
+                     },
+@@ -16608,6 +16656,8 @@ mod tests {
+ 
+     mod message_time_tests;
+ 
++    mod account_refresh_line_tests;
++
+     use super::*;
+     use gpui::UpdateGlobal;
+     use project::{FakeFs, Project};
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/account_refresh_line_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/account_refresh_line_tests.rs
+new file mode 100644
+index 0000000..4a71333
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/tests/account_refresh_line_tests.rs
+@@ -0,0 +1,35 @@
++// Zeo next proposal §6.16 (ask 36): under the context ring's quota rows, one line says what
++// they are -- being refreshed, waiting for the turn to end, or the local time they arrived.
++
++use acp_thread::AccountUsageRefreshStatus as Status;
++
++use super::super::account_refresh_line;
++
++#[test]
++fn account_refresh_line_says_what_the_quota_rows_are() {
++    assert_eq!(
++        account_refresh_line(Status::Unknown),
++        None,
++        "nothing to say"
++    );
++    assert_eq!(
++        account_refresh_line(Status::Refreshing).as_deref(),
++        Some("Refreshing\u{2026}")
++    );
++    assert_eq!(
++        account_refresh_line(Status::AfterTurn).as_deref(),
++        Some("Refreshes when the turn ends")
++    );
++    let at = chrono::DateTime::parse_from_rfc3339("2026-11-10T09:15:07Z")
++        .expect("fixture")
++        .with_timezone(&chrono::Utc);
++    let local = at
++        .with_timezone(&chrono::Local)
++        .format("%H:%M:%S")
++        .to_string();
++    assert_eq!(
++        account_refresh_line(Status::Updated(at)),
++        Some(format!("Updated at {local}")),
++        "the arrival in local time, to the second"
++    );
++}

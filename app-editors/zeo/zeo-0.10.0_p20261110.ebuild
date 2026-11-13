@@ -1850,6 +1850,13 @@ src_prepare() {
 		# src_compile below exports as ${PV} -- and keeps Zed's AppVersion on a
 		# row of its own, since extensions check compatibility against it.
 		"${FILESDIR}/0047-zed-the-About-window-names-Zeo-s-version.patch"
+		# 0091 (Zeo next proposal §6.18): the About window titles Zeo's stage,
+		# shows the packaged commit (ZEO_UPSTREAM_COMMIT, exported in src_compile)
+		# on the Zed row, and links both repositories. On 0047.
+		"${FILESDIR}/0091-zed-about-window-stage-commit-and-links.patch"
+		# 0098 (Zeo next proposal §6.25): "Install CLI" only while zeo is not
+		# reachable; on Linux it links ~/.local/bin/zeo. On 0022 and 0025.
+		"${FILESDIR}/0098-zed-install-cli-only-while-zeo-is-not-reachable.patch"
 		# 0033 ships Claude Agent (Plus) and Claude Agent TUI as default agents:
 		# npx entries in the ACP registry list, enabled in default.json, always
 		# @latest from npm. Needs no adapter at build time, so it is not gated
@@ -2150,6 +2157,52 @@ src_prepare() {
 			# order, left to right; Zed 483b746b reversed the row, which drew
 			# Claude Agent's Mode last. Upstream code only.
 			"${FILESDIR}/0086-agent-ui-config-options-keep-agent-order.patch"
+			# 0087 (Wave 3, Zeo next proposal §6.4): message times and turn
+			# duration, from plus's _meta.claudeCode.timestamp or the live
+			# receive time. On 0086.
+			"${FILESDIR}/0087-agent-ui-message-times-and-turn-duration.patch"
+			# 0088 (Wave 3, Zeo next proposal §6.14): the tasks card keeps clear of
+			# a child thread's titlebar. On 0037.
+			"${FILESDIR}/0088-agent-ui-tasks-card-clears-child-titlebar.patch"
+			# 0089 (Wave 3, Zeo next proposal §6.16): the ring's quota rows refresh
+			# live and say so. On 0060.
+			"${FILESDIR}/0089-agent-ui-account-quota-refreshes-live.patch"
+			# 0090 (Wave 3, Zeo next proposal §6.17): an agent-menu toggle starts
+			# inline terminals minimized (upstream's expand_terminal_card).
+			"${FILESDIR}/0090-agent-ui-terminals-minimized-by-default.patch"
+			# 0092 (Wave 3, Zeo next proposal §6.19): the tasks card moves to a bar
+			# at the bottom of the conversation. On 0037, 0082 and 0088.
+			"${FILESDIR}/0092-agent-ui-tasks-card-moves-to-the-bottom.patch"
+			# 0093 (Wave 3, Zeo next proposal §6.20): the Agent Tasks panel lists
+			# its rows in pages. On 0035 and 0053.
+			"${FILESDIR}/0093-agent-tasks-panel-pages.patch"
+			# 0094 (Wave 3, Zeo next proposal §6.22): the tasks card's eye previews
+			# the task. On 0037, 0056 and 0092.
+			"${FILESDIR}/0094-agent-ui-tasks-card-eye-previews.patch"
+			# 0095 (Wave 3, Zeo next proposal §6.21): Agent Tasks panel rows carry
+			# the card's eye, ↑ and ↓. On 0093 and 0094.
+			"${FILESDIR}/0095-agent-tasks-panel-card-buttons-and-preview.patch"
+			# 0096 (Wave 3, Zeo next proposal §6.6): a thread carries a description,
+			# in a database domain of its own. On 0048 and 0068.
+			"${FILESDIR}/0096-agent-ui-thread-description.patch"
+			# 0097 (Wave 3, Zeo next proposal §6.2): a background task carries a
+			# purpose chip, tagged by plus from its command. On 0034, 0037, 0056, 0071.
+			"${FILESDIR}/0097-agent-ui-tasks-card-purpose-tags.patch"
+			# 0099 (Wave 3, Zeo next proposal §6.26): the context ring draws the
+			# 5-hour quota window as an outer arc when reported. On 0011 and 0089.
+			"${FILESDIR}/0099-agent-ui-context-ring-five-hour-arc.patch"
+			# 0100 (Wave 3, Zeo next proposal §6.1, §6.27): a running task's log in a
+			# tab of the Agent Tasks panel. On 0034, 0035, 0056, 0093, 0095.
+			"${FILESDIR}/0100-agent-tasks-panel-follow-log-tabs.patch"
+			# 0101 (Wave 3, Zeo next proposal §6.1): an ended shell keeps its result
+			# line; a subagent row shows its latest entry. On 0034, 0037, 0056, 0071.
+			"${FILESDIR}/0101-agent-ui-tasks-card-result-line-and-subagent-latest-entry.patch"
+			# 0102 (Wave 3, Zeo next proposal §6.3): the sent message stays pinned at
+			# the top, minimized. On 0026 and 0078.
+			"${FILESDIR}/0102-agent-ui-pin-the-sent-message-at-the-top.patch"
+			# 0103 (Wave 3, Zeo next proposal §6.5): a thread pins to its project as
+			# well as globally; a project pin heads its group. On 0048, 0049, 0096.
+			"${FILESDIR}/0103-sidebar-pins-per-project.patch"
 		)
 	fi
 
@@ -2402,6 +2455,10 @@ src_prepare() {
 
 src_compile() {
 	export RELEASE_VERSION="${PV}"
+	# 0091 (Zeo next proposal §6.18): the About window's Zed row shows the
+	# packaged upstream commit. Not ZED_COMMIT_SHA, which would also rewrite
+	# AppVersion, the version extensions check compatibility against.
+	export ZEO_UPSTREAM_COMMIT="${EGIT_COMMIT}"
 	export ZED_UPDATE_EXPLANATION='Zeo updates are handled by portage'
 	# crates/zed/build.rs reads RELEASE_CHANNEL as an ENVIRONMENT VARIABLE, via
 	# option_env!, to pick the icon it embeds -- a different input from the

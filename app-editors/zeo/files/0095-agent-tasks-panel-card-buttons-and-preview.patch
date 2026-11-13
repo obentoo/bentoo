@@ -1,0 +1,674 @@
+From 99e115a8786312b4f220cf103ccd433187b79236 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 10 Nov 2026 11:30:12 -0300
+Subject: [PATCH] =?UTF-8?q?agent=5Ftasks=5Fpanel:=20rows=20carry=20the=20t?=
+ =?UTF-8?q?asks=20card's=20eye,=20=E2=86=91=20and=20=E2=86=93,=20and=20pre?=
+ =?UTF-8?q?view=20under=20the=20list?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.21 (ask 41). A panel row had Rename, Open Log,
+Stop and Archive (or Delete); the card's row also has the eye, ↑ "Open
+Thread at This Task" and ↓ "Send to Background". The rows gain all
+three, with the card's icons, tooltips and conditions:
+
+- ↑ on every row, opening the thread at the task as a click on the row
+  does, for a reader who looks for the card's button;
+- the eye on a task a card holds running. It is the card's own eye: the
+  card watches the task (previews it, and notifies when it ends), and
+  the panel shows the same preview in a pane under its list -- the
+  card's preview text (0094: the served output, else the feed's tail),
+  its last 12 lines, with an X that turns the eye off. One preview at a time: the eye on
+  another row moves it there and turns the previous one off;
+- ↓ on a running foreground task with a tool call (the card's own
+  condition, now agent_ui::can_send_to_background), sent through the
+  card, so an error lands on the card's row, which the panel reads back.
+
+An ended task keeps Open Log, which already shows its saved log. The
+list's rows stay one line high (uniform_list), so the preview is a pane
+of its own, not part of a row.
+
+The card gains is_watched() and preview_text() for the panel. The
+panel's buttons carry screen-reader labels of their own ("Preview:",
+"Open at task:", "Background:"): with the card's "Watch:" the label
+contract tests counted the panel's eyes as the card's.
+
+Tests: panel::card_buttons (an ended row has ↑ only, a running
+foreground row all three; the eye watches the task in the card and
+opens and closes the pane; ↓ reaches the agent with the task's tool
+call). All three seen failing with the buttons left out of the row. The
+panel tests' StopConnection records background requests.
+---
+
+diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
+index 87d5c56..13891e8 100644
+--- a/crates/agent_tasks_panel/src/panel.rs
++++ b/crates/agent_tasks_panel/src/panel.rs
+@@ -16,8 +16,8 @@ use agent_client_protocol::v2::schema as acp_v2;
+ use agent_ui::{
+     AgentPanel, DEFAULT_THREAD_TITLE, OpenAgentSessionOptions, OpenedAgentSession,
+     OpenedAgentSubagent, SUBAGENT_TASK_ID_PREFIX, TASK_WAITING_LABEL, TaskRecord, TasksCard,
+-    collapse_label, display_label, open_agent_session, open_agent_subagent, task_log,
+-    thread_metadata_store::ThreadMetadataStore,
++    can_send_to_background, collapse_label, display_label, open_agent_session, open_agent_subagent,
++    task_log, thread_metadata_store::ThreadMetadataStore,
+ };
+ use anyhow::{Result, anyhow};
+ use collections::HashMap;
+@@ -225,6 +225,10 @@ pub struct PanelRow {
+     pub can_archive: bool,
+     /// The task has a saved log, so "Open Log" is offered (story 041 R5.7).
+     pub can_open_log: bool,
++    /// A running foreground task with a tool call: the card's ↓ applies (Zeo next §6.21).
++    pub can_background: bool,
++    /// The card's eye is on for it (Zeo next §6.21).
++    pub watched: bool,
+     /// The row is in the panel's selection (story 034 R5).
+     pub selected: bool,
+     /// Why the last click on the row opened nothing (R2.7).
+@@ -255,6 +259,10 @@ struct RowFocus {
+     open: FocusHandle,
+     rename: FocusHandle,
+     open_log: FocusHandle,
++    /// The card's buttons on the panel row (Zeo next §6.21).
++    watch: FocusHandle,
++    open_at_task: FocusHandle,
++    background: FocusHandle,
+     stop: FocusHandle,
+     /// Archive, or Unarchive on an archived row: the two share the row's last slot.
+     archive: FocusHandle,
+@@ -268,6 +276,9 @@ impl RowFocus {
+             open: control_focus_handle(cx),
+             rename: control_focus_handle(cx),
+             open_log: control_focus_handle(cx),
++            watch: control_focus_handle(cx),
++            open_at_task: control_focus_handle(cx),
++            background: control_focus_handle(cx),
+             stop: control_focus_handle(cx),
+             archive: control_focus_handle(cx),
+             delete: control_focus_handle(cx),
+@@ -363,6 +374,9 @@ pub struct AgentTasksPanel {
+     /// the size is saved with the panel's state, like its dock.
+     page_index: usize,
+     page_size: usize,
++    /// The task whose preview shows under the list, while the card watches it (Zeo next
++    /// §6.21). One at a time; the card's eye on another row moves it there.
++    previewing: Option<TaskKey>,
+     /// The latest write of the page size; a newer change replaces (and so cancels) it.
+     _save_page_size: Task<()>,
+     /// The latest write of the dock position; a newer move replaces (and so cancels) it.
+@@ -492,6 +506,7 @@ impl AgentTasksPanel {
+             entries: Vec::new(),
+             page_index: 0,
+             page_size: pagination::DEFAULT_PAGE_SIZE,
++            previewing: None,
+             _save_page_size: Task::ready(()),
+             _save_position: Task::ready(()),
+             _subscriptions: subscriptions,
+@@ -533,8 +548,14 @@ impl AgentTasksPanel {
+                     .then(|| store.live_task(&key.0, &key.1, cx))
+                     .flatten()
+                     .map(|(card, task)| {
+-                        let waiting = card.read(cx).live_task_waiting(&key.0, &key.1, cx);
+-                        LiveTask { task, waiting }
++                        let card = card.read(cx);
++                        let waiting = card.live_task_waiting(&key.0, &key.1, cx);
++                        let watched = card.is_watched(&key.0, &key.1);
++                        LiveTask {
++                            task,
++                            waiting,
++                            watched,
++                        }
+                     });
+                 let selected = self.selection.contains(&key);
+                 let notice = self.notices.get(&key).cloned();
+@@ -1217,6 +1238,131 @@ impl AgentTasksPanel {
+         });
+     }
+ 
++    /// The row's eye (Zeo next §6.21): the card's own, so the card watches the task --
++    /// previews it and notifies when it ends -- and the panel shows the same preview under
++    /// its list. Off again, both close.
++    pub fn toggle_preview(&mut self, key: &TaskKey, cx: &mut Context<Self>) {
++        let (session_id, task_id) = key;
++        let Some((card, _task)) = self.store.read(cx).live_task(session_id, task_id, cx) else {
++            log::debug!(
++                "agent tasks panel: preview requested for task {task_id} of session \
++                 {session_id}, which no card holds running"
++            );
++            return;
++        };
++        let watched = card.read(cx).is_watched(session_id, task_id);
++        // The previous preview's eye goes off with it: one preview at a time.
++        if !watched {
++            if let Some(previous) = self.previewing.take() {
++                if let Some((previous_card, _)) =
++                    self.store.read(cx).live_task(&previous.0, &previous.1, cx)
++                {
++                    if previous_card.read(cx).is_watched(&previous.0, &previous.1) {
++                        previous_card.update(cx, |card, cx| {
++                            card.toggle_watch(previous.0.clone(), previous.1.clone(), cx)
++                        });
++                    }
++                }
++            }
++        }
++        card.update(cx, |card, cx| {
++            card.toggle_watch(session_id.clone(), task_id.clone(), cx)
++        });
++        self.previewing = (!watched).then(|| key.clone());
++        cx.notify();
++    }
++
++    /// The task the preview under the list shows, while its card still watches it.
++    pub fn previewing(&self, cx: &App) -> Option<TaskKey> {
++        let key = self.previewing.as_ref()?;
++        let (card, _task) = self.store.read(cx).live_task(&key.0, &key.1, cx)?;
++        card.read(cx)
++            .is_watched(&key.0, &key.1)
++            .then(|| key.clone())
++    }
++
++    /// The row's ↓ (Zeo next §6.21), through the card, so the panel's is the card's: the same
++    /// request and an error kept on the card's row, which the panel reads back.
++    pub fn send_to_background(&mut self, key: &TaskKey, cx: &mut Context<Self>) {
++        let (session_id, task_id) = key;
++        let Some((card, _task)) = self.store.read(cx).live_task(session_id, task_id, cx) else {
++            log::debug!(
++                "agent tasks panel: background requested for task {task_id} of session \
++                 {session_id}, which no card holds running"
++            );
++            return;
++        };
++        card.update(cx, |card, cx| {
++            card.send_to_background(session_id.clone(), task_id.clone(), cx)
++        });
++    }
++
++    /// The preview under the list (Zeo next §6.21): the card's preview text of the watched
++    /// task, its last lines in a monospace block, with an X that turns the eye off.
++    fn render_preview_pane(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
++        let key = self.previewing(cx)?;
++        let (card, task) = self.store.read(cx).live_task(&key.0, &key.1, cx)?;
++        let text = card.read(cx).preview_text(&key.0, &key.1, cx);
++        let label = collapse_label(&task.description);
++        Some(
++            v_flex()
++                .debug_selector(|| "agent-tasks-preview".to_string())
++                .flex_none()
++                .max_h(rems(14.))
++                .border_t_1()
++                .border_color(cx.theme().colors().border_variant)
++                .child(
++                    h_flex()
++                        .justify_between()
++                        .px_2()
++                        .py_0p5()
++                        .child(
++                            Label::new(format!("Preview \u{00b7} {}", display_label(&label)))
++                                .size(LabelSize::Small)
++                                .color(Color::Muted)
++                                .single_line()
++                                .truncate(),
++                        )
++                        .child(
++                            IconButton::new("agent-tasks-preview-close", IconName::Close)
++                                .icon_size(IconSize::Small)
++                                .icon_color(Color::Muted)
++                                .tooltip(Tooltip::text("Close Preview"))
++                                .on_click(cx.listener(move |panel, _, _, cx| {
++                                    panel.toggle_preview(&key, cx)
++                                })),
++                        ),
++                )
++                .child(
++                    v_flex()
++                        .id("agent-tasks-preview-body")
++                        .debug_selector(|| "agent-tasks-preview-body".to_string())
++                        .overflow_y_scroll()
++                        .px_2()
++                        .pb_1()
++                        .bg(cx.theme().colors().editor_background)
++                        .map(|body| match text {
++                            // The pane holds about a dozen lines: its last ones, as a
++                            // terminal shows them (the card's preview scrolls).
++                            Some(text) => {
++                                body.children(last_lines(&text, PANE_LINES).map(|line| {
++                                    Label::new(line.to_string())
++                                        .size(LabelSize::XSmall)
++                                        .buffer_font(cx)
++                                        .single_line()
++                                }))
++                            }
++                            None => body.child(
++                                Label::new("No output yet")
++                                    .size(LabelSize::XSmall)
++                                    .color(Color::Muted),
++                            ),
++                        }),
++                )
++                .into_any_element(),
++        )
++    }
++
+     /// Archives `key`'s task (R3.1). A running task is never archived (R3.4).
+     pub fn archive(&mut self, key: &TaskKey, cx: &mut Context<Self>) {
+         let (session_id, task_id) = key;
+@@ -2038,6 +2184,80 @@ fn render_row(
+                 })),
+             )
+     });
++    // Zeo next §6.21: the card's eye, ↑ and ↓, with the card's icons and conditions.
++    let watch_button = row.can_stop.then(|| {
++        let (icon, tooltip) = if row.watched {
++            (IconName::EyeOff, "Stop Watching This Task")
++        } else {
++            (IconName::Eye, "Watch This Task")
++        };
++        div()
++            .debug_selector({
++                let task_id = record.task_id.clone();
++                move || format!("agent-tasks-watch-{task_id}")
++            })
++            .child(
++                action_button(
++                    control_id("watch"),
++                    icon,
++                    format!("Preview: {shown_label}"),
++                    tooltip,
++                    &focus.watch,
++                )
++                .toggle_state(row.watched)
++                .on_click(cx.listener({
++                    let key = key.clone();
++                    move |panel, _, _, cx| {
++                        cx.stop_propagation();
++                        panel.toggle_preview(&key, cx)
++                    }
++                })),
++            )
++    });
++    let open_at_task_button = div()
++        .debug_selector({
++            let task_id = record.task_id.clone();
++            move || format!("agent-tasks-open-at-task-{task_id}")
++        })
++        .child(
++            action_button(
++                control_id("open-at-task"),
++                IconName::ArrowUpRight,
++                format!("Open at task: {shown_label}"),
++                "Open Thread at This Task",
++                &focus.open_at_task,
++            )
++            .on_click(cx.listener({
++                let key = key.clone();
++                move |panel, _, window, cx| {
++                    cx.stop_propagation();
++                    panel.open_task(&key, window, cx)
++                }
++            })),
++        );
++    let background_button = row.can_background.then(|| {
++        div()
++            .debug_selector({
++                let task_id = record.task_id.clone();
++                move || format!("agent-tasks-background-{task_id}")
++            })
++            .child(
++                action_button(
++                    control_id("background"),
++                    IconName::ArrowDown,
++                    format!("Background: {shown_label}"),
++                    "Send to Background",
++                    &focus.background,
++                )
++                .on_click(cx.listener({
++                    let key = key.clone();
++                    move |panel, _, _, cx| {
++                        cx.stop_propagation();
++                        panel.send_to_background(&key, cx)
++                    }
++                })),
++            )
++    });
+     let stop_button = row.can_stop.then(|| {
+         action_button(
+             control_id("stop"),
+@@ -2105,7 +2325,10 @@ fn render_row(
+         .gap_1()
+         .child(div().min_w_0().flex_1().child(open_or_rename))
+         .child(rename_button)
++        .child(open_at_task_button)
+         .children(open_log_button)
++        .children(watch_button)
++        .children(background_button)
+         .children(stop_button)
+         .children(archive_button)
+         .children(delete_button)
+@@ -2297,6 +2520,7 @@ fn status_color(status: AgentTaskStatus) -> Color {
+ struct LiveTask {
+     task: AgentTask,
+     waiting: bool,
++    watched: bool,
+ }
+ 
+ /// A row for `entry`, with `live` — the card's view of the task while it runs — laid over
+@@ -2310,7 +2534,11 @@ fn panel_row(
+ ) -> PanelRow {
+     let mut entry = entry.clone();
+     let can_stop = live.is_some();
+-    if let Some(LiveTask { task, waiting }) = live {
++    let can_background = live
++        .as_ref()
++        .is_some_and(|live| can_send_to_background(&live.task));
++    let watched = live.as_ref().is_some_and(|live| live.watched);
++    if let Some(LiveTask { task, waiting, .. }) = live {
+         let record = &mut entry.record;
+         record.waiting = waiting;
+         record.status = task.status;
+@@ -2322,6 +2550,8 @@ fn panel_row(
+         can_stop,
+         can_archive: !entry.archived && !entry.record.status.is_running(),
+         can_open_log: entry.log_bytes.is_some(),
++        can_background,
++        watched,
+         selected,
+         notice,
+         error,
+@@ -2516,12 +2746,23 @@ impl Render for AgentTasksPanel {
+                     )
+                 }
+             })
++            .children(self.render_preview_pane(cx))
+             .when(page.total_rows > 0, |this| {
+                 this.child(self.render_pager(page, cx))
+             })
+     }
+ }
+ 
++/// The preview pane's lines (Zeo next §6.21).
++const PANE_LINES: usize = 12;
++
++/// The last `count` lines of `text`, oldest first.
++fn last_lines(text: &str, count: usize) -> impl Iterator<Item = &str> {
++    let lines: Vec<&str> = text.lines().collect();
++    let skip = lines.len().saturating_sub(count);
++    lines.into_iter().skip(skip)
++}
++
+ /// Where the page size is saved, beside the dock position under the panel's own key.
+ const PAGE_SIZE_KEY: &str = "AgentTasksPanelPageSize";
+ 
+@@ -2598,6 +2839,10 @@ mod list;
+ #[path = "panel/pagination_tests.rs"]
+ mod pagination_tests;
+ 
++#[cfg(test)]
++#[path = "panel/card_buttons_tests.rs"]
++mod card_buttons;
++
+ #[cfg(test)]
+ #[path = "panel/multi_window_tests.rs"]
+ mod multi_window;
+diff --git a/crates/agent_tasks_panel/src/panel/card_buttons_tests.rs b/crates/agent_tasks_panel/src/panel/card_buttons_tests.rs
+new file mode 100644
+index 0000000..d1a09f1
+--- /dev/null
++++ b/crates/agent_tasks_panel/src/panel/card_buttons_tests.rs
+@@ -0,0 +1,130 @@
++// Zeo next proposal §6.21 (ask 41): a panel row carries the tasks card's eye, ↑ and ↓ with
++// the card's conditions. The eye is the card's own -- the card watches the task -- and the
++// panel shows the same preview under its list. GPUI integration tests over the real card.
++
++use gpui::Modifiers;
++use gpui::TestAppContext;
++
++use crate::test_helpers::*;
++
++fn show(panels: &mut Panels) {
++    panels
++        .workspace
++        .update_in(&mut panels.cx, |workspace, window, cx| {
++            workspace.focus_panel::<crate::AgentTasksPanel>(window, cx);
++        });
++    panels.cx.update(|window, _| window.refresh());
++    panels.cx.run_until_parked();
++}
++
++fn click(panels: &mut Panels, selector: String) {
++    let selector: &'static str = Box::leak(selector.into_boxed_str());
++    let bounds = panels
++        .cx
++        .debug_bounds(selector)
++        .unwrap_or_else(|| panic!("{selector} is painted"));
++    panels.cx.simulate_click(bounds.center(), Modifiers::none());
++    panels.cx.update(|window, _| window.refresh());
++    panels.cx.run_until_parked();
++}
++
++fn painted(panels: &mut Panels, selector: String) -> bool {
++    let selector: &'static str = Box::leak(selector.into_boxed_str());
++    panels.cx.debug_bounds(selector).is_some()
++}
++
++/// Hostile: an ended row gets ↑ only -- no eye, no ↓ -- and a running foreground one all three.
++#[gpui::test]
++async fn card_buttons_follow_the_cards_conditions(cx: &mut TestAppContext) {
++    init_base(cx);
++    let mut panels = open_panels(cx).await;
++    let thread = open_live_thread(&mut panels, "Live");
++    send_tasks(
++        &thread,
++        vec![
++            wire_task("run", "running", 2_000, None),
++            wire_task("done", "completed", 1_000, None),
++        ],
++        &mut panels.cx,
++    );
++    show(&mut panels);
++
++    for button in ["watch", "open-at-task", "background"] {
++        assert!(
++            painted(&mut panels, format!("agent-tasks-{button}-run")),
++            "{button} on the running row"
++        );
++    }
++    assert!(painted(&mut panels, "agent-tasks-open-at-task-done".into()));
++    assert!(
++        !painted(&mut panels, "agent-tasks-watch-done".into()),
++        "no eye when ended"
++    );
++    assert!(
++        !painted(&mut panels, "agent-tasks-background-done".into()),
++        "no ↓ when ended"
++    );
++}
++
++/// The eye is the card's: it watches the task, and the panel previews it under the list.
++#[gpui::test]
++async fn card_buttons_the_eye_previews_under_the_list(cx: &mut TestAppContext) {
++    init_base(cx);
++    let mut panels = open_panels(cx).await;
++    let thread = open_live_thread(&mut panels, "Live");
++    let mut task = wire_task("run", "running", 2_000, None);
++    task["tail"] = serde_json::json!(["building PREVIEWED"]);
++    send_tasks(&thread, vec![task], &mut panels.cx);
++    let session = session_of(&thread, &panels.cx);
++    show(&mut panels);
++    assert!(!painted(&mut panels, "agent-tasks-preview".into()));
++
++    click(&mut panels, "agent-tasks-watch-run".into());
++    let card = panels
++        .agent_panel
++        .read_with(&panels.cx, |panel, _| panel.tasks_card().clone());
++    assert!(card.read_with(&panels.cx, |card, _| {
++        card.is_watched(&session, &"run".into())
++    }));
++    assert!(
++        painted(&mut panels, "agent-tasks-preview".into()),
++        "the preview shows"
++    );
++    assert!(painted(&mut panels, "agent-tasks-preview-body".into()));
++
++    click(&mut panels, "agent-tasks-watch-run".into());
++    assert!(!card.read_with(&panels.cx, |card, _| {
++        card.is_watched(&session, &"run".into())
++    }));
++    assert!(
++        !painted(&mut panels, "agent-tasks-preview".into()),
++        "closed with the eye"
++    );
++}
++
++/// ↓ sends the task's tool call to the background, through the card.
++#[gpui::test]
++async fn card_buttons_down_sends_to_the_background(cx: &mut TestAppContext) {
++    init_base(cx);
++    let mut panels = open_panels(cx).await;
++    let connection = StopConnection::new();
++    let thread = open_thread_on(
++        &panels.agent_panel,
++        connection.clone(),
++        "Live",
++        &mut panels.cx,
++    );
++    send_tasks(
++        &thread,
++        vec![wire_task("run", "running", 2_000, None)],
++        &mut panels.cx,
++    );
++    let session = session_of(&thread, &panels.cx);
++    show(&mut panels);
++
++    click(&mut panels, "agent-tasks-background-run".into());
++    assert_eq!(
++        connection.backgrounds.lock().unwrap().clone(),
++        vec![(session.to_string(), "toolu_run".to_string())]
++    );
++}
+diff --git a/crates/agent_tasks_panel/src/test_helpers.rs b/crates/agent_tasks_panel/src/test_helpers.rs
+index c569535..6c3189d 100644
+--- a/crates/agent_tasks_panel/src/test_helpers.rs
++++ b/crates/agent_tasks_panel/src/test_helpers.rs
+@@ -241,6 +241,8 @@ pub(crate) struct StopConnection {
+     next_session: Arc<Mutex<usize>>,
+     pub stops: Arc<Mutex<Vec<(String, String)>>>,
+     pub stop_error: Arc<Mutex<Option<&'static str>>>,
++    /// (session, tool call) of every "Send to Background" (Zeo next §6.21).
++    pub backgrounds: Arc<Mutex<Vec<(String, String)>>>,
+ }
+ 
+ impl StopConnection {
+@@ -250,6 +252,7 @@ impl StopConnection {
+             next_session: Arc::new(Mutex::new(0)),
+             stops: Arc::default(),
+             stop_error: Arc::default(),
++            backgrounds: Arc::default(),
+         }
+     }
+ 
+@@ -337,6 +340,19 @@ impl AgentConnection for StopConnection {
+         }
+     }
+ 
++    fn background_task(
++        self: Rc<Self>,
++        session_id: &acp_v2::SessionId,
++        tool_call_id: &str,
++        _cx: &mut App,
++    ) -> Task<Result<bool>> {
++        self.backgrounds
++            .lock()
++            .unwrap()
++            .push((session_id.to_string(), tool_call_id.to_string()));
++        Task::ready(Ok(true))
++    }
++
+     fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
+         self
+     }
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index fef105d..23fe256 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -45,8 +45,8 @@ mod task_label;
+ mod tasks_card;
+ mod terminal_codegen;
+ mod terminal_inline_assistant;
+-mod terminals_minimized;
+ pub mod terminal_thread_metadata_store;
++mod terminals_minimized;
+ #[cfg(any(test, feature = "test-support"))]
+ pub mod test_support;
+ mod thread_import;
+@@ -122,7 +122,7 @@ pub use crate::task_label::{
+ pub use crate::tasks_card::task_log;
+ pub use crate::tasks_card::{
+     SUBAGENT_TASK_ID_PREFIX, TASK_WAITING_LABEL, TaskActivity, TaskKey, TaskRecord, TasksCard,
+-    TasksCardEvent, ThreadTitleChanged,
++    TasksCardEvent, ThreadTitleChanged, can_send_to_background,
+ };
+ pub use crate::thread_metadata_store::ThreadId;
+ pub use agent_diff::{AgentDiffPane, AgentDiffToolbar};
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index 19c9cd4..8b1506b 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -896,6 +896,41 @@ impl TasksCard {
+         cx.notify();
+     }
+ 
++    /// Whether the eye is on for that task (Zeo next §6.21: the panel's eye is the card's).
++    pub fn is_watched(&self, session_id: &acp_v2::SessionId, task_id: &AgentTaskId) -> bool {
++        self.watched
++            .contains(&(session_id.clone(), task_id.clone()))
++    }
++
++    /// The text a watched task's preview shows: its fetched output, else the feed's tail.
++    /// `None` while neither exists. The Agent Tasks panel draws the same text (§6.21).
++    pub fn preview_text(
++        &self,
++        session_id: &acp_v2::SessionId,
++        task_id: &AgentTaskId,
++        cx: &App,
++    ) -> Option<String> {
++        let key = (session_id.clone(), task_id.clone());
++        if let Some(output) = self
++            .previews
++            .get(&key)
++            .and_then(|preview| preview.output.as_ref())
++            .filter(|output| !output.content.is_empty())
++        {
++            let (lines, _) = preview::preview_lines(&output.content, preview::PREVIEW_MAX_LINES);
++            return Some(lines.join("\n"));
++        }
++        self.current_task(&key, cx)
++            .and_then(|task| task.tail)
++            .filter(|tail| !tail.is_empty())
++            .map(|tail| {
++                tail.iter()
++                    .map(|line| line.as_ref())
++                    .collect::<Vec<_>>()
++                    .join("\n")
++            })
++    }
++
+     /// Fetches a watched task's output for its preview, unless a fetch is already out or
+     /// the agent serves none for it (Zeo next §6.22).
+     fn refresh_preview(&mut self, key: TaskKey, cx: &mut Context<Self>) {
+@@ -2930,6 +2965,13 @@ impl TasksCard {
+     }
+ }
+ 
++/// Whether "Send to Background" applies to `task`: a running foreground task with a tool
++/// call to address. The Agent Tasks panel offers the card's ↓ on the same condition
++/// (Zeo next §6.21).
++pub fn can_send_to_background(task: &AgentTask) -> bool {
++    task.status.is_running() && background_target(task).is_some()
++}
++
+ /// The tool call a "Send to Background" for `task` is addressed to; `None` when
+ /// the task is already in the background or has no tool call to address (R4.4).
+ fn background_target(task: &AgentTask) -> Option<&acp_v2::ToolCallId> {

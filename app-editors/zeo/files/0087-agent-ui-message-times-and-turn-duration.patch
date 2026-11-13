@@ -1,0 +1,627 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 10 Nov 2026 05:00:58 -0300
+Subject: [PATCH] agent_ui, acp_thread: message times and turn duration
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.4 (ask 24). Each user message shows when it was
+sent, right-aligned under it; each completed turn's last agent message
+shows when it ended and how long the turn took ("09:16 · 1m 30s"). The
+full date is in a tooltip. Shown regardless of `show_turn_stats`.
+
+acp_thread keeps the times in a side table, `message_times`, one slot per
+entry, kept in step by push_entry and truncate_entries, so rewind drops
+them. A side table rather than a field on UserMessage/AssistantMessage:
+those literals span upstream's native agent (agent/thread.rs, db.rs),
+26 sites a bump would have to carry. A chunk's time is the agent's
+`_meta.claudeCode.timestamp` (Claude Agent (Plus) >= 0.37.0 stamps every
+chunk, live and on replay), on the v1 and the keyed v2 path, else the
+receive time, but only while a turn runs: a replayed chunk received now
+says nothing about when it was sent, so an agent without the field shows
+times live only. The local prompt is stamped when it is sent.
+turn_duration runs from the user message to the turn's last agent
+message, and is None while that turn still runs.
+
+The row is added once, where render_entries wraps each entry, so
+render_entry is untouched.
+
+Tests, each seen failing first: acp_thread_message_times_tests.rs (agent
+meta on replay, no time without one, a live turn's receive time, rewind)
+and thread_view/tests/message_time_tests.rs (the rows and the duration;
+nothing without a time).
+---
+
+diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
+index 04aaef7..ff15c29 100644
+--- a/crates/acp_thread/src/acp_thread.rs
++++ b/crates/acp_thread/src/acp_thread.rs
+@@ -509,6 +509,25 @@ fn can_merge_message_chunks(
+     }
+ }
+ 
++/// `_meta.claudeCode.timestamp`, the ISO 8601 time Claude Agent (Plus) stamps on each message
++/// chunk, live and on replay. Anything unparsable reads as absent.
++fn agent_message_time(
++    meta: &serde_json::Map<String, serde_json::Value>,
++) -> Option<chrono::DateTime<chrono::Utc>> {
++    let timestamp = meta.get("claudeCode")?.get("timestamp")?.as_str()?;
++    chrono::DateTime::parse_from_rfc3339(timestamp)
++        .ok()
++        .map(|time| time.with_timezone(&chrono::Utc))
++}
++
++/// When a user or agent message was sent (Zeo next proposal §6.4): its first and its latest
++/// chunk. `None` for an entry that is not a message, or whose time is unknown.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct MessageTime {
++    pub first: chrono::DateTime<chrono::Utc>,
++    pub last: chrono::DateTime<chrono::Utc>,
++}
++
+ #[derive(Clone, Copy)]
+ enum MessageLocation {
+     User {
+@@ -4215,6 +4234,10 @@ pub struct AcpThread {
+     forked_from: Option<acp_v2::SessionId>,
+     provisional_title: Option<SharedString>,
+     entries: Vec<AgentThreadEntry>,
++    /// One slot per entry, kept in step with `entries` by push_entry and truncate_entries:
++    /// when each message was sent (Zeo next proposal §6.4). A side table rather than a field on
++    /// UserMessage/AssistantMessage, whose literals span upstream's native agent too.
++    message_times: Vec<Option<MessageTime>>,
+     // Notices stay with the live session, but never enter conversation history or exports.
+     notices: Vec<(usize, acp_v2::Notice)>,
+     next_notice_id: usize,
+@@ -4600,6 +4623,7 @@ impl AcpThread {
+             action_log,
+             shared_buffers: Default::default(),
+             entries: Default::default(),
++            message_times: Default::default(),
+             notices: Vec::new(),
+             next_notice_id: 0,
+             elicitations: ElicitationStore::default(),
+@@ -4927,6 +4951,87 @@ impl AcpThread {
+         self.set_work_dirs(work_dirs, cx);
+     }
+ 
++    /// When the message at `entry_index` was sent (§6.4).
++    pub fn message_time(&self, entry_index: usize) -> Option<MessageTime> {
++        self.message_times.get(entry_index).copied().flatten()
++    }
++
++    /// How long the turn that starts with the user message at `entry_index` took: from that
++    /// message to the last agent message before the next user message (§6.4).
++    pub fn turn_duration(&self, entry_index: usize) -> Option<std::time::Duration> {
++        if !matches!(
++            self.entries.get(entry_index),
++            Some(AgentThreadEntry::UserMessage(_))
++        ) {
++            return None;
++        }
++        let sent = self.message_time(entry_index)?.first;
++        let next_turn = self
++            .entries
++            .iter()
++            .enumerate()
++            .skip(entry_index + 1)
++            .find(|(_, entry)| matches!(entry, AgentThreadEntry::UserMessage(_)))
++            .map(|(ix, _)| ix);
++        // The last turn is still being written while one runs: no duration until it ends.
++        if next_turn.is_none() && self.running_turn.is_some() {
++            return None;
++        }
++        let end = next_turn.unwrap_or(self.entries.len());
++        let replied = (entry_index + 1..end)
++            .rev()
++            .filter(|ix| matches!(self.entries[*ix], AgentThreadEntry::AssistantMessage(_)))
++            .find_map(|ix| self.message_time(ix))?
++            .last;
++        (replied - sent).to_std().ok()
++    }
++
++    /// Records a message chunk's time on the entry it went into: the agent's
++    /// `_meta.claudeCode.timestamp`, else the receive time while a turn runs. A replayed chunk
++    /// with no time of its own records nothing -- received now says nothing about when it was
++    /// sent.
++    fn note_message_time(
++        &mut self,
++        entry_index: usize,
++        meta: Option<&serde_json::Map<String, serde_json::Value>>,
++    ) {
++        if !matches!(
++            self.entries.get(entry_index),
++            Some(AgentThreadEntry::UserMessage(_) | AgentThreadEntry::AssistantMessage(_))
++        ) {
++            return;
++        }
++        let Some(time) = meta
++            .and_then(agent_message_time)
++            .or_else(|| self.running_turn.is_some().then(chrono::Utc::now))
++        else {
++            return;
++        };
++        if let Some(slot) = self.message_times.get_mut(entry_index) {
++            *slot = Some(match *slot {
++                Some(known) => MessageTime {
++                    first: known.first.min(time),
++                    last: known.last.max(time),
++                },
++                None => MessageTime {
++                    first: time,
++                    last: time,
++                },
++            });
++        }
++    }
++
++    /// note_message_time for the entry a v1 chunk just went into: always the last one, since a
++    /// v1 chunk merges into the last entry or pushes a new one.
++    fn note_last_message_time(
++        &mut self,
++        meta: Option<&serde_json::Map<String, serde_json::Value>>,
++    ) {
++        if let Some(entry_index) = self.entries.len().checked_sub(1) {
++            self.note_message_time(entry_index, meta);
++        }
++    }
++
+     pub fn status(&self) -> ThreadStatus {
+         match self.foreground_activity() {
+             ForegroundActivity::Unconfirmed | ForegroundActivity::Unknown => {
+@@ -5710,6 +5815,7 @@ impl AcpThread {
+             acp_v1::SessionUpdate::UserMessageChunk(acp_v1::ContentChunk {
+                 content,
+                 message_id,
++                meta,
+                 ..
+             }) => {
+                 let content = content::from_v1(content).map_err(acp_v1::Error::from)?;
+@@ -5738,10 +5844,12 @@ impl AcpThread {
+                 if !already_in_user_message {
+                     self.push_user_content_block_from_agent(message_id, content, cx);
+                 }
++                self.note_last_message_time(meta.as_ref());
+             }
+             acp_v1::SessionUpdate::AgentMessageChunk(acp_v1::ContentChunk {
+                 content,
+                 message_id,
++                meta,
+                 ..
+             }) => {
+                 self.push_assistant_content_block_with_message_id(
+@@ -5751,6 +5859,7 @@ impl AcpThread {
+                     false,
+                     cx,
+                 );
++                self.note_last_message_time(meta.as_ref());
+             }
+             acp_v1::SessionUpdate::AgentThoughtChunk(acp_v1::ContentChunk {
+                 content,
+@@ -6145,15 +6254,19 @@ impl AcpThread {
+         chunk: acp_v2::ContentChunk,
+         cx: &mut Context<Self>,
+     ) -> Result<()> {
+-        // Chunk-envelope metadata does not patch the message's metadata.
++        // Chunk-envelope metadata does not patch the message's metadata; its time is recorded
++        // beside the message (§6.4).
+         let acp_v2::ContentChunk {
+             message_id,
+             content,
++            meta,
+             ..
+         } = chunk;
+         let previous_entry_count = self.entries.len();
+         let location = self.keyed_message_location(kind, message_id, cx)?;
+-        self.append_message_content(location, kind, content, previous_entry_count, cx)
++        self.append_message_content(location, kind, content, previous_entry_count, cx)?;
++        self.note_message_time(location.entry_index(), meta.as_ref());
++        Ok(())
+     }
+ 
+     fn append_message_content(
+@@ -6706,6 +6819,7 @@ impl AcpThread {
+     fn push_entry(&mut self, entry: AgentThreadEntry, cx: &mut Context<Self>) {
+         self.flush_streaming_text(cx);
+         self.entries.push(entry);
++        self.message_times.push(None);
+         cx.emit(AcpThreadEvent::NewEntry);
+     }
+ 
+@@ -6720,6 +6834,7 @@ impl AcpThread {
+             })
+             .collect::<Vec<_>>();
+         self.entries.truncate(index);
++        self.message_times.truncate(index);
+         for id in removed_requests {
+             self.resolve_permission_request(id, RequestPermissionOutcome::Cancelled, cx);
+         }
+@@ -8347,6 +8462,8 @@ impl AcpThread {
+                         }),
+                         cx,
+                     );
++                    // Sent now, inside its turn: stamped with the send time (§6.4).
++                    this.note_last_message_time(None);
+                 })
+                 .ok();
+             }
+@@ -28193,4 +28310,5 @@ mod tests {
+     include!("acp_thread_tasks_contract_v2_tests.rs");
+     include!("acp_thread_tasks_child_session_tests.rs");
+     include!("acp_thread_tasks_turn_end_tests.rs");
++    include!("acp_thread_message_times_tests.rs");
+ }
+diff --git a/crates/acp_thread/src/acp_thread_message_times_tests.rs b/crates/acp_thread/src/acp_thread_message_times_tests.rs
+new file mode 100644
+index 0000000..a878d28
+--- /dev/null
++++ b/crates/acp_thread/src/acp_thread_message_times_tests.rs
+@@ -0,0 +1,178 @@
++// Zeo next proposal §6.4 (ask 24): message times and turn duration.
++//
++// Each user and agent message records when it was sent: the agent's `_meta.claudeCode.timestamp`
++// (Claude Agent (Plus) >= 0.37.0 stamps every chunk, live and on replay), else the time Zeo
++// received it -- but only while a turn is running, because a replayed chunk received now says
++// nothing about when it was sent. A turn's duration runs from its user message to the last
++// agent message before the next user message.
++//
++// Included at the end of `mod tests` in `acp_thread.rs`.
++
++const T_SENT: &str = "2026-11-10T09:15:00Z";
++const T_REPLY: &str = "2026-11-10T09:15:20Z";
++const T_LAST: &str = "2026-11-10T09:16:30Z";
++
++fn message_times_meta(timestamp: &str) -> serde_json::Map<String, serde_json::Value> {
++    serde_json::Map::from_iter([(
++        "claudeCode".to_string(),
++        serde_json::json!({ "timestamp": timestamp }),
++    )])
++}
++
++fn message_times_at(timestamp: &str) -> chrono::DateTime<chrono::Utc> {
++    chrono::DateTime::parse_from_rfc3339(timestamp)
++        .expect("fixture timestamp")
++        .with_timezone(&chrono::Utc)
++}
++
++async fn message_times_thread(cx: &mut TestAppContext) -> Entity<AcpThread> {
++    init_test(cx);
++    let fs = FakeFs::new(cx.executor());
++    let project = Project::test(fs, [], cx).await;
++    let connection: Rc<dyn AgentConnection> = Rc::new(FakeAgentConnection::new());
++    cx.update(|cx| connection.new_session(project, PathList::new(&[Path::new(path!("/test"))]), cx))
++        .await
++        .unwrap()
++}
++
++fn message_times_replay(
++    thread: &Entity<AcpThread>,
++    update: acp_v1::SessionUpdate,
++    cx: &mut TestAppContext,
++) {
++    thread.update(cx, |thread, cx| {
++        thread.handle_session_update(update, cx).expect("update applies")
++    });
++}
++
++#[gpui::test]
++async fn message_times_come_from_the_agents_meta_on_replay(cx: &mut TestAppContext) {
++    let thread = message_times_thread(cx).await;
++    message_times_replay(
++        &thread,
++        acp_v1::SessionUpdate::UserMessageChunk(
++            acp_v1::ContentChunk::new("Fix the build".into()).meta(message_times_meta(T_SENT)),
++        ),
++        cx,
++    );
++    message_times_replay(
++        &thread,
++        acp_v1::SessionUpdate::AgentMessageChunk(
++            acp_v1::ContentChunk::new("Looking.".into()).meta(message_times_meta(T_REPLY)),
++        ),
++        cx,
++    );
++    message_times_replay(
++        &thread,
++        acp_v1::SessionUpdate::AgentMessageChunk(
++            acp_v1::ContentChunk::new(" Fixed.".into()).meta(message_times_meta(T_LAST)),
++        ),
++        cx,
++    );
++
++    thread.read_with(cx, |thread, _| {
++        let user = thread.message_time(0).expect("the user message has a time");
++        assert_eq!((user.first, user.last), (message_times_at(T_SENT), message_times_at(T_SENT)));
++        let reply = thread.message_time(1).expect("the reply has a time");
++        assert_eq!(reply.first, message_times_at(T_REPLY), "first chunk");
++        assert_eq!(reply.last, message_times_at(T_LAST), "last chunk");
++        assert_eq!(
++            thread.turn_duration(0),
++            Some(std::time::Duration::from_secs(90)),
++            "from the user message to the turn's last agent message"
++        );
++    });
++}
++
++#[gpui::test]
++async fn message_times_are_absent_for_a_replayed_chunk_without_one(cx: &mut TestAppContext) {
++    let thread = message_times_thread(cx).await;
++    message_times_replay(
++        &thread,
++        acp_v1::SessionUpdate::UserMessageChunk(acp_v1::ContentChunk::new("Fix it".into())),
++        cx,
++    );
++    message_times_replay(
++        &thread,
++        acp_v1::SessionUpdate::AgentMessageChunk(acp_v1::ContentChunk::new("Done.".into())),
++        cx,
++    );
++
++    thread.read_with(cx, |thread, _| {
++        assert_eq!(thread.message_time(0), None, "received now is not when it was sent");
++        assert_eq!(thread.message_time(1), None);
++        assert_eq!(thread.turn_duration(0), None);
++    });
++}
++
++#[gpui::test]
++async fn message_times_stamp_a_live_turn_with_the_receive_time(cx: &mut TestAppContext) {
++    init_test(cx);
++    let fs = FakeFs::new(cx.executor());
++    let project = Project::test(fs, [], cx).await;
++    let connection = Rc::new(StubAgentConnection::new());
++    connection.set_next_prompt_updates(vec![acp_v1::SessionUpdate::AgentMessageChunk(
++        acp_v1::ContentChunk::new("Done.".into()),
++    )]);
++    let session_connection: Rc<dyn AgentConnection> = connection.clone();
++    let thread = cx
++        .update(|cx| {
++            session_connection.new_session(project, PathList::new(&[Path::new(path!("/test"))]), cx)
++        })
++        .await
++        .unwrap();
++    let before = chrono::Utc::now();
++
++    thread
++        .update(cx, |thread, cx| thread.send_raw("Fix it", cx))
++        .await
++        .expect("turn completes");
++
++    let after = chrono::Utc::now();
++    thread.read_with(cx, |thread, _| {
++        for ix in [0, 1] {
++            let time = thread
++                .message_time(ix)
++                .unwrap_or_else(|| panic!("entry {ix} stamped live"));
++            assert!(before <= time.first && time.last <= after, "entry {ix}: {time:?}");
++        }
++        assert!(thread.turn_duration(0).is_some());
++    });
++}
++
++#[gpui::test]
++async fn message_times_follow_a_rewind(cx: &mut TestAppContext) {
++    let thread = message_times_thread(cx).await;
++    message_times_replay(
++        &thread,
++        acp_v1::SessionUpdate::UserMessageChunk(
++            acp_v1::ContentChunk::new("one".into()).meta(message_times_meta(T_SENT)),
++        ),
++        cx,
++    );
++    message_times_replay(
++        &thread,
++        acp_v1::SessionUpdate::AgentMessageChunk(
++            acp_v1::ContentChunk::new("reply".into()).meta(message_times_meta(T_REPLY)),
++        ),
++        cx,
++    );
++
++    thread.update(cx, |thread, cx| thread.truncate_entries(1, cx));
++    message_times_replay(
++        &thread,
++        acp_v1::SessionUpdate::AgentMessageChunk(
++            acp_v1::ContentChunk::new("again".into()).meta(message_times_meta(T_LAST)),
++        ),
++        cx,
++    );
++
++    thread.read_with(cx, |thread, _| {
++        let reply = thread.message_time(1).expect("the new reply has a time");
++        assert_eq!(
++            (reply.first, reply.last),
++            (message_times_at(T_LAST), message_times_at(T_LAST)),
++            "the truncated reply's times are gone"
++        );
++    });
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 1ee2dce..158595f 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -8030,6 +8030,76 @@ fn sandbox_network_rows(network: &SandboxNetPolicy) -> Vec<SandboxRow> {
+ }
+ 
+ impl ThreadView {
++    /// The time line under a message (Zeo next proposal §6.4): a user message's send time, and
++    /// under a completed turn's last agent message, when it ended and how long the turn took.
++    fn render_message_time(&self, entry_ix: usize, cx: &Context<Self>) -> Option<AnyElement> {
++        let thread = self.thread.read(cx);
++        let entries = thread.entries();
++        let entry = entries.get(entry_ix)?;
++        if entry.is_indented() {
++            return None;
++        }
++        let (time, duration, is_user) = match entry {
++            AgentThreadEntry::UserMessage(_) => (thread.message_time(entry_ix)?.first, None, true),
++            AgentThreadEntry::AssistantMessage(_) => {
++                let next_turn = entries
++                    .iter()
++                    .enumerate()
++                    .skip(entry_ix + 1)
++                    .find(|(_, entry)| matches!(entry, AgentThreadEntry::UserMessage(_)))
++                    .map_or(entries.len(), |(ix, _)| ix);
++                // Only the turn's last agent message, and only once the turn has ended.
++                let later_reply = entries[entry_ix + 1..next_turn]
++                    .iter()
++                    .any(|entry| matches!(entry, AgentThreadEntry::AssistantMessage(_)));
++                let still_running =
++                    next_turn == entries.len() && thread.status() != ThreadStatus::Idle;
++                if later_reply || still_running {
++                    return None;
++                }
++                let turn_start = entries[..entry_ix]
++                    .iter()
++                    .rposition(|entry| matches!(entry, AgentThreadEntry::UserMessage(_)));
++                (
++                    thread.message_time(entry_ix)?.last,
++                    turn_start.and_then(|ix| thread.turn_duration(ix)),
++                    false,
++                )
++            }
++            _ => return None,
++        };
++
++        let local = time.with_timezone(&chrono::Local);
++        let full_date: SharedString = local.format("%A, %-d %B %Y, %H:%M:%S").to_string().into();
++        Some(
++            h_flex()
++                .id(("message-time", entry_ix))
++                .debug_selector(move || format!("message-time-{entry_ix}"))
++                .w_full()
++                .px_5()
++                .gap_1()
++                .when(is_user, |this| this.justify_end())
++                .child(
++                    Label::new(local.format("%H:%M").to_string())
++                        .size(LabelSize::XSmall)
++                        .color(Color::Muted),
++                )
++                .when_some(duration, |this, duration| {
++                    this.child(
++                        div()
++                            .debug_selector(move || format!("message-time-{entry_ix}-duration"))
++                            .child(
++                                Label::new(format!("· {}", duration_alt_display(duration)))
++                                    .size(LabelSize::XSmall)
++                                    .color(Color::Muted),
++                            ),
++                    )
++                })
++                .tooltip(Tooltip::text(full_date))
++                .into_any_element(),
++        )
++    }
++
+     fn render_entries(&mut self, cx: &mut Context<Self>) -> List {
+         let max_content_width = AgentSettings::get_global(cx).max_content_width;
+         let centered_container = move |content: AnyElement| {
+@@ -8047,6 +8117,10 @@ impl ThreadView {
+                 let entries = this.thread.read(cx).entries();
+                 if let Some(entry) = entries.get(index) {
+                     let rendered = this.render_entry(index, entries.len(), entry, window, cx);
++                    let rendered = v_flex()
++                        .w_full()
++                        .child(rendered)
++                        .children(this.render_message_time(index, cx));
+                     centered_container(rendered.into_any_element()).into_any_element()
+                 } else if this.generating_indicator_in_list {
+                     let confirmation = this.thread.read(cx).is_waiting_for_confirmation()
+@@ -16025,6 +16099,8 @@ mod tests {
+ 
+     mod question_card_minimize_tests;
+ 
++    mod message_time_tests;
++
+     use super::*;
+     use gpui::UpdateGlobal;
+     use project::{FakeFs, Project};
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/message_time_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/message_time_tests.rs
+new file mode 100644
+index 0000000..67b17e1
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/tests/message_time_tests.rs
+@@ -0,0 +1,82 @@
++// Zeo next proposal §6.4 (ask 24): each user message shows when it was sent, and each completed
++// turn's last agent message shows when it ended and how long the turn took, with the full date
++// in a tooltip. Times come from acp_thread's message_time (the agent's timestamp, else the
++// receive time live); a message without one shows nothing.
++
++use agent_client_protocol::v1::schema as acp_v1;
++use gpui::TestAppContext;
++
++use super::elicitation_decline_harness::*;
++
++fn message_time_meta(timestamp: &str) -> serde_json::Map<String, serde_json::Value> {
++    serde_json::Map::from_iter([(
++        "claudeCode".to_string(),
++        serde_json::json!({ "timestamp": timestamp }),
++    )])
++}
++
++fn message_time_replay(
++    thread: &gpui::Entity<acp_thread::AcpThread>,
++    update: acp_v1::SessionUpdate,
++    cx: &mut gpui::VisualTestContext,
++) {
++    thread.update(cx, |thread, cx| {
++        thread
++            .handle_session_update(update, cx)
++            .expect("update applies")
++    });
++}
++
++#[gpui::test]
++async fn a_turn_shows_its_times_and_duration(cx: &mut TestAppContext) {
++    let (_view, thread, mut cx) = setup(cx).await;
++    message_time_replay(
++        &thread,
++        acp_v1::SessionUpdate::UserMessageChunk(
++            acp_v1::ContentChunk::new("Fix the build".into())
++                .meta(message_time_meta("2026-11-10T09:15:00Z")),
++        ),
++        &mut cx,
++    );
++    message_time_replay(
++        &thread,
++        acp_v1::SessionUpdate::AgentMessageChunk(
++            acp_v1::ContentChunk::new("Fixed.".into())
++                .meta(message_time_meta("2026-11-10T09:16:30Z")),
++        ),
++        &mut cx,
++    );
++    draw(&mut cx);
++
++    assert!(
++        cx.debug_bounds("message-time-0").is_some(),
++        "the user message shows its time"
++    );
++    assert!(
++        cx.debug_bounds("message-time-1").is_some(),
++        "the turn's last reply shows its time"
++    );
++    assert!(
++        cx.debug_bounds("message-time-1-duration").is_some(),
++        "and the turn's duration"
++    );
++}
++
++#[gpui::test]
++async fn a_message_without_a_time_shows_none(cx: &mut TestAppContext) {
++    let (_view, thread, mut cx) = setup(cx).await;
++    message_time_replay(
++        &thread,
++        acp_v1::SessionUpdate::UserMessageChunk(acp_v1::ContentChunk::new("Fix it".into())),
++        &mut cx,
++    );
++    message_time_replay(
++        &thread,
++        acp_v1::SessionUpdate::AgentMessageChunk(acp_v1::ContentChunk::new("Done.".into())),
++        &mut cx,
++    );
++    draw(&mut cx);
++
++    assert!(cx.debug_bounds("message-time-0").is_none());
++    assert!(cx.debug_bounds("message-time-1").is_none());
++}

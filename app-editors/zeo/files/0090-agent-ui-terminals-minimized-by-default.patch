@@ -1,0 +1,161 @@
+From 779c0b43cb2ae5085651449b1891c8c65c8e0f21 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 10 Nov 2026 06:11:48 -0300
+Subject: [PATCH] agent_ui: a menu toggle starts inline terminals minimized
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.17 (ask 37). A long run of tool calls fills the
+conversation's scroll with expanded terminal cards. Upstream already has
+the setting, agent.expand_terminal_card (default true), applied when a
+terminal card is created; it was reachable only by editing settings.json.
+
+The agent menu gains a "Conversation" section with "Terminals Minimized
+by Default". The toggle owns no setting of its own: minimized is
+expand_terminal_card seen from the other side, written through
+update_settings_file like the Agent Questions entries. A terminal
+already on screen keeps the state it has; the setting reaches terminals
+created after the change.
+
+The read and the write live in terminals_minimized.rs, so they can be
+tested without opening the menu, which exposes no entries to a test.
+Tests: terminals_minimized::tests (the write inverts the upstream key;
+the toggle reads it, checked after a user-settings update). They were
+written with the code and not seen failing first; the helper is two
+lines, and the menu wiring is proven by the Xvfb proof instead.
+---
+
+diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
+index 9670223..de59d52 100644
+--- a/crates/agent_ui/src/agent_panel.rs
++++ b/crates/agent_ui/src/agent_panel.rs
+@@ -45,6 +45,10 @@ use crate::terminal_thread_metadata_store::{
+     TerminalThreadMetadata, TerminalThreadMetadataStore, compose_terminal_thread_title,
+     normalize_terminal_custom_title, terminal_title_without_prefix,
+ };
++use crate::terminals_minimized::{
++    TERMINALS_MINIMIZED_MENU_LABEL, set_terminals_minimized_by_default,
++    terminals_minimized_by_default,
++};
+ use crate::thread_metadata_store::{ThreadId, ThreadMetadataStore, ThreadMetadataStoreEvent};
+ use crate::{
+     Agent, AgentInitialContent, AgentThreadSource, ExternalSourcePrompt, NewExternalAgentThread,
+@@ -6774,6 +6778,29 @@ impl AgentPanel {
+                             );
+                         }
+ 
++                        // Zeo next §6.17: inline terminals start minimized, so a
++                        // long run of tool calls takes less of the scroll. Applies
++                        // to terminals created after the change.
++                        let terminals_minimized =
++                            terminals_minimized_by_default(AgentSettings::get_global(cx));
++                        menu = menu.separator().header("Conversation").toggleable_entry(
++                            TERMINALS_MINIMIZED_MENU_LABEL,
++                            terminals_minimized,
++                            IconPosition::End,
++                            None,
++                            {
++                                let fs = fs.clone();
++                                move |_window, cx| {
++                                    update_settings_file(fs.clone(), cx, move |settings, _| {
++                                        set_terminals_minimized_by_default(
++                                            settings,
++                                            !terminals_minimized,
++                                        );
++                                    });
++                                }
++                            },
++                        );
++
+                         if has_auth_methods || supports_logout {
+                             menu = menu.separator()
+                         }
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index 424acd5..fef105d 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -45,6 +45,7 @@ mod task_label;
+ mod tasks_card;
+ mod terminal_codegen;
+ mod terminal_inline_assistant;
++mod terminals_minimized;
+ pub mod terminal_thread_metadata_store;
+ #[cfg(any(test, feature = "test-support"))]
+ pub mod test_support;
+diff --git a/crates/agent_ui/src/terminals_minimized.rs b/crates/agent_ui/src/terminals_minimized.rs
+new file mode 100644
+index 0000000..d16961e
+--- /dev/null
++++ b/crates/agent_ui/src/terminals_minimized.rs
+@@ -0,0 +1,70 @@
++//! Zeo next proposal §6.17 (ask 37): an agent-menu toggle that starts every inline
++//! terminal minimized, so a long run of tool calls takes less of the conversation's
++//! scroll. It is upstream's `agent.expand_terminal_card` seen from the other side --
++//! "minimized" is "not expanded" -- so the menu owns no setting of its own, and a
++//! terminal already on screen keeps the state it has.
++
++use agent_settings::AgentSettings;
++use settings::SettingsContent;
++
++/// The agent-menu label, shared with the menu and its tests.
++pub(crate) const TERMINALS_MINIMIZED_MENU_LABEL: &str = "Terminals Minimized by Default";
++
++/// Whether the toggle shows checked.
++pub(crate) fn terminals_minimized_by_default(settings: &AgentSettings) -> bool {
++    !settings.expand_terminal_card
++}
++
++/// Writes the toggle's new state into the user's settings.
++pub(crate) fn set_terminals_minimized_by_default(settings: &mut SettingsContent, minimized: bool) {
++    settings.agent.get_or_insert_default().expand_terminal_card = Some(!minimized);
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use gpui::UpdateGlobal as _;
++    use settings::Settings as _;
++
++    #[test]
++    fn minimized_is_the_terminal_card_not_expanded() {
++        let mut settings = SettingsContent::default();
++        set_terminals_minimized_by_default(&mut settings, true);
++        assert_eq!(
++            settings
++                .agent
++                .as_ref()
++                .and_then(|agent| agent.expand_terminal_card),
++            Some(false)
++        );
++        set_terminals_minimized_by_default(&mut settings, false);
++        assert_eq!(
++            settings
++                .agent
++                .as_ref()
++                .and_then(|agent| agent.expand_terminal_card),
++            Some(true)
++        );
++    }
++
++    #[gpui::test]
++    fn the_toggle_reads_the_upstream_setting(cx: &mut gpui::TestAppContext) {
++        cx.update(|cx| {
++            let store = settings::SettingsStore::test(cx);
++            cx.set_global(store);
++            AgentSettings::register(cx);
++            assert!(
++                !terminals_minimized_by_default(AgentSettings::get_global(cx)),
++                "upstream's default expands the card"
++            );
++            settings::SettingsStore::update_global(cx, |store, cx| {
++                store.update_user_settings(cx, |settings| {
++                    set_terminals_minimized_by_default(settings, true)
++                });
++            });
++            assert!(terminals_minimized_by_default(AgentSettings::get_global(
++                cx
++            )));
++        });
++    }
++}

@@ -1,0 +1,297 @@
+From ae40cbfccbebdad6eed639b385d7fffc8bc5cdba Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Wed, 11 Nov 2026 20:32:00 -0300
+Subject: [PATCH] agent_ui: the sent message stays pinned at the top, minimized
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.3 (ask 16), as the operator clarified it: as in
+Cursor, once a message is sent it stays at the top of the thread,
+minimized to one line, while the reply scrolls under it.
+
+The rule is one function, pinned_user_message_ix, over the entry at
+the viewport's top: the last user message above it is pinned, unless
+the entry at the top is a user message itself -- whole or partly
+scrolled past, it is on screen, and a pinned copy would sit over it.
+So a newer message takes the place of an older one when its turn
+scrolls under the top, and scrolling back up into an earlier turn pins
+that turn's message: one sticky header per user message. Before the
+first message nothing is pinned.
+
+The header is an overlay at the top of the conversation, beside 0026's
+floating navigation: a person icon, the message's first non-blank line
+truncated, and a chevron. A click on the line jumps to the message
+(scroll to its entry, offset 0), which hides the header; the chevron
+expands the whole message in place, wrapped, scrolling past 160 px,
+and points up to minimize it. Which message is expanded is kept by
+entry index, so a different pinned message always arrives minimized.
+
+The code lives in conversation_view/thread_view/pinned_message.rs; the
+thread view gains one field and one child.
+
+Tests: pinned_message::tests (the turn under the top pins its message;
+a newer one takes its place; hidden while the message is on screen,
+whole or partly; scrolling back up pins the earlier one; nothing
+before the first message or past the end; the minimized line is the
+first non-blank one). Seen failing with the on-screen rule removed and
+with the rule answering None.
+---
+
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index d9aea93..e769504 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -596,6 +596,8 @@ fn highlight_code_runs(
+     runs
+ }
+ 
++mod pinned_message;
++
+ #[cfg(test)]
+ mod numbered_code_block_tests {
+     use super::*;
+@@ -820,6 +822,9 @@ pub struct ThreadView {
+     /// The entry count when auto-scroll was paused (Zeo next proposal §5.8), or `None` while
+     /// the view follows the tail. Per thread: each thread view holds its own.
+     pub(crate) auto_scroll_paused_at: Option<usize>,
++    /// The pinned user message shown whole, by entry index (Zeo next §6.3); any other pinned
++    /// message shows minimized.
++    pinned_message_expanded: Option<usize>,
+     pub _cancel_task: Option<Task<()>>,
+     _save_task: Option<Task<()>>,
+     _draft_resolve_task: Option<Task<()>>,
+@@ -1383,6 +1388,7 @@ impl ThreadView {
+             question_queue: QuestionQueue::default(),
+             question_card_minimized: false,
+             auto_scroll_paused_at: None,
++            pinned_message_expanded: None,
+             _cancel_task: None,
+             _save_task: None,
+             _draft_resolve_task: None,
+@@ -15966,6 +15972,7 @@ impl Render for ThreadView {
+                         .flex_1()
+                         .size_full()
+                         .child(self.render_entries(cx))
++                        .children(self.render_pinned_user_message(cx))
+                         .child(self.render_floating_thread_navigation(cx))
+                         .vertical_scrollbar_for(&list_state, window, cx)
+                         .into_any()
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
+new file mode 100644
+index 0000000..d01a3ea
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
+@@ -0,0 +1,137 @@
++//! The sent message stays at the top, minimized (Zeo next proposal §6.3, ask 16).
++//!
++//! Once the operator's message scrolls out of view above, its first line stays pinned at the top
++//! of the conversation while the reply scrolls under it -- one sticky header per user message,
++//! as Cursor does. Scrolling up into an earlier turn pins that turn's message instead; the
++//! header hides while the message itself is on screen. A click on the line jumps to the
++//! message; the chevron expands it in place.
++
++use acp_thread::AgentThreadEntry;
++use gpui::{AnyElement, Context, ListOffset, px};
++use ui::{IconButton, IconName, IconSize, Label, LabelSize, Tooltip, prelude::*};
++
++use super::ThreadView;
++
++/// The most an expanded pinned message shows before it scrolls.
++const PINNED_EXPANDED_MAX_HEIGHT: f32 = 160.;
++
++/// The user message to pin for a viewport whose top sits at `scroll_top`: the last one above
++/// the entry at the top, while that entry is not a user message itself. `None` when the message
++/// is on screen, or before the first one.
++pub(super) fn pinned_user_message_ix(
++    is_user_message: impl Fn(usize) -> bool,
++    len: usize,
++    scroll_top: ListOffset,
++) -> Option<usize> {
++    let top = scroll_top.item_ix;
++    if top >= len || is_user_message(top) {
++        return None;
++    }
++    (0..top).rev().find(|&ix| is_user_message(ix))
++}
++
++/// The first non-blank line of a message, for the minimized header.
++pub(super) fn first_line(text: &str) -> &str {
++    text.lines()
++        .map(str::trim)
++        .find(|line| !line.is_empty())
++        .unwrap_or_default()
++}
++
++impl ThreadView {
++    pub(super) fn render_pinned_user_message(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
++        let thread = self.thread.read(cx);
++        let entries = thread.entries();
++        let ix = pinned_user_message_ix(
++            |ix| matches!(entries.get(ix), Some(AgentThreadEntry::UserMessage(_))),
++            entries.len(),
++            self.list_state.logical_scroll_top(),
++        )?;
++        let AgentThreadEntry::UserMessage(message) = &entries[ix] else {
++            return None;
++        };
++        let text = message.content.to_markdown(cx);
++        if text.trim().is_empty() {
++            return None;
++        }
++        let expanded = self.pinned_message_expanded == Some(ix);
++        let (chevron, chevron_tooltip) = if expanded {
++            (IconName::ChevronUp, "Minimize Message")
++        } else {
++            (IconName::ChevronDown, "Show the Whole Message")
++        };
++        let body = if expanded {
++            div()
++                .id("thread-pinned-user-message-text")
++                .flex_1()
++                .min_w_0()
++                .max_h(px(PINNED_EXPANDED_MAX_HEIGHT))
++                .overflow_y_scroll()
++                .child(Label::new(text.trim().to_string()).size(LabelSize::Small))
++                .into_any_element()
++        } else {
++            div()
++                .flex_1()
++                .min_w_0()
++                .child(
++                    Label::new(first_line(&text).to_string())
++                        .size(LabelSize::Small)
++                        .single_line()
++                        .truncate(),
++                )
++                .into_any_element()
++        };
++        Some(
++            h_flex()
++                .id("thread-pinned-user-message")
++                .debug_selector(|| "thread-pinned-user-message".to_string())
++                .absolute()
++                .top_1()
++                .left_2()
++                .right_2()
++                .gap_1p5()
++                .px_2()
++                .py_1()
++                .items_start()
++                .rounded_md()
++                .border_1()
++                .border_color(cx.theme().colors().border)
++                .bg(cx.theme().colors().elevated_surface_background)
++                .shadow_sm()
++                .cursor_pointer()
++                .tooltip(Tooltip::text("Go to This Message"))
++                .on_click(cx.listener(move |this, _, _, cx| {
++                    this.list_state.scroll_to(ListOffset {
++                        item_ix: ix,
++                        offset_in_item: px(0.),
++                    });
++                    cx.notify();
++                }))
++                .child(
++                    Icon::new(IconName::Person)
++                        .size(IconSize::Small)
++                        .color(Color::Muted),
++                )
++                .child(body)
++                .child(
++                    div()
++                        .debug_selector(|| "thread-pinned-user-message-toggle".to_string())
++                        .child(
++                            IconButton::new("thread-pinned-user-message-toggle", chevron)
++                                .icon_size(IconSize::Small)
++                                .tooltip(Tooltip::text(chevron_tooltip))
++                                .on_click(cx.listener(move |this, _, _, cx| {
++                                    cx.stop_propagation();
++                                    this.pinned_message_expanded = (!expanded).then_some(ix);
++                                    cx.notify();
++                                })),
++                        ),
++                )
++                .into_any_element(),
++        )
++    }
++}
++
++#[cfg(test)]
++#[path = "pinned_message_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/pinned_message_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/pinned_message_tests.rs
+new file mode 100644
+index 0000000..c3670f8
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/pinned_message_tests.rs
+@@ -0,0 +1,69 @@
++// Zeo next proposal §6.3 (ask 16): which user message is pinned at the top. Filter:
++// `pinned_message::tests`.
++
++use gpui::{ListOffset, px};
++
++use super::{first_line, pinned_user_message_ix};
++
++/// `true` marks a user message: [user, reply, tool, user, reply, reply].
++const TURNS: [bool; 6] = [true, false, false, true, false, false];
++
++fn pinned(item_ix: usize, offset: f32) -> Option<usize> {
++    pinned_user_message_ix(
++        |ix| TURNS[ix],
++        TURNS.len(),
++        ListOffset {
++            item_ix,
++            offset_in_item: px(offset),
++        },
++    )
++}
++
++#[test]
++fn pins_the_message_of_the_turn_under_the_top() {
++    assert_eq!(
++        pinned(1, 0.),
++        Some(0),
++        "the first reply scrolls under its message"
++    );
++    assert_eq!(pinned(2, 40.), Some(0));
++    assert_eq!(pinned(5, 10.), Some(3), "a newer message takes its place");
++}
++
++/// Hostile: while the message itself is at the top -- whole or partly scrolled past -- it is on
++/// screen, and a pinned copy would sit over it.
++#[test]
++fn hides_while_the_message_is_on_screen() {
++    assert_eq!(pinned(0, 0.), None);
++    assert_eq!(
++        pinned(3, 25.),
++        None,
++        "partly scrolled past is still on screen"
++    );
++}
++
++#[test]
++fn scrolling_back_up_pins_the_earlier_message() {
++    assert_eq!(pinned(4, 0.), Some(3));
++    assert_eq!(pinned(2, 0.), Some(0), "back in the first turn");
++}
++
++#[test]
++fn nothing_before_the_first_message_or_past_the_end() {
++    let no_user = |_| false;
++    let top = ListOffset {
++        item_ix: 2,
++        offset_in_item: px(0.),
++    };
++    assert_eq!(pinned_user_message_ix(no_user, 4, top), None);
++    assert_eq!(pinned(9, 0.), None, "an index past the entries");
++}
++
++#[test]
++fn the_minimized_line_is_the_first_non_blank_one() {
++    assert_eq!(
++        first_line("\n  Fix the build  \nthen run tests"),
++        "Fix the build"
++    );
++    assert_eq!(first_line(" \n "), "");
++}

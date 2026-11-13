@@ -1,0 +1,502 @@
+From 66d1e4fdabb01d79c605af5828efd92cec9345d5 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Wed, 11 Nov 2026 20:04:53 -0300
+Subject: [PATCH] agent_ui, acp_thread: an ended shell keeps its result line; a
+ subagent row its latest entry
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.1, the tasks card's two additions (asks 3, 13).
+
+An expanded shell row lost everything under its details the moment
+the task ended: the tail block is for running rows, and the adapter
+sends `tail: null` once it stops reading the file. How the build ended
+-- "Finished release", "2 tests failed" -- took opening the log. The
+thread now keeps the last tail an ended task had when the ending
+snapshot carries none (only then: a running task's null is the
+adapter's word, and a task that never had a tail gains none), and the
+card shows that tail's last non-blank line under the details of an
+expanded ended shell, in the tail's monospace style.
+
+A native subagent row (subagents RFD) showed its label and nothing of
+what it was doing. SubagentRow gains latest_entry: the child's newest
+entry that says something -- the last non-blank line of an assistant
+message, else a tool call's label -- cut to 200 characters. Thoughts
+are skipped, as are the operator's messages and bookkeeping entries.
+The card's native row carries it where a feed task carries its summary,
+so the expanded details show it with no new rendering path. A feed
+subagent already shows its last tool.
+
+Still open in §6.1: a subagent's transcript served by plus for jailed
+and remote sessions.
+
+Tests: acp_thread tests::test_tasks_v2_an_ended_shell_keeps_its_last_tail
+and ..._only_an_ended_task_inherits_a_tail (a running null stands; a
+task with no tail gains none); subagent_rows::latest_tests (nothing
+said, no entry; the last line said; a thought is skipped; one_line
+keeps the last non-blank line and cuts at 200 with an ellipsis);
+tasks_card::result_line (a running row shows its tail, not a result;
+ended, the result line shows; none without a non-blank line). Seen
+failing with the tail not carried, the result line never rendered, and
+latest_entry always None.
+---
+
+diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
+index 1f96dfa..ceca23a 100644
+--- a/crates/acp_thread/src/acp_thread.rs
++++ b/crates/acp_thread/src/acp_thread.rs
+@@ -5793,6 +5793,17 @@ impl AcpThread {
+         }
+         tasks.sort_by_key(|task| task.started_at);
+ 
++        // An ended shell arrives without its tail (the adapter stops reading the file). Keep
++        // the last one it had, so the card can still show how the task ended (Zeo next §6.1).
++        for task in &mut tasks {
++            if task.status.is_running() || task.tail.is_some() {
++                continue;
++            }
++            if let Some(previous) = self.tasks.iter().find(|previous| previous.id == task.id) {
++                task.tail = previous.tail.clone();
++            }
++        }
++
+         // Forget an ending once its id leaves the list, or comes back running:
+         // a resumed subagent restarts under the same id, and its next ending
+         // is news again.
+diff --git a/crates/acp_thread/src/acp_thread_tasks_v2_tests.rs b/crates/acp_thread/src/acp_thread_tasks_v2_tests.rs
+index bc94905..21cb471 100644
+--- a/crates/acp_thread/src/acp_thread_tasks_v2_tests.rs
++++ b/crates/acp_thread/src/acp_thread_tasks_v2_tests.rs
+@@ -278,3 +278,67 @@ async fn test_tasks_v2_fetch_output_is_unsupported_for_an_agent_without_it(
+         "{text}"
+     );
+ }
++
++// ---- Zeo next §6.1 — an ended shell keeps its last tail -------------------------------------
++
++/// The adapter sends `tail: null` once a shell ends; the thread keeps the last tail it had, so
++/// the card can still show how the task ended.
++#[gpui::test]
++async fn test_tasks_v2_an_ended_shell_keeps_its_last_tail(cx: &mut TestAppContext) {
++    let (thread, _events) = tasks_thread(Rc::new(FakeAgentConnection::new()), cx).await;
++    tasks_send(
++        &thread,
++        tasks_snapshot(vec![tasks_v2_shell(
++            "b1",
++            serde_json::json!(["Compiling zeo", "Finished release in 3m"]),
++            serde_json::json!(true),
++        )]),
++        cx,
++    );
++    let mut ended = tasks_wire_task("b1", "completed", 1_000);
++    ended["tail"] = serde_json::json!(null);
++    ended["hasOutput"] = serde_json::json!(true);
++    tasks_send(&thread, tasks_snapshot(vec![ended]), cx);
++    assert_eq!(
++        tasks_v2_tail(&thread, "b1", cx),
++        Some(vec![
++            "Compiling zeo".to_string(),
++            "Finished release in 3m".to_string()
++        ])
++    );
++}
++
++/// Hostile: a running task's `null` tail is the adapter's word and is not overridden, and a task
++/// that never had a tail does not gain one.
++#[gpui::test]
++async fn test_tasks_v2_only_an_ended_task_inherits_a_tail(cx: &mut TestAppContext) {
++    let (thread, _events) = tasks_thread(Rc::new(FakeAgentConnection::new()), cx).await;
++    tasks_send(
++        &thread,
++        tasks_snapshot(vec![tasks_v2_shell(
++            "b1",
++            serde_json::json!(["line"]),
++            serde_json::json!(true),
++        )]),
++        cx,
++    );
++    tasks_send(
++        &thread,
++        tasks_snapshot(vec![tasks_v2_shell(
++            "b1",
++            serde_json::json!(null),
++            serde_json::json!(false),
++        )]),
++        cx,
++    );
++    assert_eq!(
++        tasks_v2_tail(&thread, "b1", cx),
++        None,
++        "running: the adapter's null stands"
++    );
++
++    let mut ended = tasks_wire_task("b2", "completed", 2_000);
++    ended["tail"] = serde_json::json!(null);
++    tasks_send(&thread, tasks_snapshot(vec![ended]), cx);
++    assert_eq!(tasks_v2_tail(&thread, "b2", cx), None);
++}
+diff --git a/crates/acp_thread/src/subagent_rows.rs b/crates/acp_thread/src/subagent_rows.rs
+index 75fb83f..b06bd86 100644
+--- a/crates/acp_thread/src/subagent_rows.rs
++++ b/crates/acp_thread/src/subagent_rows.rs
+@@ -7,7 +7,7 @@ use std::time::{Instant, SystemTime};
+ use agent_client_protocol::v2::schema as acp_v2;
+ use gpui::{App, SharedString};
+ 
+-use crate::{AcpThread, ForegroundActivity};
++use crate::{AcpThread, AgentThreadEntry, AssistantMessageChunk, ForegroundActivity};
+ 
+ /// Six outcomes, because the card's four (`Running`, `Completed`, `Failed`, `Canceled`) fold
+ /// `RequiresAction` into Running and an unconfirmed state into the idle default — and both
+@@ -42,6 +42,9 @@ pub struct SubagentRow {
+     pub error: Option<SharedString>,
+     /// Wall-clock, like `AgentTask::started_at`, so merged rows sort and persist alike.
+     pub started_at: Option<SystemTime>,
++    /// The child's latest entry as one line -- the last thing it said, else the tool it last
++    /// called -- for the task surfaces to show what it is doing (Zeo next §6.1).
++    pub latest_entry: Option<SharedString>,
+ }
+ 
+ /// What a thread's children add to its own state in the sidebar. Waiting outranks Running:
+@@ -58,7 +61,7 @@ pub enum ChildActivity {
+ pub fn subagent_rows(parent: &AcpThread, cx: &App) -> Vec<SubagentRow> {
+     parent
+         .subagents()
+-        .map(|child| subagent_row(child.read(cx)))
++        .map(|child| subagent_row(child.read(cx), cx))
+         .collect()
+ }
+ 
+@@ -74,7 +77,7 @@ pub fn any_child_active(parent: &AcpThread, cx: &App) -> ChildActivity {
+     activity
+ }
+ 
+-fn subagent_row(child: &AcpThread) -> SubagentRow {
++fn subagent_row(child: &AcpThread, cx: &App) -> SubagentRow {
+     let association = child.subagent_association();
+     // The parent's label describes the child in the parent's view, so it wins (R1.2).
+     let label = association
+@@ -89,9 +92,46 @@ fn subagent_row(child: &AcpThread) -> SubagentRow {
+         can_cancel: association.is_some_and(|association| association.can_cancel),
+         error,
+         started_at: child.activity_started_at().map(wall_clock),
++        latest_entry: latest_entry(child, cx),
+     }
+ }
+ 
++/// The longest latest entry kept, in characters; the surfaces truncate further to fit.
++const LATEST_ENTRY_MAX_CHARS: usize = 200;
++
++/// The child's newest entry that says something: an assistant message's last line, or a tool
++/// call's label. Thoughts, the operator's messages and bookkeeping entries are skipped.
++fn latest_entry(child: &AcpThread, cx: &App) -> Option<SharedString> {
++    child.entries().iter().rev().find_map(|entry| match entry {
++        AgentThreadEntry::AssistantMessage(message) => {
++            message.chunks.iter().rev().find_map(|chunk| match chunk {
++                AssistantMessageChunk::Message { block, .. } => one_line(&block.to_markdown(cx)),
++                AssistantMessageChunk::Thought { .. } => None,
++            })
++        }
++        AgentThreadEntry::ToolCall(call) => one_line(call.label.read(cx).source()),
++        _ => None,
++    })
++}
++
++/// The last non-blank line of `text`, trimmed and cut to [`LATEST_ENTRY_MAX_CHARS`].
++fn one_line(text: &str) -> Option<SharedString> {
++    let line = text
++        .lines()
++        .rev()
++        .map(str::trim)
++        .find(|line| !line.is_empty())?;
++    let cut: String = line.chars().take(LATEST_ENTRY_MAX_CHARS).collect();
++    Some(
++        if cut.len() < line.len() {
++            format!("{cut}…")
++        } else {
++            cut
++        }
++        .into(),
++    )
++}
++
+ fn subagent_row_status(child: &AcpThread) -> (SubagentRowStatus, Option<SharedString>) {
+     match child.foreground_activity() {
+         ForegroundActivity::Running => (SubagentRowStatus::Running, None),
+@@ -148,6 +188,9 @@ pub fn idle_outcome(idle: &acp_v2::IdleStateUpdate) -> (SubagentRowStatus, Optio
+ #[path = "subagent_rows_identity_tests.rs"]
+ mod identity_tests;
+ #[cfg(test)]
++#[path = "subagent_rows_latest_tests.rs"]
++mod latest_tests;
++#[cfg(test)]
+ #[path = "subagent_rows_test_support.rs"]
+ mod test_support;
+ #[cfg(test)]
+diff --git a/crates/acp_thread/src/subagent_rows_latest_tests.rs b/crates/acp_thread/src/subagent_rows_latest_tests.rs
+new file mode 100644
+index 0000000..4fd6f1d
+--- /dev/null
++++ b/crates/acp_thread/src/subagent_rows_latest_tests.rs
+@@ -0,0 +1,80 @@
++// Zeo next proposal §6.1: a subagent row says what the child is doing -- the last line it said,
++// else the tool it last called. Filter: `subagent_rows::latest_tests`.
++
++use agent_client_protocol::v1::schema as acp_v1;
++use gpui::TestAppContext;
++
++use super::one_line;
++use super::test_support::*;
++
++fn say(
++    child: &gpui::Entity<crate::AcpThread>,
++    update: acp_v1::SessionUpdate,
++    cx: &mut TestAppContext,
++) {
++    child.update(cx, |thread, cx| {
++        thread
++            .handle_session_update(update, cx)
++            .expect("update applies")
++    });
++}
++
++#[gpui::test]
++async fn a_child_with_nothing_said_has_no_latest_entry(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    subagent_rows_child(&rig, "child-1", Some("Explore"), cx);
++    let rows = subagent_rows_of(&rig, cx);
++    assert_eq!(subagent_rows_find(&rows, "child-1").latest_entry, None);
++}
++
++#[gpui::test]
++async fn the_latest_entry_is_the_last_line_the_child_said(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    let child = subagent_rows_child(&rig, "child-1", Some("Explore"), cx);
++    say(
++        &child,
++        acp_v1::SessionUpdate::AgentMessageChunk(acp_v1::ContentChunk::new(
++            "Looking at the crate.\n\nFound three callers.\n".into(),
++        )),
++        cx,
++    );
++    let rows = subagent_rows_of(&rig, cx);
++    assert_eq!(
++        subagent_rows_find(&rows, "child-1").latest_entry.as_deref(),
++        Some("Found three callers.")
++    );
++}
++
++/// Hostile: a thought is not something the child said, and must not stand in for it.
++#[gpui::test]
++async fn a_thought_is_skipped(cx: &mut TestAppContext) {
++    let rig = subagent_rows_rig(cx).await;
++    let child = subagent_rows_child(&rig, "child-1", Some("Explore"), cx);
++    say(
++        &child,
++        acp_v1::SessionUpdate::AgentMessageChunk(acp_v1::ContentChunk::new("Said this.".into())),
++        cx,
++    );
++    say(
++        &child,
++        acp_v1::SessionUpdate::AgentThoughtChunk(acp_v1::ContentChunk::new(
++            "secret reasoning".into(),
++        )),
++        cx,
++    );
++    let rows = subagent_rows_of(&rig, cx);
++    assert_eq!(
++        subagent_rows_find(&rows, "child-1").latest_entry.as_deref(),
++        Some("Said this.")
++    );
++}
++
++#[test]
++fn one_line_keeps_the_last_non_blank_line_and_cuts_it() {
++    assert_eq!(one_line("a\n\n  b  \n\n").as_deref(), Some("b"));
++    assert_eq!(one_line(" \n\t\n"), None);
++    let long = "x".repeat(300);
++    let cut = one_line(&long).unwrap();
++    assert_eq!(cut.chars().count(), 201, "200 characters and an ellipsis");
++    assert!(cut.ends_with('…'));
++}
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index cc7fdea..8276b67 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -91,6 +91,10 @@ mod output_connection_support;
+ #[path = "tasks_card/purpose_tests.rs"]
+ mod purpose;
+ 
++#[cfg(test)]
++#[path = "tasks_card/result_line_tests.rs"]
++mod result_line;
++
+ #[cfg(test)]
+ #[path = "tasks_card/preview_tests.rs"]
+ mod preview_rows;
+@@ -3206,9 +3210,41 @@ fn render_expanded_body(task: &AgentTask, running_what: SharedString, cx: &App)
+         .child(running_what)
+         .child(render_details(task, task_id))
+         .when(shows_tail, |this| this.child(render_tail(task, cx)))
++        .children(render_result_line(task, cx))
+         .into_any_element()
+ }
+ 
++/// An ended shell's last line of output, kept from its last tail (Zeo next §6.1): how the
++/// task ended -- "Finished release", "2 tests failed" -- without opening its log.
++fn render_result_line(task: &AgentTask, cx: &App) -> Option<AnyElement> {
++    if task.kind != SHELL_KIND || task.status.is_running() {
++        return None;
++    }
++    let line = task
++        .tail
++        .as_deref()?
++        .iter()
++        .rev()
++        .find(|line| !line.trim().is_empty())?;
++    let task_id = task.id.clone();
++    Some(
++        div()
++            .debug_selector(move || format!("tasks-card-result-{task_id}"))
++            .min_w_0()
++            .px_1()
++            .rounded_sm()
++            .bg(cx.theme().colors().editor_background)
++            .child(
++                Label::new(tail_line(line))
++                    .size(LabelSize::XSmall)
++                    .buffer_font(cx)
++                    .single_line()
++                    .truncate(),
++            )
++            .into_any_element(),
++    )
++}
++
+ /// A running shell's tail, one entry per line in a monospace block, or "No output yet"
+ /// before the agent has sent any (R4.3, R4.4).
+ fn render_tail(task: &AgentTask, cx: &App) -> AnyElement {
+diff --git a/crates/agent_ui/src/tasks_card/merge.rs b/crates/agent_ui/src/tasks_card/merge.rs
+index b7440c2..24ab040 100644
+--- a/crates/agent_ui/src/tasks_card/merge.rs
++++ b/crates/agent_ui/src/tasks_card/merge.rs
+@@ -62,7 +62,8 @@ fn native_row(row: &SubagentRow) -> TaskRow {
+             ended_at: None,
+             usage: None,
+             last_tool: None,
+-            summary: None,
++            // What the child last said or ran, where a feed task shows its summary (§6.1).
++            summary: row.latest_entry.clone(),
+             has_output: false,
+             tail: None,
+             child_session_id: Some(row.child_session_id.clone()),
+diff --git a/crates/agent_ui/src/tasks_card/merge_tests.rs b/crates/agent_ui/src/tasks_card/merge_tests.rs
+index 95f3ee0..caead5b 100644
+--- a/crates/agent_ui/src/tasks_card/merge_tests.rs
++++ b/crates/agent_ui/src/tasks_card/merge_tests.rs
+@@ -63,6 +63,7 @@ fn native_row(child: &str, label: &str, status: SubagentRowStatus) -> SubagentRo
+         can_cancel: true,
+         error: None,
+         started_at: Some(merge_ms(1_000)),
++        latest_entry: None,
+     }
+ }
+ 
+diff --git a/crates/agent_ui/src/tasks_card/result_line_tests.rs b/crates/agent_ui/src/tasks_card/result_line_tests.rs
+new file mode 100644
+index 0000000..67105a0
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/result_line_tests.rs
+@@ -0,0 +1,91 @@
++// Zeo next proposal §6.1: an expanded shell row that has ended keeps its result line -- the last
++// line of output it had -- instead of losing everything below its details when the tail stops.
++// Filter: `tasks_card::result_line`.
++
++use gpui::{TestAppContext, VisualTestContext};
++use serde_json::json;
++
++use super::test_helpers::*;
++
++fn draw(cx: &mut VisualTestContext) {
++    cx.update(|window, _| window.refresh());
++    cx.run_until_parked();
++}
++
++fn painted(selector: &'static str, cx: &mut VisualTestContext) -> bool {
++    draw(cx);
++    cx.debug_bounds(selector).is_some()
++}
++
++fn shell(id: &str, status: &str, tail: serde_json::Value) -> serde_json::Value {
++    let mut task = wire_task(id, status, true, 1_000);
++    task["tail"] = tail;
++    task["hasOutput"] = json!(true);
++    task
++}
++
++#[gpui::test]
++async fn an_ended_shell_keeps_its_last_line(cx: &mut TestAppContext) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    let connection = TaskActionsConnection::new();
++    let a = open_titled_thread(&panel, &connection, "A", &mut cx);
++    send_tasks(
++        &a,
++        vec![shell(
++            "t1",
++            "running",
++            json!(["Compiling zeo", "Finished release", ""]),
++        )],
++        &mut cx,
++    );
++    let sa = session_of(&a, &cx);
++    let card = card(&panel, &cx);
++    card.update(&mut cx, |card, cx| {
++        card.toggle_expanded(sa.clone(), "t1".into(), cx)
++    });
++    assert!(painted("tasks-card-tail-t1", &mut cx));
++    assert!(
++        !painted("tasks-card-result-t1", &mut cx),
++        "a running row shows its tail, not a result"
++    );
++
++    send_tasks(&a, vec![shell("t1", "completed", json!(null))], &mut cx);
++    assert!(
++        !painted("tasks-card-tail-t1", &mut cx),
++        "the tail block is for running rows"
++    );
++    assert!(painted("tasks-card-result-t1", &mut cx));
++}
++
++/// Hostile: a shell that ended with no output at all, or only blank lines, has no result line.
++#[gpui::test]
++async fn no_result_line_without_a_non_blank_line(cx: &mut TestAppContext) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    let connection = TaskActionsConnection::new();
++    let a = open_titled_thread(&panel, &connection, "A", &mut cx);
++    send_tasks(
++        &a,
++        vec![
++            shell("t1", "running", json!(["", "  "])),
++            shell("t2", "running", json!(null)),
++        ],
++        &mut cx,
++    );
++    let sa = session_of(&a, &cx);
++    let card = card(&panel, &cx);
++    send_tasks(
++        &a,
++        vec![
++            shell("t1", "completed", json!(null)),
++            shell("t2", "completed", json!(null)),
++        ],
++        &mut cx,
++    );
++    for id in ["t1", "t2"] {
++        card.update(&mut cx, |card, cx| {
++            card.toggle_expanded(sa.clone(), id.into(), cx)
++        });
++    }
++    assert!(!painted("tasks-card-result-t1", &mut cx));
++    assert!(!painted("tasks-card-result-t2", &mut cx));
++}

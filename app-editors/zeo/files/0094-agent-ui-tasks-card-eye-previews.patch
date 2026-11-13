@@ -1,0 +1,988 @@
+From b635211378c570aa439c0a0864612fe4dd7458af Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 10 Nov 2026 11:22:56 -0300
+Subject: [PATCH] agent_ui: the tasks card's eye previews the task; the chevron
+ keeps the details
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.22 (ask 42). The chevron and the eye opened the
+same body: the command line, the details (tokens, tools, last tool,
+summary) and, for a running shell, a few truncated tail lines. The
+operator asked for the split the inline thread already makes: the
+details behind the chevron, a preview of what the task is doing behind
+the eye, with the card wide enough to read it.
+
+The chevron opens the details, as before. The eye opens a preview: the
+task's output as the agent serves it through `_claude/tasks/output`
+(0056), refetched every 2 s while the task runs, its last 200 lines in a
+monospace block that scrolls, with a note when earlier output was left
+out. The block follows the end, as a terminal does, while the reader is
+at the end or nothing was shown yet; scrolled up to read, it stays put.
+The Xvfb proof found the first version opening on the first line, under
+a header that already claimed it followed the end. Until the first fetch lands, or for a task whose output the agent
+does not serve, the preview falls back to the feed's short tail (a
+shell) or to the details (anything else), and a failed fetch says
+"Preview unavailable: …" under it, so the block is never blank. While a
+preview is open the card widens from 22rem to its overlay's frame, and
+it goes back to its width after.
+
+The eye keeps its tray role, per the proposal's §12 default: a watched
+task still notifies when it ends. A watched row still counts as open
+(TaskRow::expanded); only the chevron's own state picks the details
+and the chevron's icon.
+
+Not done here: the live TerminalView the thread draws inline for a
+shell tool call. Embedding it needs the thread's entry view state in
+the card; the served output covers the same text.
+
+The output-answering test connection moved from open_log_tests.rs to
+output_connection_support.rs, unchanged but for visibility, so the
+preview tests share it. Two tests that said "watching shows the
+details" now open the row with the chevron for the details and check
+the preview on the eye (render: test_only_watched_rows_show_their_
+details; progress: tasks_card_progress_keeps_the_watched_details).
+
+Tests: tasks_card::preview_rows (the eye fetches and shows the output,
+not the details, and widens the card, which narrows again after; a
+running preview is refetched and stops once unwatched; a failed fetch
+falls back to the tail; a long output opens on its end) and
+preview::tests (the last lines). The two
+that depend on the fetch were seen failing with refresh_preview made a
+no-op, and the end test with scroll_to_bottom left out.
+---
+
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index 737f1e7..19c9cd4 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -39,6 +39,7 @@ use crate::sub_thread_reporter::SubThreadReporter;
+ use crate::task_label::{TaskLabels, collapse_label, display_label};
+ 
+ mod merge;
++mod preview;
+ pub use merge::SUBAGENT_TASK_ID_PREFIX;
+ mod sub_thread_row;
+ pub mod task_log;
+@@ -83,6 +84,13 @@ mod placement;
+ #[path = "tasks_card/dock_bottom_tests.rs"]
+ mod dock_bottom;
+ 
++#[cfg(test)]
++mod output_connection_support;
++
++#[cfg(test)]
++#[path = "tasks_card/preview_tests.rs"]
++mod preview_rows;
++
+ #[cfg(test)]
+ #[path = "tasks_card/accessibility_tests.rs"]
+ mod accessibility;
+@@ -406,6 +414,10 @@ pub struct TasksCard {
+     /// Repaints the elapsed times every second; only exists while the card is
+     /// expanded and enabled with a task running, so an idle card never wakes.
+     _tick: Option<Task<()>>,
++    /// The eye's previews, one per watched row that has one (Zeo next §6.22), and the loop
++    /// that refetches them while their tasks run.
++    previews: HashMap<TaskKey, preview::TaskPreview>,
++    _preview_poll: Option<Task<()>>,
+     /// Re-evaluates the tick when the card is enabled or disabled in settings.
+     _settings_observation: Subscription,
+     /// Repaints the rows when the user renames a task in the Agent Tasks panel (R3.3).
+@@ -524,6 +536,8 @@ impl TasksCard {
+             in_view: None,
+             _expiry: None,
+             _tick: None,
++            previews: HashMap::default(),
++            _preview_poll: None,
+             _settings_observation: cx
+                 .observe_global::<SettingsStore>(|card, cx| card.update_tick(cx)),
+             _labels_observation: cx.observe_global::<TaskLabels>(|_, cx| cx.notify()),
+@@ -872,12 +886,92 @@ impl TasksCard {
+         cx: &mut Context<Self>,
+     ) {
+         let key = (session_id, task_id);
+-        if !self.watched.remove(&key) {
+-            self.watched.insert(key);
++        if self.watched.remove(&key) {
++            self.previews.remove(&key);
++        } else {
++            self.watched.insert(key.clone());
++            self.refresh_preview(key, cx);
+         }
++        self.update_preview_poll(cx);
+         cx.notify();
+     }
+ 
++    /// Fetches a watched task's output for its preview, unless a fetch is already out or
++    /// the agent serves none for it (Zeo next §6.22).
++    fn refresh_preview(&mut self, key: TaskKey, cx: &mut Context<Self>) {
++        let Some(task) = self.current_task(&key, cx) else {
++            return;
++        };
++        if !task.has_output {
++            return;
++        }
++        let Some(thread) = self.held_thread(&key.0) else {
++            return;
++        };
++        let preview = self.previews.entry(key.clone()).or_default();
++        if preview.in_flight {
++            return;
++        }
++        preview.in_flight = true;
++        let fetch = thread.update(cx, |thread, cx| thread.fetch_task_output(&key.1, cx));
++        cx.spawn(async move |card, cx| {
++            let fetched = fetch.await;
++            card.update(cx, |card, cx| {
++                // Unwatched while the fetch was out: nothing to show it in.
++                let Some(preview) = card.previews.get_mut(&key) else {
++                    return;
++                };
++                preview.in_flight = false;
++                match fetched {
++                    Ok(output) => preview.show(output),
++                    Err(error) => {
++                        log::debug!(
++                            "tasks card: preview of task {} in session {} failed: {error:#}",
++                            key.1,
++                            key.0
++                        );
++                        preview.error = Some(format!("{error:#}").into());
++                    }
++                }
++                cx.notify();
++            })
++            .ok();
++        })
++        .detach();
++    }
++
++    /// Keeps a refetch loop alive while a watched task runs.
++    fn update_preview_poll(&mut self, cx: &mut Context<Self>) {
++        if self.watched.is_empty() {
++            self._preview_poll = None;
++            return;
++        }
++        if self._preview_poll.is_some() {
++            return;
++        }
++        self._preview_poll = Some(cx.spawn(async move |card, cx| {
++            loop {
++                cx.background_executor().timer(preview::PREVIEW_POLL).await;
++                let keep = card.update(cx, |card, cx| {
++                    let running: Vec<TaskKey> = card
++                        .watched
++                        .iter()
++                        .filter(|key| card.running_task(key, cx).is_some())
++                        .cloned()
++                        .collect();
++                    for key in running {
++                        card.refresh_preview(key, cx);
++                    }
++                    !card.watched.is_empty()
++                });
++                if !matches!(keep, Ok(true)) {
++                    card.update(cx, |card, _| card._preview_poll = None).ok();
++                    break;
++                }
++            }
++        }));
++    }
++
+     /// Expands or collapses one thread's task row (R4.5). A watched row stays
+     /// expanded whatever this says, until it is unwatched (R4.6).
+     pub fn toggle_expanded(
+@@ -2122,6 +2216,10 @@ impl TasksCard {
+     ) -> AnyElement {
+         let running = running_count(&groups);
+         let now = SystemTime::now();
++        let previewing = groups
++            .iter()
++            .flat_map(|group| &group.rows)
++            .any(|row| row.watched);
+         let anything_finished = groups.iter().any(|group| {
+             group
+                 .rows
+@@ -2232,7 +2330,15 @@ impl TasksCard {
+             .id("tasks-card")
+             .debug_selector(|| "tasks-card".into())
+             .occlude()
+-            .w(rems(22.))
++            // A preview needs the room a terminal line does (§6.22): the card widens to its
++            // frame while one is open, and goes back to its own width after.
++            .map(|card| {
++                if previewing {
++                    card.w_full()
++                } else {
++                    card.w(rems(22.))
++                }
++            })
+             .max_w_full()
+             .max_h_full()
+             .min_h_0()
+@@ -2331,7 +2437,8 @@ impl TasksCard {
+             source,
+             status,
+             watched,
+-            expanded,
++            // A watched row is open too, but on its preview: the chevron reads `details_open`.
++            expanded: _,
+             running_what,
+             error,
+         } = row;
+@@ -2345,6 +2452,8 @@ impl TasksCard {
+         };
+         let task_id = task.id.clone();
+         let key: TaskKey = (session_id.clone(), task_id.clone());
++        // The chevron's own state: a watched row is open too (`expanded`), but on its preview.
++        let details_open = self.expanded.contains(&key);
+         let element_key = format!("{}-{}", session_id.0, task_id);
+         // `try_global`: the global is absent wherever `agent_ui::init` did not run.
+         let user_label = cx
+@@ -2430,7 +2539,7 @@ impl TasksCard {
+         };
+ 
+         let expand_focus_handle = self.row_focus_handle(&key, RowControl::Expand, cx);
+-        let (expand_icon, expand_text) = if expanded {
++        let (expand_icon, expand_text) = if details_open {
+             (IconName::ChevronDown, "Collapse task")
+         } else {
+             (IconName::ChevronRight, "Expand task")
+@@ -2756,8 +2865,23 @@ impl TasksCard {
+                         .min_w_0()
+                         .child(line)
+                         .children(progress_line)
+-                        .when(expanded, |this| {
+-                            this.child(render_expanded_body(&task, running_what, cx))
++                        // §6.22: the chevron opens the details, the eye the preview.
++                        .when(details_open, |this| {
++                            this.child(render_expanded_body(&task, running_what.clone(), cx))
++                        })
++                        .when(watched, |this| {
++                            this.child(preview::render_preview(
++                                &task,
++                                self.previews.get(&key),
++                                || {
++                                    if task.kind == SHELL_KIND {
++                                        render_tail(&task, cx)
++                                    } else {
++                                        render_expanded_body(&task, running_what.clone(), cx)
++                                    }
++                                },
++                                cx,
++                            ))
+                         })
+                         .when_some(error, |this, error| {
+                             this.child(
+diff --git a/crates/agent_ui/src/tasks_card/open_log_tests.rs b/crates/agent_ui/src/tasks_card/open_log_tests.rs
+index a104e02..d87191f 100644
+--- a/crates/agent_ui/src/tasks_card/open_log_tests.rs
++++ b/crates/agent_ui/src/tasks_card/open_log_tests.rs
+@@ -27,148 +27,22 @@
+ // the row (nobody asked) and records nothing.
+ 
+ use std::{
+-    any::Any,
+     cell::RefCell,
+-    collections::HashMap,
+     path::{Path, PathBuf},
+     rc::Rc,
+-    sync::{Arc, Mutex},
+ };
+ 
+-use acp_thread::{AcpThread, AgentConnection, StubAgentConnection, TaskOutput};
++use acp_thread::{AcpThread, TaskOutput};
+ use agent_client_protocol::v1::schema as acp;
+-use agent_client_protocol::v2::schema as acp_v2;
+-use anyhow::{Result, anyhow};
+-use gpui::{App, AppContext as _, Entity, SharedString, Task, TestAppContext, VisualTestContext};
+-use project::{AgentId, Project};
++use gpui::{Entity, TestAppContext, VisualTestContext};
+ use serde_json::json;
+-use workspace::PathList;
+ 
++use super::output_connection_support::OutputConnection;
+ use super::task_log::{LogsRootOverride, log_path, render_log};
+ use super::test_helpers::*;
+ use super::{TasksCard, TasksCardEvent};
+ use crate::test_support::open_thread_with_custom_connection;
+ 
+-// ---- A connection that answers `fetch_task_output` as scripted ------------------------------
+-
+-#[derive(Clone)]
+-struct OutputConnection {
+-    stub: StubAgentConnection,
+-    next_session: Arc<Mutex<usize>>,
+-    /// task id -> the answer; a missing id answers an error.
+-    answers: Arc<Mutex<HashMap<(String, String), std::result::Result<TaskOutput, String>>>>,
+-    fetches: Arc<Mutex<Vec<(String, String)>>>,
+-}
+-
+-impl OutputConnection {
+-    fn new() -> Self {
+-        Self {
+-            stub: StubAgentConnection::new(),
+-            next_session: Arc::new(Mutex::new(0)),
+-            answers: Arc::default(),
+-            fetches: Arc::default(),
+-        }
+-    }
+-
+-    fn answer(
+-        &self,
+-        session: &acp_v2::SessionId,
+-        task: &str,
+-        answer: std::result::Result<TaskOutput, String>,
+-    ) {
+-        self.answers
+-            .lock()
+-            .unwrap()
+-            .insert((session.to_string(), task.to_string()), answer);
+-    }
+-
+-    fn fetches(&self) -> Vec<(String, String)> {
+-        self.fetches.lock().unwrap().clone()
+-    }
+-}
+-
+-impl AgentConnection for OutputConnection {
+-    fn agent_id(&self) -> AgentId {
+-        self.stub.agent_id()
+-    }
+-
+-    fn telemetry_id(&self) -> SharedString {
+-        "open-log-test".into()
+-    }
+-
+-    fn new_session(
+-        self: Rc<Self>,
+-        project: Entity<Project>,
+-        work_dirs: PathList,
+-        cx: &mut App,
+-    ) -> Task<Result<Entity<AcpThread>>> {
+-        let session_id = {
+-            let mut next = self.next_session.lock().unwrap();
+-            *next += 1;
+-            acp_v2::SessionId::new(format!("open-log-session-{}", *next))
+-        };
+-        let action_log = cx.new(|_| action_log::ActionLog::new(project.clone()));
+-        let thread = cx.new(|cx| {
+-            AcpThread::new(
+-                None,
+-                None,
+-                Some(work_dirs),
+-                self.clone(),
+-                project,
+-                action_log,
+-                session_id,
+-                watch::Receiver::constant(acp_v2::PromptCapabilities::new()),
+-                cx,
+-            )
+-        });
+-        Task::ready(Ok(thread))
+-    }
+-
+-    fn auth_methods(&self) -> &[acp_v2::AuthMethod] {
+-        &[]
+-    }
+-
+-    fn authenticate(&self, _method: acp_v2::AuthMethodId, _cx: &mut App) -> Task<Result<()>> {
+-        Task::ready(Ok(()))
+-    }
+-
+-    fn prompt(
+-        &self,
+-        _params: acp_v2::PromptRequest,
+-        _cx: &mut App,
+-    ) -> Task<Result<acp::PromptResponse>> {
+-        Task::ready(Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)))
+-    }
+-
+-    fn cancel(&self, _session_id: &acp_v2::SessionId, _cx: &mut App) -> Result<()> {
+-        Ok(())
+-    }
+-
+-    fn fetch_task_output(
+-        self: Rc<Self>,
+-        session_id: &acp_v2::SessionId,
+-        task_id: &str,
+-        _cx: &mut App,
+-    ) -> Task<Result<TaskOutput>> {
+-        let key = (session_id.to_string(), task_id.to_string());
+-        self.fetches.lock().unwrap().push(key.clone());
+-        let answer = self.answers.lock().unwrap().get(&key).cloned();
+-        Task::ready(match answer {
+-            Some(Ok(output)) => Ok(output),
+-            Some(Err(message)) => Err(anyhow!(
+-                "_claude/tasks/output failed for {task_id}: {message}"
+-            )),
+-            None => Err(anyhow!(
+-                "_claude/tasks/output failed for {task_id}: no answer scripted"
+-            )),
+-        })
+-    }
+-
+-    fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
+-        self
+-    }
+-}
+-
+ // ---- Rig ---------------------------------------------------------------------------------
+ 
+ struct Scratch(PathBuf);
+diff --git a/crates/agent_ui/src/tasks_card/output_connection_support.rs b/crates/agent_ui/src/tasks_card/output_connection_support.rs
+new file mode 100644
+index 0000000..9610d27
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/output_connection_support.rs
+@@ -0,0 +1,138 @@
++// A test connection that answers `fetch_task_output` as scripted, shared by the Open Log
++// tests (story 041) and the eye's preview tests (Zeo next §6.22). Moved out of
++// open_log_tests.rs unchanged but for visibility.
++
++use std::{
++    any::Any,
++    collections::HashMap,
++    rc::Rc,
++    sync::{Arc, Mutex},
++};
++
++use acp_thread::{AcpThread, AgentConnection, StubAgentConnection, TaskOutput};
++use agent_client_protocol::v1::schema as acp;
++use agent_client_protocol::v2::schema as acp_v2;
++use anyhow::{Result, anyhow};
++use gpui::{App, AppContext as _, Entity, SharedString, Task};
++use project::{AgentId, Project};
++use workspace::PathList;
++
++// ---- A connection that answers `fetch_task_output` as scripted ------------------------------
++
++#[derive(Clone)]
++pub(crate) struct OutputConnection {
++    stub: StubAgentConnection,
++    next_session: Arc<Mutex<usize>>,
++    /// task id -> the answer; a missing id answers an error.
++    answers: Arc<Mutex<HashMap<(String, String), std::result::Result<TaskOutput, String>>>>,
++    fetches: Arc<Mutex<Vec<(String, String)>>>,
++}
++
++impl OutputConnection {
++    pub(crate) fn new() -> Self {
++        Self {
++            stub: StubAgentConnection::new(),
++            next_session: Arc::new(Mutex::new(0)),
++            answers: Arc::default(),
++            fetches: Arc::default(),
++        }
++    }
++
++    pub(crate) fn answer(
++        &self,
++        session: &acp_v2::SessionId,
++        task: &str,
++        answer: std::result::Result<TaskOutput, String>,
++    ) {
++        self.answers
++            .lock()
++            .unwrap()
++            .insert((session.to_string(), task.to_string()), answer);
++    }
++
++    pub(crate) fn fetches(&self) -> Vec<(String, String)> {
++        self.fetches.lock().unwrap().clone()
++    }
++}
++
++impl AgentConnection for OutputConnection {
++    fn agent_id(&self) -> AgentId {
++        self.stub.agent_id()
++    }
++
++    fn telemetry_id(&self) -> SharedString {
++        "open-log-test".into()
++    }
++
++    fn new_session(
++        self: Rc<Self>,
++        project: Entity<Project>,
++        work_dirs: PathList,
++        cx: &mut App,
++    ) -> Task<Result<Entity<AcpThread>>> {
++        let session_id = {
++            let mut next = self.next_session.lock().unwrap();
++            *next += 1;
++            acp_v2::SessionId::new(format!("open-log-session-{}", *next))
++        };
++        let action_log = cx.new(|_| action_log::ActionLog::new(project.clone()));
++        let thread = cx.new(|cx| {
++            AcpThread::new(
++                None,
++                None,
++                Some(work_dirs),
++                self.clone(),
++                project,
++                action_log,
++                session_id,
++                watch::Receiver::constant(acp_v2::PromptCapabilities::new()),
++                cx,
++            )
++        });
++        Task::ready(Ok(thread))
++    }
++
++    fn auth_methods(&self) -> &[acp_v2::AuthMethod] {
++        &[]
++    }
++
++    fn authenticate(&self, _method: acp_v2::AuthMethodId, _cx: &mut App) -> Task<Result<()>> {
++        Task::ready(Ok(()))
++    }
++
++    fn prompt(
++        &self,
++        _params: acp_v2::PromptRequest,
++        _cx: &mut App,
++    ) -> Task<Result<acp::PromptResponse>> {
++        Task::ready(Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)))
++    }
++
++    fn cancel(&self, _session_id: &acp_v2::SessionId, _cx: &mut App) -> Result<()> {
++        Ok(())
++    }
++
++    fn fetch_task_output(
++        self: Rc<Self>,
++        session_id: &acp_v2::SessionId,
++        task_id: &str,
++        _cx: &mut App,
++    ) -> Task<Result<TaskOutput>> {
++        let key = (session_id.to_string(), task_id.to_string());
++        self.fetches.lock().unwrap().push(key.clone());
++        let answer = self.answers.lock().unwrap().get(&key).cloned();
++        Task::ready(match answer {
++            Some(Ok(output)) => Ok(output),
++            Some(Err(message)) => Err(anyhow!(
++                "_claude/tasks/output failed for {task_id}: {message}"
++            )),
++            None => Err(anyhow!(
++                "_claude/tasks/output failed for {task_id}: no answer scripted"
++            )),
++        })
++    }
++
++    fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
++        self
++    }
++}
+diff --git a/crates/agent_ui/src/tasks_card/preview.rs b/crates/agent_ui/src/tasks_card/preview.rs
+new file mode 100644
+index 0000000..a200b7b
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/preview.rs
+@@ -0,0 +1,134 @@
++//! Zeo next proposal §6.22 (ask 42): the eye previews a task. The chevron keeps the row's
++//! details (tokens, tools, summary); the eye shows what the task printed -- the output the
++//! agent serves through `_claude/tasks/output` (0056), refetched while the task runs -- in a
++//! monospace block that follows its end, and the card widens to its frame while a preview
++//! is open. Until the first fetch lands, or for a task whose output the agent does not
++//! serve, the preview falls back to the short tail the feed carries, so it is never blank.
++//! The eye keeps its tray role (§12's default): a watched task still notifies when it ends.
++
++use std::time::Duration;
++
++use acp_thread::{AgentTask, TaskOutput};
++use gpui::{AnyElement, App, ScrollHandle, SharedString, px};
++use ui::prelude::*;
++
++/// How often a running task's preview is refetched.
++pub(super) const PREVIEW_POLL: Duration = Duration::from_secs(2);
++/// The preview's last lines; older ones scroll out, as a terminal's do.
++pub(super) const PREVIEW_MAX_LINES: usize = 200;
++
++/// One open preview's state, in memory only.
++#[derive(Default)]
++pub(super) struct TaskPreview {
++    pub output: Option<TaskOutput>,
++    pub error: Option<SharedString>,
++    pub in_flight: bool,
++    /// The block's scroll, so new output can follow the end (see [`TaskPreview::show`]).
++    pub scroll: ScrollHandle,
++}
++
++impl TaskPreview {
++    /// Takes a fetched output. The block follows the end, as a terminal does, while the
++    /// reader is at the end or nothing was shown yet; scrolled up to read, it stays put.
++    pub(super) fn show(&mut self, output: TaskOutput) {
++        let at_end = self.scroll.offset().y <= -self.scroll.max_offset().y + px(2.);
++        let follow = self.output.is_none() || at_end;
++        self.output = Some(output);
++        self.error = None;
++        if follow {
++            self.scroll.scroll_to_bottom();
++        }
++    }
++}
++
++/// The last `max` lines of `content`, and whether older ones were left out.
++pub(super) fn preview_lines(content: &str, max: usize) -> (Vec<&str>, bool) {
++    let lines: Vec<&str> = content.lines().collect();
++    let cut = lines.len().saturating_sub(max);
++    (lines[cut..].to_vec(), cut > 0)
++}
++
++/// The eye's block under a row. `fallback` is the row's short tail, drawn while there is no
++/// fetched output.
++pub(super) fn render_preview(
++    task: &AgentTask,
++    preview: Option<&TaskPreview>,
++    fallback: impl FnOnce() -> AnyElement,
++    cx: &App,
++) -> AnyElement {
++    let task_id = task.id.clone();
++    let body = match preview.and_then(|preview| preview.output.as_ref()) {
++        Some(output) if !output.content.is_empty() => {
++            let (lines, cut) = preview_lines(&output.content, PREVIEW_MAX_LINES);
++            v_flex()
++                .id(SharedString::from(format!(
++                    "tasks-card-preview-output-{task_id}"
++                )))
++                .debug_selector({
++                    let task_id = task_id.clone();
++                    move || format!("tasks-card-preview-output-{task_id}")
++                })
++                .max_h(rems(16.))
++                .overflow_y_scroll()
++                .track_scroll(
++                    &preview
++                        .map(|preview| preview.scroll.clone())
++                        .unwrap_or_default(),
++                )
++                .min_w_0()
++                .px_1()
++                .rounded_sm()
++                .bg(cx.theme().colors().editor_background)
++                .when(cut || output.truncated, |this| {
++                    this.child(
++                        Label::new("… earlier output not shown")
++                            .size(LabelSize::XSmall)
++                            .color(Color::Muted),
++                    )
++                })
++                .children(lines.into_iter().map(|line| {
++                    Label::new(line.to_string())
++                        .size(LabelSize::XSmall)
++                        .buffer_font(cx)
++                        .single_line()
++                }))
++                .into_any_element()
++        }
++        _ => fallback(),
++    };
++    v_flex()
++        .debug_selector(move || format!("tasks-card-preview-{task_id}"))
++        .min_w_0()
++        .gap_0p5()
++        .child(body)
++        .when_some(
++            preview.and_then(|preview| preview.error.clone()),
++            |this, error| {
++                this.child(
++                    Label::new(format!("Preview unavailable: {error}"))
++                        .size(LabelSize::XSmall)
++                        .color(Color::Muted),
++                )
++            },
++        )
++        .into_any_element()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn the_preview_keeps_the_last_lines() {
++        let content = (1..=5)
++            .map(|n| format!("line {n}"))
++            .collect::<Vec<_>>()
++            .join("\n");
++        assert_eq!(
++            preview_lines(&content, 3),
++            (vec!["line 3", "line 4", "line 5"], true)
++        );
++        assert_eq!(preview_lines(&content, 10).1, false, "nothing left out");
++        assert_eq!(preview_lines("", 3), (Vec::<&str>::new(), false));
++    }
++}
+diff --git a/crates/agent_ui/src/tasks_card/preview_tests.rs b/crates/agent_ui/src/tasks_card/preview_tests.rs
+new file mode 100644
+index 0000000..3386561
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/preview_tests.rs
+@@ -0,0 +1,204 @@
++// Zeo next proposal §6.22 (ask 42): the eye previews a task -- what it printed, refetched
++// while it runs -- and the chevron keeps the details. The card widens while a preview is
++// open. Filter: `tasks_card::preview_rows`.
++
++use std::time::Duration;
++
++use acp_thread::{AcpThread, TaskOutput};
++use agent_client_protocol::v1::schema as acp;
++use gpui::{Entity, TestAppContext, VisualTestContext};
++use serde_json::json;
++
++use super::output_connection_support::OutputConnection;
++use super::test_helpers::*;
++use crate::test_support::open_thread_with_custom_connection;
++
++fn open_thread(
++    panel: &Entity<crate::AgentPanel>,
++    connection: &OutputConnection,
++    cx: &mut VisualTestContext,
++) -> Entity<AcpThread> {
++    open_thread_with_custom_connection(panel, connection.clone(), cx);
++    let thread = panel.read_with(cx, |panel, cx| panel.active_agent_thread(cx).unwrap());
++    send_info(&thread, acp::SessionInfoUpdate::new().title("A"), cx);
++    thread
++}
++
++fn shell(id: &str, status: &str) -> serde_json::Value {
++    let mut task = wire_task(id, status, true, 1_000);
++    task["hasOutput"] = json!(true);
++    task["tail"] = json!(["short tail"]);
++    task
++}
++
++fn output(content: &str) -> TaskOutput {
++    TaskOutput {
++        content: content.to_string(),
++        total_bytes: content.len() as u64,
++        truncated: false,
++    }
++}
++
++fn draw(cx: &mut VisualTestContext) {
++    cx.update(|window, _| window.refresh());
++    cx.run_until_parked();
++}
++
++/// Hostile: the eye must show the fetched output, not the chevron's details, and the card
++/// must widen for it.
++#[gpui::test]
++async fn test_preview_rows_the_eye_shows_the_output_and_widens_the_card(cx: &mut TestAppContext) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    let connection = OutputConnection::new();
++    let a = open_thread(&panel, &connection, &mut cx);
++    let sa = session_of(&a, &cx);
++    connection.answer(
++        &sa,
++        "t1",
++        Ok(output("compiling foo\ncompiling bar\nPREVIEW-END")),
++    );
++    send_tasks(&a, vec![shell("t1", "running")], &mut cx);
++    draw(&mut cx);
++    let narrow = cx
++        .debug_bounds("tasks-card")
++        .expect("card painted")
++        .size
++        .width;
++
++    let card = card(&panel, &cx);
++    card.update(&mut cx, |card, cx| {
++        card.toggle_watch(sa.clone(), "t1".into(), cx)
++    });
++    draw(&mut cx);
++
++    assert_eq!(
++        connection.fetches(),
++        vec![(sa.to_string(), "t1".to_string())]
++    );
++    assert!(
++        cx.debug_bounds("tasks-card-preview-output-t1").is_some(),
++        "the output shows"
++    );
++    assert!(
++        cx.debug_bounds("tasks-card-details-t1").is_none(),
++        "not the details"
++    );
++    let wide = cx
++        .debug_bounds("tasks-card")
++        .expect("card painted")
++        .size
++        .width;
++    assert!(wide > narrow, "the card widens: {narrow:?} -> {wide:?}");
++
++    // The chevron opens the details; the preview stays.
++    card.update(&mut cx, |card, cx| {
++        card.toggle_expanded(sa.clone(), "t1".into(), cx)
++    });
++    draw(&mut cx);
++    assert!(cx.debug_bounds("tasks-card-details-t1").is_some());
++
++    // Unwatched, the preview closes and the card is back to its width.
++    card.update(&mut cx, |card, cx| {
++        card.toggle_watch(sa.clone(), "t1".into(), cx)
++    });
++    draw(&mut cx);
++    assert!(cx.debug_bounds("tasks-card-preview-t1").is_none());
++    let back = cx
++        .debug_bounds("tasks-card")
++        .expect("card painted")
++        .size
++        .width;
++    assert_eq!(back, narrow);
++}
++
++/// A running task's preview is refetched; an unwatched one is not.
++#[gpui::test]
++async fn test_preview_rows_a_running_preview_follows_and_stops_when_unwatched(
++    cx: &mut TestAppContext,
++) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    let connection = OutputConnection::new();
++    let a = open_thread(&panel, &connection, &mut cx);
++    let sa = session_of(&a, &cx);
++    connection.answer(&sa, "t1", Ok(output("one")));
++    send_tasks(&a, vec![shell("t1", "running")], &mut cx);
++    draw(&mut cx);
++    let card = card(&panel, &cx);
++    card.update(&mut cx, |card, cx| {
++        card.toggle_watch(sa.clone(), "t1".into(), cx)
++    });
++    draw(&mut cx);
++    assert_eq!(connection.fetches().len(), 1);
++
++    advance(&mut cx, Duration::from_secs(2));
++    draw(&mut cx);
++    assert_eq!(connection.fetches().len(), 2, "refetched while it runs");
++
++    card.update(&mut cx, |card, cx| {
++        card.toggle_watch(sa.clone(), "t1".into(), cx)
++    });
++    advance(&mut cx, Duration::from_secs(6));
++    draw(&mut cx);
++    assert_eq!(
++        connection.fetches().len(),
++        2,
++        "nothing fetched once unwatched"
++    );
++}
++
++/// A failed fetch falls back to the feed's tail and says why, instead of a blank block.
++#[gpui::test]
++async fn test_preview_rows_a_failed_fetch_falls_back_to_the_tail(cx: &mut TestAppContext) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    let connection = OutputConnection::new();
++    let a = open_thread(&panel, &connection, &mut cx);
++    let sa = session_of(&a, &cx);
++    connection.answer(&sa, "t1", Err("gone".to_string()));
++    send_tasks(&a, vec![shell("t1", "running")], &mut cx);
++    draw(&mut cx);
++    let card = card(&panel, &cx);
++    card.update(&mut cx, |card, cx| {
++        card.toggle_watch(sa.clone(), "t1".into(), cx)
++    });
++    draw(&mut cx);
++    assert!(cx.debug_bounds("tasks-card-preview-t1").is_some());
++    assert!(
++        cx.debug_bounds("tasks-card-tail-t1").is_some(),
++        "the tail stands in"
++    );
++    assert!(cx.debug_bounds("tasks-card-preview-output-t1").is_none());
++}
++
++/// Hostile: a long output must open on its end, not its first line, as a terminal does.
++#[gpui::test]
++async fn test_preview_rows_a_long_output_opens_on_its_end(cx: &mut TestAppContext) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    let connection = OutputConnection::new();
++    let a = open_thread(&panel, &connection, &mut cx);
++    let sa = session_of(&a, &cx);
++    let long = (1..=80)
++        .map(|n| format!("line {n}"))
++        .collect::<Vec<_>>()
++        .join("\n");
++    connection.answer(&sa, "t1", Ok(output(&long)));
++    send_tasks(&a, vec![shell("t1", "running")], &mut cx);
++    draw(&mut cx);
++    let card = card(&panel, &cx);
++    card.update(&mut cx, |card, cx| {
++        card.toggle_watch(sa.clone(), "t1".into(), cx)
++    });
++    draw(&mut cx);
++    draw(&mut cx);
++    let (offset, max) = card.read_with(&cx, |card, _| {
++        let preview = card
++            .previews
++            .get(&(sa.clone(), "t1".into()))
++            .expect("a preview");
++        (preview.scroll.offset().y, preview.scroll.max_offset().y)
++    });
++    assert!(max > gpui::px(0.), "the output overflows the block");
++    assert!(
++        offset < gpui::px(0.),
++        "scrolled to the end: offset {offset:?} of {max:?}"
++    );
++}
+diff --git a/crates/agent_ui/src/tasks_card/progress_tests.rs b/crates/agent_ui/src/tasks_card/progress_tests.rs
+index 8684ffa..aef4677 100644
+--- a/crates/agent_ui/src/tasks_card/progress_tests.rs
++++ b/crates/agent_ui/src/tasks_card/progress_tests.rs
+@@ -191,8 +191,9 @@ async fn tasks_card_progress_is_gone_once_the_task_ends(cx: &mut TestAppContext)
+     );
+ }
+ 
+-// R1.5 — a watched row keeps its details (tokens, last tool, summary) and gains the progress
+-// line; the unwatched neighbour gets the progress line only.
++// R1.5 — an opened row keeps its details (tokens, last tool, summary) and gains the progress
++// line; the closed neighbour gets the progress line only. Since Zeo next §6.22 the chevron
++// opens the details and the eye the preview, so the row is opened with the chevron.
+ #[gpui::test]
+ async fn tasks_card_progress_keeps_the_watched_details(cx: &mut TestAppContext) {
+     let (panel, mut cx) = setup_card_panel(cx).await;
+@@ -206,7 +207,7 @@ async fn tasks_card_progress_keeps_the_watched_details(cx: &mut TestAppContext)
+     );
+     let card = card(&panel, &cx);
+     let id = find_row(&card, &sa, "t1", &mut cx).unwrap().task.id;
+-    card.update(&mut cx, |card, cx| card.toggle_watch(sa.clone(), id, cx));
++    card.update(&mut cx, |card, cx| card.toggle_expanded(sa.clone(), id, cx));
+     draw(&mut cx);
+ 
+     assert!(
+diff --git a/crates/agent_ui/src/tasks_card/render_tests.rs b/crates/agent_ui/src/tasks_card/render_tests.rs
+index 072fa0f..c7e4b8e 100644
+--- a/crates/agent_ui/src/tasks_card/render_tests.rs
++++ b/crates/agent_ui/src/tasks_card/render_tests.rs
+@@ -142,7 +142,8 @@ async fn test_minimize_collapses_to_a_pill_and_clicking_it_expands(cx: &mut Test
+     assert!(cx.debug_bounds("tasks-card-pill").is_none());
+ }
+ 
+-/// A watched row is expanded with its progress details; every other row is one line.
++/// An opened row shows its details and a watched one its preview (Zeo next §6.22: the chevron
++/// opens the details, the eye the preview); every other row is one line.
+ #[gpui::test]
+ async fn test_only_watched_rows_show_their_details(cx: &mut TestAppContext) {
+     let (panel, mut cx) = setup_card_panel(cx).await;
+@@ -163,10 +164,19 @@ async fn test_only_watched_rows_show_their_details(cx: &mut TestAppContext) {
+     let sa = session_of(&a, &cx);
+     let card = card(&panel, &cx);
+     let id = find_row(&card, &sa, "t1", &mut cx).unwrap().task.id;
+-    card.update(&mut cx, |card, cx| card.toggle_watch(sa.clone(), id, cx));
++    card.update(&mut cx, |card, cx| {
++        card.toggle_expanded(sa.clone(), id.clone(), cx)
++    });
+     draw(&mut cx);
+     assert!(cx.debug_bounds("tasks-card-details-t1").is_some());
+     assert!(cx.debug_bounds("tasks-card-details-t2").is_none());
++    card.update(&mut cx, |card, cx| card.toggle_watch(sa.clone(), id, cx));
++    draw(&mut cx);
++    assert!(
++        cx.debug_bounds("tasks-card-preview-t1").is_some(),
++        "watched: its preview"
++    );
++    assert!(cx.debug_bounds("tasks-card-preview-t2").is_none());
+     let watched = cx.debug_bounds("tasks-card-row-t1").unwrap();
+     let plain = cx.debug_bounds("tasks-card-row-t2").unwrap();
+     assert!(
