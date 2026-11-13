@@ -1,4 +1,4 @@
-From 8a85e680e1a66404e4f4b65c23a9ebb482fa7d3b Mon Sep 17 00:00:00 2001
+From 40f1d6434d542680f6aad31127773ba35ecfa6b8 Mon Sep 17 00:00:00 2001
 From: lucascouts <lucascs@protonmail.com>
 Date: Fri, 13 Nov 2026 06:40:42 -0300
 Subject: [PATCH] sidebar, agent_ui: a thread pins to its project as well as
@@ -8,9 +8,8 @@ Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
 Zeo next proposal §6.5 (ask 12): a pin is global, as 0049 made it, or
-belongs to the thread's project. A project pin heads its project's
-group in the threads sidebar; the Pinned section keeps the global
-ones.
+belongs to the thread's project. The active project's pins have a
+Pinned section of their own, above the global one.
 
 The pin itself -- whether a thread is pinned, and the order of pins --
 stays where 0048 keeps it. Only the scope is new, and it lives in a
@@ -23,33 +22,51 @@ project is the thread's own, read from its metadata when the sidebar
 groups it, so it is not stored twice. Like the organization, the scope
 belongs to a saved thread (admit) and goes with a deleted one (forget).
 
-In the sidebar, pinned_section::pinned_thread_ids leaves project pins
-out of the Pinned section, so their group lists them like any thread,
-and project_pins::hoist_project_pins then moves them to the top of the
-group in pin order -- after the group's sort and 0048's manual order,
-which would otherwise undo it. The thread menu offers "Pin to Project"
-to an unpinned thread, before "Pin Thread" so the entries after that
-one keep their place; a pinned thread still offers "Unpin Thread"
-alone, whichever its scope. The scope is written only after the
-organization accepted the toggle: a refused toggle changes nothing and
-still warns once. An unpin clears the scope, so a later global pin
-does not inherit it.
+Fixed in Zeo 0.10.1, from the operator's first session on 0.10.0. As
+shipped, pinning was global by default, "Pin to Project" was the extra
+entry, and a project pin only moved to the top of its group, with no
+section. The operator asked for the opposite default and for a
+section:
+
+- Every pin entry point -- the row's button, the keyboard action and
+  "Pin Thread" -- pins to the project (toggle_project_pin). The other
+  scope is one menu entry away, for an unpinned thread and a pinned one
+  alike: "Pin Globally", or "Pin to Project" on a global pin. Changing
+  scope keeps the thread's place in the pin order.
+- There are two Pinned sections after the last group. "Pinned" lists
+  the active project's pins (project_pins::active_project_pin_ids: the
+  project pins whose thread derives the active group's key); "Pinned
+  Globally" under it lists the global ones, as 0049's section did. One
+  project section, not one per group: the operator chose it. A project
+  pin of any other project stays an ordinary row of its group until
+  that project is the active one.
+- ListEntry::PinnedHeader carries which section it heads, and each
+  section collapses on its own, under its own key-value key. The
+  hoist inside the group is gone.
+
+The scope is written only after the organization accepted the toggle:
+a refused toggle changes nothing and still warns once. An unpin clears
+the scope, so a later global pin does not inherit it.
 
 Tests: pin_scope::tests (a migration list of its own; a project pin
 survives a restart and global clears it; a draft has none; a deleted
-thread's is forgotten), project_pins::tests (project pins go first in
-pin order and the rest keep theirs; absent pins and threadless rows
-are left alone) and sidebar_pinned_tests::project_pins (a project pin
-heads its group and skips the Pinned section; unpinning clears the
-scope). Seen failing under three probes: the restart, the hoist and
-the unpin's scope.
+thread's is forgotten), project_pins::tests (only the active project's
+pins are listed, in pin order; no active project and unknown threads
+list nothing) and sidebar_pinned_tests::project_pins (the default pin
+is the project's and its section sits above the global one; a project
+pin shows its section only while its project is active; each section
+collapses on its own; unpinning clears the scope; the menu offers the
+other scope). Seen failing under two probes: the default toggle
+pinning globally, and the section ignoring which project is active.
+sidebar_tags_tests anchors on "Pin Globally", now the entry before
+Tags.
 ---
 
 diff --git a/crates/agent_ui/src/thread_organization.rs b/crates/agent_ui/src/thread_organization.rs
-index 8df252c..1d5eb6f 100644
+index 05cd09a..0da35fa 100644
 --- a/crates/agent_ui/src/thread_organization.rs
 +++ b/crates/agent_ui/src/thread_organization.rs
-@@ -32,6 +32,7 @@ const MAX_LIST_NAME_CHARS: usize = 64;
+@@ -31,6 +31,7 @@ const MAX_LIST_NAME_CHARS: usize = 64;
  const MAX_TAGS_PER_THREAD: usize = 20;
  
  pub mod description;
@@ -57,7 +74,7 @@ index 8df252c..1d5eb6f 100644
  
  struct ThreadOrganizationDb(ThreadSafeConnection);
  
-@@ -311,6 +312,7 @@ pub fn init(cx: &mut App) {
+@@ -303,6 +304,7 @@ pub fn init(cx: &mut App) {
      let store = cx.new(|cx| ThreadOrganizationStore::new(db, cx));
      cx.set_global(GlobalThreadOrganizationStore(store));
      description::init(cx);
@@ -65,7 +82,7 @@ index 8df252c..1d5eb6f 100644
  }
  
  /// Called by `ThreadMetadataStore::delete` while that store is being updated, so this must not
-@@ -320,6 +322,7 @@ pub fn forget(thread_id: ThreadId, cx: &mut App) {
+@@ -312,6 +314,7 @@ pub fn forget(thread_id: ThreadId, cx: &mut App) {
          store.update(cx, |store, cx| store.forget_thread(thread_id, cx));
      }
      description::forget(thread_id, cx);
@@ -399,10 +416,15 @@ index 0000000..f3dd742
 +    assert!(!is_project(&store, thread_id, cx), "and from disk");
 +}
 diff --git a/crates/sidebar/src/pinned_section.rs b/crates/sidebar/src/pinned_section.rs
-index 2951952..6e3dc8f 100644
+index 0bfc5fb..59efba5 100644
 --- a/crates/sidebar/src/pinned_section.rs
 +++ b/crates/sidebar/src/pinned_section.rs
-@@ -28,7 +28,14 @@ use crate::{
+@@ -24,11 +24,18 @@ use crate::{
+     all_thread_infos_for_workspace, apply_live_row_state, find_workspace_for_thread,
+ };
+ 
+-/// The pinned thread ids, newest pin first. Empty when the store is not installed, which leaves
++/// The globally pinned thread ids, newest pin first. Empty when the store is not installed, which leaves
  /// the sidebar exactly as it was before pinning existed.
  pub(crate) fn pinned_thread_ids(cx: &App) -> Vec<ThreadId> {
      ThreadOrganizationStore::try_global(cx)
@@ -411,7 +433,7 @@ index 2951952..6e3dc8f 100644
 +            store
 +                .read(cx)
 +                .pinned()
-+                // A project pin heads its project's group instead (Zeo next §6.5).
++                // A project pin is listed in its project's own section (Zeo next §6.5).
 +                .filter(|thread_id| crate::project_pins::is_global_pin(*thread_id, cx))
 +                .collect()
 +        })
@@ -420,24 +442,25 @@ index 2951952..6e3dc8f 100644
  
 diff --git a/crates/sidebar/src/project_pins.rs b/crates/sidebar/src/project_pins.rs
 new file mode 100644
-index 0000000..8bee2df
+index 0000000..92c7285
 --- /dev/null
 +++ b/crates/sidebar/src/project_pins.rs
-@@ -0,0 +1,77 @@
-+//! Project pins (Zeo next proposal §6.5, ask 12): a thread pinned to its project heads that
-+//! project's group instead of joining the Pinned section, which keeps the global pins.
+@@ -0,0 +1,81 @@
++//! Project pins (Zeo next proposal §6.5, ask 12): a thread pinned to its project is listed in
++//! a Pinned section of that project, shown while the project is the active one, above the
++//! global Pinned section.
 +//!
-+//! The pin and its order are `0048`'s; the scope is `ThreadPinScopeStore`'s. A project pin is
-+//! left out of the Pinned section (`pinned_section::pinned_thread_ids`), so its group lists it
-+//! like any thread, and [`hoist_project_pins`] then moves it to the top, after the group's own
-+//! sort and manual order, which would otherwise undo it.
++//! The pin and its order are `0048`'s; the scope is `ThreadPinScopeStore`'s. A project pin of
++//! the active project is left out of its group and of the global section
++//! (`pinned_section::pinned_thread_ids`) and listed by [`active_project_pin_ids`]. A project pin
++//! of any other project stays an ordinary row of its group until that project is the active one.
 +
 +use agent_ui::ThreadId;
++use agent_ui::thread_metadata_store::ThreadMetadataStore;
 +use agent_ui::thread_organization::ThreadOrganizationStore;
 +use agent_ui::thread_organization::pin_scope::ThreadPinScopeStore;
 +use gpui::App;
-+
-+use crate::ListEntry;
++use workspace::ProjectGroupKey;
 +
 +/// The project pins, in pin order: pinned in the organization and scoped to their project.
 +pub(crate) fn project_pin_order(cx: &App) -> Vec<ThreadId> {
@@ -456,46 +479,49 @@ index 0000000..8bee2df
 +        .unwrap_or_default()
 +}
 +
-+/// Whether a pinned thread belongs in the Pinned section: every pin but a project one.
++/// Whether a pinned thread belongs in the global Pinned section: every pin but a project one.
 +pub(crate) fn is_global_pin(thread_id: ThreadId, cx: &App) -> bool {
 +    ThreadPinScopeStore::try_global(cx)
 +        .is_none_or(|scope| !scope.read(cx).is_project_pin(thread_id))
 +}
 +
-+/// Moves a group's project pins to its top, in pin order; every other row keeps its place
-+/// relative to the rest.
-+pub(crate) fn hoist_project_pins(rows: &mut Vec<ListEntry>, cx: &App) {
++/// The project pins of the active project, in pin order. The project of a thread is derived
++/// from the thread alone, as the global section's label is.
++pub(crate) fn active_project_pin_ids(active: Option<&ProjectGroupKey>, cx: &App) -> Vec<ThreadId> {
 +    let order = project_pin_order(cx);
-+    hoist_by(
-+        rows,
-+        |entry| match entry {
-+            ListEntry::Thread(thread) => Some(thread.metadata.thread_id),
-+            _ => None,
-+        },
++    if order.is_empty() {
++        return order;
++    }
++    let store = ThreadMetadataStore::global(cx).read(cx);
++    pins_of(
 +        &order,
-+    );
++        |thread_id| {
++            store.entry(thread_id).map(|metadata| {
++                ProjectGroupKey::from_worktree_paths(
++                    &metadata.worktree_paths,
++                    metadata.remote_connection.clone(),
++                )
++            })
++        },
++        active,
++    )
 +}
 +
-+/// The rows whose key is in `order` first, in `order`'s order, then the rest as they were.
-+pub(crate) fn hoist_by<T>(
-+    rows: &mut Vec<T>,
-+    key: impl Fn(&T) -> Option<ThreadId>,
++/// The ids of `order` whose project is `active`, in `order`'s order. None without an active
++/// project, and a thread whose project is unknown belongs to none.
++pub(crate) fn pins_of<K: PartialEq>(
 +    order: &[ThreadId],
-+) {
-+    if order.is_empty() {
-+        return;
-+    }
-+    let mut hoisted: Vec<(usize, T)> = Vec::new();
-+    let mut rest: Vec<T> = Vec::new();
-+    for row in rows.drain(..) {
-+        match key(&row).and_then(|id| order.iter().position(|pinned| *pinned == id)) {
-+            Some(rank) => hoisted.push((rank, row)),
-+            None => rest.push(row),
-+        }
-+    }
-+    hoisted.sort_by_key(|(rank, _)| *rank);
-+    rows.extend(hoisted.into_iter().map(|(_, row)| row));
-+    rows.extend(rest);
++    project_of: impl Fn(ThreadId) -> Option<K>,
++    active: Option<&K>,
++) -> Vec<ThreadId> {
++    let Some(active) = active else {
++        return Vec::new();
++    };
++    order
++        .iter()
++        .copied()
++        .filter(|thread_id| project_of(*thread_id).as_ref() == Some(active))
++        .collect()
 +}
 +
 +#[cfg(test)]
@@ -503,45 +529,47 @@ index 0000000..8bee2df
 +mod tests;
 diff --git a/crates/sidebar/src/project_pins_tests.rs b/crates/sidebar/src/project_pins_tests.rs
 new file mode 100644
-index 0000000..fc8397b
+index 0000000..70b54af
 --- /dev/null
 +++ b/crates/sidebar/src/project_pins_tests.rs
-@@ -0,0 +1,33 @@
-+// Zeo next proposal §6.5: the order a group's rows take once its project pins are hoisted.
+@@ -0,0 +1,35 @@
++// Zeo next proposal §6.5: which project pins the active project's section lists.
 +// Filter: `project_pins::tests`.
 +
 +use agent_ui::ThreadId;
 +
-+use super::hoist_by;
++use super::pins_of;
 +
 +fn ids(n: usize) -> Vec<ThreadId> {
 +    (0..n).map(|_| ThreadId::new()).collect()
 +}
 +
 +#[test]
-+fn project_pins_go_first_in_pin_order_and_the_rest_keep_theirs() {
-+    let t = ids(5);
-+    let mut rows = t.clone();
-+    hoist_by(&mut rows, |id| Some(*id), &[t[3], t[1]]);
-+    assert_eq!(rows, vec![t[3], t[1], t[0], t[2], t[4]]);
++fn only_the_active_projects_pins_are_listed_in_pin_order() {
++    let order = ids(4);
++    let project_of = |id: ThreadId| {
++        let ix = order.iter().position(|other| *other == id)?;
++        Some(if ix % 2 == 0 { "alpha" } else { "beta" })
++    };
++    assert_eq!(
++        pins_of(&order, project_of, Some(&"alpha")),
++        vec![order[0], order[2]]
++    );
++    assert_eq!(
++        pins_of(&order, project_of, Some(&"beta")),
++        vec![order[1], order[3]]
++    );
 +}
 +
-+/// Hostile: a pin of another project (absent from this group) and rows with no thread change
-+/// nothing; no pins is the identity.
++/// Hostile: with no active project, or a thread whose project is unknown, nothing is listed.
 +#[test]
-+fn absent_pins_and_threadless_rows_are_left_alone() {
-+    let t = ids(3);
-+    let other = ThreadId::new();
-+    let mut rows: Vec<Option<ThreadId>> = vec![Some(t[0]), None, Some(t[1]), Some(t[2])];
-+    hoist_by(&mut rows, |row| *row, &[other, t[2]]);
-+    assert_eq!(rows, vec![Some(t[2]), Some(t[0]), None, Some(t[1])]);
-+
-+    let mut unchanged = t.clone();
-+    hoist_by(&mut unchanged, |id| Some(*id), &[]);
-+    assert_eq!(unchanged, t);
++fn no_active_project_and_unknown_threads_list_nothing() {
++    let order = ids(2);
++    assert!(pins_of(&order, |_| Some("alpha"), None).is_empty());
++    assert!(pins_of(&order, |_| None::<&str>, Some(&"alpha")).is_empty());
 +}
 diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
-index 037c21b..85255f2 100644
+index bbb4b6e..e334fa0 100644
 --- a/crates/sidebar/src/sidebar.rs
 +++ b/crates/sidebar/src/sidebar.rs
 @@ -1,4 +1,5 @@
@@ -550,7 +578,50 @@ index 037c21b..85255f2 100644
  mod thread_switcher;
  
  use acp_thread::ThreadStatus;
-@@ -1092,6 +1093,15 @@ impl Sidebar {
+@@ -505,6 +506,8 @@ enum ListEntry {
+     Terminal(TerminalEntry),
+     PinnedHeader {
+         has_notifications: bool,
++        /// The active project's pins (Zeo next §6.5); `false` on the global section's header.
++        project: bool,
+     },
+ }
+ 
+@@ -628,6 +631,7 @@ enum EntryShape {
+     Terminal(TerminalId),
+     PinnedHeader {
+         is_collapsed: bool,
++        project: bool,
+     },
+     // Distinct from `Thread` so pinning or unpinning never reuses the other row's measurement.
+     PinnedThread(ThreadId),
+@@ -918,9 +922,12 @@ fn create_worktree_in_workspace(
+ /// append-only domain, where a step can never be edited once it ships.
+ pub(crate) const PINNED_COLLAPSED_KEY: &str = "zeo_sidebar_pinned_collapsed";
+ 
+-fn read_pinned_collapsed(cx: &App) -> bool {
++/// The same for the active project's Pinned section (Zeo next §6.5).
++pub(crate) const PROJECT_PINNED_COLLAPSED_KEY: &str = "zeo_sidebar_project_pinned_collapsed";
++
++fn read_pinned_collapsed(key: &str, cx: &App) -> bool {
+     KeyValueStore::global(cx)
+-        .read_kvp(PINNED_COLLAPSED_KEY)
++        .read_kvp(key)
+         .log_err()
+         .flatten()
+         .is_some_and(|value| value == "true")
+@@ -991,7 +998,9 @@ pub struct Sidebar {
+     cross_channel_import_channels: Vec<SharedString>,
+     /// Never serialized: the Pinned section's collapsed state lasts for the session.
+     pinned_collapsed: bool,
+-    /// The last write of `pinned_collapsed`. Each write waits for the one before it, so
++    /// The active project's Pinned section, collapsed (Zeo next §6.5).
++    project_pinned_collapsed: bool,
++    /// The last write of either collapsed state. Each write waits for the one before it, so
+     /// a quick collapse-then-expand cannot land in the store in the wrong order.
+     pinned_collapsed_write: Option<Task<()>>,
+ }
+@@ -1081,6 +1090,15 @@ impl Sidebar {
          {
              cx.observe(&store, |_, _store, cx| cx.notify()).detach();
          }
@@ -566,11 +637,54 @@ index 037c21b..85255f2 100644
  
          cx.observe(&ThreadMetadataStore::global(cx), |this, _store, cx| {
              this.schedule_update_entries(false, cx);
-@@ -1198,11 +1208,42 @@ impl Sidebar {
+@@ -1152,13 +1170,39 @@ impl Sidebar {
+             update_task: None,
+             import_banners_use_verbose_labels: None,
+             cross_channel_import_channels: Vec::new(),
+-            pinned_collapsed: read_pinned_collapsed(cx),
++            pinned_collapsed: read_pinned_collapsed(PINNED_COLLAPSED_KEY, cx),
++            project_pinned_collapsed: read_pinned_collapsed(PROJECT_PINNED_COLLAPSED_KEY, cx),
+             pinned_collapsed_write: None,
+         }
+     }
+ 
+-    /// The one writer of a pin from the sidebar. It must run outside any `ThreadMetadataStore`
+-    /// update: the store reads that entity to refuse drafts and unknown threads.
++    /// The toggle every pin entry point of the sidebar runs (Zeo next §6.5): an unpinned thread
++    /// pins to its project, a pinned one unpins whichever its scope.
++    fn toggle_project_pin(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) {
++        let is_pinned = ThreadOrganizationStore::try_global(cx)
++            .is_some_and(|store| Self::is_pinned_in(&store, thread_id, cx));
++        if is_pinned {
++            self.toggle_pin(thread_id, cx);
++        } else {
++            self.pin_to_project(thread_id, cx);
++        }
++    }
++
++    /// Pins `thread_id` for every project, or moves a project pin to the global section.
++    fn pin_globally(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) {
++        let Some(store) = ThreadOrganizationStore::try_global(cx) else {
++            return;
++        };
++        if let Err(error) = store.update(cx, |store, cx| store.pin(thread_id, cx)) {
++            log::warn!("sidebar: global pin refused for thread {thread_id:?}: {error}");
++            return;
++        }
++        Self::set_pin_scope(thread_id, false, cx);
++    }
++
++    /// The global toggle, and the one writer of an unpin. It must run outside any
++    /// `ThreadMetadataStore` update: the store reads that entity to refuse drafts and unknown
++    /// threads.
+     fn toggle_pin(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) {
+         let Some(store) = ThreadOrganizationStore::try_global(cx) else {
+             return;
+@@ -1171,11 +1215,43 @@ impl Sidebar {
                  store.pin(thread_id, cx)
              }
          });
-+        // Pinning here is global, and an unpin leaves no scope behind (Zeo next §6.5). Only after
++        // A pin made here is global, and an unpin leaves no scope behind (Zeo next §6.5). Only after
 +        // the store accepted the toggle: a refused one changes nothing and warns once.
 +        if result.is_ok() {
 +            Self::set_pin_scope(thread_id, false, cx);
@@ -581,7 +695,8 @@ index 037c21b..85255f2 100644
      }
  
 +    /// Pins `thread_id` to its project (Zeo next §6.5): pinned as any thread, and scoped so it
-+    /// heads its project's group rather than the Pinned section.
++    /// is listed in its project's Pinned section, shown while that project is the active one.
++    /// A thread already pinned keeps its place in the pin order and only changes scope.
 +    fn pin_to_project(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) {
 +        let Some(store) = ThreadOrganizationStore::try_global(cx) else {
 +            return;
@@ -609,41 +724,416 @@ index 037c21b..85255f2 100644
      /// Whether `thread_id` is pinned, as every pin entry point must read it to name and perform
      /// the toggle: by its `pinned_position`, never by which section its row is in.
      fn is_pinned_in(
-@@ -6448,6 +6489,8 @@ impl Sidebar {
-         let mut row_entries: Vec<ListEntry> = row_entries.collect();
-         // After the final sort, which would otherwise undo it.
-         organization::order_manually(&mut row_entries, group_key, cx);
-+        // Zeo next §6.5: a thread pinned to this project heads its group.
-+        project_pins::hoist_project_pins(&mut row_entries, cx);
+@@ -1741,7 +1817,21 @@ impl Sidebar {
+             }
+         }
  
-         for entry in row_entries {
-             if let ListEntry::Thread(thread) = &entry {
-@@ -7270,6 +7313,20 @@ impl Sidebar {
-                             });
+-        let pinned_ids = pinned_section::pinned_thread_ids(cx);
++        let global_pin_ids = pinned_section::pinned_thread_ids(cx);
++        // Zeo next §6.5: the active project's pins get a section of their own, above the
++        // global one. A project pin of any other project stays a row of its group.
++        let active_group_key = active_workspace.as_ref().and_then(|active| {
++            groups
++                .iter()
++                .find(|group| group.workspaces.contains(active))
++                .map(|group| group.key.clone())
++        });
++        let project_pin_ids = project_pins::active_project_pin_ids(active_group_key.as_ref(), cx);
++        let pinned_ids: Vec<ThreadId> = project_pin_ids
++            .iter()
++            .chain(&global_pin_ids)
++            .copied()
++            .collect();
+         // Pinned threads are listed in their own section, so every group path skips them. The
+         // first group that would have listed one claims it, as an unpinned thread is listed by the
+         // first group that finds it, so that group still counts as having threads.
+@@ -2282,42 +2372,51 @@ impl Sidebar {
+             }
+         }
+ 
+-        let pinned_rows = pinned_section::build_pinned_rows(
+-            self,
+-            &pinned_ids,
+-            PinnedBuildContext {
+-                workspaces: &workspaces,
+-                active_workspace: active_workspace.as_ref(),
+-                path_detail_map: &path_detail_map,
+-                branch_by_path: &branch_by_path,
+-                resolve_agent_icon: &resolve_agent_icon,
+-                new_live_statuses: &mut new_live_statuses,
+-                notified_threads: &mut notified_threads,
+-            },
+-            cx,
+-        );
+-        let pinned_rows =
+-            thread_tags::retain_tagged_rows(pinned_rows, &tag_query, &mut current_thread_ids, cx);
+-        // Like a group's rows, a pinned row the filter drops is not registered below, so the
+-        // header is decided by, and reports notifications of, only the rows that are shown.
+-        let pinned_rows = pinned_section::filter_pinned_rows(pinned_rows, &query);
+-        if !pinned_rows.is_empty() {
+-            // Registered even while the section is collapsed, so the retains below keep the
+-            // notifications its header reports.
+-            for row in &pinned_rows {
+-                if let Some(session_id) = &row.metadata.session_id {
+-                    current_session_ids.insert(session_id.clone());
++        for (project, section_ids) in [(true, &project_pin_ids), (false, &global_pin_ids)] {
++            let pinned_rows = pinned_section::build_pinned_rows(
++                self,
++                section_ids,
++                PinnedBuildContext {
++                    workspaces: &workspaces,
++                    active_workspace: active_workspace.as_ref(),
++                    path_detail_map: &path_detail_map,
++                    branch_by_path: &branch_by_path,
++                    resolve_agent_icon: &resolve_agent_icon,
++                    new_live_statuses: &mut new_live_statuses,
++                    notified_threads: &mut notified_threads,
++                },
++                cx,
++            );
++            let pinned_rows = thread_tags::retain_tagged_rows(
++                pinned_rows,
++                &tag_query,
++                &mut current_thread_ids,
++                cx,
++            );
++            // Like a group's rows, a pinned row the filter drops is not registered below, so the
++            // header is decided by, and reports notifications of, only the rows that are shown.
++            let pinned_rows = pinned_section::filter_pinned_rows(pinned_rows, &query);
++            if !pinned_rows.is_empty() {
++                // Registered even while the section is collapsed, so the retains below keep the
++                // notifications its header reports.
++                for row in &pinned_rows {
++                    if let Some(session_id) = &row.metadata.session_id {
++                        current_session_ids.insert(session_id.clone());
++                    }
++                    current_thread_ids.insert(row.metadata.thread_id);
++                }
++                let has_notifications = pinned_rows
++                    .iter()
++                    .any(|row| notified_threads.contains(&row.metadata.thread_id));
++                project_header_indices.push(entries.len());
++                entries.push(ListEntry::PinnedHeader {
++                    has_notifications,
++                    project,
++                });
++                // Like a project group, a collapsed section still shows what the filter matches.
++                if !self.pinned_section_collapsed(project) || !query.is_empty() {
++                    entries.extend(pinned_rows.into_iter().map(ListEntry::Thread));
+                 }
+-                current_thread_ids.insert(row.metadata.thread_id);
+-            }
+-            let has_notifications = pinned_rows
+-                .iter()
+-                .any(|row| notified_threads.contains(&row.metadata.thread_id));
+-            project_header_indices.push(entries.len());
+-            entries.push(ListEntry::PinnedHeader { has_notifications });
+-            // Like a project group, a collapsed section still shows what the filter matches.
+-            if !self.pinned_collapsed || !query.is_empty() {
+-                entries.extend(pinned_rows.into_iter().map(ListEntry::Thread));
+             }
+         }
+ 
+@@ -2460,8 +2559,9 @@ impl Sidebar {
+             }
+             ListEntry::Thread(thread) => EntryShape::Thread(thread.metadata.thread_id),
+             ListEntry::Terminal(terminal) => EntryShape::Terminal(terminal.metadata.terminal_id),
+-            ListEntry::PinnedHeader { .. } => EntryShape::PinnedHeader {
+-                is_collapsed: self.pinned_collapsed,
++            ListEntry::PinnedHeader { project, .. } => EntryShape::PinnedHeader {
++                is_collapsed: self.pinned_section_collapsed(*project),
++                project: *project,
+             },
+         })
+     }
+@@ -2617,8 +2717,11 @@ impl Sidebar {
+             ListEntry::Terminal(terminal) => {
+                 self.render_terminal(ix, terminal, is_active, is_selected, cx)
+             }
+-            ListEntry::PinnedHeader { has_notifications } => {
+-                self.render_pinned_header(ix, false, *has_notifications, is_selected, cx)
++            ListEntry::PinnedHeader {
++                has_notifications,
++                project,
++            } => {
++                self.render_pinned_header(ix, false, *project, *has_notifications, is_selected, cx)
+             }
+         };
+ 
+@@ -3578,12 +3681,17 @@ impl Sidebar {
+         &self,
+         ix: usize,
+         is_sticky: bool,
++        project: bool,
+         has_notifications: bool,
+         is_focused: bool,
+         cx: &mut Context<Self>,
+     ) -> AnyElement {
+         let color = cx.theme().colors();
+-        let disclosure_icon = if self.pinned_collapsed {
++        let is_collapsed = self.pinned_section_collapsed(project);
++        // The active project's pins come first and keep the plain name; the section under it
++        // lists the pins of every project (Zeo next §6.5).
++        let title = if project { "Pinned" } else { "Pinned Globally" };
++        let disclosure_icon = if is_collapsed {
+             IconName::ChevronRight
+         } else {
+             IconName::ChevronDown
+@@ -3605,8 +3713,8 @@ impl Sidebar {
+             } else {
+                 gpui::transparent_black()
+             })
+-            .child(Label::new("Pinned").color(Color::Muted))
+-            .when(self.pinned_collapsed && has_notifications, |this| {
++            .child(Label::new(title).color(Color::Muted))
++            .when(is_collapsed && has_notifications, |this| {
+                 this.child(
+                     Icon::new(IconName::Circle)
+                         .size(IconSize::Small)
+@@ -3621,9 +3729,10 @@ impl Sidebar {
+                 )
+             })
+             .cursor_pointer()
+-            .on_click(cx.listener(|this, _: &gpui::ClickEvent, _window, cx| {
++            .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _window, cx| {
+                 if !this.has_filter_query(cx) {
+-                    this.set_pinned_collapsed(!this.pinned_collapsed, cx);
++                    let collapsed = this.pinned_section_collapsed(project);
++                    this.set_pinned_section_collapsed(project, !collapsed, cx);
+                 }
+             }))
+             .block_mouse_except_scroll()
+@@ -3633,8 +3742,32 @@ impl Sidebar {
+     /// Collapses or expands the Pinned section. The state is session-only: unlike a project
+     /// group's, it is never serialized, so a new window starts with Pinned expanded.
+     fn set_pinned_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+-        if self.pinned_collapsed != collapsed {
+-            self.pinned_collapsed = collapsed;
++        self.set_pinned_section_collapsed(false, collapsed, cx);
++    }
++
++    /// Whether a Pinned section is collapsed: the active project's, or the global one.
++    fn pinned_section_collapsed(&self, project: bool) -> bool {
++        if project {
++            self.project_pinned_collapsed
++        } else {
++            self.pinned_collapsed
++        }
++    }
++
++    fn set_pinned_section_collapsed(
++        &mut self,
++        project: bool,
++        collapsed: bool,
++        cx: &mut Context<Self>,
++    ) {
++        if self.pinned_section_collapsed(project) != collapsed {
++            let key = if project {
++                self.project_pinned_collapsed = collapsed;
++                PROJECT_PINNED_COLLAPSED_KEY
++            } else {
++                self.pinned_collapsed = collapsed;
++                PINNED_COLLAPSED_KEY
++            };
+             let store = KeyValueStore::global(cx);
+             let previous = self.pinned_collapsed_write.take();
+             self.pinned_collapsed_write = Some(cx.background_spawn(async move {
+@@ -3642,13 +3775,13 @@ impl Sidebar {
+                     previous.await;
+                 }
+                 store
+-                    .write_kvp(PINNED_COLLAPSED_KEY.to_string(), collapsed.to_string())
++                    .write_kvp(key.to_string(), collapsed.to_string())
+                     .await
+                     .log_err();
+             }));
+             self.update_entries(cx);
+-            // Collapsing drops the rows after the header, which is the last entry: a selected
+-            // pinned row would otherwise point past the end of the list.
++            // Collapsing drops the rows after the header, which can be the last entry: a
++            // selected pinned row would otherwise point past the end of the list.
+             let len = self.contents.entries.len();
+             if self.selection.is_some_and(|ix| ix >= len) {
+                 self.selection = len.checked_sub(1);
+@@ -3704,9 +3837,17 @@ impl Sidebar {
+                 *has_threads,
+                 cx,
+             ),
+-            ListEntry::PinnedHeader { has_notifications } => {
+-                self.render_pinned_header(header_idx, true, *has_notifications, is_selected, cx)
+-            }
++            ListEntry::PinnedHeader {
++                has_notifications,
++                project,
++            } => self.render_pinned_header(
++                header_idx,
++                true,
++                *project,
++                *has_notifications,
++                is_selected,
++                cx,
++            ),
+             ListEntry::Thread(_) | ListEntry::Terminal(_) => return None,
+         };
+ 
+@@ -4113,8 +4254,10 @@ impl Sidebar {
+                 let workspace = terminal.workspace.clone();
+                 self.activate_terminal_entry(metadata, workspace, false, window, cx);
+             }
+-            ListEntry::PinnedHeader { .. } => {
+-                self.set_pinned_collapsed(!self.pinned_collapsed, cx);
++            ListEntry::PinnedHeader { project, .. } => {
++                let project = *project;
++                let collapsed = self.pinned_section_collapsed(project);
++                self.set_pinned_section_collapsed(project, !collapsed, cx);
+             }
+         }
+     }
+@@ -4771,8 +4914,11 @@ impl Sidebar {
+                 self.set_group_expanded(&key, true, cx);
+                 self.update_entries(cx);
+             }
+-            Some(ListEntry::PinnedHeader { .. }) if self.pinned_collapsed => {
+-                self.set_pinned_collapsed(false, cx);
++            Some(ListEntry::PinnedHeader { project, .. })
++                if self.pinned_section_collapsed(*project) =>
++            {
++                let project = *project;
++                self.set_pinned_section_collapsed(project, false, cx);
+             }
+             Some(ListEntry::ProjectHeader { .. } | ListEntry::PinnedHeader { .. })
+                 if ix + 1 < self.contents.entries.len() =>
+@@ -4813,16 +4959,20 @@ impl Sidebar {
                          }
+                         // Pinned rows follow the last group: stopping here keeps a pinned row
+                         // from collapsing that group.
+-                        Some(ListEntry::PinnedHeader { .. }) => {
++                        Some(ListEntry::PinnedHeader { project, .. }) => {
++                            let project = *project;
+                             self.selection = Some(i);
+-                            self.set_pinned_collapsed(true, cx);
++                            self.set_pinned_section_collapsed(project, true, cx);
+                             break;
+                         }
+                         _ => {}
+                     }
+                 }
+             }
+-            Some(ListEntry::PinnedHeader { .. }) => self.set_pinned_collapsed(true, cx),
++            Some(ListEntry::PinnedHeader { project, .. }) => {
++                let project = *project;
++                self.set_pinned_section_collapsed(project, true, cx);
++            }
+             None => {}
+         }
+     }
+@@ -4860,11 +5010,13 @@ impl Sidebar {
+                     }
+                     self.update_entries(cx);
+                 }
+-                Some(ListEntry::PinnedHeader { .. }) => {
+-                    if !self.pinned_collapsed {
++                Some(ListEntry::PinnedHeader { project, .. }) => {
++                    let project = *project;
++                    let collapsed = self.pinned_section_collapsed(project);
++                    if !collapsed {
+                         self.selection = Some(header_ix);
+                     }
+-                    self.set_pinned_collapsed(!self.pinned_collapsed, cx);
++                    self.set_pinned_section_collapsed(project, !collapsed, cx);
+                 }
+                 Some(ListEntry::Thread(_) | ListEntry::Terminal(_)) | None => {}
+             }
+@@ -6280,7 +6432,7 @@ impl Sidebar {
+             return;
+         }
+         let thread_id = thread.metadata.thread_id;
+-        self.toggle_pin(thread_id, cx);
++        self.toggle_project_pin(thread_id, cx);
+     }
  
-+                        // Zeo next §6.5: an unpinned thread can pin to its project too, offered
-+                        // before "Pin Thread" so the entries after that one keep their place.
-+                        if pin_entry_label == Some("Pin Thread") {
-+                            menu = menu.entry("Pin to Project", None, {
-+                                let sidebar = sidebar.clone();
-+                                move |_window, cx| {
-+                                    sidebar
-+                                        .update(cx, |sidebar, cx| {
-+                                            sidebar.pin_to_project(thread_id, cx);
+     fn rename_selected_thread(
+@@ -6930,7 +7082,7 @@ impl Sidebar {
+                             }
+                         })
+                         .on_click(cx.listener(move |this, _, _window, cx| {
+-                            this.toggle_pin(thread_id_for_actions, cx);
++                            this.toggle_project_pin(thread_id_for_actions, cx);
+                         }))
+                 });
+ 
+@@ -7090,6 +7242,11 @@ impl Sidebar {
+                             "Pin Thread"
+                         }
+                     });
++                    // `Some(true)` offers "Pin to Project", on a global pin; `Some(false)` offers
++                    // "Pin Globally", on an unpinned thread and on a project pin.
++                    let pin_scope_entry = pin_entry_label.map(|label| {
++                        label == "Unpin Thread" && project_pins::is_global_pin(thread_id, cx)
++                    });
+                     ContextMenu::build(_window, cx, move |mut menu, _window, _cx| {
+                         menu = menu.entry("Rename Title", None, {
+                             let sidebar = sidebar.clone();
+@@ -7175,7 +7332,30 @@ impl Sidebar {
+                                 move |_window, cx| {
+                                     sidebar
+                                         .update(cx, |sidebar, cx| {
+-                                            sidebar.toggle_pin(thread_id, cx);
++                                            sidebar.toggle_project_pin(thread_id, cx);
 +                                        })
 +                                        .ok();
 +                                }
 +                            });
 +                        }
-                         if let Some(label) = pin_entry_label {
-                             menu = menu.entry(label, None, {
-                                 let sidebar = sidebar.clone();
++                        // Zeo next §6.5: "Pin Thread" pins to the project; the other scope is
++                        // one entry away, for an unpinned thread and for a pinned one alike.
++                        if let Some(to_project) = pin_scope_entry {
++                            let label = if to_project {
++                                "Pin to Project"
++                            } else {
++                                "Pin Globally"
++                            };
++                            menu = menu.entry(label, None, {
++                                let sidebar = sidebar.clone();
++                                move |_window, cx| {
++                                    sidebar
++                                        .update(cx, |sidebar, cx| {
++                                            if to_project {
++                                                sidebar.pin_to_project(thread_id, cx);
++                                            } else {
++                                                sidebar.pin_globally(thread_id, cx);
++                                            }
+                                         })
+                                         .ok();
+                                 }
+diff --git a/crates/sidebar/src/sidebar_organization_tests.rs b/crates/sidebar/src/sidebar_organization_tests.rs
+index 5d35420..30b5820 100644
+--- a/crates/sidebar/src/sidebar_organization_tests.rs
++++ b/crates/sidebar/src/sidebar_organization_tests.rs
+@@ -799,6 +799,7 @@ mod pure {
+             b1_row,
+             ListEntry::PinnedHeader {
+                 has_notifications: false,
++                project: false,
+             },
+             thread_entry(a1, "a1", Some(3), 3, None, None, Some("alpha")),
+         ];
 diff --git a/crates/sidebar/src/sidebar_pinned_tests.rs b/crates/sidebar/src/sidebar_pinned_tests.rs
-index b5c1302..f197370 100644
+index b5c1302..20908ab 100644
 --- a/crates/sidebar/src/sidebar_pinned_tests.rs
 +++ b/crates/sidebar/src/sidebar_pinned_tests.rs
-@@ -2118,3 +2118,6 @@ mod markdown;
+@@ -831,7 +831,9 @@ fn pinned_header_has_notifications(
+             .entries
+             .iter()
+             .find_map(|entry| match entry {
+-                ListEntry::PinnedHeader { has_notifications } => Some(*has_notifications),
++                ListEntry::PinnedHeader {
++                    has_notifications, ..
++                } => Some(*has_notifications),
+                 _ => None,
+             })
+     })
+@@ -2118,3 +2120,6 @@ mod markdown;
  
  #[path = "sidebar_pinned_background_tests.rs"]
  mod background;
@@ -652,51 +1142,141 @@ index b5c1302..f197370 100644
 +mod project_pins;
 diff --git a/crates/sidebar/src/sidebar_project_pins_tests.rs b/crates/sidebar/src/sidebar_project_pins_tests.rs
 new file mode 100644
-index 0000000..cba8d2f
+index 0000000..2d2dc4c
 --- /dev/null
 +++ b/crates/sidebar/src/sidebar_project_pins_tests.rs
-@@ -0,0 +1,64 @@
-+// Zeo next proposal §6.5 (ask 12): "Pin to Project" heads the project's group and stays out of
-+// the Pinned section, which keeps the global pins; unpinning clears the scope. Filter:
+@@ -0,0 +1,207 @@
++// Zeo next proposal §6.5 (ask 12), as the operator corrected it in Zeo 0.10.1: pinning is to the
++// project by default; the active project's pins have a Pinned section of their own, above the
++// global one; the other scope is one menu entry away. Filter:
 +// `sidebar_pinned_tests::project_pins`.
 +
 +use super::*;
 +use pretty_assertions::assert_eq;
 +
++/// The index of each Pinned header with whether it is the project's, top to bottom.
++fn pinned_headers(sidebar: &Entity<Sidebar>, cx: &mut VisualTestContext) -> Vec<(usize, bool)> {
++    sidebar.read_with(cx, |sidebar, _| {
++        sidebar
++            .contents
++            .entries
++            .iter()
++            .enumerate()
++            .filter_map(|(ix, entry)| match entry {
++                ListEntry::PinnedHeader { project, .. } => Some((ix, *project)),
++                _ => None,
++            })
++            .collect()
++    })
++}
++
++fn is_project_pin(thread_id: ThreadId, cx: &mut VisualTestContext) -> bool {
++    cx.update(|_, cx| !crate::project_pins::is_global_pin(thread_id, cx))
++}
++
 +#[gpui::test]
-+async fn a_project_pin_heads_its_group_and_skips_the_pinned_section(cx: &mut TestAppContext) {
++async fn the_default_pin_is_the_projects_and_its_section_sits_above_the_global_one(
++    cx: &mut TestAppContext,
++) {
 +    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
 +    let old = save_in("s1", "Oldest", ALPHA, 1, cx);
 +    let mid = save_in("s2", "Middle", ALPHA, 2, cx);
 +    let new = save_in("s3", "Newest", ALPHA, 3, cx);
 +    cx.run_until_parked();
-+    assert!(
-+        group_row_ix(&sidebar, new, cx) < group_row_ix(&sidebar, old, cx),
-+        "by time first"
-+    );
 +
-+    sidebar.update(cx, |sidebar, cx| sidebar.pin_to_project(old, cx));
++    // What the row button, the keyboard action and "Pin Thread" all run.
++    sidebar.update(cx, |sidebar, cx| sidebar.toggle_project_pin(old, cx));
 +    cx.run_until_parked();
-+    assert_eq!(
-+        pinned_header_ix(&sidebar, cx),
-+        None,
-+        "no Pinned section for a project pin"
-+    );
-+    assert_eq!(rows_of(&sidebar, old, cx), 1, "listed once, in its group");
-+    assert!(
-+        group_row_ix(&sidebar, old, cx) < group_row_ix(&sidebar, new, cx),
-+        "the project pin heads its group"
-+    );
++    assert!(is_project_pin(old, cx), "the default pin is a project pin");
 +    assert_eq!(stored_pins(cx), vec![old], "it is a pin like any other");
++    let headers = pinned_headers(&sidebar, cx);
++    assert_eq!(headers.len(), 1, "one section: the project's");
++    assert!(headers[0].1);
++    assert_eq!(rows_of(&sidebar, old, cx), 1, "listed once, in the section");
++    assert!(pinned_row_ix(&sidebar, old, cx) > headers[0].0);
++    assert!(
++        group_row_ix(&sidebar, new, cx) < headers[0].0,
++        "the section follows the project's threads"
++    );
 +
-+    // A global pin still goes to the Pinned section, beside the project pin in its group.
-+    toggle_pin(&sidebar, mid, cx);
-+    assert!(pinned_header_ix(&sidebar, cx).is_some());
-+    let _ = pinned_row_ix(&sidebar, mid, cx);
-+    assert!(group_row_ix(&sidebar, old, cx) < group_row_ix(&sidebar, new, cx));
++    // A global pin gets the section under it.
++    sidebar.update(cx, |sidebar, cx| sidebar.pin_globally(mid, cx));
++    cx.run_until_parked();
++    let headers = pinned_headers(&sidebar, cx);
++    assert_eq!(
++        headers
++            .iter()
++            .map(|(_, project)| *project)
++            .collect::<Vec<_>>(),
++        vec![true, false],
++        "the project's section first, then the global one"
++    );
++    let (project_header, global_header) = (headers[0].0, headers[1].0);
++    let old_ix = pinned_row_ix(&sidebar, old, cx);
++    let mid_ix = pinned_row_ix(&sidebar, mid, cx);
++    assert!(project_header < old_ix && old_ix < global_header);
++    assert!(global_header < mid_ix);
 +}
 +
-+/// Hostile: unpinning a project pin clears its scope, so a later plain pin is global.
++/// Hostile: a project pin of a project that is not the active one is in no Pinned section; it
++/// stays a row of its own group, and moves to the section once its project is active.
++#[gpui::test]
++async fn a_project_pin_shows_its_section_only_while_its_project_is_active(cx: &mut TestAppContext) {
++    let (fs, multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    let alpha = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
++    let in_alpha = save_in("a1", "Fix login", ALPHA, 1, cx);
++    let beta = open_in_window(BETA, &fs, &multi_workspace, cx).await;
++    let in_beta = save_in("b1", "Ship release", BETA, 1, cx);
++    cx.run_until_parked();
++
++    sidebar.update(cx, |sidebar, cx| {
++        sidebar.pin_to_project(in_alpha, cx);
++        sidebar.pin_to_project(in_beta, cx);
++    });
++    cx.run_until_parked();
++
++    // Opening BETA made it the active project.
++    assert_eq!(pinned_headers(&sidebar, cx).len(), 1);
++    let _ = pinned_row_ix(&sidebar, in_beta, cx);
++    let _ = group_row_ix(&sidebar, in_alpha, cx);
++    assert_eq!(rows_of(&sidebar, in_alpha, cx), 1);
++    assert_eq!(rows_of(&sidebar, in_beta, cx), 1);
++
++    multi_workspace.update_in(cx, |mw, window, cx| {
++        mw.activate(alpha.clone(), None, window, cx)
++    });
++    cx.run_until_parked();
++    assert_eq!(pinned_headers(&sidebar, cx).len(), 1);
++    let _ = pinned_row_ix(&sidebar, in_alpha, cx);
++    let _ = group_row_ix(&sidebar, in_beta, cx);
++    drop(beta);
++}
++
++/// The two sections collapse on their own, each under its own key.
++#[gpui::test]
++async fn each_pinned_section_collapses_on_its_own(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    let mine = save_in("s1", "Mine", ALPHA, 1, cx);
++    let everywhere = save_in("s2", "Everywhere", ALPHA, 2, cx);
++    cx.run_until_parked();
++    sidebar.update(cx, |sidebar, cx| {
++        sidebar.pin_to_project(mine, cx);
++        sidebar.pin_globally(everywhere, cx);
++    });
++    cx.run_until_parked();
++
++    sidebar.update(cx, |sidebar, cx| {
++        sidebar.set_pinned_section_collapsed(true, true, cx)
++    });
++    cx.run_until_parked();
++    assert_eq!(rows_of(&sidebar, mine, cx), 0, "the project's rows fold");
++    assert_eq!(rows_of(&sidebar, everywhere, cx), 1, "the global ones stay");
++    assert_eq!(pinned_headers(&sidebar, cx).len(), 2, "both headers stay");
++    assert!(sidebar.read_with(cx, |sidebar, _| !sidebar.pinned_collapsed));
++}
++
++/// Hostile: unpinning a project pin clears its scope, so a later global pin is global, and a
++/// pinned thread changes scope in place without a second pin.
 +#[gpui::test]
 +async fn unpinning_clears_the_scope(cx: &mut TestAppContext) {
 +    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
@@ -706,17 +1286,92 @@ index 0000000..cba8d2f
 +
 +    sidebar.update(cx, |sidebar, cx| sidebar.pin_to_project(old, cx));
 +    cx.run_until_parked();
-+    toggle_pin(&sidebar, old, cx);
++    sidebar.update(cx, |sidebar, cx| sidebar.toggle_project_pin(old, cx));
++    cx.run_until_parked();
 +    assert!(stored_pins(cx).is_empty(), "unpinned");
++    assert!(!is_project_pin(old, cx), "no scope left behind");
 +    assert!(
 +        group_row_ix(&sidebar, new, cx) < group_row_ix(&sidebar, old, cx),
 +        "back in time order"
 +    );
 +
 +    toggle_pin(&sidebar, old, cx);
-+    assert!(
-+        pinned_header_ix(&sidebar, cx).is_some(),
-+        "a plain pin is global again"
++    assert_eq!(
++        pinned_headers(&sidebar, cx)
++            .iter()
++            .map(|(_, project)| *project)
++            .collect::<Vec<_>>(),
++        vec![false],
++        "the global toggle pins globally"
 +    );
-+    let _ = pinned_row_ix(&sidebar, old, cx);
++
++    sidebar.update(cx, |sidebar, cx| sidebar.pin_to_project(old, cx));
++    cx.run_until_parked();
++    assert_eq!(stored_pins(cx), vec![old], "still one pin");
++    assert_eq!(
++        pinned_headers(&sidebar, cx)
++            .iter()
++            .map(|(_, project)| *project)
++            .collect::<Vec<_>>(),
++        vec![true],
++        "moved to the project's section"
++    );
 +}
++
++/// The menu names the default and offers the other scope: "Pin Globally" beside "Pin Thread",
++/// and on a project pin; "Pin to Project" on a global one.
++#[gpui::test]
++async fn the_menu_offers_the_other_scope(cx: &mut TestAppContext) {
++    let (_fs, _multi_workspace, sidebar, cx) = alpha_window(cx).await;
++    save_in("a1", "Fix login", ALPHA, 2, cx);
++    let target = save_in("a2", "Write docs", ALPHA, 1, cx);
++    cx.run_until_parked();
++
++    let ix = group_row_ix(&sidebar, target, cx);
++    right_click(entry_bounds(&sidebar, ix, cx).center(), cx);
++    cx.debug_bounds("MENU_ITEM-Pin Thread")
++        .expect("an unpinned thread is offered Pin Thread");
++    assert!(cx.debug_bounds("MENU_ITEM-Pin to Project").is_none());
++    let global = cx
++        .debug_bounds("MENU_ITEM-Pin Globally")
++        .expect("an unpinned thread is offered Pin Globally");
++    cx.simulate_click(global.center(), Modifiers::none());
++    cx.run_until_parked();
++    assert_eq!(stored_pins(cx), vec![target]);
++    assert!(!is_project_pin(target, cx));
++
++    let ix = pinned_row_ix(&sidebar, target, cx);
++    right_click(entry_bounds(&sidebar, ix, cx).center(), cx);
++    cx.debug_bounds("MENU_ITEM-Unpin Thread")
++        .expect("a pinned thread is offered Unpin Thread");
++    assert!(cx.debug_bounds("MENU_ITEM-Pin Globally").is_none());
++    let to_project = cx
++        .debug_bounds("MENU_ITEM-Pin to Project")
++        .expect("a global pin is offered Pin to Project");
++    cx.simulate_click(to_project.center(), Modifiers::none());
++    cx.run_until_parked();
++    assert!(is_project_pin(target, cx));
++    assert_eq!(stored_pins(cx), vec![target], "still one pin");
++}
+diff --git a/crates/sidebar/src/sidebar_tags_tests.rs b/crates/sidebar/src/sidebar_tags_tests.rs
+index 2d60b19..84a1ffd 100644
+--- a/crates/sidebar/src/sidebar_tags_tests.rs
++++ b/crates/sidebar/src/sidebar_tags_tests.rs
+@@ -283,13 +283,14 @@ async fn tags_entry_on_group_and_pinned_rows_opens_the_picker_for_that_thread(
+     let item = cx
+         .debug_bounds(TAGS_MENU_ITEM)
+         .expect("R1.1: a thread row of a project group offers Tags…");
++    // The pin entries are two since Zeo 0.10.1: "Pin Thread", then the other scope.
+     let pin = cx
+-        .debug_bounds("MENU_ITEM-Pin Thread")
+-        .expect("fixture: Pin Thread is offered");
++        .debug_bounds("MENU_ITEM-Pin Globally")
++        .expect("fixture: the pin entries are offered");
+     let gap = item.top() - pin.top();
+     assert!(
+         gap > px(0.) && gap < pin.size.height * 1.5,
+-        "R1.1: right after Pin Thread"
++        "R1.1: right after the pin entries"
+     );
+     cx.simulate_click(item.center(), Modifiers::none());
+     cx.run_until_parked();

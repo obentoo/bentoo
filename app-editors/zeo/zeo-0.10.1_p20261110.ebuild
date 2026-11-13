@@ -2200,8 +2200,9 @@ src_prepare() {
 			# 0102 (Wave 3, Zeo next proposal §6.3): the sent message stays pinned at
 			# the top, minimized. On 0026 and 0078.
 			"${FILESDIR}/0102-agent-ui-pin-the-sent-message-at-the-top.patch"
-			# 0103 (Wave 3, Zeo next proposal §6.5): a thread pins to its project as
-			# well as globally; a project pin heads its group. On 0048, 0049, 0096.
+			# 0103 (Wave 3, Zeo next proposal §6.5): a thread pins to its project by
+			# default, or globally; the active project's pins have a Pinned section
+			# above the global one (Zeo 0.10.1). On 0048, 0049, 0096.
 			"${FILESDIR}/0103-sidebar-pins-per-project.patch"
 		)
 	fi
