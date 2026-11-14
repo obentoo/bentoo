@@ -10,22 +10,13 @@ inherit prefix python-any-r1 qt6-build toolchain-funcs
 QT_PV=6.8:6
 
 DESCRIPTION="Library for rendering dynamic web content in Qt6 C++ and QML applications"
-# BENTOO-DIVERGENCE: SLOT - subslot 6/6.140.0 follows the new Chromium-based
-# version scheme; ::gentoo's 6.140.9999 derives the same value.
-# BENTOO-DIVERGENCE: SRC_URI - since 6.140 QtWebEngine ships apart from the Qt
-# release, under development_releases/qtwebengine/<ver>/ with no submodules/
-# directory; qt6-build.eclass would build a 404 path for the pre-release.
-# Temporary mirror: drop once ::gentoo ships a qtwebengine-6.140.
-SRC_URI="
-	https://download.qt.io/development_releases/qtwebengine/${PV/_/-}/${PN}-everywhere-src-${PV/_/-}.tar.xz
-	https://distfiles.gentoo.org/pub/dev/ionen@gentoo.org/${PN}-6.11-patchset-5.tar.xz
+SRC_URI+="
+	https://distfiles.gentoo.org/pub/dev/ionen@gentoo.org/${PN}-6.11-patchset-7.tar.xz
 "
-# the -rc tarball unpacks without the suffix the eclass appends
-S=${WORKDIR}/${PN}-everywhere-src-${PV%%_*}
 
-# BENTOO-DIVERGENCE: KEYWORDS - keyworded although a pre-release: it is the
-# only QtWebEngine that builds against qtbase-6.12 (6.11.2 pins ~qtbase-6.11.2)
-KEYWORDS="~amd64 ~arm64"
+if [[ ${QT6_BUILD_TYPE} == release ]]; then
+	KEYWORDS="~amd64 ~arm64"
+fi
 
 IUSE="
 	accessibility +alsa bindist custom-cflags designer geolocation
@@ -120,20 +111,12 @@ PATCHES=( "${WORKDIR}"/patches/${PN} )
 
 PATCHES+=(
 	# add extras as needed here, may merge in set if carries across versions
-	"${FILESDIR}"/${PN}-6.10.3-climits.patch
-	"${FILESDIR}"/${PN}-6.11.1-musl-missing-includes.patch
-	"${FILESDIR}"/${PN}-6.11.1-musl-arm64-mte.patch
-	"${FILESDIR}"/${PN}-6.11.2-libcxx23.patch
-	# BENTOO-DIVERGENCE: PATCHES - of ::gentoo's two 6.11.2-r1 extras, only
-	# the CVE one. Its cert blocklist update is only in Chromium >=158 and
-	# the 6.140.0-rc chromium submodule (39352427a3) lacks it; the patch
-	# applies to that file as-is. QTBUG-149946 is left out because its own
-	# header says it is fixed in 6.140.0.
-	"${FILESDIR}"/${PN}-6.11.2-CVE-2026-111943.patch
+	"${FILESDIR}"/${PN}-6.11.0-gcc17.patch
 	# BENTOO-DIVERGENCE: PATCHES - V8's gen-regexp-special-case host tool
-	# traps (CHECK_EQ, SIGTRAP) under USE=system-icu with dev-libs/icu-79:
-	# Unicode 18 puts a supplementary code point in the case closure of
-	# U+00DF. Generator half of upstream V8's fix; see the patch header.
+	# traps (CHECK_LE in Canonicalize, SIGTRAP) under USE=system-icu with
+	# bentoo's dev-libs/icu-79: Unicode 18 puts U+1DF95 in the case closure
+	# of U+00DF and U+1E9E. Generator half of upstream V8's fix; see the
+	# patch header. Drop once ::gentoo carries it or reaches icu-79.
 	"${FILESDIR}"/${PN}-6.140.0-icu79-regexp-special-case.patch
 )
 
