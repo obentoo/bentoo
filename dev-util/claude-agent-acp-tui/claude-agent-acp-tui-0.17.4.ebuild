@@ -1,0 +1,67 @@
+# Copyright 1999-2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+
+EAPI=8
+
+DESCRIPTION="Run the Claude Code TUI in Zed's agent panel via an ACP-over-PTY bridge"
+HOMEPAGE="https://github.com/zeo-workspace/claude-agent-tui"
+# Upstream GitHub repo/release asset is still named 'claude-agent-tui'; the
+# package was renamed to claude-agent-acp-tui, so fetch the upstream tarball
+# and rename it to ${P} (and set S to the upstream-named extracted dir).
+SRC_URI="https://github.com/zeo-workspace/claude-agent-tui/releases/download/v${PV}/claude-agent-tui-${PV}.tar.gz -> ${P}.tar.gz"
+S="${WORKDIR}/claude-agent-tui-${PV}"
+
+LICENSE="Apache-2.0"
+SLOT="0"
+KEYWORDS="-* ~amd64"
+RESTRICT="mirror strip bindist"
+
+RDEPEND="
+	>=net-libs/nodejs-24
+	dev-util/claude-code
+"
+
+QA_PREBUILT="usr/lib/node_modules/${PN}/node_modules/node-pty/build/Release/pty.node"
+
+src_prepare() {
+	default
+
+	# The bundle vendors the SDK's native Claude CLI (~200 MB), but the bridge
+	# never runs it: claude-path.js resolves `claude` from PATH only, with no
+	# native-binary fallback, and that PATH entry is dev-util/claude-code. The
+	# SDK itself is used here only for session/settings file helpers, which
+	# work without the platform package.
+	local sdk_bin=node_modules/@anthropic-ai/claude-agent-sdk-linux-x64
+	[[ -d ${sdk_bin} ]] || die "${sdk_bin} is gone; drop this removal"
+	rm -r "${sdk_bin}" || die
+}
+
+src_compile() {
+	:
+}
+
+src_install() {
+	insinto /usr/lib/node_modules/${PN}
+	doins -r dist node_modules package.json
+	dodoc README.md NOTICE
+
+	# Executable wrapper: doins strips the +x bit, so the wrapper itself
+	# carries it via fperms. dist/index.js is invoked through 'node' and
+	# pty.node is loaded via dlopen, so neither needs +x.
+	dodir /usr/bin
+	cat > "${ED}/usr/bin/claude-agent-acp-tui" <<-EOF || die
+		#!/bin/sh
+		exec node /usr/lib/node_modules/${PN}/dist/index.js "\$@"
+	EOF
+	fperms +x /usr/bin/claude-agent-acp-tui
+}
+
+pkg_postinst() {
+	elog "The bridge is installed as the 'claude-agent-acp-tui' executable."
+	elog ""
+	elog "To enable it in Zed, add the following to ~/.config/zed/settings.json:"
+	elog ""
+	elog "    \"agent_servers\": {"
+	elog "        \"Claude Agent TUI\": { \"command\": \"claude-agent-acp-tui\", \"args\": [] }"
+	elog "    }"
+}
