@@ -34,7 +34,7 @@ nothing without a time).
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 04aaef7..ff15c29 100644
+index 7a6fcbb..d12db2f 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
 @@ -509,6 +509,25 @@ fn can_merge_message_chunks(
@@ -63,7 +63,7 @@ index 04aaef7..ff15c29 100644
  #[derive(Clone, Copy)]
  enum MessageLocation {
      User {
-@@ -4215,6 +4234,10 @@ pub struct AcpThread {
+@@ -4236,6 +4255,10 @@ pub struct AcpThread {
      forked_from: Option<acp_v2::SessionId>,
      provisional_title: Option<SharedString>,
      entries: Vec<AgentThreadEntry>,
@@ -74,7 +74,7 @@ index 04aaef7..ff15c29 100644
      // Notices stay with the live session, but never enter conversation history or exports.
      notices: Vec<(usize, acp_v2::Notice)>,
      next_notice_id: usize,
-@@ -4600,6 +4623,7 @@ impl AcpThread {
+@@ -4621,6 +4644,7 @@ impl AcpThread {
              action_log,
              shared_buffers: Default::default(),
              entries: Default::default(),
@@ -82,7 +82,7 @@ index 04aaef7..ff15c29 100644
              notices: Vec::new(),
              next_notice_id: 0,
              elicitations: ElicitationStore::default(),
-@@ -4927,6 +4951,87 @@ impl AcpThread {
+@@ -4948,6 +4972,87 @@ impl AcpThread {
          self.set_work_dirs(work_dirs, cx);
      }
  
@@ -170,7 +170,7 @@ index 04aaef7..ff15c29 100644
      pub fn status(&self) -> ThreadStatus {
          match self.foreground_activity() {
              ForegroundActivity::Unconfirmed | ForegroundActivity::Unknown => {
-@@ -5710,6 +5815,7 @@ impl AcpThread {
+@@ -5731,6 +5836,7 @@ impl AcpThread {
              acp_v1::SessionUpdate::UserMessageChunk(acp_v1::ContentChunk {
                  content,
                  message_id,
@@ -178,7 +178,7 @@ index 04aaef7..ff15c29 100644
                  ..
              }) => {
                  let content = content::from_v1(content).map_err(acp_v1::Error::from)?;
-@@ -5738,10 +5844,12 @@ impl AcpThread {
+@@ -5759,10 +5865,12 @@ impl AcpThread {
                  if !already_in_user_message {
                      self.push_user_content_block_from_agent(message_id, content, cx);
                  }
@@ -191,7 +191,7 @@ index 04aaef7..ff15c29 100644
                  ..
              }) => {
                  self.push_assistant_content_block_with_message_id(
-@@ -5751,6 +5859,7 @@ impl AcpThread {
+@@ -5772,6 +5880,7 @@ impl AcpThread {
                      false,
                      cx,
                  );
@@ -199,7 +199,7 @@ index 04aaef7..ff15c29 100644
              }
              acp_v1::SessionUpdate::AgentThoughtChunk(acp_v1::ContentChunk {
                  content,
-@@ -6145,15 +6254,19 @@ impl AcpThread {
+@@ -6166,15 +6275,19 @@ impl AcpThread {
          chunk: acp_v2::ContentChunk,
          cx: &mut Context<Self>,
      ) -> Result<()> {
@@ -221,7 +221,7 @@ index 04aaef7..ff15c29 100644
      }
  
      fn append_message_content(
-@@ -6706,6 +6819,7 @@ impl AcpThread {
+@@ -6727,6 +6840,7 @@ impl AcpThread {
      fn push_entry(&mut self, entry: AgentThreadEntry, cx: &mut Context<Self>) {
          self.flush_streaming_text(cx);
          self.entries.push(entry);
@@ -229,7 +229,7 @@ index 04aaef7..ff15c29 100644
          cx.emit(AcpThreadEvent::NewEntry);
      }
  
-@@ -6720,6 +6834,7 @@ impl AcpThread {
+@@ -6741,6 +6855,7 @@ impl AcpThread {
              })
              .collect::<Vec<_>>();
          self.entries.truncate(index);
@@ -237,7 +237,7 @@ index 04aaef7..ff15c29 100644
          for id in removed_requests {
              self.resolve_permission_request(id, RequestPermissionOutcome::Cancelled, cx);
          }
-@@ -8347,6 +8462,8 @@ impl AcpThread {
+@@ -8379,6 +8494,8 @@ impl AcpThread {
                          }),
                          cx,
                      );
@@ -246,7 +246,7 @@ index 04aaef7..ff15c29 100644
                  })
                  .ok();
              }
-@@ -28193,4 +28310,5 @@ mod tests {
+@@ -28303,4 +28420,5 @@ mod tests {
      include!("acp_thread_tasks_contract_v2_tests.rs");
      include!("acp_thread_tasks_child_session_tests.rs");
      include!("acp_thread_tasks_turn_end_tests.rs");
@@ -254,10 +254,10 @@ index 04aaef7..ff15c29 100644
  }
 diff --git a/crates/acp_thread/src/acp_thread_message_times_tests.rs b/crates/acp_thread/src/acp_thread_message_times_tests.rs
 new file mode 100644
-index 0000000..a878d28
+index 0000000..2e2f466
 --- /dev/null
 +++ b/crates/acp_thread/src/acp_thread_message_times_tests.rs
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,190 @@
 +// Zeo next proposal §6.4 (ask 24): message times and turn duration.
 +//
 +// Each user and agent message records when it was sent: the agent's `_meta.claudeCode.timestamp`
@@ -301,7 +301,9 @@ index 0000000..a878d28
 +    cx: &mut TestAppContext,
 +) {
 +    thread.update(cx, |thread, cx| {
-+        thread.handle_session_update(update, cx).expect("update applies")
++        thread
++            .handle_session_update(update, cx)
++            .expect("update applies")
 +    });
 +}
 +
@@ -332,7 +334,10 @@ index 0000000..a878d28
 +
 +    thread.read_with(cx, |thread, _| {
 +        let user = thread.message_time(0).expect("the user message has a time");
-+        assert_eq!((user.first, user.last), (message_times_at(T_SENT), message_times_at(T_SENT)));
++        assert_eq!(
++            (user.first, user.last),
++            (message_times_at(T_SENT), message_times_at(T_SENT))
++        );
 +        let reply = thread.message_time(1).expect("the reply has a time");
 +        assert_eq!(reply.first, message_times_at(T_REPLY), "first chunk");
 +        assert_eq!(reply.last, message_times_at(T_LAST), "last chunk");
@@ -359,7 +364,11 @@ index 0000000..a878d28
 +    );
 +
 +    thread.read_with(cx, |thread, _| {
-+        assert_eq!(thread.message_time(0), None, "received now is not when it was sent");
++        assert_eq!(
++            thread.message_time(0),
++            None,
++            "received now is not when it was sent"
++        );
 +        assert_eq!(thread.message_time(1), None);
 +        assert_eq!(thread.turn_duration(0), None);
 +    });
@@ -394,7 +403,10 @@ index 0000000..a878d28
 +            let time = thread
 +                .message_time(ix)
 +                .unwrap_or_else(|| panic!("entry {ix} stamped live"));
-+            assert!(before <= time.first && time.last <= after, "entry {ix}: {time:?}");
++            assert!(
++                before <= time.first && time.last <= after,
++                "entry {ix}: {time:?}"
++            );
 +        }
 +        assert!(thread.turn_duration(0).is_some());
 +    });
@@ -437,7 +449,7 @@ index 0000000..a878d28
 +    });
 +}
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 1ee2dce..158595f 100644
+index 4ea77bc..b065672 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -8030,6 +8030,76 @@ fn sandbox_network_rows(network: &SandboxNetPolicy) -> Vec<SandboxRow> {
@@ -528,7 +540,7 @@ index 1ee2dce..158595f 100644
                      centered_container(rendered.into_any_element()).into_any_element()
                  } else if this.generating_indicator_in_list {
                      let confirmation = this.thread.read(cx).is_waiting_for_confirmation()
-@@ -16025,6 +16099,8 @@ mod tests {
+@@ -16081,6 +16155,8 @@ mod tests {
  
      mod question_card_minimize_tests;
  

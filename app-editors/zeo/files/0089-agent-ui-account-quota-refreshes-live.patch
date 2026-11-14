@@ -46,10 +46,10 @@ thread_view/tests/account_refresh_line_tests.rs (the line's wording).
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 1239995..ebe0ef1 100644
+index d12db2f..bf442d1 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -3846,10 +3846,26 @@ pub struct AccountUsageWindow {
+@@ -3863,10 +3863,26 @@ pub struct AccountUsageWindow {
      pub resets_at: Option<i64>,
  }
  
@@ -80,7 +80,7 @@ index 1239995..ebe0ef1 100644
  
  /// Account-level quota state, accumulated across `rate_limit_event`s.
  #[derive(Debug, Clone, Default, PartialEq)]
-@@ -4270,6 +4286,9 @@ pub struct AcpThread {
+@@ -4287,6 +4303,9 @@ pub struct AcpThread {
      // being answered. See `refresh_account_usage`.
      account_usage_refreshed_at: Option<Instant>,
      account_usage_refreshing: bool,
@@ -90,7 +90,7 @@ index 1239995..ebe0ef1 100644
      background_task_count: usize,
      tasks: Vec<AgentTask>,
      // Ids whose ending has been announced with `TaskEnded`, so a repeated snapshot does
-@@ -4655,6 +4674,7 @@ impl AcpThread {
+@@ -4672,6 +4691,7 @@ impl AcpThread {
              account_usage: AccountUsage::default(),
              account_usage_refreshed_at: None,
              account_usage_refreshing: false,
@@ -98,7 +98,7 @@ index 1239995..ebe0ef1 100644
              background_task_count: 0,
              tasks: Vec::new(),
              announced_task_endings: HashSet::default(),
-@@ -5587,24 +5607,47 @@ impl AcpThread {
+@@ -5604,24 +5624,47 @@ impl AcpThread {
          (!self.account_usage.is_empty()).then_some(&self.account_usage)
      }
  
@@ -153,7 +153,7 @@ index 1239995..ebe0ef1 100644
          let session_id = self.session_id().clone();
          let request = self
              .connection
-@@ -5618,8 +5661,11 @@ impl AcpThread {
+@@ -5635,8 +5678,11 @@ impl AcpThread {
                      session_id.0
                  );
              }
@@ -167,7 +167,7 @@ index 1239995..ebe0ef1 100644
          })
          .detach();
      }
-@@ -7191,11 +7237,17 @@ impl AcpThread {
+@@ -7208,11 +7254,17 @@ impl AcpThread {
          // The account quota rides in `_meta` on the same notification. Absent for
          // every agent but the Claude adapter, so its absence is the normal case
          // and must stay silent.
@@ -188,7 +188,7 @@ index 1239995..ebe0ef1 100644
          cx.emit(AcpThreadEvent::TokenUsageUpdated(
              OutputTokensUpdate::Unchanged,
          ));
-@@ -9720,7 +9772,7 @@ mod tests {
+@@ -9748,7 +9800,7 @@ mod tests {
              .await
              .unwrap();
          let refresh = |cx: &mut TestAppContext| {
@@ -197,7 +197,7 @@ index 1239995..ebe0ef1 100644
              cx.run_until_parked();
          };
  
-@@ -28315,4 +28367,5 @@ mod tests {
+@@ -28421,4 +28473,5 @@ mod tests {
      include!("acp_thread_tasks_child_session_tests.rs");
      include!("acp_thread_tasks_turn_end_tests.rs");
      include!("acp_thread_message_times_tests.rs");
@@ -380,10 +380,10 @@ index 0000000..e1d3c94
 +    });
 +}
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index e50198e..a2fd7fb 100644
+index b065672..a0d8a88 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
-@@ -6697,7 +6697,6 @@ impl ThreadView {
+@@ -6487,7 +6487,6 @@ impl ThreadView {
          let input_max_label = crate::humanize_token_count(max_input_tokens);
          let output_max_label = crate::humanize_token_count(max_output_tokens);
  
@@ -391,7 +391,7 @@ index e50198e..a2fd7fb 100644
          let thread_entity = self.thread.clone();
  
          let build_tooltip = {
-@@ -6713,7 +6712,13 @@ impl ThreadView {
+@@ -6503,7 +6502,13 @@ impl ThreadView {
                  let project_entry_ids = project_entry_ids.clone();
                  let workspace = workspace.clone();
                  let cost_label = cost_label.clone();
@@ -406,7 +406,7 @@ index e50198e..a2fd7fb 100644
                  cx.new(move |cx| TokenUsageTooltip {
                      // The quota rows follow the thread while the tooltip is open, so a
                      // refresh the hover asked for lands in front of the reader instead
-@@ -6724,12 +6729,18 @@ impl ThreadView {
+@@ -6514,12 +6519,18 @@ impl ThreadView {
                              let (rows, credits_required) = account_usage_rows(thread.read(cx));
                              tooltip.account_rows = rows;
                              tooltip.account_credits_required = credits_required;
@@ -425,7 +425,7 @@ index e50198e..a2fd7fb 100644
                      used,
                      max,
                      input_tokens: input_tokens_label,
-@@ -6767,6 +6778,7 @@ impl ThreadView {
+@@ -6557,6 +6568,7 @@ impl ThreadView {
                  h_flex()
                      .id("split_token_usage")
                      .on_hover(cx.listener(Self::refresh_account_usage_on_hover))
@@ -433,7 +433,7 @@ index e50198e..a2fd7fb 100644
                      .flex_shrink_0()
                      .gap_1p5()
                      .mr_1()
-@@ -6816,6 +6828,7 @@ impl ThreadView {
+@@ -6606,6 +6618,7 @@ impl ThreadView {
                  h_flex()
                      .id("circular_progress_tokens")
                      .on_hover(cx.listener(Self::refresh_account_usage_on_hover))
@@ -441,7 +441,7 @@ index e50198e..a2fd7fb 100644
                      .mt_px()
                      .mr_1()
                      .child(
-@@ -6845,10 +6858,22 @@ impl ThreadView {
+@@ -6635,10 +6648,22 @@ impl ThreadView {
      ) {
          if *hovered {
              self.thread
@@ -465,7 +465,7 @@ index e50198e..a2fd7fb 100644
      fn fast_mode_available(&self, cx: &Context<Self>) -> bool {
          self.as_native_thread(cx)
              .and_then(|thread| thread.read(cx).model())
-@@ -7780,6 +7805,20 @@ impl ThreadView {
+@@ -7554,6 +7579,20 @@ impl ThreadView {
  /// credits. Only the Claude adapter reports quota today: it forwards the SDK's
  /// `rate_limit_event` in `_meta`, which ACP itself has no field for. Every other agent
  /// yields no rows and the section does not render.
@@ -486,7 +486,7 @@ index e50198e..a2fd7fb 100644
  fn account_usage_rows(thread: &AcpThread) -> (Vec<AccountUsageRow>, bool) {
      let Some(account) = thread.account_usage() else {
          return (Vec::new(), false);
-@@ -7818,6 +7857,7 @@ struct TokenUsageTooltip {
+@@ -7592,6 +7631,7 @@ struct TokenUsageTooltip {
      percentage: String,
      account_rows: Vec<AccountUsageRow>,
      account_credits_required: bool,
@@ -494,7 +494,7 @@ index e50198e..a2fd7fb 100644
      used: String,
      max: String,
      input_tokens: String,
-@@ -7847,6 +7887,7 @@ impl Render for TokenUsageTooltip {
+@@ -7621,6 +7661,7 @@ impl Render for TokenUsageTooltip {
          let cost_label = self.cost_label.clone();
          let account_rows = self.account_rows.clone();
          let account_credits_required = self.account_credits_required;
@@ -502,7 +502,7 @@ index e50198e..a2fd7fb 100644
          let global_agents_md_loaded = self.global_agents_md_loaded;
          let project_rules_count = self.project_rules_count;
          let project_entry_ids = self.project_entry_ids.clone();
-@@ -7967,6 +8008,13 @@ impl Render for TokenUsageTooltip {
+@@ -7741,6 +7782,13 @@ impl Render for TokenUsageTooltip {
                                              .size(LabelSize::Small)
                                              .color(Color::Warning),
                                      )
@@ -516,7 +516,7 @@ index e50198e..a2fd7fb 100644
                                  }),
                          )
                      },
-@@ -16608,6 +16656,8 @@ mod tests {
+@@ -16157,6 +16205,8 @@ mod tests {
  
      mod message_time_tests;
  

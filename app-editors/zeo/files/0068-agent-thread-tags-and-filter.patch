@@ -101,6 +101,18 @@ sqlez keys migrations per domain, so nothing collides with upstream's numbering,
 and the `threads` table and the index's columns are untouched. No code change
 needed.
 
+On Zed f0fa51bb (bump to zeo-0.11.0_p20261114): gpui's Window::insert_quad now
+paints a rounded or bordered quad that has a background as an interior quad
+plus four strips, each keeping the whole quad's bounds and clipped to its part
+by its content mask. thread_tags_picker_layout_tests read every painted quad on
+its own, so the "frame" became the modal surface's 12 px left strip and all
+three tests failed with the picker unchanged. A `shapes` helper now merges the
+pieces back (same bounds and background, masks united) before the frame, the
+highlight and the quads inside are measured. Test-only; the picker is
+untouched. Red re-checked: dropping initial_width and wrapping the unsized
+picker in a fixed 24 rem v_flex (the defect R1.13 records) fails two of the
+three, as before; the width guard stays green on it by design.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -819,10 +831,10 @@ index 0000000..ad4772a
 +mod thread_tags_picker_layout_tests;
 diff --git a/crates/agent_ui/src/thread_tags_picker_layout_tests.rs b/crates/agent_ui/src/thread_tags_picker_layout_tests.rs
 new file mode 100644
-index 0000000..b8dfbe6
+index 0000000..32d8d44
 --- /dev/null
 +++ b/crates/agent_ui/src/thread_tags_picker_layout_tests.rs
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,348 @@
 +// Story 037, task 9.2 — the Tags picker is drawn inside its frame: every entry, its selection
 +// highlight and its separators. Requirement: R1.13 (Q5, Q11, Q12). Found by the GUI proof,
 +// `docs/assets/037-live-proof-2026-10-20/c2a-picker-typed.png`: the selected "Add tag" row ran
@@ -857,7 +869,10 @@ index 0000000..b8dfbe6
 +use agent_client_protocol::v2::schema as acp;
 +use chrono::Utc;
 +use fs::FakeFs;
-+use gpui::{Entity, Hsla, Quad, TestAppContext, VisualTestContext, px, size};
++use gpui::{
++    Background, Bounds, Entity, Hsla, Quad, ScaledPixels, TestAppContext, VisualTestContext, px,
++    size,
++};
 +use project::Project;
 +use serde_json::json;
 +use ui::ActiveTheme as _;
@@ -979,9 +994,7 @@ index 0000000..b8dfbe6
 +}
 +
 +impl Rect {
-+    fn visible(quad: &Quad) -> Self {
-+        let bounds = quad.bounds;
-+        let mask = quad.content_mask.bounds;
++    fn visible(bounds: Bounds<ScaledPixels>, mask: Bounds<ScaledPixels>) -> Self {
 +        Self {
 +            left: bounds.origin.x.0,
 +            top: bounds.origin.y.0,
@@ -1004,6 +1017,30 @@ index 0000000..b8dfbe6
 +    }
 +}
 +
++/// One painted shape per quad the elements asked for, with its background and visible extent.
++///
++/// Since Zed f0fa51bb `Window::insert_quad` paints a bordered or rounded quad with a background
++/// as an interior quad plus four strips: every piece keeps the whole quad's bounds and is
++/// clipped to its part by its content mask. Pieces of one shape are merged back here, by bounds
++/// and background, with their masks united, so the frame is the modal surface again rather than
++/// its narrowest strip.
++fn shapes(quads: &[Quad]) -> Vec<(Background, Rect)> {
++    let mut shapes: Vec<(Bounds<ScaledPixels>, Background, Bounds<ScaledPixels>)> = Vec::new();
++    for quad in quads {
++        let mask = quad.content_mask.bounds;
++        match shapes.iter_mut().find(|(bounds, background, _)| {
++            *bounds == quad.bounds && *background == quad.background
++        }) {
++            Some((_, _, union)) => *union = union.union(&mask),
++            None => shapes.push((quad.bounds, quad.background, mask)),
++        }
++    }
++    shapes
++        .into_iter()
++        .map(|(bounds, background, mask)| (background, Rect::visible(bounds, mask)))
++        .collect()
++}
++
 +struct Painted {
 +    frame: Rect,
 +    selected: Rect,
@@ -1020,17 +1057,17 @@ index 0000000..b8dfbe6
 +        let surface: Hsla = colors.elevated_surface_background;
 +        let selected_bg: Hsla = colors.ghost_element_selected;
 +        let rem = (window.rem_size() / px(1.)) * window.scale_factor();
-+        let quads = window.painted_quads();
++        let shapes = shapes(&window.painted_quads());
 +
-+        let surfaces: Vec<Rect> = quads
++        let surfaces: Vec<Rect> = shapes
 +            .iter()
-+            .filter(|quad| quad.background.as_solid() == Some(surface))
-+            .map(Rect::visible)
++            .filter(|(background, _)| background.as_solid() == Some(surface))
++            .map(|(_, rect)| *rect)
 +            .collect();
-+        let highlights: Vec<Rect> = quads
++        let highlights: Vec<Rect> = shapes
 +            .iter()
-+            .filter(|quad| quad.background.as_solid() == Some(selected_bg))
-+            .map(Rect::visible)
++            .filter(|(background, _)| background.as_solid() == Some(selected_bg))
++            .map(|(_, rect)| *rect)
 +            .collect();
 +        // The selected row is the highlight that starts inside a modal surface; the frame is the
 +        // smallest surface containing it.
@@ -1050,9 +1087,9 @@ index 0000000..b8dfbe6
 +                     highlights {highlights:?}"
 +                )
 +            });
-+        let inside = quads
++        let inside = shapes
 +            .iter()
-+            .map(Rect::visible)
++            .map(|(_, rect)| *rect)
 +            .filter(|rect| {
 +                frame.contains_origin_of(rect)
 +                    && !(rect.left == frame.left
@@ -2217,7 +2254,7 @@ index 0000000..a7c75d1
 +    assert_eq!(picker_stored(this, cx), vec![DOTTED.to_string()]);
 +}
 diff --git a/crates/agent_ui/src/threads_archive_view.rs b/crates/agent_ui/src/threads_archive_view.rs
-index 2e909f1..fe86c3f 100644
+index 15ed40e..544ba13 100644
 --- a/crates/agent_ui/src/threads_archive_view.rs
 +++ b/crates/agent_ui/src/threads_archive_view.rs
 @@ -7,6 +7,8 @@ use crate::agent_connection_store::AgentConnectionStore;
@@ -2271,7 +2308,7 @@ index 2e909f1..fe86c3f 100644
              let highlight_positions = if !query.is_empty() {
                  let title = session
                      .title
-@@ -1701,3 +1726,11 @@ mod tests {
+@@ -1708,3 +1733,11 @@ mod tests {
          }
      }
  }
@@ -2833,7 +2870,7 @@ index a26d829..0bfc5fb 100644
          return rows;
      }
 diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
-index e070355..a800822 100644
+index e20f775..1b79b17 100644
 --- a/crates/sidebar/src/sidebar.rs
 +++ b/crates/sidebar/src/sidebar.rs
 @@ -95,6 +95,13 @@ mod organization;
@@ -2898,7 +2935,7 @@ index e070355..a800822 100644
          // Like a group's rows, a pinned row the filter drops is not registered below, so the
          // header is decided by, and reports notifications of, only the rows that are shown.
          let pinned_rows = pinned_section::filter_pinned_rows(pinned_rows, &query);
-@@ -6658,6 +6684,7 @@ impl Sidebar {
+@@ -6656,6 +6682,7 @@ impl Sidebar {
              .when_some(thread.pinned_project_label.clone(), |this, label| {
                  this.project_name(label)
              })
@@ -2906,7 +2943,7 @@ index e070355..a800822 100644
              .timestamp(timestamp)
              .highlight_positions(thread.highlight_positions.to_vec())
              .title_generating(title_generating)
-@@ -6981,6 +7008,7 @@ impl Sidebar {
+@@ -6979,6 +7006,7 @@ impl Sidebar {
                                  }
                              });
                          }

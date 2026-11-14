@@ -17,9 +17,9 @@ CRATES="
 	adler2@2.0.1
 	adler32@1.2.0
 	aes@0.8.4
-	agent-client-protocol-derive@5.1.0
-	agent-client-protocol-schema@1.16.0
-	agent-client-protocol@5.1.0
+	agent-client-protocol-derive@5.2.0
+	agent-client-protocol-schema@1.17.0
+	agent-client-protocol@5.2.0
 	ahash@0.8.12
 	aho-corasick@1.1.3
 	aliasable@0.1.3
@@ -54,7 +54,6 @@ CRATES="
 	ascii@1.1.0
 	ash@0.38.0+1.3.281
 	ashpd@0.13.5
-	async-attributes@1.1.2
 	async-broadcast@0.7.2
 	async-channel@1.9.0
 	async-channel@2.5.0
@@ -89,8 +88,8 @@ CRATES="
 	avif-serialize@0.8.6
 	aws-config@1.8.14
 	aws-credential-types@1.2.12
-	aws-lc-rs@1.18.1
-	aws-lc-sys@0.45.0
+	aws-lc-rs@1.19.0
+	aws-lc-sys@0.47.0
 	aws-runtime@1.7.0
 	aws-sdk-bedrockruntime@1.125.0
 	aws-sdk-kinesis@1.100.0
@@ -121,6 +120,7 @@ CRATES="
 	base64-simd@0.8.0
 	base64@0.21.7
 	base64@0.22.1
+	base64@0.23.1
 	base64ct@1.8.0
 	beef@0.5.2
 	betlang@0.1.1
@@ -159,7 +159,7 @@ CRATES="
 	byteorder@1.5.0
 	bytes-utils@0.1.4
 	bytes@0.4.12
-	bytes@1.11.1
+	bytes@1.12.1
 	bzip2@0.6.1
 	c-enum@0.2.3
 	cached@0.56.0
@@ -260,9 +260,9 @@ CRATES="
 	crypto-bigint@0.4.9
 	crypto-bigint@0.5.5
 	crypto-common@0.1.6
-	cssparser-macros@0.6.1
-	cssparser@0.36.0
+	cssparser-macros@0.7.1
 	cssparser@0.37.0
+	cssparser@0.38.0
 	ctor@1.0.12
 	ctrlc@3.5.0
 	cursor-icon@1.2.0
@@ -317,8 +317,8 @@ CRATES="
 	doxygen-rs@0.4.2
 	dtoa-short@0.3.5
 	dtoa@1.0.10
-	dugong-graphlib@0.8.0-alpha.5
-	dugong@0.8.0-alpha.5
+	dugong-graphlib@0.9.3
+	dugong@0.9.3
 	dunce@1.0.5
 	dwrote@0.11.5
 	dyn-clone@1.0.20
@@ -376,7 +376,6 @@ CRATES="
 	flate2@1.1.8
 	float-cmp@0.9.0
 	float-ord@0.3.2
-	float_next_after@1.0.0
 	fluent-uri@0.4.1
 	flume@0.11.1
 	flume@0.12.0
@@ -438,7 +437,7 @@ CRATES="
 	gobject-sys@0.21.5
 	goblin@0.9.3
 	gpu-allocator@0.28.0
-	granit-parser@1.0.0
+	granit-parser@2.1.0
 	group@0.12.1
 	guppy-workspace-hack@0.1.0
 	guppy@0.18.0
@@ -472,6 +471,7 @@ CRATES="
 	home@0.5.11
 	hound@3.5.1
 	html5ever@0.39.0
+	html5ever@0.40.1
 	htmlize@1.1.0
 	http-body-util@0.1.3
 	http-body@0.4.6
@@ -491,8 +491,6 @@ CRATES="
 	hyper@1.11.1
 	iana-time-zone-haiku@0.1.2
 	iana-time-zone@0.1.64
-	icu_collator@2.3.0
-	icu_collator_data@2.3.0
 	icu_collections@2.3.0
 	icu_locale_core@2.3.0
 	icu_locale_fallback@2.3.0
@@ -519,7 +517,7 @@ CRATES="
 	include-flate@0.3.4
 	indenter@0.3.4
 	indexmap@1.9.3
-	indexmap@2.14.0
+	indexmap@2.14.2
 	indoc@2.0.6
 	inherent@1.0.13
 	inotify-sys@0.1.5
@@ -556,19 +554,20 @@ CRATES="
 	jni@0.22.4
 	jobserver@0.1.34
 	js-sys@0.3.106
-	json5@1.3.1
+	json5@1.3.7
 	jsonschema-regex@0.51.0
 	jsonschema-value@0.51.0
 	jsonschema@0.51.0
 	jsonwebtoken@10.3.0
-	jupyter-protocol@1.4.0
-	jupyter-websocket-client@1.1.0
+	jupyter-protocol@2.0.3
+	jupyter-websocket-client@3.0.1
+	jupyter-zmq-client@3.0.1
 	khronos_api@3.1.0
 	kqueue-sys@1.1.2
 	kqueue@1.2.0
 	kurbo@0.13.1
 	kv-log-macro@1.0.7
-	lalrpop-util@0.23.1
+	lalrpop-util@0.23.2
 	lazy_static@1.5.0
 	leb128@0.2.5
 	leb128fmt@0.1.0
@@ -601,25 +600,22 @@ CRATES="
 	logos-derive@0.16.1
 	logos@0.15.1
 	logos@0.16.1
-	lol_html@3.0.1
 	longest-increasing-subsequence@0.1.0
 	loom@0.7.2
 	loop9@0.1.5
 	lru-slab@0.1.2
 	lru@0.16.4
-	lyon@1.0.16
-	lyon_algorithms@1.0.16
-	lyon_extra@1.0.3
-	lyon_geom@1.0.17
-	lyon_path@1.0.16
-	lyon_tessellation@1.0.16
+	lyon_extra@1.1.0
+	lyon_geom@1.0.19
+	lyon_path@1.0.19
 	mac-notification-sys@0.6.15
 	mach2@0.6.0
 	macro_rules_attribute-proc_macro@0.2.3
 	macro_rules_attribute@0.2.3
-	manatee@0.8.0-alpha.5
+	manatee@0.9.3
 	maplit@1.0.2
 	markup5ever@0.39.0
+	markup5ever@0.40.0
 	markup5ever_rcdom@0.39.0+unofficial
 	matchers@0.2.0
 	matchit@0.7.3
@@ -633,9 +629,13 @@ CRATES="
 	memoffset@0.9.1
 	merge@0.1.0
 	merge_derive@0.1.0
-	merman-core@0.8.0-alpha.5
-	merman-render@0.8.0-alpha.5
-	merman@0.8.0-alpha.5
+	merman-analysis@0.9.3
+	merman-ascii@0.9.3
+	merman-core@0.9.3
+	merman-editor-core@0.9.3
+	merman-render@0.9.3
+	merman-unicode-linebreak@0.9.3
+	merman@0.9.3
 	micromap@0.3.0
 	miette-derive@7.6.0
 	miette@7.6.0
@@ -655,7 +655,7 @@ CRATES="
 	multimap@0.8.3
 	nanoid@0.4.0
 	native-tls@0.2.18
-	nbformat@1.2.0
+	nbformat@3.0.0
 	ndk-context@0.1.1
 	ndk-sys@0.6.0+11769913
 	ndk@0.9.0
@@ -664,6 +664,7 @@ CRATES="
 	nix@0.30.1
 	nix@0.31.3
 	no_std_io2@0.9.4
+	nohash-hasher@0.2.0
 	nom@7.1.3
 	nom@8.0.0
 	noop_proc_macro@0.3.0
@@ -776,13 +777,18 @@ CRATES="
 	pgvector@0.4.1
 	phf@0.11.3
 	phf@0.13.1
+	phf@0.14.0
 	phf_codegen@0.13.1
+	phf_codegen@0.14.0
 	phf_generator@0.11.3
 	phf_generator@0.13.1
+	phf_generator@0.14.0
 	phf_macros@0.11.3
 	phf_macros@0.13.1
+	phf_macros@0.14.0
 	phf_shared@0.11.3
 	phf_shared@0.13.1
+	phf_shared@0.14.0
 	pico-args@0.5.0
 	pin-project-internal@1.1.10
 	pin-project-lite@0.2.16
@@ -845,7 +851,7 @@ CRATES="
 	psm@0.1.30
 	pulldown-cmark-escape@0.10.1
 	pulldown-cmark@0.10.3
-	pulldown-cmark@0.13.4
+	pulldown-cmark@0.13.6
 	pulley-interpreter@48.0.7
 	pulley-macros@48.0.7
 	pxfm@0.1.25
@@ -856,6 +862,7 @@ CRATES="
 	quick-xml@0.37.5
 	quick-xml@0.39.3
 	quick-xml@0.41.0
+	quick-xml@0.42.0
 	quinn-proto@0.11.18
 	quinn-udp@0.5.14
 	quinn@0.11.9
@@ -910,21 +917,20 @@ CRATES="
 	rle-decode-fast@1.0.3
 	rmp@0.8.14
 	rmpv@1.3.0
-	roughr-merman@0.12.3
+	roughr-merman@0.12.6
 	roxmltree@0.20.0
-	roxmltree@0.21.1
+	roxmltree@0.21.2
 	rpassword@7.5.2
 	rsa@0.9.10
 	rtoolbox@0.0.3
 	rtrb@0.3.5
-	runtimelib@1.4.0
 	rust-embed-impl@8.11.0
 	rust-embed-utils@8.11.0
 	rust-embed@8.11.0
 	rust_decimal@1.39.0
 	rustc-demangle@0.1.26
 	rustc-hash@1.1.0
-	rustc-hash@2.1.1
+	rustc-hash@2.1.3
 	rustc_version@0.4.1
 	rustix-linux-procfs@0.1.1
 	rustix-openpty@0.2.0
@@ -940,11 +946,11 @@ CRATES="
 	rustversion@1.0.22
 	rusty-fork@0.3.1
 	rustybuzz@0.20.1
-	ryu-js@1.0.2
+	ryu-js@1.0.3
 	ryu@1.0.23
-	saa@5.4.9
+	saa@5.6.2
 	same-file@1.0.6
-	scc@3.5.6
+	scc@3.8.8
 	schannel@0.1.28
 	schemars@0.9.0
 	schemars@1.0.4
@@ -953,7 +959,7 @@ CRATES="
 	scopeguard@1.2.0
 	scroll@0.12.0
 	scroll_derive@0.12.1
-	sdd@4.6.2
+	sdd@4.8.11
 	sea-bae@0.2.2
 	sea-orm-macros@1.1.10
 	sea-orm@1.1.10
@@ -965,17 +971,17 @@ CRATES="
 	secrecy@0.10.3
 	security-framework-sys@2.15.0
 	security-framework@3.5.1
-	selectors@0.37.0
 	self_cell@1.2.2
 	semver@1.0.28
 	send_wrapper@0.6.0
+	serde-saphyr@2.1.1
 	serde@1.0.229
 	serde_bytes@0.11.19
 	serde_core@1.0.229
 	serde_derive@1.0.229
 	serde_derive_internals@0.29.1
 	serde_fmt@1.0.3
-	serde_json@1.0.151
+	serde_json@1.0.154
 	serde_json_lenient@0.2.4
 	serde_path_to_error@0.1.20
 	serde_repr@0.1.20
@@ -986,7 +992,6 @@ CRATES="
 	serde_with_macros@3.22.0
 	serde_yaml@0.9.34+deprecated
 	serde_yaml_ng@0.10.0
-	servo_arc@0.4.3
 	sha-1@0.10.1
 	sha1@0.10.6
 	sha1_smol@1.0.1
@@ -1044,7 +1049,9 @@ CRATES="
 	static_assertions@1.1.0
 	streaming-iterator@0.1.9
 	strict-num@0.1.1
+	string_cache@0.11.0
 	string_cache@0.9.0
+	string_cache_codegen@0.11.2
 	string_cache_codegen@0.6.1
 	stringprep@0.1.5
 	strsim@0.11.1
@@ -1096,9 +1103,9 @@ CRATES="
 	termcolor@1.4.1
 	terminal_size@0.4.3
 	thiserror-impl@1.0.69
-	thiserror-impl@2.0.17
+	thiserror-impl@2.0.21
 	thiserror@1.0.69
-	thiserror@2.0.17
+	thiserror@2.0.21
 	thread_local@1.1.9
 	tiff@0.11.3
 	time-core@0.1.8
@@ -1121,7 +1128,7 @@ CRATES="
 	tokio-tungstenite@0.20.1
 	tokio-tungstenite@0.28.0
 	tokio-util@0.7.18
-	tokio@1.52.1
+	tokio@1.54.1
 	toml@0.5.11
 	toml@0.8.23
 	toml@0.9.8
@@ -1193,11 +1200,10 @@ CRATES="
 	unsafe-libyaml@0.2.11
 	untrusted@0.7.1
 	untrusted@0.9.0
-	url@2.5.7
+	url@2.5.8
 	urlencoding@2.1.3
 	usvg@0.46.0
 	utf-8@0.7.6
-	utf16_iter@1.0.5
 	utf8-chars@3.0.6
 	utf8_iter@1.0.4
 	utf8parse@0.2.2
@@ -1271,6 +1277,7 @@ CRATES="
 	web-sys@0.3.106
 	web-time@1.1.0
 	web_atoms@0.2.6
+	web_atoms@0.3.0
 	webpki-root-certs@1.0.10
 	webpki-roots@0.26.11
 	webpki-roots@1.0.10
@@ -1393,7 +1400,6 @@ CRATES="
 	wit-parser@0.227.1
 	wit-parser@0.244.0
 	wit-parser@0.254.2
-	write16@1.0.0
 	writeable@0.6.4
 	x11@2.21.0
 	x11rb-protocol@0.13.2
@@ -1431,7 +1437,7 @@ CRATES="
 	zerofrom@0.1.6
 	zeroize@1.8.2
 	zeroize_derive@1.4.2
-	zeromq@0.5.0
+	zeromq@0.7.0
 	zerotrie@0.2.5
 	zerovec-derive@0.11.5
 	zerovec@0.11.8
@@ -1545,7 +1551,7 @@ declare -A GIT_CRATES=(
 # rewrites the date and EGIT_COMMIT; a second version variable it could not
 # keep current would leave a new tarball under an old, already-manifested name).
 
-EGIT_COMMIT="f0d896f2c18a543335eb155f729d36b624695591"
+EGIT_COMMIT="f0fa51bb510fc91f6da7ec55f3e0f317f1f975ec"
 # LLVM 23 only, so it is the default slot: llvm-r2 would always prefer slot 22
 # (its newest stable) whenever 22 is listed. RUST_NEEDS_LLVM ties the Rust slot
 # to it, so this builds with Rust 1.99, one release past upstream's 1.98.1 pin
@@ -1599,7 +1605,7 @@ LICENSE+=" BSD"
 LICENSE+="
 	Apache-2.0 Apache-2.0-with-LLVM-exceptions BSD-2 BSD Boost-1.0
 	CC0-1.0 CDLA-Permissive-2.0 ISC LGPL-3 MIT MIT-0 MPL-2.0 UoI-NCSA
-	Unicode-3.0 Unlicense ZLIB BZIP2
+	Unicode-3.0 ZLIB BZIP2
 "
 # whisper-rs and whisper-rs-sys (0067) are Unlicense, and whisper.cpp, which
 # whisper-rs-sys bundles, is MIT. They reach the binary only with USE=voice, so
@@ -2212,6 +2218,11 @@ src_prepare() {
 			"${FILESDIR}/0105-agent-ui-sub-thread-menu-labels.patch"
 			# 0106 (Zeo 0.10.3): another project's pins stay out of its group. On 0103.
 			"${FILESDIR}/0106-sidebar-hide-other-projects-pins.patch"
+			# 0107: composer code blocks and quotes look like blocks; ``` closes itself.
+			"${FILESDIR}/0107-agent-ui-composer-code-blocks.patch"
+			# 0108 (Zeo next proposal §6.30): the series' floating elements keep to
+			# the conversation's column. On 0026, 0027, 0037, 0082, 0092, 0094, 0102.
+			"${FILESDIR}/0108-agent-ui-floating-elements-keep-to-the-content-column.patch"
 		)
 	fi
 

@@ -1,0 +1,939 @@
+From abd000972c2e53543c4fc31b03d2e298d971ff3a Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sat, 14 Nov 2026 03:25:44 -0300
+Subject: [PATCH] agent_ui: the series' floating elements keep to the
+ conversation's column
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.30, ask 50 (operator, 2026-11-13): "the width of every
+element must follow the agent panel's maximum".
+
+Upstream caps the entries, the activity bar and the composer at
+`agent.max_content_width` (850 px by default, while
+`agent.limit_content_width` is on) and centres them. Of the series' own
+elements only 0087 read that setting. On a panel wider than the column the
+rest spanned the whole agent area while the messages around them stayed in
+the middle: the pinned user message (0102: `.absolute().left_2().right_2()`
+against the panel), the question card and its minimized bar (0027, 0082:
+`.w_full()`), the tasks card's bottom bar (0092), the floating tasks card in
+its corner and its eye preview (0037, 0094: the frame was the free area of
+the whole panel), and the floating navigation controls (0026: `right_4` of
+the panel).
+
+What changes. `thread_view/content_column.rs` holds one helper,
+`content_column`, which is upstream's own `centered_container` from
+`render_entries` (h_flex w_full justify_center around a div max_w(max) w_full),
+so the series and upstream cannot disagree about where the column is. The
+pinned message and the navigation controls keep their absolute layer over
+the conversation and put their content in the column inside it; the
+controls sit at the column's right edge (`justify_end`), and `right_4`
+still clears the scrollbar for a column as wide as the panel. The question
+card, its bar and the docked tasks bar go through the same helper in the
+thread's bottom slots. The floating tasks card is placed in a free area
+measured at prepaint, so it gets a pure function instead,
+`tasks_card::within_content_column`, applied to that area in
+`AgentPanel::render_tasks_card`: the card's corner becomes the column's
+corner, and a preview that widens to its frame (0094) widens to the column.
+With `limit_content_width` off there is no maximum and every element is as
+wide as before -- tested, so the fix cannot invent a width of its own.
+
+Two debug selectors are added for the tests: `pinned-elicitations` and
+`thread-floating-navigation`.
+
+Tests, each seen failing first with the helper reduced to a pass-through
+and the free area unclamped (6 failed, the 3 that must hold either way
+passed): tasks_card::content_width (the floating card in all four corners,
+the docked bar, the corner without a maximum, two unit tests of
+within_content_column) and thread_view::tests::content_width_tests (the
+pinned message, the navigation controls, the question card and its bar,
+the bar without a maximum). Neighbours green: placement, dock_bottom,
+question_card, pinned_message, tasks_card -- 244 tests.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/agent_ui/src/agent_panel.rs            |   6 +-
+ .../src/conversation_view/thread_view.rs      | 221 ++++++++++--------
+ .../thread_view/content_column.rs             |  27 +++
+ .../thread_view/pinned_message.rs             | 116 ++++-----
+ .../thread_view/tests/content_width_tests.rs  | 176 ++++++++++++++
+ crates/agent_ui/src/tasks_card.rs             |  22 ++
+ .../src/tasks_card/content_width_tests.rs     | 172 ++++++++++++++
+ 7 files changed, 581 insertions(+), 159 deletions(-)
+ create mode 100644 crates/agent_ui/src/conversation_view/thread_view/content_column.rs
+ create mode 100644 crates/agent_ui/src/conversation_view/thread_view/tests/content_width_tests.rs
+ create mode 100644 crates/agent_ui/src/tasks_card/content_width_tests.rs
+
+diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
+index d0ba7e9..40fa21f 100644
+--- a/crates/agent_ui/src/agent_panel.rs
++++ b/crates/agent_ui/src/agent_panel.rs
+@@ -5065,11 +5065,15 @@ impl AgentPanel {
+             }
+             below_toolbar
+         };
++        // Inside the conversation's column, as the entries are (§6.30).
++        let max_content_width = AgentSettings::get_global(cx).max_content_width;
+         Some(deferred(TasksCardOverlay::new(
+             self.tasks_card.clone(),
+             AgentSettings::get_global(cx).tasks_card.position,
+             DynamicSpacing::Base08.px(cx),
+-            free_area,
++            move |content, cx| {
++                crate::tasks_card::within_content_column(free_area(content, cx), max_content_width)
++            },
+         )))
+     }
+ 
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 062ab78..74d019c 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -586,6 +586,7 @@ fn highlight_code_runs(
+     runs
+ }
+ 
++mod content_column;
+ mod pinned_message;
+ 
+ #[cfg(test)]
+@@ -9226,105 +9227,109 @@ impl ThreadView {
+             (IconName::DebugPause, "Pause Auto-Scroll")
+         };
+ 
++        let controls = h_flex()
++            .debug_selector(|| "thread-floating-navigation".into())
++            .gap_0p5()
++            .p_0p5()
++            .rounded_md()
++            .border_1()
++            .border_color(cx.theme().colors().border)
++            .bg(cx.theme().colors().elevated_surface_background)
++            .opacity(0.4)
++            .hover(|s| s.opacity(1.))
++            .child(
++                IconButton::new("floating_toggle_auto_scroll", pause_icon)
++                    .icon_size(IconSize::Small)
++                    .icon_color(if paused { Color::Accent } else { Color::Muted })
++                    .toggle_state(paused)
++                    .tooltip(Tooltip::text(pause_tooltip))
++                    .on_click(cx.listener(|this, _, _, cx| {
++                        this.toggle_auto_scroll_pause(cx);
++                    })),
++            )
++            .when(new_while_paused > 0, |this| {
++                this.child(
++                    Label::new(format!("{new_while_paused} new"))
++                        .size(LabelSize::Small)
++                        .color(Color::Accent),
++                )
++            })
++            .child(
++                IconButton::new("floating_copy_agent_response", IconName::Copy)
++                    .icon_size(IconSize::Small)
++                    .icon_color(Color::Muted)
++                    .disabled(copy_target.is_none())
++                    .tooltip(Tooltip::text("Copy This Agent Response"))
++                    .on_click(cx.listener(move |this, _, _, cx| {
++                        let Some(target) = copy_target else {
++                            return;
++                        };
++                        let entries = this.thread.read(cx).entries();
++                        if let Some(text) = Self::get_agent_message_content(entries, target, cx) {
++                            cx.write_to_clipboard(ClipboardItem::new_string(text));
++                        }
++                    })),
++            )
++            .child(
++                IconButton::new(
++                    "floating_scroll_to_previous_user_message",
++                    IconName::UserArrowUp,
++                )
++                .icon_size(IconSize::Small)
++                .icon_color(Color::Muted)
++                .disabled(previous_user_message.is_none())
++                .tooltip(Tooltip::text("Scroll to Previous User Message"))
++                .on_click(cx.listener(move |this, _, _, cx| {
++                    if let Some(ix) = previous_user_message {
++                        this.scroll_to_user_message_index(Some(ix), cx);
++                    }
++                })),
++            )
++            .child(
++                IconButton::new(
++                    "floating_scroll_to_next_user_message",
++                    IconName::UserArrowDown,
++                )
++                .icon_size(IconSize::Small)
++                .icon_color(Color::Muted)
++                .disabled(next_user_message.is_none())
++                .tooltip(Tooltip::text("Scroll to Next User Message"))
++                .on_click(cx.listener(move |this, _, _, cx| {
++                    if let Some(ix) = next_user_message {
++                        this.scroll_to_user_message_index(Some(ix), cx);
++                    }
++                })),
++            )
++            .child(
++                IconButton::new("floating_scroll_to_top", IconName::ArrowUp)
++                    .icon_size(IconSize::Small)
++                    .icon_color(Color::Muted)
++                    .tooltip(Tooltip::text("Scroll to Top"))
++                    .on_click(cx.listener(|this, _, _, cx| {
++                        this.scroll_to_top(cx);
++                    })),
++            )
++            .child(
++                IconButton::new("floating_scroll_to_bottom", IconName::ArrowDown)
++                    .icon_size(IconSize::Small)
++                    .icon_color(Color::Muted)
++                    .tooltip(Tooltip::text("Scroll to Bottom"))
++                    .on_click(cx.listener(|this, _, _, cx| {
++                        this.scroll_to_end(cx);
++                    })),
++            );
++        // At the right edge of the entries' column, not of the panel (§6.30): on a wide panel
++        // the controls sit beside the messages they move between. `right_4` still clears the
++        // vertical scrollbar the same container draws, for a column as wide as the panel.
+         div()
+             .absolute()
+-            // Clear of the vertical scrollbar the same container draws.
++            .left_2()
+             .right_4()
+             .bottom_2()
+-            .child(
+-                h_flex()
+-                    .gap_0p5()
+-                    .p_0p5()
+-                    .rounded_md()
+-                    .border_1()
+-                    .border_color(cx.theme().colors().border)
+-                    .bg(cx.theme().colors().elevated_surface_background)
+-                    .opacity(0.4)
+-                    .hover(|s| s.opacity(1.))
+-                    .child(
+-                        IconButton::new("floating_toggle_auto_scroll", pause_icon)
+-                            .icon_size(IconSize::Small)
+-                            .icon_color(if paused { Color::Accent } else { Color::Muted })
+-                            .toggle_state(paused)
+-                            .tooltip(Tooltip::text(pause_tooltip))
+-                            .on_click(cx.listener(|this, _, _, cx| {
+-                                this.toggle_auto_scroll_pause(cx);
+-                            })),
+-                    )
+-                    .when(new_while_paused > 0, |this| {
+-                        this.child(
+-                            Label::new(format!("{new_while_paused} new"))
+-                                .size(LabelSize::Small)
+-                                .color(Color::Accent),
+-                        )
+-                    })
+-                    .child(
+-                        IconButton::new("floating_copy_agent_response", IconName::Copy)
+-                            .icon_size(IconSize::Small)
+-                            .icon_color(Color::Muted)
+-                            .disabled(copy_target.is_none())
+-                            .tooltip(Tooltip::text("Copy This Agent Response"))
+-                            .on_click(cx.listener(move |this, _, _, cx| {
+-                                let Some(target) = copy_target else {
+-                                    return;
+-                                };
+-                                let entries = this.thread.read(cx).entries();
+-                                if let Some(text) =
+-                                    Self::get_agent_message_content(entries, target, cx)
+-                                {
+-                                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+-                                }
+-                            })),
+-                    )
+-                    .child(
+-                        IconButton::new(
+-                            "floating_scroll_to_previous_user_message",
+-                            IconName::UserArrowUp,
+-                        )
+-                        .icon_size(IconSize::Small)
+-                        .icon_color(Color::Muted)
+-                        .disabled(previous_user_message.is_none())
+-                        .tooltip(Tooltip::text("Scroll to Previous User Message"))
+-                        .on_click(cx.listener(move |this, _, _, cx| {
+-                            if let Some(ix) = previous_user_message {
+-                                this.scroll_to_user_message_index(Some(ix), cx);
+-                            }
+-                        })),
+-                    )
+-                    .child(
+-                        IconButton::new(
+-                            "floating_scroll_to_next_user_message",
+-                            IconName::UserArrowDown,
+-                        )
+-                        .icon_size(IconSize::Small)
+-                        .icon_color(Color::Muted)
+-                        .disabled(next_user_message.is_none())
+-                        .tooltip(Tooltip::text("Scroll to Next User Message"))
+-                        .on_click(cx.listener(move |this, _, _, cx| {
+-                            if let Some(ix) = next_user_message {
+-                                this.scroll_to_user_message_index(Some(ix), cx);
+-                            }
+-                        })),
+-                    )
+-                    .child(
+-                        IconButton::new("floating_scroll_to_top", IconName::ArrowUp)
+-                            .icon_size(IconSize::Small)
+-                            .icon_color(Color::Muted)
+-                            .tooltip(Tooltip::text("Scroll to Top"))
+-                            .on_click(cx.listener(|this, _, _, cx| {
+-                                this.scroll_to_top(cx);
+-                            })),
+-                    )
+-                    .child(
+-                        IconButton::new("floating_scroll_to_bottom", IconName::ArrowDown)
+-                            .icon_size(IconSize::Small)
+-                            .icon_color(Color::Muted)
+-                            .tooltip(Tooltip::text("Scroll to Bottom"))
+-                            .on_click(cx.listener(|this, _, _, cx| {
+-                                this.scroll_to_end(cx);
+-                            })),
+-                    ),
+-            )
++            .child(content_column::content_column(
++                h_flex().w_full().justify_end().child(controls),
++                cx,
++            ))
+     }
+ 
+     /// Pausing puts the list in `FollowMode::Normal`, so it never follows the tail, even when
+@@ -9600,11 +9605,17 @@ impl ThreadView {
+         .header_end(minimize)
+         .render(cx);
+ 
++        // In the column the composer under it uses (§6.30), not the panel's width.
+         Some(
+-            v_flex()
+-                .id("pinned-elicitations")
+-                .child(card)
+-                .into_any_element(),
++            content_column::content_column(
++                v_flex()
++                    .id("pinned-elicitations")
++                    .debug_selector(|| "pinned-elicitations".into())
++                    .w_full()
++                    .child(card),
++                cx,
++            )
++            .into_any_element(),
+         )
+     }
+ 
+@@ -9619,7 +9630,8 @@ impl ThreadView {
+             let card = card.read(cx);
+             card.is_docked_bottom() && card.is_visible(cx)
+         };
+-        docked.then(|| card.into_any_element())
++        // The bar keeps to the composer's column (§6.30), as the question bar beside it does.
++        docked.then(|| content_column::content_column(card, cx).into_any_element())
+     }
+ 
+     fn render_question_card_bar(pending_count: usize, cx: &Context<Self>) -> AnyElement {
+@@ -9628,7 +9640,7 @@ impl ThreadView {
+         } else {
+             format!("Question pending · {pending_count} questions")
+         };
+-        h_flex()
++        let bar = h_flex()
+             .id("question-card-bar")
+             .debug_selector(|| "question-card-bar".into())
+             .w_full()
+@@ -9661,8 +9673,9 @@ impl ThreadView {
+                     .on_click(cx.listener(|this, _, _, cx| {
+                         this.toggle_question_card(&crate::ToggleQuestionCard, cx)
+                     })),
+-            )
+-            .into_any_element()
++            );
++        // The card it stands for keeps to the composer's column, and so does the bar (§6.30).
++        content_column::content_column(bar, cx).into_any_element()
+     }
+ 
+     pub(crate) fn toggle_question_card(
+@@ -16300,6 +16313,8 @@ mod tests {
+ 
+     mod question_card_minimize_tests;
+ 
++    mod content_width_tests;
++
+     mod message_time_tests;
+ 
+     mod account_refresh_line_tests;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/content_column.rs b/crates/agent_ui/src/conversation_view/thread_view/content_column.rs
+new file mode 100644
+index 0000000..d52ce01
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/content_column.rs
+@@ -0,0 +1,27 @@
++//! The series' own elements keep to the conversation's column (Zeo next proposal §6.30, ask 50).
++//!
++//! Upstream caps the entries, the activity bar and the composer at `agent.max_content_width`
++//! (850 px by default, while `agent.limit_content_width` is on) and centres them. The pinned user
++//! message, the question card and its bar, the docked tasks bar and the floating navigation
++//! controls were added by the series without that cap, so on a wide panel they spanned the whole
++//! agent area while everything around them stayed in the column. They now go through
++//! [`content_column`], which is upstream's own `centered_container` from `render_entries`, so the
++//! two can never disagree about where the column is.
++
++use agent_settings::AgentSettings;
++use gpui::{App, Div, IntoElement};
++use settings::Settings as _;
++use ui::prelude::*;
++
++/// `child` inside the conversation's column: as wide as the panel up to the configured maximum,
++/// and centred. With `limit_content_width` off there is no maximum and the column is the panel.
++pub(crate) fn content_column(child: impl IntoElement, cx: &App) -> Div {
++    let max_content_width = AgentSettings::get_global(cx).max_content_width;
++    h_flex().w_full().justify_center().child(
++        div()
++            .when_some(max_content_width, |this, max_w| this.max_w(max_w))
++            .w_full()
++            .min_w_0()
++            .child(child),
++    )
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
+index 9e5c4d6..fabed7c 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
+@@ -11,6 +11,7 @@ use gpui::{AnyElement, Context, ListOffset, canvas, px};
+ use ui::{IconButton, IconName, IconSize, Label, LabelSize, Tooltip, prelude::*};
+ 
+ use super::ThreadView;
++use super::content_column::content_column;
+ 
+ /// The most an expanded pinned message shows before it scrolls.
+ const PINNED_EXPANDED_MAX_HEIGHT: f32 = 160.;
+@@ -83,66 +84,71 @@ impl ThreadView {
+                 )
+                 .into_any_element()
+         };
++        let header = h_flex()
++            .id("thread-pinned-user-message")
++            .debug_selector(|| "thread-pinned-user-message".to_string())
++            .w_full()
++            .gap_1p5()
++            .px_2()
++            .py_1()
++            .items_start()
++            .rounded_md()
++            .border_1()
++            .border_color(cx.theme().colors().border)
++            .bg(cx.theme().colors().elevated_surface_background)
++            .shadow_sm()
++            .cursor_pointer()
++            .tooltip(Tooltip::text("Go to This Message"))
++            .on_click(cx.listener(move |this, _, _, cx| {
++                this.list_state.scroll_to(ListOffset {
++                    item_ix: ix,
++                    offset_in_item: px(0.),
++                });
++                cx.notify();
++            }))
++            .child(
++                Icon::new(IconName::Person)
++                    .size(IconSize::Small)
++                    .color(Color::Muted),
++            )
++            .child(body)
++            .child(
++                div()
++                    .debug_selector(|| "thread-pinned-user-message-toggle".to_string())
++                    .child(
++                        IconButton::new("thread-pinned-user-message-toggle", chevron)
++                            .icon_size(IconSize::Small)
++                            .tooltip(Tooltip::text(chevron_tooltip))
++                            .on_click(cx.listener(move |this, _, _, cx| {
++                                cx.stop_propagation();
++                                this.pinned_message_expanded = (!expanded).then_some(ix);
++                                cx.notify();
++                            })),
++                    ),
++            )
++            // The header reports where it ends, so what shares the top of the conversation
++            // with it -- the tasks card -- sits below instead of over it. Its height is
++            // only known here: minimized, expanded, or wrapped at the panel's width.
++            .child({
++                let top_overlay_bottom = self.top_overlay_bottom.clone();
++                canvas(
++                    move |bounds, _, _| top_overlay_bottom.set(Some(bounds.bottom())),
++                    |_, _, _, _| {},
++                )
++                .absolute()
++                .top_0()
++                .left_0()
++                .size_full()
++            });
++        // The layer spans the conversation; the header inside it keeps to the entries' column
++        // (§6.30), so on a wide panel it no longer runs past the messages it stands for.
+         Some(
+-            h_flex()
+-                .id("thread-pinned-user-message")
+-                .debug_selector(|| "thread-pinned-user-message".to_string())
++            div()
+                 .absolute()
+                 .top_1()
+                 .left_2()
+                 .right_2()
+-                .gap_1p5()
+-                .px_2()
+-                .py_1()
+-                .items_start()
+-                .rounded_md()
+-                .border_1()
+-                .border_color(cx.theme().colors().border)
+-                .bg(cx.theme().colors().elevated_surface_background)
+-                .shadow_sm()
+-                .cursor_pointer()
+-                .tooltip(Tooltip::text("Go to This Message"))
+-                .on_click(cx.listener(move |this, _, _, cx| {
+-                    this.list_state.scroll_to(ListOffset {
+-                        item_ix: ix,
+-                        offset_in_item: px(0.),
+-                    });
+-                    cx.notify();
+-                }))
+-                .child(
+-                    Icon::new(IconName::Person)
+-                        .size(IconSize::Small)
+-                        .color(Color::Muted),
+-                )
+-                .child(body)
+-                .child(
+-                    div()
+-                        .debug_selector(|| "thread-pinned-user-message-toggle".to_string())
+-                        .child(
+-                            IconButton::new("thread-pinned-user-message-toggle", chevron)
+-                                .icon_size(IconSize::Small)
+-                                .tooltip(Tooltip::text(chevron_tooltip))
+-                                .on_click(cx.listener(move |this, _, _, cx| {
+-                                    cx.stop_propagation();
+-                                    this.pinned_message_expanded = (!expanded).then_some(ix);
+-                                    cx.notify();
+-                                })),
+-                        ),
+-                )
+-                // The header reports where it ends, so what shares the top of the conversation
+-                // with it -- the tasks card -- sits below instead of over it. Its height is
+-                // only known here: minimized, expanded, or wrapped at the panel's width.
+-                .child({
+-                    let top_overlay_bottom = self.top_overlay_bottom.clone();
+-                    canvas(
+-                        move |bounds, _, _| top_overlay_bottom.set(Some(bounds.bottom())),
+-                        |_, _, _, _| {},
+-                    )
+-                    .absolute()
+-                    .top_0()
+-                    .left_0()
+-                    .size_full()
+-                })
++                .child(content_column(header, cx))
+                 .into_any_element(),
+         )
+     }
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/content_width_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/content_width_tests.rs
+new file mode 100644
+index 0000000..b808856
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/tests/content_width_tests.rs
+@@ -0,0 +1,176 @@
++//! Zeo next proposal §6.30 (ask 50): on a panel wider than `agent.max_content_width`, the
++//! series' own elements -- the pinned user message, the question card and its bar, the
++//! floating navigation controls -- keep to the conversation's centred column, as the entries
++//! and the composer do, instead of spanning the whole agent area. Filter: `content_width_tests`.
++//!
++//! Resolves to `crates/agent_ui/src/conversation_view/thread_view/tests/content_width_tests.rs`.
++
++use acp_thread::AcpThread;
++use agent_client_protocol::v1::schema as acp;
++use agent_settings::AgentSettings;
++use gpui::{Bounds, Entity, ListOffset, Pixels, TestAppContext, VisualTestContext, px, size};
++use settings::Settings as _;
++use workspace::dock::PanelSizeState;
++
++use super::super::ThreadView;
++use super::elicitation_decline_harness::*;
++use crate::AgentPanel;
++
++const WIDE_PANEL: f32 = 1700.;
++
++async fn wide(
++    cx: &mut TestAppContext,
++) -> (Entity<ThreadView>, Entity<AcpThread>, VisualTestContext) {
++    let (view, thread, mut cx) = setup(cx).await;
++    cx.simulate_resize(size(px(WIDE_PANEL + 500.), px(900.)));
++    let workspace = view
++        .read_with(&cx, |view, _| view.workspace.upgrade())
++        .expect("the workspace is alive");
++    workspace.update_in(&mut cx, |workspace, window, cx| {
++        workspace.set_panel_size_state::<AgentPanel>(
++            PanelSizeState {
++                size: Some(px(WIDE_PANEL)),
++                flex: None,
++            },
++            window,
++            cx,
++        );
++    });
++    draw(&mut cx);
++    (view, thread, cx)
++}
++
++fn max_content_width(cx: &mut VisualTestContext) -> Pixels {
++    cx.update(|_, cx| AgentSettings::get_global(cx).max_content_width)
++        .expect("the column is limited by default")
++}
++
++fn panel_bounds(cx: &mut VisualTestContext) -> Bounds<Pixels> {
++    cx.debug_bounds("agent-panel").expect("panel painted")
++}
++
++/// `inner` fits the `width`-wide column centred on `outer`; a few pixels of slack cover the
++/// overlays' own insets (`left_2`/`right_4`) and rounding.
++fn assert_in_column(what: &str, outer: Bounds<Pixels>, width: Pixels, inner: Bounds<Pixels>) {
++    assert!(
++        inner.size.width <= width + px(0.5),
++        "{what} {inner:?} is wider than the {width:?} column"
++    );
++    let half = width / 2.;
++    let center = outer.center().x;
++    assert!(
++        inner.left() >= center - half - px(8.) && inner.right() <= center + half + px(8.),
++        "{what} {inner:?} is outside the {width:?} column centred in {outer:?}"
++    );
++}
++
++/// A user message and a long reply, scrolled so the message is above the viewport and pinned.
++fn scroll_past_a_user_message(
++    view: &Entity<ThreadView>,
++    thread: &Entity<AcpThread>,
++    cx: &mut VisualTestContext,
++) {
++    thread.update(cx, |thread, cx| {
++        thread.push_user_content_block(None, "the question that started the turn".into(), cx)
++    });
++    let reply = (0..120)
++        .map(|ix| format!("line {ix} of a reply long enough to scroll"))
++        .collect::<Vec<_>>()
++        .join("\n\n");
++    thread
++        .update(cx, |thread, cx| {
++            thread.handle_session_update(
++                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(reply.into())),
++                cx,
++            )
++        })
++        .expect("the reply applies");
++    draw(cx);
++    view.update(cx, |view, cx| {
++        view.list_state.scroll_to(ListOffset {
++            item_ix: 1,
++            offset_in_item: px(200.),
++        });
++        cx.notify();
++    });
++    draw(cx);
++}
++
++#[gpui::test]
++async fn the_pinned_user_message_keeps_to_the_column(cx: &mut TestAppContext) {
++    let (view, thread, mut cx) = wide(cx).await;
++    scroll_past_a_user_message(&view, &thread, &mut cx);
++    let max_width = max_content_width(&mut cx);
++    let panel = panel_bounds(&mut cx);
++    assert!(
++        panel.size.width > max_width + px(200.),
++        "the panel {panel:?} is wide"
++    );
++    let header = cx
++        .debug_bounds("thread-pinned-user-message")
++        .expect("the user message is pinned");
++    assert_in_column("the pinned message", panel, max_width, header);
++}
++
++#[gpui::test]
++async fn the_floating_navigation_sits_at_the_columns_right_edge(cx: &mut TestAppContext) {
++    let (view, thread, mut cx) = wide(cx).await;
++    scroll_past_a_user_message(&view, &thread, &mut cx);
++    let max_width = max_content_width(&mut cx);
++    let panel = panel_bounds(&mut cx);
++    let controls = cx
++        .debug_bounds("thread-floating-navigation")
++        .expect("the controls are painted");
++    assert_in_column("the navigation controls", panel, max_width, controls);
++    assert!(
++        controls.right() >= panel.center().x + max_width / 2. - px(24.),
++        "the controls {controls:?} sit at the column's right edge, not its middle"
++    );
++}
++
++#[gpui::test]
++async fn the_question_card_and_its_bar_keep_to_the_column(cx: &mut TestAppContext) {
++    let (view, thread, mut cx) = wide(cx).await;
++    ask(&thread, one_question(), "Which one?", &mut cx);
++    draw(&mut cx);
++    let max_width = max_content_width(&mut cx);
++    let panel = panel_bounds(&mut cx);
++    let card = cx
++        .debug_bounds("pinned-elicitations")
++        .expect("the question card is painted");
++    assert_in_column("the question card", panel, max_width, card);
++
++    view.update(&mut cx, |view, cx| {
++        view.toggle_question_card(&crate::ToggleQuestionCard, cx)
++    });
++    draw(&mut cx);
++    let bar = cx
++        .debug_bounds("question-card-bar")
++        .expect("minimized: the bar shows");
++    assert_in_column("the question bar", panel, max_width, bar);
++}
++
++/// Hostile: with `limit_content_width` off there is no column, and the bar spans the panel as
++/// it always did -- the fix must not invent a width of its own.
++#[gpui::test]
++async fn without_a_maximum_the_bar_spans_the_panel(cx: &mut TestAppContext) {
++    let (view, thread, mut cx) = wide(cx).await;
++    cx.update(|_, cx| {
++        let mut settings = AgentSettings::get_global(cx).clone();
++        settings.max_content_width = None;
++        AgentSettings::override_global(settings, cx);
++    });
++    ask(&thread, one_question(), "Which one?", &mut cx);
++    view.update(&mut cx, |view, cx| {
++        view.toggle_question_card(&crate::ToggleQuestionCard, cx)
++    });
++    draw(&mut cx);
++    let panel = panel_bounds(&mut cx);
++    let bar = cx
++        .debug_bounds("question-card-bar")
++        .expect("minimized: the bar shows");
++    assert!(
++        bar.size.width >= panel.size.width * 0.9,
++        "the bar {bar:?} spans the panel {panel:?}"
++    );
++}
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index 9399eef..49381f2 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -84,6 +84,10 @@ mod placement;
+ #[path = "tasks_card/dock_bottom_tests.rs"]
+ mod dock_bottom;
+ 
++#[cfg(test)]
++#[path = "tasks_card/content_width_tests.rs"]
++mod content_width;
++
+ #[cfg(test)]
+ mod output_connection_support;
+ 
+@@ -3038,6 +3042,24 @@ fn card_tooltip(
+ /// `area` without the strip an overlay takes at its top: the thread's pinned user message
+ /// floats over the first lines of the conversation, and the card shares that corner. An
+ /// overlay that ends above the area, or past its bottom, never moves the area outside itself.
++/// `area` narrowed to the conversation's column (Zeo next proposal §6.30): as wide as `area` up
++/// to `max_content_width`, centred in it -- the column upstream gives the entries and the
++/// composer. The card's corner is then the column's corner, and a preview that widens to its
++/// frame widens to the column instead of the whole panel. With no maximum the area is unchanged.
++pub(crate) fn within_content_column(
++    area: Bounds<Pixels>,
++    max_content_width: Option<Pixels>,
++) -> Bounds<Pixels> {
++    let Some(max_width) = max_content_width else {
++        return area;
++    };
++    if area.size.width <= max_width {
++        return area;
++    }
++    let left = area.left() + (area.size.width - max_width) / 2.;
++    Bounds::new(point(left, area.top()), size(max_width, area.size.height))
++}
++
+ pub(crate) fn below_top_overlay(
+     area: Bounds<Pixels>,
+     overlay_bottom: Option<Pixels>,
+diff --git a/crates/agent_ui/src/tasks_card/content_width_tests.rs b/crates/agent_ui/src/tasks_card/content_width_tests.rs
+new file mode 100644
+index 0000000..eff30e6
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/content_width_tests.rs
+@@ -0,0 +1,172 @@
++// Zeo next proposal §6.30 (ask 50): on a panel wider than `agent.max_content_width`, the tasks
++// card -- floating in any corner, previewing, or docked as a bar -- keeps to the conversation's
++// centred column, as the entries and the composer do. Filter: `tasks_card::content_width`.
++
++use agent_client_protocol::v1::schema as acp;
++use agent_settings::AgentSettings;
++use gpui::{Bounds, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
++use settings::{Settings as _, TasksCardPosition};
++use workspace::dock::PanelSizeState;
++
++use super::test_helpers::*;
++use crate::AgentPanel;
++
++/// Wide enough that the default 850 px column leaves room on both sides.
++const WIDE_PANEL: f32 = 1700.;
++
++fn draw(cx: &mut VisualTestContext) {
++    cx.update(|window, _| window.refresh());
++    cx.run_until_parked();
++}
++
++fn click(selector: &'static str, cx: &mut VisualTestContext) {
++    let bounds = cx
++        .debug_bounds(selector)
++        .unwrap_or_else(|| panic!("{selector} is painted"));
++    cx.simulate_click(bounds.center(), Modifiers::none());
++    draw(cx);
++}
++
++fn max_content_width(cx: &mut VisualTestContext) -> Option<Pixels> {
++    cx.update(|_, cx| AgentSettings::get_global(cx).max_content_width)
++}
++
++fn update_agent_settings(cx: &mut VisualTestContext, change: impl FnOnce(&mut AgentSettings)) {
++    cx.update(|_, cx| {
++        let mut settings = AgentSettings::get_global(cx).clone();
++        change(&mut settings);
++        AgentSettings::override_global(settings, cx);
++    });
++    draw(cx);
++}
++
++/// A panel of `WIDE_PANEL` px holding a thread with one entry and one running task.
++async fn wide_panel_with_a_task(
++    cx: &mut TestAppContext,
++) -> (gpui::Entity<AgentPanel>, VisualTestContext) {
++    let (panel, workspace, mut cx) = setup_card_panel_in_workspace(cx).await;
++    cx.simulate_resize(size(px(WIDE_PANEL + 500.), px(900.)));
++    workspace.update_in(&mut cx, |workspace, window, cx| {
++        workspace.set_panel_size_state::<AgentPanel>(
++            PanelSizeState {
++                size: Some(px(WIDE_PANEL)),
++                flex: None,
++            },
++            window,
++            cx,
++        );
++    });
++    let connection = TaskActionsConnection::new();
++    let thread = open_titled_thread(&panel, &connection, "A", &mut cx);
++    thread
++        .update(&mut cx, |thread, cx| {
++            thread.handle_session_update(
++                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
++                    "a response long enough to be an entry".into(),
++                )),
++                cx,
++            )
++        })
++        .expect("the agent message applies");
++    send_tasks(
++        &thread,
++        vec![wire_task("t1", "running", true, 1_000)],
++        &mut cx,
++    );
++    draw(&mut cx);
++    (panel, cx)
++}
++
++fn conversation(panel: &gpui::Entity<AgentPanel>, cx: &VisualTestContext) -> Bounds<Pixels> {
++    panel.read_with(cx, |panel, cx| {
++        let view = panel.active_thread_view(cx).expect("a thread view");
++        view.read(cx).list_state.viewport_bounds()
++    })
++}
++
++/// `inner` lies within the `width`-wide column centred on `outer`, half a pixel of rounding
++/// allowed on each side.
++fn inside_column(outer: Bounds<Pixels>, width: Pixels, inner: Bounds<Pixels>) -> bool {
++    let half = width / 2.;
++    let center = outer.center().x;
++    inner.left() >= center - half - px(0.5) && inner.right() <= center + half + px(0.5)
++}
++
++#[test]
++fn a_wide_area_narrows_to_the_centred_column() {
++    let area = Bounds::new(gpui::point(px(100.), px(40.)), size(px(1700.), px(600.)));
++    let column = crate::tasks_card::within_content_column(area, Some(px(850.)));
++    assert_eq!(column.size.width, px(850.));
++    assert_eq!(column.size.height, area.size.height);
++    assert_eq!(column.top(), area.top());
++    assert_eq!(column.center().x, area.center().x);
++}
++
++/// Hostile: a column wider than the area must never grow the area past the panel, and no
++/// maximum (`limit_content_width` off) leaves it exactly as it was.
++#[test]
++fn a_narrow_area_or_no_maximum_is_left_alone() {
++    let area = Bounds::new(gpui::point(px(10.), px(10.)), size(px(400.), px(300.)));
++    assert_eq!(
++        crate::tasks_card::within_content_column(area, Some(px(850.))),
++        area
++    );
++    assert_eq!(crate::tasks_card::within_content_column(area, None), area);
++}
++
++#[gpui::test]
++async fn test_the_floating_card_keeps_to_the_column_in_every_corner(cx: &mut TestAppContext) {
++    let (panel, mut cx) = wide_panel_with_a_task(cx).await;
++    let max_width = max_content_width(&mut cx).expect("the column is limited by default");
++    let viewport = conversation(&panel, &cx);
++    assert!(
++        viewport.size.width > max_width + px(200.),
++        "the conversation {viewport:?} is wider than the column"
++    );
++    for position in [
++        TasksCardPosition::TopRight,
++        TasksCardPosition::TopLeft,
++        TasksCardPosition::BottomRight,
++        TasksCardPosition::BottomLeft,
++    ] {
++        update_agent_settings(&mut cx, |settings| settings.tasks_card.position = position);
++        let card = cx.debug_bounds("tasks-card").expect("card painted");
++        assert!(
++            inside_column(viewport, max_width, card),
++            "{position:?}: card {card:?} outside the {max_width:?} column of {viewport:?}"
++        );
++    }
++}
++
++/// With no maximum the card goes back to the panel's corner: the fix narrows to the column,
++/// it does not move the card in for its own sake.
++#[gpui::test]
++async fn test_without_a_maximum_the_card_reaches_the_panel_corner(cx: &mut TestAppContext) {
++    let (panel, mut cx) = wide_panel_with_a_task(cx).await;
++    update_agent_settings(&mut cx, |settings| settings.max_content_width = None);
++    let viewport = conversation(&panel, &cx);
++    let card = cx.debug_bounds("tasks-card").expect("card painted");
++    assert!(
++        card.right() >= viewport.right() - px(24.),
++        "TopRight with no maximum: card {card:?} sits at the right edge of {viewport:?}"
++    );
++}
++
++#[gpui::test]
++async fn test_the_docked_bar_keeps_to_the_column(cx: &mut TestAppContext) {
++    let (_panel, mut cx) = wide_panel_with_a_task(cx).await;
++    let max_width = max_content_width(&mut cx).expect("the column is limited by default");
++    click("tasks-card-dock-bottom", &mut cx);
++    let bar = cx
++        .debug_bounds("tasks-card-bar")
++        .expect("the bar is painted");
++    let panel_bounds = cx.debug_bounds("agent-panel").expect("panel painted");
++    assert!(
++        bar.size.width <= max_width + px(0.5),
++        "the bar {bar:?} is wider than the {max_width:?} column"
++    );
++    assert!(
++        inside_column(panel_bounds, max_width, bar),
++        "the bar {bar:?} is not centred in {panel_bounds:?}"
++    );
++}
