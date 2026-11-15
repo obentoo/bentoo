@@ -44,6 +44,17 @@ BDEPEND="
 "
 
 src_prepare() {
+	# 1.23 builds libonnx with hidden visibility and exports only the ONNX_API
+	# surface. That surface is too small for a shared libonnx: upstream's only
+	# consumers link a static onnx, and sci-libs/onnxruntime fails at link time
+	# with ~300 undefined onnx:: references (OpSchema::Attr, DataTypeUtils,
+	# shape-inference helpers). Export everything, as libonnx did up to 1.20.
+	# The guard makes a bump that moves the line fail here, not at a consumer.
+	grep -qF 'set_target_properties(onnx PROPERTIES CXX_VISIBILITY_PRESET hidden)' \
+		CMakeLists.txt || die "onnx visibility line moved; re-check the export fix"
+	sed -i -e 's/set_target_properties(onnx PROPERTIES CXX_VISIBILITY_PRESET hidden)/set_target_properties(onnx PROPERTIES CXX_VISIBILITY_PRESET default)/' \
+		CMakeLists.txt || die
+
 	cmake_src_prepare
 	distutils-r1_src_prepare
 }

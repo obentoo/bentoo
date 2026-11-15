@@ -45,9 +45,14 @@ RESTRICT="!test? ( test )"
 # Hard blocker rather than soft, matching sci-ml/lemonade{,-bin} in this
 # overlay: portage cannot resolve the conflict by ordering, because neither
 # package is an upgrade path for the other. One has to be unmerged by hand.
-# sci-ml/onnx is pinned below 1.23: onnxruntime 1.31 is built against onnx 1.22,
-# and libonnx carries no versioned soname, so nothing would force a rebuild after
-# an onnx 1.23 upgrade. Lift the pin when onnxruntime is bumped and rebuilt.
+# sci-ml/onnx is pinned to the 1.23 series: onnxruntime 1.32 is built against
+# onnx 1.23.2 (cmake/deps.txt) and registers the opset 28 schemas, which older
+# onnx does not declare (`DepthToSpace_Onnx_ver28 is not a member of onnx`).
+# The floor is -r1 because 1.23.2-r0 shipped a hidden-visibility libonnx that
+# this package cannot link against (undefined onnx:: references).
+# The upper bound stays because libonnx carries no versioned soname, so nothing
+# would force a rebuild after an onnx 1.24 upgrade. Re-read deps.txt on every
+# bump: the autoupdate copies this pin verbatim.
 RDEPEND="
 	!!sci-libs/onnxruntime-bin
 
@@ -55,7 +60,8 @@ RDEPEND="
 	dev-libs/cpuinfo
 	dev-libs/protobuf:=
 	dev-libs/re2:=
-	<sci-ml/onnx-1.23[disableStaticReg]
+	>=sci-ml/onnx-1.23.2-r1[disableStaticReg]
+	<sci-ml/onnx-1.24
 
 	python? (
 		${PYTHON_DEPS}
@@ -65,7 +71,7 @@ RDEPEND="
 		dev-python/packaging[${PYTHON_USEDEP}]
 		dev-python/protobuf[${PYTHON_USEDEP}]
 		dev-python/sympy[${PYTHON_USEDEP}]
-		<sci-ml/onnx-1.23[${PYTHON_USEDEP}]
+		>=sci-ml/onnx-1.23.2-r1[${PYTHON_USEDEP}]
 	)
 "
 DEPEND="
@@ -87,7 +93,7 @@ BDEPEND="
 
 	test? (
 		dev-cpp/gtest
-		$(python_gen_any_dep '<sci-ml/onnx-1.23[${PYTHON_USEDEP}]')
+		$(python_gen_any_dep '>=sci-ml/onnx-1.23.2-r1[${PYTHON_USEDEP}]')
 
 		python? ( dev-python/pytest[${PYTHON_USEDEP}] )
 	)
@@ -115,7 +121,7 @@ CMAKE_USE_DIR="${S}/cmake"
 # The `$(python_get_sitedir)/onnx/onnx-ml.proto` file is used during tests
 python_check_deps() {
 	! use test && return 0
-	python_has_version "<sci-ml/onnx-1.23[${PYTHON_USEDEP}]"
+	python_has_version ">=sci-ml/onnx-1.23.2-r1[${PYTHON_USEDEP}]"
 }
 
 src_configure() {
