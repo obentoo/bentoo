@@ -3,8 +3,10 @@
 
 EAPI=8
 
-DISTUTILS_USE_PEP517=setuptools
-PYTHON_COMPAT=( python3_{11..15} )
+# 16.1.0 moved its build backend from setuptools(-scm) to hatchling and
+# raised requires-python to >=3.12; the version is now static in pyproject.toml.
+DISTUTILS_USE_PEP517=hatchling
+PYTHON_COMPAT=( python3_{12..15} )
 
 inherit distutils-r1 pypi
 
@@ -20,7 +22,4 @@ KEYWORDS="~amd64"
 
 RDEPEND="
 	dev-python/typing-extensions[${PYTHON_USEDEP}]
-"
-BDEPEND="
-	>=dev-python/setuptools-scm-8[${PYTHON_USEDEP}]
 "
