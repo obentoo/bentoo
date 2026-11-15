@@ -1,0 +1,40 @@
+cmake: generate the kde_output_order_v1 client code into an existing directory
+
+FindKDEProtocols.cmake runs wayland-scanner at configure time and writes
+into "generated/", relative to the build directory, before anything has
+created that directory (configure_file() does it later in CMakeLists.txt).
+Both scanner calls fail, their status is never checked, and configuration
+then dies in src/CMakeLists.txt with "Cannot find source file:
+.../generated/kde-output-order-v1-client.c".
+
+Create the directory first, write the header to an absolute path, run the
+two scanner calls separately (two COMMANDs in one execute_process form a
+pipeline) and fail loudly when either of them fails.
+
+--- a/cmake/FindKDEProtocols.cmake
++++ b/cmake/FindKDEProtocols.cmake
+@@ -13,11 +13,21 @@
+         message(STATUS "[OK] KDE Output Device v2 protocol found: ${KDE_OUTPUT_ORDER_V1_XML}")
+         set(HAVE_KDE_OUTPUT_ORDER_V1 1)
+ 		set(KDE_OUTPUT_ORDER_V1_XML_C "${CMAKE_BINARY_DIR}/generated/kde-output-order-v1-client.c")
++        file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
+         execute_process(
+-            COMMAND wayland-scanner client-header ${KDE_OUTPUT_ORDER_V1_XML} "generated/kde-output-order-v1-client.h"
+-			COMMAND wayland-scanner public-code ${KDE_OUTPUT_ORDER_V1_XML} "${KDE_OUTPUT_ORDER_V1_XML_C}"
++            COMMAND wayland-scanner client-header ${KDE_OUTPUT_ORDER_V1_XML} "${CMAKE_BINARY_DIR}/generated/kde-output-order-v1-client.h"
+             RESULT_VARIABLE SCANNER_RESULT
+-        )		
++        )
++        if(NOT SCANNER_RESULT EQUAL 0)
++            message(FATAL_ERROR "wayland-scanner client-header failed: ${SCANNER_RESULT}")
++        endif()
++        execute_process(
++            COMMAND wayland-scanner public-code ${KDE_OUTPUT_ORDER_V1_XML} "${KDE_OUTPUT_ORDER_V1_XML_C}"
++            RESULT_VARIABLE SCANNER_RESULT
++        )
++        if(NOT SCANNER_RESULT EQUAL 0)
++            message(FATAL_ERROR "wayland-scanner public-code failed: ${SCANNER_RESULT}")
++        endif()
+     else()
+         message(STATUS "[SKIP] kde_output_order_v1 not found. Will fallback gracefully at runtime.")
+ 		set(KDE_OUTPUT_ORDER_V1_XML_C "")
