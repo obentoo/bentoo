@@ -1,0 +1,75 @@
+# Copyright 1999-2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+
+EAPI=8
+
+if [[ ${PV} == "9999" ]] ; then
+	inherit git-r3
+	EGIT_REPO_URI="https://gitlab.freedesktop.org/mobile-broadband/libqmi.git"
+else
+	GIT_COMMIT="3454c2c619d516fd46a08fe16c6eebdee061857d"
+	SRC_URI="https://gitlab.freedesktop.org/mobile-broadband/libqmi/-/archive/${GIT_COMMIT}/libqmi-${GIT_COMMIT}.tar.gz"
+	KEYWORDS="amd64 arm arm64 ~loong ~mips ppc ppc64 ~riscv x86"
+	S="${WORKDIR}/libqmi-${GIT_COMMIT}"
+fi
+
+PYTHON_COMPAT=( python3_{11..15} )
+inherit bash-completion-r1 meson python-any-r1 udev
+
+DESCRIPTION="Qualcomm MSM (Mobile Station Modem) Interface (QMI) modem protocol library"
+HOMEPAGE="https://www.freedesktop.org/wiki/Software/libqmi/ https://gitlab.freedesktop.org/mobile-broadband/libqmi"
+
+LICENSE="LGPL-2"
+# The subslot is the soname of libqmi-glib.so, and it must be MEASURED, not
+# carried forward: the installed library is libqmi-glib.so.5.12.0 (verified in
+# VDB CONTENTS) while this line said 5.11 for an entire release. A subslot that
+# does not match the library it describes silently disables the rebuild it
+# exists to trigger -- net-misc/modemmanager records :0/5.11= and never rebuilds
+# when the ABI moves under it.
+#
+# The revision bump is not cosmetic. Correcting the subslot alone changes what
+# FUTURE consumers record; only a new revision makes portage re-emerge the ones
+# already installed against the wrong value.
+# BENTOO-DIVERGENCE: SLOT - subslot 0/5.12 where ::gentoo has 0/5.11. It tracks
+# the libqmi-glib soname, which moved in this snapshot. Follows the version.
+SLOT="0/5.12"
+IUSE="gtk-doc introspection +mbim +qrtr"
+
+RDEPEND="
+	>=dev-libs/glib-2.56
+	>=dev-libs/libgudev-232
+	introspection? ( dev-libs/gobject-introspection:= )
+	mbim? ( >=net-libs/libmbim-1.18.0 )
+	qrtr? ( >=net-libs/libqrtr-glib-1.0.0:= )
+"
+DEPEND="${RDEPEND}"
+BDEPEND="
+	${PYTHON_DEPS}
+	sys-apps/help2man
+	virtual/pkgconfig
+	gtk-doc? ( dev-util/gtk-doc )
+"
+
+src_configure() {
+	local emesonargs=(
+		$(meson_use mbim mbim_qmux)
+		$(meson_use qrtr)
+		-Drmnet=true
+
+		-Dudev=true
+		-Dudevdir="$(get_udevdir)"
+
+		$(meson_use introspection)
+		$(meson_use gtk-doc gtk_doc)
+		-Dman=true
+
+		# Let's avoid BuildRequiring bash-completion, install it manually
+		-Dbash_completion=false
+	)
+	meson_src_configure
+}
+
+src_install() {
+	meson_src_install
+	dobashcomp src/qmicli/qmicli
+}
