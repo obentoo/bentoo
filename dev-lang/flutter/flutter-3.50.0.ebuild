@@ -20,7 +20,7 @@ RESTRICT="bindist mirror strip"
 
 QA_PREBUILT="*"
 
-# This release bundles Dart SDK 3.13.7 (see dart_sdk_version in upstream's
+# This release bundles Dart SDK 3.14.0 (see dart_sdk_version in upstream's
 # releases_linux.json). src_install replaces the bundled SDK with the system
 # one, so the version must match exactly: bin/cache/flutter_tools.snapshot only
 # loads on the Dart VM it was compiled against. Keep this pin in sync with the
@@ -49,7 +49,7 @@ QA_PREBUILT="*"
 DEPEND="acct-group/flutter"
 RDEPEND="
 	${DEPEND}
-	~dev-lang/dart-3.13.7
+	~dev-lang/dart-3.14.0
 "
 
 DOC_CONTENTS="The Flutter SDK is installed in /opt/flutter.
