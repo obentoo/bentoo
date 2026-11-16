@@ -2,16 +2,17 @@
 # Distributed under the terms of the GNU General Public License v2
 
 # BENTOO-DIVERGENCE: ECLASS - fork of ::gentoo's rust.eclass whose only change
-# is the 1.99.1 -> LLVM 23 row in _RUST_LLVM_MAP and _RUST_SLOTS_ORDERED.
-# Both tables are the ONLY source rust_pkg_setup and the generated BDEPEND read,
-# so without the row the overlay's dev-lang/rust{,-bin}-1.99.1 dies in its own
-# pkg_setup and no Rust consumer would ever select it. Overlay eclasses shadow
-# the master's only for ebuilds in THIS overlay; ::gentoo ebuilds keep using
-# ::gentoo's copy and so cannot see 1.99.1 until Gentoo adds the row itself.
-# Retire this file (git rm) once ::gentoo's rust.eclass lists 1.99.1; until
-# then, re-copy it from ::gentoo on every sync that touches it and re-add the
-# two rows -- a stale fork silently drops whatever Gentoo changed.
-
+# is the 1.100.0 and 1.99.1 -> LLVM 23 rows in _RUST_LLVM_MAP and
+# _RUST_SLOTS_ORDERED. Both tables are the ONLY source rust_pkg_setup and the
+# generated BDEPEND read, so without the rows the overlay's
+# dev-lang/rust{,-bin}-{1.99.1,1.100.0} die in their own pkg_setup and no Rust
+# consumer would ever select them. Overlay eclasses shadow the master's only
+# for ebuilds in THIS overlay; ::gentoo ebuilds keep using ::gentoo's copy and
+# so cannot see these slots until Gentoo adds the rows itself.
+# Drop each row once ::gentoo's rust.eclass lists that version, and git rm the
+# file when it lists both; until then, re-copy it from ::gentoo on every sync
+# that touches it and re-add the rows -- a stale fork silently drops whatever
+# Gentoo changed.
 # @ECLASS: rust.eclass
 # @MAINTAINER:
 # Matt Jolly <kangie@gentoo.org>
@@ -79,6 +80,7 @@ fi
 # Definitive list of Rust slots and the associated LLVM slot, newest first.
 declare -A -g -r _RUST_LLVM_MAP=(
 	["9999"]=23
+	["1.100.0"]=23
 	["1.99.1"]=23
 	["1.99.0"]=23
 	["1.98.1"]=22
@@ -86,9 +88,7 @@ declare -A -g -r _RUST_LLVM_MAP=(
 	["1.96.1"]=22
 	["1.95.0"]=22
 	["1.94.1"]=21
-	["1.94.0"]=21
 	["1.93.1"]=21
-	["1.93.0"]=21
 	["1.92.0"]=21
 	["1.91.0"]=21
 	["1.90.0"]=20
@@ -102,6 +102,7 @@ declare -A -g -r _RUST_LLVM_MAP=(
 # this array is used to store the Rust slots in a more convenient order for iteration.
 declare -a -g -r _RUST_SLOTS_ORDERED=(
 	"9999"
+	"1.100.0"
 	"1.99.1"
 	"1.99.0"
 	"1.98.1"
@@ -109,9 +110,7 @@ declare -a -g -r _RUST_SLOTS_ORDERED=(
 	"1.96.1"
 	"1.95.0"
 	"1.94.1"
-	"1.94.0"
 	"1.93.1"
-	"1.93.0"
 	"1.92.0"
 	"1.91.0"
 	"1.90.0"
