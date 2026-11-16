@@ -6,7 +6,7 @@ EAPI=8
 DISTUTILS_USE_PEP517=hatchling
 PYTHON_COMPAT=( python3_{14..15} )
 
-inherit distutils-r1
+inherit distutils-r1 tmpfiles
 
 DESCRIPTION="Builds Bentoo (Gentoo stage5) images and live ISOs from a stage3"
 HOMEPAGE="https://github.com/obentoo/shidashi"
@@ -23,9 +23,13 @@ IUSE="vm"
 # Always: systemd-nspawn runs every build stage (and systemd-ssh-proxy reaches
 # the VM), gpg verifies the stage3 and the ::gentoo snapshot, git fetches the
 # pinned overlays, openssl hashes the live user's password, binutils' objdump
-# checks the image's ISA. Portage runs inside the containers, and the ISO tools
-# (grub, xorriso, mtools, squashfs-tools) inside the toolbox stage -- none of
-# them is needed on the host. `shidashi doctor` checks the same list.
+# checks the image's ISA. OpenSSH (ssh, ssh-keygen) pairs a build worker,
+# provisions one and relays `worker`, `vm --dev --worker` and `ci pool` to it;
+# rsync carries the caches with `worker sync`. Neither needs the vm flag: the
+# host drives a worker's VMs without booting any itself. Portage runs inside
+# the containers, and the ISO tools (grub, xorriso, mtools, squashfs-tools)
+# inside the toolbox stage -- none of them is needed on the host. `shidashi
+# doctor` checks the same list.
 # sys-apps/systemd is a hard dependency on purpose: nspawn has no standalone
 # package, so a host without systemd (split-usr, musl profiles) cannot build.
 RDEPEND="
@@ -37,13 +41,14 @@ RDEPEND="
 	dev-python/rich[${PYTHON_USEDEP}]
 	dev-python/typer[${PYTHON_USEDEP}]
 	dev-vcs/git
+	net-misc/rsync
 	sys-apps/systemd
 	sys-devel/binutils
+	virtual/openssh
 	vm? (
 		app-emulation/qemu
 		app-emulation/virtiofsd
 		dev-libs/libisoburn
-		virtual/ssh
 		|| (
 			sys-firmware/edk2-bin
 			sys-firmware/edk2
@@ -63,9 +68,17 @@ python_install_all() {
 	# still points a curator at another tree.
 	insinto /usr/share/${PN}
 	doins -r variants seeds
+
+	# The vsock CID lock directory root's boot tests and users' `vm test` and
+	# `vm start` share: root must create it at boot, or a copy a user made first
+	# is refused (README, "shidashi vm"). contrib/systemd-user's CI poller is
+	# not installed: it runs a checkout through uv, not this package.
+	dotmpfiles contrib/tmpfiles.d/${PN}.conf
 }
 
 pkg_postinst() {
+	tmpfiles_process ${PN}.conf
+
 	elog "Shidashi keeps its data in:"
 	elog "  ${EROOT}/var/cache/shidashi     binhost, fork points, pins, distfiles"
 	elog "  ${EROOT}/var/log/shidashi/runs  audit trails"
