@@ -93,7 +93,7 @@ CRATES="
 	httparse@1.10.1
 	ignore@0.4.34
 	indexmap@2.14.0
-	inquire@0.9.4
+	inquire@0.9.5
 	is_terminal_polyfill@1.70.2
 	itoa@1.0.18
 	js-sys@0.3.107
@@ -101,7 +101,7 @@ CRATES="
 	lazy-regex@3.6.1
 	lazy_static@1.5.0
 	libc@0.2.189
-	libloading@0.9.0
+	libloading@0.9.1
 	libm@0.2.16
 	libredox@0.1.25
 	linux-raw-sys@0.12.1
@@ -116,10 +116,10 @@ CRATES="
 	mio@1.2.2
 	multiversion_no_op@1.0.0
 	napi-build@2.6.0
-	napi-derive-backend@7.0.0
-	napi-derive@3.7.0
+	napi-derive-backend@7.0.1
+	napi-derive@3.7.1
 	napi-sys@3.4.1
-	napi@3.16.1
+	napi@3.16.2
 	nix@0.31.3
 	nohash-hasher@0.2.0
 	normalize-line-endings@0.3.0
@@ -141,12 +141,12 @@ CRATES="
 	prettyplease@0.2.37
 	proc-macro-crate@3.5.0
 	proc-macro2@1.0.107
-	pyo3-build-config@0.29.2
-	pyo3-ffi@0.29.2
-	pyo3-macros-backend@0.29.2
-	pyo3-macros@0.29.2
-	pyo3@0.29.2
-	pythonize@0.29.0
+	pyo3-build-config@0.30.1
+	pyo3-ffi@0.30.1
+	pyo3-macros-backend@0.30.1
+	pyo3-macros@0.30.1
+	pyo3@0.30.1
+	pythonize@0.30.0
 	quote@1.0.47
 	r-efi@6.0.0
 	redox_syscall@0.5.18
@@ -247,7 +247,7 @@ CRATES="
 	tree-sitter-python@0.25.0
 	tree-sitter-ruby@0.23.1
 	tree-sitter-rust@0.24.2
-	tree-sitter-scala@0.26.10
+	tree-sitter-scala@0.26.13
 	tree-sitter-solidity@1.2.13
 	tree-sitter-swift@0.7.4
 	tree-sitter-typescript@0.23.2
