@@ -1,0 +1,195 @@
+# Copyright 1999-2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+
+EAPI=8
+
+inherit cmake desktop go-env go-module systemd xdg-utils
+
+MY_PN="${PN/-mail/}"
+MY_P="${MY_PN}-${PV}"
+
+DESCRIPTION="Serves Proton Mail to IMAP/SMTP clients"
+HOMEPAGE="https://proton.me/mail/bridge https://github.com/ProtonMail/proton-bridge/"
+SRC_URI="https://github.com/ProtonMail/${MY_PN}/archive/refs/tags/v${PV}.tar.gz -> ${P}.tar.gz"
+S="${WORKDIR}"/${MY_P}
+
+LICENSE="GPL-3+ Apache-2.0 BSD BSD-2 ISC LGPL-3+ MIT MPL-2.0 Unlicense"
+SLOT="0"
+KEYWORDS="~amd64"
+# `systemd` gates the user unit ONLY. The OpenRC user script is installed
+# unconditionally -- see src_install.
+# BENTOO-DIVERGENCE: IUSE - systemd gates the user unit. Per project policy
+# the OpenRC user service is installed unconditionally and only the unit is
+# gated, so a non-systemd system can still run the daemon.
+IUSE="gui systemd"
+
+# Both the build and the tests require Internet access.
+PROPERTIES="test_network"
+# Between 2026-09-05 and this bump the module tree came from a
+# ${P}-vendor.tar.xz on the overlay mirror, which made the build reproducible
+# and put its inputs in the Manifest. No such tarball has been published for
+# 3.27.0, so src_prepare is back to `go mod download` against the live module
+# proxy and RESTRICT carries network-sandbox again. Restore the vendor tarball
+# in SRC_URI once it is available for this version.
+RESTRICT="network-sandbox test strip"
+
+BDEPEND="
+	>=dev-lang/go-1.21
+"
+
+# BENTOO-DIVERGENCE: RDEPEND - libcbor, libfido2 and openssl are named
+# explicitly here. ::gentoo does not name them because its vendored tree
+# resolves them at link time; ours names them because they are cgo
+# libraries, which Go vendoring does not supply.
+# The binary links libcbor.so.<subslot> and libfido2.so.1 directly, so both
+# carry := : without it a libcbor subslot bump (0.14 -> 0.15) left the bridge
+# on a removed soname, kept alive only by preserve-libs.
+# BENTOO-DIVERGENCE: DEPEND - same three, through RDEPEND.
+RDEPEND="
+	app-crypt/libsecret
+	dev-libs/libcbor:=
+	dev-libs/libfido2:=
+	dev-libs/openssl:=
+	gui? (
+		>=dev-libs/protobuf-21.12:=
+		dev-libs/re2:=
+		>=dev-libs/sentry-native-0.6.5-r1
+		dev-qt/qtbase:6=[gui,icu,widgets]
+		dev-qt/qtdeclarative:6=[widgets]
+		dev-qt/qtsvg:6=
+		media-libs/mesa
+		net-libs/grpc:=
+	)
+"
+DEPEND="${RDEPEND}"
+
+PATCHES=(
+	"${FILESDIR}"/${PN}-3.15.1-gui_gentoo.patch
+)
+
+# $S is there for bug 957684
+DOCS=( "${S}"/{README,Changelog}.md )
+
+src_unpack() {
+	default
+
+	go-env_set_compile_environment
+}
+
+src_prepare() {
+	xdg_environment_reset
+	default
+
+	# No vendor tarball for this version, so populate the module cache from the
+	# proxy instead. Guarded by RESTRICT=network-sandbox above.
+	ego mod download
+
+	if use gui; then
+		# prepare desktop file
+		local desktopFilePath="${S}"/dist/${MY_PN}.desktop
+		sed -i 's/protonmail/proton-mail/g' ${desktopFilePath} || die
+		sed -i 's/Exec=proton-mail-bridge/Exec=proton-mail-bridge-gui/g' ${desktopFilePath} || die
+
+		# build GUI
+		local PATCHES=()
+		BUILD_DIR="${WORKDIR}"/gui_build \
+			CMAKE_USE_DIR="${S}"/internal/frontend/bridge-gui/bridge-gui \
+			cmake_src_prepare
+	fi
+}
+
+src_configure() {
+	# Set Go build environment
+	export CGO_ENABLED=1
+	export CGO_CFLAGS="${CFLAGS}"
+	export CGO_CPPFLAGS="${CPPFLAGS}"
+	export CGO_CXXFLAGS="${CXXFLAGS}"
+	export CGO_LDFLAGS="${LDFLAGS} -lfido2 -lcbor -lssl -lcrypto"
+
+	if use gui; then
+		local mycmakeargs=(
+			-DBRIDGE_APP_FULL_NAME="Proton Mail Bridge"
+			-DBRIDGE_APP_VERSION="${PV}+git"
+			-DBRIDGE_REPO_ROOT="${S}"
+			-DBRIDGE_TAG="NOTAG"
+			-DBRIDGE_VENDOR="Gentoo Linux"
+			-DCMAKE_DISABLE_PRECOMPILE_HEADERS=OFF
+			-Dsentry_DIR="${S}/internal/sentry"
+		)
+		BUILD_DIR="${WORKDIR}"/gui_build \
+			CMAKE_USE_DIR="${S}"/internal/frontend/bridge-gui/bridge-gui \
+			cmake_src_configure
+	fi
+}
+
+src_compile() {
+	# Build with proper Go flags for Gentoo
+	emake -Onone \
+		GOFLAGS="-buildmode=pie ${GOFLAGS}" \
+		build-nogui
+
+	if use gui; then
+		BUILD_DIR="${WORKDIR}"/gui_build \
+			CMAKE_USE_DIR="${S}"/internal/frontend/bridge-gui/bridge-gui \
+			cmake_src_compile
+	fi
+}
+
+src_test() {
+	emake -Onone test
+}
+
+src_install() {
+	exeinto /usr/bin
+	newexe bridge ${PN}
+
+	if use gui; then
+		BUILD_DIR="${WORKDIR}"/gui_build \
+			CMAKE_USE_DIR="${S}"/internal/frontend/bridge-gui/bridge-gui \
+			cmake_src_install
+		mv "${ED}"/usr/bin/bridge-gui "${ED}"/usr/bin/${PN}-gui || die
+		newicon {"${S}"/dist/bridge,${PN}}.svg
+		newmenu {dist/${MY_PN},${PN}}.desktop
+	fi
+
+	# The only service this package ships is user-scope, so both files below
+	# are user-scope too. The OpenRC script is installed unconditionally: it
+	# costs a systemd user nothing, while gating it would leave an OpenRC user
+	# with no supervised way to run the bridge at all.
+	#
+	# newinitd has no user-scope variant, so the script goes in as a plain
+	# executable, following sys-apps/xdg-desktop-portal. Note that the OpenRC
+	# script cannot reproduce the unit's sandboxing directives -- see the
+	# comment at the top of the file.
+	exeinto /etc/user/init.d
+	newexe "${FILESDIR}"/${PN}.initd ${PN}
+
+	if use systemd; then
+		systemd_newuserunit "${FILESDIR}"/${PN}.service-r1 ${PN}.service
+	fi
+
+	einstalldocs
+}
+
+# BENTOO-DIVERGENCE: DEFINED_PHASES - postinst and postrm, which install and
+# tear down the service integration described under IUSE above.
+pkg_postinst() {
+	xdg_desktop_database_update
+	xdg_icon_cache_update
+	
+	elog "Proton Mail Bridge has been installed."
+	elog "Go dependencies were fetched during build process."
+	elog ""
+	elog "To start the service:"
+	elog "  systemctl --user enable --now proton-mail-bridge.service"
+	elog ""
+	if use gui; then
+		elog "GUI version is available as: proton-mail-bridge-gui"
+	fi
+	elog "Command-line version is available as: proton-mail-bridge"
+}
+
+pkg_postrm() {
+	xdg_desktop_database_update
+	xdg_icon_cache_update
+}
