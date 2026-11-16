@@ -1,0 +1,76 @@
+#!/sbin/openrc-run
+# Copyright 1999-2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+
+# USER-SCOPE service: this file belongs in /etc/user/init.d, not /etc/init.d,
+# and is started per login session by openrc-user.  It is the OpenRC
+# counterpart of upstream's usr/lib/systemd/user/jottad.service, which the
+# ebuild installs with systemd_douserunit under USE=systemd.  There is no
+# system-scope service on purpose: upstream retired the system-slice jottad in
+# 0.11, and the daemon's data lives under the user's $HOME.
+#
+# newinitd has no user-scope variant, which is why the ebuild installs this
+# with `exeinto /etc/user/init.d` + `newexe`, following sys-apps/xdg-desktop-
+# portal and sci-ml/lemonade-bin.
+#
+# WHAT THIS TRANSLATION CHANGES.
+#
+#   ExecStart=/usr/bin/jottad stdoutlog datadir %h/.jottad/
+#     -> "datadir ${HOME}/.jottad", WITHOUT stdoutlog.  Under systemd stdout
+#        goes to the journal; OpenRC has no journal, and supervise-daemon would
+#        drop it.  Upstream's own non-systemd launch (run_jottad with
+#        JOTTAD_SYSTEMD=0) omits stdoutlog too, leaving jottad to write its own
+#        log file (it links natefinch/lumberjack, a rotating file logger).  The
+#        log file's exact location was not verified: the binary was never run
+#        while packaging it.
+#
+#   Type=notify
+#     -> no readiness signal.  supervise-daemon treats the service as started
+#        once the process is spawned; jottad sees no NOTIFY_SOCKET and skips
+#        the notification.
+#
+#   Restart=on-failure
+#     -> supervise-daemon respawns on ANY exit, clean ones included.  The
+#        respawn_* values below mirror systemd's defaults (RestartSec=100ms
+#        rounded up to 1s, StartLimitBurst=5 within StartLimitIntervalSec=10s)
+#        so a crash loop stops the same way.
+#
+# The unit carries no confinement directives, so nothing is lost there.
+
+description="Jottacloud client daemon (user session)"
+
+# %h in the unit is the user's home directory.
+: "${JOTTAD_DATADIR:=${HOME}/.jottad}"
+: "${JOTTAD_OPTS:=datadir ${JOTTAD_DATADIR}}"
+
+# EnvironmentFile=-%h/.config/jotta-cli/jotta-cli.env  (the - means optional)
+: "${JOTTAD_ENVFILE:=${HOME}/.config/jotta-cli/jotta-cli.env}"
+
+command="/usr/bin/jottad"
+command_args="${JOTTAD_OPTS}"
+directory="${HOME}"
+supervisor="supervise-daemon"
+
+respawn_delay=1
+respawn_max=5
+respawn_period=10
+
+# No depend() on purpose.  The unit has no ordering either, and OpenRC user
+# services live in their own tree: they cannot order themselves against
+# system services such as net.
+
+start_pre() {
+	# EnvironmentFile=.  systemd's EnvironmentFile is NOT a shell script, so
+	# this parses KEY=value lines instead of sourcing the file -- sourcing
+	# would execute anything pasted into it.  Blank lines and # comments are
+	# skipped, matching systemd.
+	if [ -r "${JOTTAD_ENVFILE}" ]; then
+		while IFS= read -r _line; do
+			case "${_line}" in
+				''|'#'*) continue ;;
+				*=*) export "${_line}" ;;
+			esac
+		done < "${JOTTAD_ENVFILE}"
+		unset _line
+	fi
+}

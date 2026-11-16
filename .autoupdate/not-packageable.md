@@ -314,40 +314,6 @@ artifact (tarball, `.deb`, `.rpm` or AppImage).
 
 ---
 
-## `Euro-Office/DesktopEditors` — Euro-Office desktop editors
-
-**Assessed:** 2026-10-01 · **Upstream version then:** tag `v9.4.0` (no GitHub
-release), default branch at `16d1a01` (2026-07-02) · **Verdict:** not
-packageable yet — no binary release, and the source build is not ebuild-shaped.
-
-Euro-Office is the European fork of ONLYOFFICE (Nextcloud, IONOS and others).
-`DesktopEditors` is a superproject of submodules (`core`, `sdkjs`, `web-apps`,
-`desktop-apps`, `desktop-sdk`, …) and the repository has tags but **no
-releases, so no downloadable Linux artifact**. GitHub does not detect a license
-(`NOASSERTION`): the top-level `LICENSE` is the inherited Ascensio text.
-
-| Path | Why not |
-|---|---|
-| Binary | none published |
-| Build from source | the Linux build is driven by Docker (`build/docker-bake.hcl`, `build/.docker`), not by a build system Portage can run in its sandbox |
-
-The upstream it forks is already available: `app-office/onlyoffice-bin`
-(::gentoo).
-
-### How to re-verify
-
-```bash
-gh api repos/Euro-Office/DesktopEditors/releases --jq '.[0:3][] | "\(.tag_name) \([.assets[].name]|join(","))"'
-gh api repos/Euro-Office/DesktopEditors/tags --jq '.[0:3][].name'
-gh api repos/Euro-Office/DesktopEditors/contents/build --jq '.[].name'
-```
-
-**Condition that reopens this:** a GitHub release with a Linux binary asset
-(tarball, `.deb`, `.rpm` or AppImage), which would make an `-bin` ebuild like
-`onlyoffice-bin` possible.
-
----
-
 ## `storytold/artcraft` — ArtCraft desktop app (Tauri)
 
 **Assessed:** 2026-10-12 · **Upstream version then:** `artcraft-v0.41.0`

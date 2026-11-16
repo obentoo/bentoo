@@ -1,0 +1,38 @@
+#!/sbin/openrc-run
+# Copyright 1999-2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+
+# OpenRC counterpart of upstream's mozillavpn.service (system scope).
+#   ExecStart=/usr/bin/mozillavpn linuxdaemon -> command + command_args
+#   Type=dbus, BusName=org.mozilla.vpn.dbus  -> need dbus; the daemon claims
+#                                               the name itself
+#   Restart=on-failure                       -> supervise-daemon respawn
+#   NoNewPrivileges=yes                      -> no_new_privs
+#   Wants=modprobe@xt_cgroup.service         -> modprobe in start_pre
+# Not mapped: CapabilityBoundingSet=CAP_NET_ADMIN CAP_SETUID.
+#
+# dbus-daemon can also start the daemon on demand through
+# /usr/share/dbus-1/system-services/org.mozilla.vpn.dbus.service; this script
+# is for keeping it up from boot. Do not run both at once: the second instance
+# cannot own the bus name.
+
+description="Mozilla VPN daemon"
+
+command="/usr/bin/mozillavpn"
+command_args="linuxdaemon"
+supervisor="supervise-daemon"
+respawn_delay=2
+respawn_max=5
+no_new_privs="yes"
+
+depend() {
+	need dbus
+	use net
+}
+
+start_pre() {
+	# Split tunnelling matches sockets by cgroup; a built-in or absent
+	# module is not an error.
+	modprobe -q xt_cgroup 2>/dev/null
+	return 0
+}
