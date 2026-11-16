@@ -1554,12 +1554,13 @@ declare -A GIT_CRATES=(
 EGIT_COMMIT="f0fa51bb510fc91f6da7ec55f3e0f317f1f975ec"
 # LLVM 23 only, so it is the default slot: llvm-r2 would always prefer slot 22
 # (its newest stable) whenever 22 is listed. RUST_NEEDS_LLVM ties the Rust slot
-# to it, so this builds with any LLVM 23 Rust: 1.99 and 1.100, past upstream's
-# 1.98.1 pin in rust-toolchain.toml. No RUST_MAX_VER on purpose. The series'
-# suites pass on 1.99 (zed-patches test.sh); 1.100.0 is verified by a full
-# build and merge only (2026-11-16, USE=-test), its suites have not been run.
+# to it. RUST_MIN_VER is the newest stable Rust, 1.100.0, past upstream's
+# 1.98.1 pin in rust-toolchain.toml; 1.99 is no longer accepted. No
+# RUST_MAX_VER on purpose. 1.100.0 is verified by a full build and merge
+# (2026-11-16, USE=-test); the series' suites (zed-patches test.sh) were last
+# run on 1.99, not on 1.100.0. Rust is a BDEPEND only, so no revbump.
 LLVM_COMPAT=( 23 )
-RUST_MIN_VER="1.99.0"
+RUST_MIN_VER="1.100.0"
 RUST_NEEDS_LLVM=1
 WEBRTC_COMMIT="0001d84-4"
 
