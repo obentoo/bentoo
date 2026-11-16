@@ -54,7 +54,14 @@ EAPI=8
 # 3.4.6 added a single crate to the lock, win-custody 0.1.2 (a cfg(windows)
 # dependency cargo still resolves offline), so it is topped up inline over
 # the 3.4.5 tarball: 526 + 1 = 527 against the lock.
+#
+# 3.4.7 moved one more, quinn-udp 0.5.14 -> 0.5.16 (via quinn 0.11.9), and the
+# build died with "failed to select a version for the requirement
+# `quinn-udp = "^0.5"` (locked to 0.5.16)". Topped up inline the same way;
+# the stale 0.5.14 in the tarball is harmless. Checked against the lock's
+# registry entries: 527 = 527, nothing missing.
 CRATES="
+	quinn-udp@0.5.16
 	win-custody@0.1.2
 "
 
