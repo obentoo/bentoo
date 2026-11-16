@@ -1,0 +1,916 @@
+From 29d516e932c5362f271e3cf22a23be700f097e4a Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Sun, 15 Nov 2026 15:45:26 -0300
+Subject: [PATCH] agent_ui: fork to a sub-thread from any turn's controls
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.33 (ask 55). Story 039's fork (0070) is offered
+from a selection's context menu and copies the whole conversation. The
+operator asked for a fork icon on each turn, after its stats, that keeps
+the conversation only up to that turn.
+
+- acp_thread: AssistantMessage::last_message_id reads the ACP id the
+  agent stamped on its reply chunks, which the thread already keeps in
+  each chunk's MessageIdentity; nothing new is stored. AgentConnection
+  gains supports_fork_at_turn and fork_session_at(.., cut), refusing by
+  default: forking the whole conversation instead would silently keep
+  the turns the user asked to leave out.
+- agent_servers (v1): fork_session's body becomes fork_session_with(..,
+  cut); with a cut, the `session/fork` request carries
+  `_meta["_claude/forkAt"]`, which Claude Agent (Plus) 0.38.0 resolves to
+  its transcript. The cut is offered when the agent advertises
+  session/fork and `_claude/rewind` -- plus ships both in 0.38.0, so that
+  capability is the signal.
+- agent_ui: the controls row under every finished turn (render_thread_
+  controls, which now knows its entry) gains a GitBranchPlus button,
+  "Fork to a Sub-thread from Here", on the root session's view, disabled
+  while a turn runs, as 0070's menu entry is. sub_thread::turn_fork::
+  turn_cut names the turn by its last agent message id ({"messageId"}),
+  or by its 1-based position among the prompts ({"turn"}) when no reply
+  carries one; the id is never taken from an earlier turn.
+  AgentPanel::open_sub_thread_at opens 0070's "with context" sub-thread
+  through fork_session_at; the inherited count covers the kept turns.
+  The click defers the opening past the view's update: the first build
+  panicked there ("already being updated"), found by the Xvfb proof.
+
+Tests: turn_fork::tests (the last reply id names the turn; an earlier
+turn's id is never used; nothing before the first prompt) -- seen
+failing with the search allowed past the turn's user message -- and
+fork_session_tests::a_cut_point_goes_under_the_fork_at_meta_key_only_
+when_given. The sub-thread suites and acp_thread pass. Xvfb proof with a
+stub agent: docs/assets/zeo-6.33-fork-from-turn-2026-11-15/ in the hub
+(the stub received {"_claude/forkAt": {"messageId": "msg_1"}} and the
+sub-thread inherited the first turn's two messages).
+---
+
+diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
+index 81a5d8c..b22895e 100644
+--- a/crates/acp_thread/src/acp_thread.rs
++++ b/crates/acp_thread/src/acp_thread.rs
+@@ -441,6 +441,19 @@ pub struct AssistantMessage {
+ }
+ 
+ impl AssistantMessage {
++    /// The ACP id of this message's last reply chunk that carries one (Zeo next proposal
++    /// §6.33): what an agent keys a turn on when the client forks or rewinds from it.
++    /// Thoughts are skipped; a v2 keyed identity is not a v1 message id and is skipped too.
++    pub fn last_message_id(&self) -> Option<String> {
++        self.chunks.iter().rev().find_map(|chunk| match chunk {
++            AssistantMessageChunk::Message {
++                identity: MessageIdentity::Legacy(Some(id)),
++                ..
++            } => Some(id.0.to_string()),
++            _ => None,
++        })
++    }
++
+     pub fn to_markdown(&self, cx: &App) -> String {
+         format!(
+             "## Assistant\n\n{}\n\n",
+diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
+index b48610d..f13fa7a 100644
+--- a/crates/acp_thread/src/connection.rs
++++ b/crates/acp_thread/src/connection.rs
+@@ -182,6 +182,29 @@ pub trait AgentConnection {
+         Task::ready(Err(anyhow::Error::msg("Forking sessions is not supported")))
+     }
+ 
++    /// Whether `fork_session_at` is honoured (Zeo next proposal §6.33).
++    fn supports_fork_at_turn(&self) -> bool {
++        false
++    }
++
++    /// Fork `session_id` keeping its conversation only up to the end of one turn (Zeo next
++    /// proposal §6.33). `cut` names the turn as the agent expects it: `{"messageId": ..}`, the
++    /// ACP id of one of the turn's agent messages, or `{"turn": n}`, its 1-based position
++    /// among the user's prompts. The default refuses: forking the whole conversation instead
++    /// would silently keep the turns the user asked to leave out.
++    fn fork_session_at(
++        self: Rc<Self>,
++        _session_id: &acp_v2::SessionId,
++        _project: Entity<Project>,
++        _work_dirs: PathList,
++        _cut: serde_json::Value,
++        _cx: &mut App,
++    ) -> Task<Result<Entity<AcpThread>>> {
++        Task::ready(Err(anyhow::Error::msg(
++            "Forking from a turn is not supported",
++        )))
++    }
++
+     /// Read the end of one of the session's tasks' output (`_claude/tasks/output`,
+     /// version 2). Unsupported unless the connection overrides it.
+     fn fetch_task_output(
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index e71352f..989720e 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -61,6 +61,10 @@ const CLAUDE_USAGE_CAPABILITY: &str = "_claude/usage";
+ /// Asks the agent to publish the account quota now; see `refresh_account_usage`.
+ const CLAUDE_USAGE_REFRESH_METHOD: &str = "_claude/usage/refresh";
+ const CLAUDE_TASKS_OUTPUT_METHOD: &str = "_claude/tasks/output";
++/// Advertised by the plus adapter from 0.38.0, with `session/fork`'s cut point (Zeo next §6.33).
++const CLAUDE_REWIND_CAPABILITY: &str = "_claude/rewind";
++/// Where a `session/fork` names the turn it keeps up to (plus 0.38.0).
++const CLAUDE_FORK_AT_META_KEY: &str = "_claude/forkAt";
+ /// The most `_claude/tasks/output` serves; the adapter clamps to the same value.
+ const CLAUDE_TASKS_OUTPUT_MAX_BYTES: u64 = 1_048_576;
+ async fn close_session_and_drain(
+@@ -657,6 +661,128 @@ fn client_capabilities_for_agent(agent_id: &AgentId, acp_beta: bool) -> acp::Cli
+ }
+ 
+ impl AcpConnection {
++    /// Sends `session/fork` (still `unstable_` in ACP) for `session_id` with the parent
++    /// thread's directories and the project's MCP servers, and registers the thread of the
++    /// session the agent answers with, marked as forked from the parent.
++    ///
++    /// `cut`, when set, goes to the agent as `_meta["_claude/forkAt"]` (Zeo next §6.33): the
++    /// fork keeps the conversation up to the end of that turn only.
++    fn fork_session_with(
++        self: Rc<Self>,
++        session_id: &acp_v2::SessionId,
++        project: Entity<Project>,
++        work_dirs: PathList,
++        cut: Option<serde_json::Value>,
++        cx: &mut App,
++    ) -> Task<Result<Entity<AcpThread>>> {
++        if !self.agent_supports_session_fork() {
++            return Task::ready(Err(anyhow!(LoadError::Other(
++                "Forking sessions is not supported by this agent.".into()
++            ))));
++        }
++        let directories = match self.session_directories_from_work_dirs(&work_dirs) {
++            Ok(directories) => directories,
++            Err(error) => return Task::ready(Err(error)),
++        };
++        let parent = session_id.clone();
++        let mcp_servers = mcp_servers_for_project(&project, cx);
++        // Read before the request, as a reopen reads before `session/load`. Keyed by
++        // this entry and the parent, so another entry's record of the same id is not it.
++        let parent_record = thread_config_store::read(&self.id, &parent, cx);
++
++        cx.spawn(async move |cx| {
++            let (response_sender, response_received) = futures::channel::oneshot::channel();
++            let (registered, registration_finished) = futures::channel::oneshot::channel();
++            let request = self
++                .connection
++                .prepare_request(directories.into_fork_session_request(
++                    parent.clone(),
++                    mcp_servers,
++                    cut,
++                ));
++            let cancellation = request.cancellation_handle();
++            request
++                .on_receiving_result({
++                    let connection = self.connection.clone();
++                    let supports_close = self.agent_supports_session_close();
++                    // The same abandoned-session close as `new_session`: a fork nobody
++                    // registered would otherwise stay open in the agent.
++                    async move |result: Result<
++                        acp::ForkSessionResponse,
++                        agent_client_protocol::Error,
++                    >| {
++                        let session_id = result
++                            .as_ref()
++                            .ok()
++                            .map(|response| response.session_id.clone());
++                        let registered = response_sender.send(result).is_ok()
++                            && registration_finished.await.is_ok();
++                        if !registered
++                            && supports_close
++                            && let Some(session_id) = session_id
++                        {
++                            connection
++                                .prepare_request(acp::CloseSessionRequest::new(session_id))
++                                .on_receiving_result(
++                                    async move |result: Result<
++                                        acp::CloseSessionResponse,
++                                        agent_client_protocol::Error,
++                                    >| {
++                                        if let Err(error) = result {
++                                            log::warn!(
++                                                "ACP abandoned-fork close failed with code {}",
++                                                error.code
++                                            );
++                                        }
++                                        Ok(())
++                                    },
++                                )
++                                .log_err();
++                        }
++                        Ok(())
++                    }
++                })
++                .map_err(map_acp_error)?;
++            // Armed after the publishing call returns, as in `new_session`: early SDK
++            // cancellation is not latched.
++            let _request_guard = util::defer(move || {
++                cancellation.cancel().log_err();
++            });
++            let response = response_received
++                .await
++                .context("ACP fork-session response callback was cancelled")?
++                .map_err(map_acp_error)?;
++
++            let inherited = parent_record.map(|record| InheritedConfig {
++                parent: parent.clone(),
++                record,
++            });
++            let thread = self.register_answered_session(
++                response.session_id,
++                response.modes,
++                response.config_options,
++                inherited,
++                project,
++                work_dirs,
++                cx,
++            )?;
++            thread.update(cx, |thread, _| thread.mark_forked_from(parent));
++
++            registered.send(()).map_err(|_| {
++                anyhow!("ACP fork-session ordering callback ended before registration")
++            })?;
++            Ok(thread)
++        })
++    }
++
++    /// Whether the agent lists `capability` in its `agentCapabilities._meta`.
++    fn agent_advertises(&self, capability: &str) -> bool {
++        self.agent_capabilities
++            .meta
++            .as_ref()
++            .is_some_and(|meta| meta.contains_key(capability))
++    }
++
+     /// Binds supported v2 client handlers to the existing foreground owners.
+     /// This does not change the protocol used by the connection's transport.
+     pub fn with_v2_client_ingress<Handler: HandleDispatchFrom<Agent>>(
+@@ -1919,10 +2045,17 @@ impl SessionDirectories {
+         self,
+         session_id: acp_v2::SessionId,
+         mcp_servers: Vec<acp::McpServer>,
++        cut: Option<serde_json::Value>,
+     ) -> acp::ForkSessionRequest {
+-        acp::ForkSessionRequest::new(acp::SessionId::new(session_id.0), self.cwd)
++        let mut request = acp::ForkSessionRequest::new(acp::SessionId::new(session_id.0), self.cwd)
+             .additional_directories(self.additional_directories)
+-            .mcp_servers(mcp_servers)
++            .mcp_servers(mcp_servers);
++        if let Some(cut) = cut {
++            let mut meta = serde_json::Map::new();
++            meta.insert(CLAUDE_FORK_AT_META_KEY.to_string(), cut);
++            request.meta = Some(meta);
++        }
++        request
+     }
+ }
+ 
+@@ -2117,9 +2250,6 @@ impl AgentConnection for AcpConnection {
+         self.agent_supports_session_fork()
+     }
+ 
+-    /// Sends `session/fork` (still `unstable_` in ACP) for `session_id` with the parent
+-    /// thread's directories and the project's MCP servers, and registers the thread of the
+-    /// session the agent answers with, marked as forked from the parent.
+     fn fork_session(
+         self: Rc<Self>,
+         session_id: &acp_v2::SessionId,
+@@ -2127,100 +2257,29 @@ impl AgentConnection for AcpConnection {
+         work_dirs: PathList,
+         cx: &mut App,
+     ) -> Task<Result<Entity<AcpThread>>> {
+-        if !self.agent_supports_session_fork() {
++        self.fork_session_with(session_id, project, work_dirs, None, cx)
++    }
++
++    /// Zeo next §6.33: the plus adapter takes a cut point on `session/fork` from the release
++    /// that also advertises `_claude/rewind` (0.38.0), so that capability is the signal.
++    fn supports_fork_at_turn(&self) -> bool {
++        self.agent_supports_session_fork() && self.agent_advertises(CLAUDE_REWIND_CAPABILITY)
++    }
++
++    fn fork_session_at(
++        self: Rc<Self>,
++        session_id: &acp_v2::SessionId,
++        project: Entity<Project>,
++        work_dirs: PathList,
++        cut: serde_json::Value,
++        cx: &mut App,
++    ) -> Task<Result<Entity<AcpThread>>> {
++        if !self.supports_fork_at_turn() {
+             return Task::ready(Err(anyhow!(LoadError::Other(
+-                "Forking sessions is not supported by this agent.".into()
++                "Forking from a turn is not supported by this agent.".into()
+             ))));
+         }
+-        let directories = match self.session_directories_from_work_dirs(&work_dirs) {
+-            Ok(directories) => directories,
+-            Err(error) => return Task::ready(Err(error)),
+-        };
+-        let parent = session_id.clone();
+-        let mcp_servers = mcp_servers_for_project(&project, cx);
+-        // Read before the request, as a reopen reads before `session/load`. Keyed by
+-        // this entry and the parent, so another entry's record of the same id is not it.
+-        let parent_record = thread_config_store::read(&self.id, &parent, cx);
+-
+-        cx.spawn(async move |cx| {
+-            let (response_sender, response_received) = futures::channel::oneshot::channel();
+-            let (registered, registration_finished) = futures::channel::oneshot::channel();
+-            let request = self.connection.prepare_request(
+-                directories.into_fork_session_request(parent.clone(), mcp_servers),
+-            );
+-            let cancellation = request.cancellation_handle();
+-            request
+-                .on_receiving_result({
+-                    let connection = self.connection.clone();
+-                    let supports_close = self.agent_supports_session_close();
+-                    // The same abandoned-session close as `new_session`: a fork nobody
+-                    // registered would otherwise stay open in the agent.
+-                    async move |result: Result<
+-                        acp::ForkSessionResponse,
+-                        agent_client_protocol::Error,
+-                    >| {
+-                        let session_id = result
+-                            .as_ref()
+-                            .ok()
+-                            .map(|response| response.session_id.clone());
+-                        let registered = response_sender.send(result).is_ok()
+-                            && registration_finished.await.is_ok();
+-                        if !registered
+-                            && supports_close
+-                            && let Some(session_id) = session_id
+-                        {
+-                            connection
+-                                .prepare_request(acp::CloseSessionRequest::new(session_id))
+-                                .on_receiving_result(
+-                                    async move |result: Result<
+-                                        acp::CloseSessionResponse,
+-                                        agent_client_protocol::Error,
+-                                    >| {
+-                                        if let Err(error) = result {
+-                                            log::warn!(
+-                                                "ACP abandoned-fork close failed with code {}",
+-                                                error.code
+-                                            );
+-                                        }
+-                                        Ok(())
+-                                    },
+-                                )
+-                                .log_err();
+-                        }
+-                        Ok(())
+-                    }
+-                })
+-                .map_err(map_acp_error)?;
+-            // Armed after the publishing call returns, as in `new_session`: early SDK
+-            // cancellation is not latched.
+-            let _request_guard = util::defer(move || {
+-                cancellation.cancel().log_err();
+-            });
+-            let response = response_received
+-                .await
+-                .context("ACP fork-session response callback was cancelled")?
+-                .map_err(map_acp_error)?;
+-
+-            let inherited = parent_record.map(|record| InheritedConfig {
+-                parent: parent.clone(),
+-                record,
+-            });
+-            let thread = self.register_answered_session(
+-                response.session_id,
+-                response.modes,
+-                response.config_options,
+-                inherited,
+-                project,
+-                work_dirs,
+-                cx,
+-            )?;
+-            thread.update(cx, |thread, _| thread.mark_forked_from(parent));
+-
+-            registered.send(()).map_err(|_| {
+-                anyhow!("ACP fork-session ordering callback ended before registration")
+-            })?;
+-            Ok(thread)
+-        })
++        self.fork_session_with(session_id, project, work_dirs, Some(cut), cx)
+     }
+ 
+     fn supports_session_additional_directories(&self) -> bool {
+diff --git a/crates/agent_servers/src/acp/v1/fork_session_tests.rs b/crates/agent_servers/src/acp/v1/fork_session_tests.rs
+index adaf7ec..f6e8cb6 100644
+--- a/crates/agent_servers/src/acp/v1/fork_session_tests.rs
++++ b/crates/agent_servers/src/acp/v1/fork_session_tests.rs
+@@ -289,8 +289,11 @@ fn fork_request_carries_parent_id_directories_and_mcp_servers() {
+         additional_directories: vec![PathBuf::from(EXTRA)],
+     };
+ 
+-    let request =
+-        directories.into_fork_session_request(acp_v2::SessionId::new(PARENT), servers.clone());
++    let request = directories.into_fork_session_request(
++        acp_v2::SessionId::new(PARENT),
++        servers.clone(),
++        None,
++    );
+ 
+     assert_eq!(request.session_id, acp::SessionId::new(PARENT));
+     assert_eq!(request.cwd, PathBuf::from(CWD));
+@@ -298,6 +301,32 @@ fn fork_request_carries_parent_id_directories_and_mcp_servers() {
+     assert_eq!(request.mcp_servers, servers);
+ }
+ 
++// Zeo next proposal §6.33: a fork from a turn names it under `_meta["_claude/forkAt"]`, and a
++// plain fork sends no `_meta` at all, as before.
++#[test]
++fn a_cut_point_goes_under_the_fork_at_meta_key_only_when_given() {
++    let directories = || SessionDirectories {
++        cwd: PathBuf::from(CWD),
++        additional_directories: vec![],
++    };
++    let cut = serde_json::json!({ "messageId": "msg_2" });
++    let request = directories().into_fork_session_request(
++        acp_v2::SessionId::new(PARENT),
++        vec![],
++        Some(cut.clone()),
++    );
++    assert_eq!(
++        request
++            .meta
++            .as_ref()
++            .and_then(|meta| meta.get("_claude/forkAt")),
++        Some(&cut)
++    );
++    let plain =
++        directories().into_fork_session_request(acp_v2::SessionId::new(PARENT), vec![], None);
++    assert_eq!(plain.meta, None);
++}
++
+ // Hostile half (wrong collapse) first — R6.1, R6.3: with the capability, ONE request naming the
+ // PARENT, its directories and the project's MCP servers; the thread returned and registered is
+ // the ANSWERED id's, a new thread beside the parent's, not the parent's.
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index d86650e..8ead1b0 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -8950,7 +8950,7 @@ impl ThreadView {
+             v_flex()
+                 .w_full()
+                 .child(primary)
+-                .child(self.render_thread_controls(is_thread_bottom, cx))
++                .child(self.render_thread_controls(is_thread_bottom, entry_ix, cx))
+                 .into_any_element()
+         } else {
+             primary
+@@ -8970,7 +8970,7 @@ impl ThreadView {
+                 .child(primary)
+                 .children(unsent_cards)
+                 .when(!is_assistant, |this| {
+-                    this.child(self.render_thread_controls(true, cx))
++                    this.child(self.render_thread_controls(true, entry_ix, cx))
+                 })
+                 .when_some(comments_editor, |this, editor| {
+                     this.child(Self::render_feedback_feedback_editor(editor, cx))
+@@ -9229,6 +9229,7 @@ impl ThreadView {
+     fn render_thread_controls(
+         &self,
+         is_thread_bottom: bool,
++        entry_ix: usize,
+         cx: &Context<Self>,
+     ) -> impl IntoElement {
+         if is_thread_bottom && self.is_last_turn_in_progress(cx) {
+@@ -9360,7 +9361,11 @@ impl ThreadView {
+         // unavailable, or simply not the last turn. Rendering
+         // the row regardless leaves an invisible band of padding exactly where
+         // the buttons used to be.
++        // Zeo next §6.33: actions on the turn ending here, after the stats on the left.
++        let turn_actions = self.render_fork_turn_button(entry_ix, cx);
++
+         if feedback_buttons.is_none()
++            && turn_actions.is_none()
+             && last_turn_clock.is_none()
+             && last_turn_tokens_label.is_none()
+             && session_clock.is_none()
+@@ -9386,33 +9391,34 @@ impl ThreadView {
+             .justify_between()
+             .opacity(0.4)
+             .hover(|s| s.opacity(1.))
+-            .when(
+-                last_turn_tokens_label.is_some()
+-                    || last_turn_clock.is_some()
+-                    || session_clock.is_some()
+-                    || tool_usage.is_some(),
+-                |this| {
+-                    let stats = [
+-                        last_turn_tokens_label.map(IntoElement::into_any_element),
+-                        last_turn_clock.map(IntoElement::into_any_element),
+-                        session_clock.map(IntoElement::into_any_element),
+-                        tool_usage.map(IntoElement::into_any_element),
+-                    ];
+-                    this.child(
+-                        h_flex().px_1().gap_1().children(
+-                            stats
+-                                .into_iter()
+-                                .flatten()
+-                                .enumerate()
+-                                .flat_map(|(index, stat)| {
+-                                    (index > 0)
+-                                        .then(|| separator_dots().into_any_element())
+-                                        .into_iter()
+-                                        .chain([stat])
+-                                }),
+-                        ),
++            .child(
++                h_flex()
++                    .gap_2()
++                    .when(
++                        last_turn_tokens_label.is_some()
++                            || last_turn_clock.is_some()
++                            || session_clock.is_some()
++                            || tool_usage.is_some(),
++                        |this| {
++                            let stats = [
++                                last_turn_tokens_label.map(IntoElement::into_any_element),
++                                last_turn_clock.map(IntoElement::into_any_element),
++                                session_clock.map(IntoElement::into_any_element),
++                                tool_usage.map(IntoElement::into_any_element),
++                            ];
++                            this.child(h_flex().px_1().gap_1().children(
++                                stats.into_iter().flatten().enumerate().flat_map(
++                                    |(index, stat)| {
++                                        (index > 0)
++                                            .then(|| separator_dots().into_any_element())
++                                            .into_iter()
++                                            .chain([stat])
++                                    },
++                                ),
++                            ))
++                        },
+                     )
+-                },
++                    .children(turn_actions),
+             )
+             .when_some(feedback_buttons, |this, buttons| this.child(buttons))
+             .into_any_element()
+diff --git a/crates/agent_ui/src/sub_thread.rs b/crates/agent_ui/src/sub_thread.rs
+index 5fb89d0..c9f8e70 100644
+--- a/crates/agent_ui/src/sub_thread.rs
++++ b/crates/agent_ui/src/sub_thread.rs
+@@ -3,6 +3,7 @@
+ 
+ mod forked_sub_thread;
+ mod message_menu;
++mod turn_fork;
+ 
+ pub(crate) use message_menu::menu_entries;
+ 
+@@ -97,6 +98,19 @@ impl AgentPanel {
+     /// Opens a sub-thread of `request.parent_thread_id` with the quoted excerpt in its composer,
+     /// unsent, and resolves to its conversation. Takes ids and text rather than a thread view, so
+     /// a caller other than the message menu (a devtools sub-thread) can use it.
++    /// A "with context" sub-thread that keeps the parent's conversation only up to the end of
++    /// one turn (Zeo next §6.33): `cut` as `fork_session_at` takes it.
++    pub fn open_sub_thread_at(
++        &mut self,
++        request: SubThreadRequest,
++        cut: serde_json::Value,
++        focus: bool,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> Task<Result<Entity<ConversationView>>> {
++        self.open_forked_sub_thread_with(request, Some(cut), focus, window, cx)
++    }
++
+     pub fn open_sub_thread(
+         &mut self,
+         request: SubThreadRequest,
+diff --git a/crates/agent_ui/src/sub_thread/forked_sub_thread.rs b/crates/agent_ui/src/sub_thread/forked_sub_thread.rs
+index d43d3cc..b341721 100644
+--- a/crates/agent_ui/src/sub_thread/forked_sub_thread.rs
++++ b/crates/agent_ui/src/sub_thread/forked_sub_thread.rs
+@@ -26,6 +26,19 @@ impl AgentPanel {
+         focus: bool,
+         window: &mut Window,
+         cx: &mut Context<Self>,
++    ) -> Task<Result<Entity<ConversationView>>> {
++        self.open_forked_sub_thread_with(request, None, focus, window, cx)
++    }
++
++    /// The fork of R3, cut at the end of one turn when `cut` is set (Zeo next §6.33): the
++    /// agent keeps the conversation only up to that turn (`fork_session_at`).
++    pub(super) fn open_forked_sub_thread_with(
++        &mut self,
++        request: SubThreadRequest,
++        cut: Option<serde_json::Value>,
++        focus: bool,
++        window: &mut Window,
++        cx: &mut Context<Self>,
+     ) -> Task<Result<Entity<ConversationView>>> {
+         // R3.8: without directories the fork request could not say where the session works.
+         let Some(work_dirs) = request.work_dirs.clone() else {
+@@ -49,13 +62,20 @@ impl AgentPanel {
+                     connecting.ok_or_else(|| anyhow!("agent {agent_id} has no connection"))?;
+                 let connection = connecting.await.map_err(anyhow::Error::new)?.connection;
+                 let thread = cx
+-                    .update(|_, cx| {
+-                        connection.clone().fork_session(
++                    .update(|_, cx| match cut {
++                        Some(cut) => connection.clone().fork_session_at(
++                            &parent_session,
++                            project,
++                            work_dirs.clone(),
++                            cut,
++                            cx,
++                        ),
++                        None => connection.clone().fork_session(
+                             &parent_session,
+                             project,
+                             work_dirs.clone(),
+                             cx,
+-                        )
++                        ),
+                     })?
+                     .await?;
+                 Ok((connection, thread))
+diff --git a/crates/agent_ui/src/sub_thread/turn_fork.rs b/crates/agent_ui/src/sub_thread/turn_fork.rs
+new file mode 100644
+index 0000000..a7eaeff
+--- /dev/null
++++ b/crates/agent_ui/src/sub_thread/turn_fork.rs
+@@ -0,0 +1,145 @@
++//! Fork from a turn (Zeo next proposal §6.33, ask 55).
++//!
++//! The row of controls under each finished turn gains a fork button: it opens a "with context"
++//! sub-thread (story 039's fork, `0070`) that keeps the conversation only up to the end of that
++//! turn. The turn is named to the agent by the ACP id of its last agent message, which the plus
++//! adapter (0.38.0) translates to its transcript; a turn with no id falls back to its position
++//! among the user's prompts. The button shows only when the agent takes a cut point
++//! (`supports_fork_at_turn`), on the root session's view, and waits while a turn runs, as
++//! `0070`'s menu entry does.
++
++use acp_thread::{AgentThreadEntry, ThreadStatus};
++use gpui::{AnyElement, App, Context, Entity, Window};
++use serde_json::json;
++use ui::{IconButton, IconName, IconSize, Tooltip, prelude::*};
++
++use super::{SubThreadRequest, inherited_message_count};
++use crate::AgentPanel;
++use crate::conversation_view::ThreadView;
++use crate::thread_organization::ForkKind;
++
++pub(crate) const FORK_TURN_TOOLTIP: &str = "Fork to a Sub-thread from Here";
++const WAIT_FOR_TURN: &str = "Wait for the turn to end";
++
++/// How the agent is told which turn a fork keeps up to, for the turn that ends at
++/// `entry_ix`: the last agent message id of that turn, or else the turn's 1-based position
++/// among the user's prompts. `None` before the first prompt.
++pub(crate) fn turn_cut(entries: &[AgentThreadEntry], entry_ix: usize) -> Option<serde_json::Value> {
++    let entries = entries.get(..=entry_ix)?;
++    let message_id = entries
++        .iter()
++        .rev()
++        .take_while(|entry| !matches!(entry, AgentThreadEntry::UserMessage(_)))
++        .find_map(|entry| match entry {
++            AgentThreadEntry::AssistantMessage(message) => message.last_message_id(),
++            _ => None,
++        });
++    if let Some(message_id) = message_id {
++        return Some(json!({ "messageId": message_id }));
++    }
++    let turn = entries
++        .iter()
++        .filter(|entry| matches!(entry, AgentThreadEntry::UserMessage(_)))
++        .count();
++    (turn > 0).then(|| json!({ "turn": turn }))
++}
++
++impl ThreadView {
++    /// The fork button for the turn ending at `entry_ix`, or `None` where it is not offered.
++    pub(crate) fn render_fork_turn_button(
++        &self,
++        entry_ix: usize,
++        cx: &Context<Self>,
++    ) -> Option<AnyElement> {
++        let thread = self.thread.read(cx);
++        let connection = thread.connection();
++        let offered = connection.supports_fork_at_turn()
++            && (connection.supports_load_session() || connection.supports_resume_session())
++            && self.shows_root_session(cx);
++        if !offered {
++            return None;
++        }
++        let cut = turn_cut(thread.entries(), entry_ix)?;
++        let turn_running = thread.status() != ThreadStatus::Idle;
++        Some(
++            IconButton::new(("fork-turn", entry_ix), IconName::GitBranchPlus)
++                .icon_size(IconSize::Small)
++                .icon_color(Color::Muted)
++                .disabled(turn_running)
++                .tooltip(Tooltip::text(if turn_running {
++                    WAIT_FOR_TURN
++                } else {
++                    FORK_TURN_TOOLTIP
++                }))
++                .on_click(cx.listener(move |_, _, window, cx| {
++                    // The click runs inside this view's update, and opening the fork reads the
++                    // view again through its handle: defer it past the update, or it panics
++                    // ("already being updated", seen on the Xvfb proof).
++                    let thread_view = cx.entity();
++                    let cut = cut.clone();
++                    window.defer(cx, move |window, cx| {
++                        open_fork_at_turn(&thread_view, entry_ix, cut, window, cx);
++                    });
++                }))
++                .into_any_element(),
++        )
++    }
++}
++
++fn open_fork_at_turn(
++    thread_view: &Entity<ThreadView>,
++    entry_ix: usize,
++    cut: serde_json::Value,
++    window: &mut Window,
++    cx: &mut App,
++) {
++    let view = thread_view.read(cx);
++    let thread = view.thread.read(cx);
++    let parent_session_id = thread.session_id().clone();
++    let Some(agent) = view
++        .server_view
++        .upgrade()
++        .map(|conversation| conversation.read(cx).agent_key().clone())
++    else {
++        log::warn!(
++            "zeo_sub_thread event=open_failed parent_session={parent_session_id} kind=with_context source=turn reason=no_conversation"
++        );
++        return;
++    };
++    let entries = thread.entries();
++    let kept = entries.get(..=entry_ix).unwrap_or(entries);
++    let request = SubThreadRequest {
++        parent_thread_id: view.root_thread_id,
++        parent_session_id: parent_session_id.clone(),
++        agent,
++        work_dirs: thread.work_dirs().cloned(),
++        kind: ForkKind::WithContext,
++        excerpt: "".into(),
++        inherited_messages: Some(inherited_message_count(kept)),
++    };
++    let Some(panel) = view
++        .workspace
++        .upgrade()
++        .and_then(|workspace| workspace.read(cx).panel::<AgentPanel>(cx))
++    else {
++        log::warn!(
++            "zeo_sub_thread event=open_failed parent_session={parent_session_id} kind=with_context source=turn reason=no_agent_panel"
++        );
++        return;
++    };
++    let opening = panel.update(cx, |panel, cx| {
++        panel.open_sub_thread_at(request, cut, true, window, cx)
++    });
++    cx.spawn(async move |_| {
++        if let Err(error) = opening.await {
++            log::warn!(
++                "zeo_sub_thread event=open_failed parent_session={parent_session_id} kind=with_context source=turn: {error:#}"
++            );
++        }
++    })
++    .detach();
++}
++
++#[cfg(test)]
++#[path = "turn_fork_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/sub_thread/turn_fork_tests.rs b/crates/agent_ui/src/sub_thread/turn_fork_tests.rs
+new file mode 100644
+index 0000000..33aee43
+--- /dev/null
++++ b/crates/agent_ui/src/sub_thread/turn_fork_tests.rs
+@@ -0,0 +1,125 @@
++// Zeo next proposal §6.33 (ask 55): which turn a fork from the turn's controls names.
++// Filter: `turn_fork::tests`.
++
++use std::path::Path;
++use std::rc::Rc;
++
++use acp_thread::{AcpThread, AgentConnection as _, StubAgentConnection};
++use agent_client_protocol::v1::schema as acp_v1;
++use fs::FakeFs;
++use gpui::{Entity, TestAppContext};
++use project::Project;
++use serde_json::json;
++use util::path_list::PathList;
++
++use super::turn_cut;
++
++fn user(text: &str) -> acp_v1::SessionUpdate {
++    acp_v1::SessionUpdate::UserMessageChunk(acp_v1::ContentChunk::new(text.into()))
++}
++
++fn says(text: &str, id: Option<&str>) -> acp_v1::SessionUpdate {
++    let chunk = acp_v1::ContentChunk::new(text.into());
++    let chunk = match id {
++        Some(id) => chunk.message_id(acp_v1::MessageId::new(id)),
++        None => chunk,
++    };
++    acp_v1::SessionUpdate::AgentMessageChunk(chunk)
++}
++
++fn tool(id: &str) -> acp_v1::SessionUpdate {
++    acp_v1::SessionUpdate::ToolCall(acp_v1::ToolCall::new(
++        acp_v1::ToolCallId::new(id.to_string()),
++        "Read the changelog",
++    ))
++}
++
++async fn thread_of(
++    updates: Vec<acp_v1::SessionUpdate>,
++    cx: &mut TestAppContext,
++) -> Entity<AcpThread> {
++    crate::test_support::init_test(cx);
++    let project = Project::test(FakeFs::new(cx.executor()), [], cx).await;
++    let connection = Rc::new(StubAgentConnection::new());
++    let thread = cx
++        .update(|cx| {
++            connection
++                .clone()
++                .new_session(project, PathList::new(&[Path::new("/project")]), cx)
++        })
++        .await
++        .expect("a stub session");
++    let session_id = thread.read_with(cx, |thread, _| thread.session_id().clone());
++    for update in updates {
++        cx.update(|cx| connection.send_update(session_id.clone(), update, cx));
++    }
++    cx.run_until_parked();
++    thread
++}
++
++fn cut_at(
++    thread: &Entity<AcpThread>,
++    entry_ix: usize,
++    cx: &TestAppContext,
++) -> Option<serde_json::Value> {
++    thread.read_with(cx, |thread, _| turn_cut(thread.entries(), entry_ix))
++}
++
++#[gpui::test]
++async fn names_the_turn_by_its_last_agent_message_id(cx: &mut TestAppContext) {
++    // [user, agent msg_1, tool, agent msg_2, user, agent msg_3]
++    let thread = thread_of(
++        vec![
++            user("first"),
++            says("looking", Some("msg_1")),
++            tool("t1"),
++            says("done", Some("msg_2")),
++            user("second"),
++            says("ok", Some("msg_3")),
++        ],
++        cx,
++    )
++    .await;
++    assert_eq!(
++        cut_at(&thread, 3, cx),
++        Some(json!({ "messageId": "msg_2" }))
++    );
++    assert_eq!(
++        cut_at(&thread, 5, cx),
++        Some(json!({ "messageId": "msg_3" }))
++    );
++}
++
++/// Hostile: the id must come from the turn being forked, never from an earlier turn, even
++/// when that turn's own messages carry none.
++#[gpui::test]
++async fn an_id_from_an_earlier_turn_is_never_used(cx: &mut TestAppContext) {
++    let thread = thread_of(
++        vec![
++            user("first"),
++            says("one", Some("msg_1")),
++            user("second"),
++            says("two", None),
++        ],
++        cx,
++    )
++    .await;
++    assert_eq!(
++        cut_at(&thread, 3, cx),
++        Some(json!({ "turn": 2 })),
++        "no id in this turn: its position, not msg_1"
++    );
++}
++
++#[gpui::test]
++async fn nothing_to_fork_before_the_first_prompt(cx: &mut TestAppContext) {
++    let thread = thread_of(vec![says("hello", Some("msg_0"))], cx).await;
++    assert_eq!(
++        cut_at(&thread, 0, cx),
++        Some(json!({ "messageId": "msg_0" })),
++        "an agent message alone still names itself"
++    );
++    let empty = thread_of(vec![tool("t0")], cx).await;
++    assert_eq!(cut_at(&empty, 0, cx), None);
++    assert_eq!(cut_at(&empty, 9, cx), None, "an index past the entries");
++}

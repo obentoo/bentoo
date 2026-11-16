@@ -1,0 +1,573 @@
+From 4aa7e374277ad44bba8de228561fdb0b67162604 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Sun, 15 Nov 2026 14:45:11 -0300
+Subject: [PATCH] workspace, settings_ui: order the status bar's panel buttons
+ in the settings window
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.36 (ask 59), second half. Upstream orders each dock's
+buttons by the panels' fixed activation_priority, and a button changes
+side only with its panel's dock (right-click → Dock Left/Right/Bottom).
+The operator asked to order them from the settings window -- explicitly
+not by drag and drop, which would live in this crate's most-changed code
+and be rebased on every bump.
+
+- `status_bar.panel_button_order` (default []) lists panel persistent
+  names. workspace::panel_button_order::order_by_setting puts the listed
+  panels first, in the listed order, and keeps everything else where
+  upstream put it; a name listed twice or carried by no panel changes
+  nothing and no button is ever dropped. PanelButtons::render tags each
+  button with its panel's name and applies it after upstream reverses
+  the right dock, so the order reads left to right as shown.
+- Settings → Window & Layout → Status Bar → "Panel Button Order" is a
+  sub-page (settings_ui/src/pages/panel_button_order_page.rs) listing the
+  panels of the window the settings were opened from, by side, with up
+  and down arrows (disabled at the ends) and "Reset to Default". Each move
+  writes the whole order (move_panel), so the file always says exactly
+  what is shown. Dock gains panel_names() for it. Labels split the
+  persistent name ("GitPanel" → "Git Panel").
+- The VS Code import, which builds StatusBarSettingsContent field by
+  field, leaves the new field None.
+
+Known limit: the page lists every panel of a dock, including one that
+draws no button (a hidden panel); moving it changes nothing visible.
+Telling them apart needs each panel's icon(), which takes the original
+window's context.
+
+Tests: panel_button_order::tests (6: no setting changes nothing; listed
+first in order; unknown and repeated names ignored, nothing lost; a move
+swaps neighbours; moves stop at their side's ends; labels) and
+panel_button_order_page::tests (2: groups follow the status bar and skip
+empty sides; the setting applies per side). Seen failing with the
+setting ignored (3 ordering tests) and with the bounds check removed
+(the ends test), each probe alone. Xvfb proof in the hub:
+docs/assets/zeo-6.36-remote-button-2026-11-15/ (the order page, a move,
+the status bar before and after, the written setting).
+---
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index 27202b2..d851acc 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -2104,6 +2104,9 @@
+     "active_language_button": true,
+     // Whether to show the button that opens a remote project in the status bar.
+     "remote_projects_button": true,
++    // The order of the panel buttons, by panel name, left to right within each side.
++    // Listed panels come first in this order; the others keep their default place.
++    "panel_button_order": [],
+     // Whether to show the cursor position button in the status bar.
+     "cursor_position_button": true,
+     // Whether to show active line endings button in the status bar.
+diff --git a/crates/settings/src/vscode_import.rs b/crates/settings/src/vscode_import.rs
+index 07b619a..36db254 100644
+--- a/crates/settings/src/vscode_import.rs
++++ b/crates/settings/src/vscode_import.rs
+@@ -851,6 +851,7 @@ impl VsCodeSettings {
+             active_encoding_button: None,
+             pending_keystrokes_indicator: None,
+             remote_projects_button: None,
++            panel_button_order: None,
+         })
+     }
+ 
+diff --git a/crates/settings_content/src/workspace.rs b/crates/settings_content/src/workspace.rs
+index bfab556..c132fc3 100644
+--- a/crates/settings_content/src/workspace.rs
++++ b/crates/settings_content/src/workspace.rs
+@@ -628,6 +628,11 @@ pub struct StatusBarSettingsContent {
+     ///
+     /// Default: true
+     pub remote_projects_button: Option<bool>,
++    /// The order of the panel buttons, by panel name, left to right within each side.
++    /// Listed panels come first in this order; the others keep their default place.
++    ///
++    /// Default: []
++    pub panel_button_order: Option<Vec<String>>,
+ }
+ 
+ #[derive(
+diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_data.rs
+index 1b78911..103877a 100644
+--- a/crates/settings_ui/src/page_data.rs
++++ b/crates/settings_ui/src/page_data.rs
+@@ -4172,7 +4172,7 @@ fn search_and_files_page() -> SettingsPage {
+ }
+ 
+ fn window_and_layout_page() -> SettingsPage {
+-    fn status_bar_section() -> [SettingsPageItem; 14] {
++    fn status_bar_section() -> [SettingsPageItem; 15] {
+         [
+             SettingsPageItem::SectionHeader("Status Bar"),
+             SettingsPageItem::SettingItem(SettingItem {
+@@ -4194,6 +4194,23 @@ fn window_and_layout_page() -> SettingsPage {
+                 metadata: None,
+                 files: USER,
+             }),
++            SettingsPageItem::SubPageLink(SubPageLink {
++                title: "Panel Button Order".into(),
++                r#type: Default::default(),
++                json_path: Some("status_bar.panel_button_order"),
++                description: Some("Order the panel buttons on each side of the status bar.".into()),
++                search_aliases: &[
++                    "buttons",
++                    "dock",
++                    "order",
++                    "panels",
++                    "reorder",
++                    "status bar",
++                ],
++                in_json: true,
++                files: USER,
++                render: crate::pages::render_panel_button_order_page,
++            }),
+             SettingsPageItem::SettingItem(SettingItem {
+                 title: "Remote Projects Button",
+                 description: "Show the button that opens a remote project in the status bar.",
+diff --git a/crates/settings_ui/src/pages.rs b/crates/settings_ui/src/pages.rs
+index 8f00c8e..bb4b3c9 100644
+--- a/crates/settings_ui/src/pages.rs
++++ b/crates/settings_ui/src/pages.rs
+@@ -6,6 +6,7 @@ mod external_agents_page;
+ mod feature_flags;
+ mod llm_providers_page;
+ mod mcp_servers_page;
++mod panel_button_order_page;
+ mod sandbox_settings;
+ mod skill_creator;
+ mod skills_setup;
+@@ -27,6 +28,7 @@ pub(crate) use llm_providers_page::{
+ pub(crate) use mcp_servers_page::{
+     McpServerForm, render_add_server_popover, render_mcp_servers_page,
+ };
++pub(crate) use panel_button_order_page::render_panel_button_order_page;
+ pub(crate) use sandbox_settings::render_sandbox_settings_page;
+ pub use skill_creator::SkillCreatorOpenMode;
+ pub(crate) use skill_creator::{
+diff --git a/crates/settings_ui/src/pages/panel_button_order_page.rs b/crates/settings_ui/src/pages/panel_button_order_page.rs
+new file mode 100644
+index 0000000..c140deb
+--- /dev/null
++++ b/crates/settings_ui/src/pages/panel_button_order_page.rs
+@@ -0,0 +1,202 @@
++//! Settings → Status Bar → Panel Button Order (Zeo next proposal §6.36, ask 59).
++//!
++//! Lists the panel buttons of the window the settings were opened from, side by side as the
++//! status bar shows them, with up and down arrows. Each move writes the whole order to
++//! `status_bar.panel_button_order` (see `workspace::panel_button_order`). A button changes side
++//! only with its panel's dock, which upstream already offers on the button's right-click menu;
++//! the page says so rather than duplicating it.
++
++use std::sync::Arc;
++
++use fs::Fs;
++use gpui::{AnyElement, App, ScrollHandle, Window};
++use settings::{Settings as _, update_settings_file};
++use ui::{Button, IconButton, IconName, IconSize, Label, LabelSize, Tooltip, prelude::*};
++use workspace::StatusBarSettings;
++use workspace::panel_button_order::{move_panel, order_by_setting, panel_label};
++
++use crate::SettingsWindow;
++
++/// One side of the status bar: its label and its buttons' panel names as shown.
++pub(crate) type PanelGroup = (&'static str, Vec<&'static str>);
++
++/// The buttons of each side as the status bar shows them: upstream's order per dock, the right
++/// dock reversed as upstream draws it, then the setting's order. Empty sides are left out.
++pub(crate) fn shown_groups(
++    left: Vec<&'static str>,
++    bottom: Vec<&'static str>,
++    mut right: Vec<&'static str>,
++    order: &[String],
++) -> Vec<PanelGroup> {
++    right.reverse();
++    [("Left", left), ("Bottom", bottom), ("Right", right)]
++        .into_iter()
++        .map(|(side, names)| {
++            let tagged = names.into_iter().map(|name| (name, name)).collect();
++            (side, order_by_setting(tagged, order))
++        })
++        .filter(|(_, names)| !names.is_empty())
++        .collect()
++}
++
++fn groups_for_window(settings_window: &SettingsWindow, cx: &App) -> Option<Vec<PanelGroup>> {
++    let multi_workspace = settings_window.original_window?.read(cx).ok()?;
++    let workspace = multi_workspace.workspace().read(cx);
++    Some(shown_groups(
++        workspace.left_dock().read(cx).panel_names(),
++        workspace.bottom_dock().read(cx).panel_names(),
++        workspace.right_dock().read(cx).panel_names(),
++        &StatusBarSettings::get_global(cx).panel_button_order,
++    ))
++}
++
++fn write_order(order: Vec<String>, cx: &App) {
++    update_settings_file(<dyn Fs>::global(cx), cx, move |content, _| {
++        content
++            .status_bar
++            .get_or_insert_default()
++            .panel_button_order = Some(order);
++    });
++}
++
++fn move_button(
++    id: SharedString,
++    icon: IconName,
++    tooltip: &'static str,
++    enabled: bool,
++    groups: Arc<Vec<Vec<&'static str>>>,
++    name: &'static str,
++    delta: isize,
++) -> IconButton {
++    IconButton::new(id, icon)
++        .icon_size(IconSize::Small)
++        .disabled(!enabled)
++        .tooltip(Tooltip::text(tooltip))
++        .on_click(move |_, _, cx| write_order(move_panel(&groups, name, delta), cx))
++}
++
++fn render_group(
++    side: &'static str,
++    names: &[&'static str],
++    groups: &Arc<Vec<Vec<&'static str>>>,
++) -> AnyElement {
++    let last = names.len().saturating_sub(1);
++    v_flex()
++        .gap_1()
++        .child(Label::new(side).size(LabelSize::Small).color(Color::Muted))
++        .children(names.iter().enumerate().map(|(ix, &name)| {
++            h_flex()
++                .debug_selector(move || format!("panel-button-order-row-{name}"))
++                .gap_2()
++                .child(move_button(
++                    format!("panel-button-order-up-{name}").into(),
++                    IconName::ArrowUp,
++                    "Move Left",
++                    ix > 0,
++                    groups.clone(),
++                    name,
++                    -1,
++                ))
++                .child(move_button(
++                    format!("panel-button-order-down-{name}").into(),
++                    IconName::ArrowDown,
++                    "Move Right",
++                    ix < last,
++                    groups.clone(),
++                    name,
++                    1,
++                ))
++                .child(Label::new(panel_label(name)))
++        }))
++        .into_any_element()
++}
++
++pub(crate) fn render_panel_button_order_page(
++    settings_window: &SettingsWindow,
++    scroll_handle: &ScrollHandle,
++    _window: &mut Window,
++    cx: &mut Context<SettingsWindow>,
++) -> AnyElement {
++    let content = match groups_for_window(settings_window, cx) {
++        Some(groups) if !groups.is_empty() => {
++            let all: Arc<Vec<Vec<&'static str>>> =
++                Arc::new(groups.iter().map(|(_, names)| names.clone()).collect());
++            v_flex()
++                .gap_4()
++                .children(
++                    groups
++                        .iter()
++                        .map(|(side, names)| render_group(side, names, &all)),
++                )
++                .into_any_element()
++        }
++        _ => Label::new("Open the settings from a Zeo window to order its panel buttons.")
++            .color(Color::Muted)
++            .into_any_element(),
++    };
++    v_flex()
++        .id("panel-button-order-page")
++        .debug_selector(|| "panel-button-order-page".into())
++        .size_full()
++        .gap_4()
++        .pt_2p5()
++        .px_8()
++        .pb_16()
++        .overflow_y_scroll()
++        .track_scroll(scroll_handle)
++        .child(
++            Label::new(
++                "The order of the panel buttons in the status bar, left to right on each side. \
++                 A button changes side with its panel: right-click it and choose another dock.",
++            )
++            .color(Color::Muted),
++        )
++        .child(content)
++        .child(
++            Button::new("panel-button-order-reset", "Reset to Default")
++                .on_click(|_, _, cx| write_order(Vec::new(), cx)),
++        )
++        .into_any_element()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn groups_follow_the_status_bar_and_skip_empty_sides() {
++        let groups = shown_groups(
++            vec!["Project Panel", "GitPanel"],
++            vec![],
++            vec!["AgentPanel", "NotificationPanel"],
++            &[],
++        );
++        assert_eq!(
++            groups,
++            vec![
++                ("Left", vec!["Project Panel", "GitPanel"]),
++                // Upstream draws the right dock reversed.
++                ("Right", vec!["NotificationPanel", "AgentPanel"]),
++            ]
++        );
++    }
++
++    #[test]
++    fn groups_apply_the_setting_on_each_side() {
++        let order = vec!["GitPanel".to_string(), "AgentPanel".to_string()];
++        let groups = shown_groups(
++            vec!["Project Panel", "GitPanel"],
++            vec!["TerminalPanel"],
++            vec!["AgentPanel", "NotificationPanel"],
++            &order,
++        );
++        assert_eq!(
++            groups,
++            vec![
++                ("Left", vec!["GitPanel", "Project Panel"]),
++                ("Bottom", vec!["TerminalPanel"]),
++                ("Right", vec!["AgentPanel", "NotificationPanel"]),
++            ]
++        );
++    }
++}
+diff --git a/crates/workspace/src/dock.rs b/crates/workspace/src/dock.rs
+index 41b3df0..a092b1d 100644
+--- a/crates/workspace/src/dock.rs
++++ b/crates/workspace/src/dock.rs
+@@ -927,6 +927,14 @@ impl Dock {
+         self.panel_entries.len()
+     }
+ 
++    /// The persistent names of this dock's panels, in upstream's order (§6.36).
++    pub fn panel_names(&self) -> Vec<&'static str> {
++        self.panel_entries
++            .iter()
++            .map(|entry| entry.panel.persistent_name())
++            .collect()
++    }
++
+     pub fn has_agent_panel(&self, cx: &App) -> bool {
+         self.panel_entries
+             .iter()
+@@ -1444,7 +1452,8 @@ impl Render for PanelButtons {
+                 let focus_handle = dock.panel_button_focus_handle(window, cx);
+                 let icon_label = entry.panel.icon_label(window, cx);
+ 
+-                Some(
++                Some((
++                    name,
+                     right_click_menu(name)
+                         .menu(move |window, cx| {
+                             const POSITIONS: [DockPosition; 3] = [
+@@ -1565,13 +1574,18 @@ impl Render for PanelButtons {
+                                 |this, count| this.child(CountBadge::new(count)),
+                             )
+                         }),
+-                )
++                ))
+             })
+             .collect();
+ 
+         if dock_position == DockPosition::Right {
+             buttons.reverse();
+         }
++        // §6.36: the operator's order, read left to right as the buttons are shown.
++        let buttons = crate::panel_button_order::order_by_setting(
++            buttons,
++            &crate::StatusBarSettings::get_global(cx).panel_button_order,
++        );
+ 
+         let has_buttons = !buttons.is_empty();
+ 
+diff --git a/crates/workspace/src/panel_button_order.rs b/crates/workspace/src/panel_button_order.rs
+new file mode 100644
+index 0000000..b39aca9
+--- /dev/null
++++ b/crates/workspace/src/panel_button_order.rs
+@@ -0,0 +1,66 @@
++//! The order of the status bar's panel buttons (Zeo next proposal §6.36, ask 59).
++//!
++//! Upstream orders each dock's buttons by the panels' fixed `activation_priority`, and a button
++//! moves between sides only with its panel's dock (right-click → Dock Left/Right). The operator
++//! asked to order them in the settings window instead of by drag and drop, which would live in
++//! this crate's most-changed code. `status_bar.panel_button_order` lists panel persistent names;
++//! within each dock, listed panels come first in the listed order and the rest keep upstream's.
++//! The order is read left to right as the buttons are shown, so the right dock's buttons are
++//! ordered after upstream reverses them.
++
++/// Reorders `items` (each tagged with its panel's persistent name) by `order`: the listed names
++/// first, in the listed order, then everything else in its original order. A name that is listed
++/// twice, or carried by no item, changes nothing; no item is ever dropped.
++pub fn order_by_setting<T>(items: Vec<(&'static str, T)>, order: &[String]) -> Vec<T> {
++    let mut items: Vec<Option<(&'static str, T)>> = items.into_iter().map(Some).collect();
++    let mut ordered = Vec::with_capacity(items.len());
++    for name in order {
++        if let Some(slot) = items
++            .iter_mut()
++            .find(|slot| slot.as_ref().is_some_and(|(item, _)| item == name))
++            && let Some((_, item)) = slot.take()
++        {
++            ordered.push(item);
++        }
++    }
++    ordered.extend(items.into_iter().flatten().map(|(_, item)| item));
++    ordered
++}
++
++/// The whole order after moving `name` one place (`delta` -1 up/left, +1 down/right) inside its
++/// own group. `groups` are the docks' buttons as shown, each in its current order; the answer
++/// concatenates them, ready to be written as `status_bar.panel_button_order`. A move past either
++/// end of a group, or of a name no group carries, leaves the order as it is.
++pub fn move_panel(groups: &[Vec<&'static str>], name: &str, delta: isize) -> Vec<String> {
++    let mut groups: Vec<Vec<&'static str>> = groups.to_vec();
++    for group in &mut groups {
++        if let Some(ix) = group.iter().position(|item| *item == name) {
++            let target = ix as isize + delta;
++            if target >= 0 && (target as usize) < group.len() {
++                group.swap(ix, target as usize);
++            }
++            break;
++        }
++    }
++    groups.into_iter().flatten().map(str::to_string).collect()
++}
++
++/// A readable label for a persistent name: "GitPanel" → "Git Panel". Names that already have
++/// spaces are left as they are.
++pub fn panel_label(name: &str) -> String {
++    if name.contains(' ') {
++        return name.to_string();
++    }
++    let mut label = String::with_capacity(name.len() + 4);
++    for (ix, ch) in name.chars().enumerate() {
++        if ix > 0 && ch.is_uppercase() {
++            label.push(' ');
++        }
++        label.push(ch);
++    }
++    label
++}
++
++#[cfg(test)]
++#[path = "panel_button_order_tests.rs"]
++mod tests;
+diff --git a/crates/workspace/src/panel_button_order_tests.rs b/crates/workspace/src/panel_button_order_tests.rs
+new file mode 100644
+index 0000000..72e74c4
+--- /dev/null
++++ b/crates/workspace/src/panel_button_order_tests.rs
+@@ -0,0 +1,58 @@
++// Zeo next proposal §6.36 (ask 59): the order of the status bar's panel buttons.
++// Filter: `panel_button_order::tests`.
++
++use super::{move_panel, order_by_setting, panel_label};
++
++fn names(items: Vec<&'static str>) -> Vec<&'static str> {
++    items
++}
++
++#[test]
++fn without_a_setting_the_order_is_unchanged() {
++    let shown = order_by_setting(vec![("A", 1), ("B", 2), ("C", 3)], &[]);
++    assert_eq!(shown, vec![1, 2, 3]);
++}
++
++#[test]
++fn listed_panels_come_first_in_the_listed_order() {
++    let order = vec!["C".to_string(), "A".to_string()];
++    let shown = order_by_setting(vec![("A", 1), ("B", 2), ("C", 3)], &order);
++    assert_eq!(shown, vec![3, 1, 2]);
++}
++
++/// Hostile: a name in the setting that no panel in this dock carries -- a panel of the other
++/// side, a removed extension, a typo -- changes nothing and loses nothing.
++#[test]
++fn unknown_names_are_ignored_and_no_button_is_lost() {
++    let order = vec!["Gone".to_string(), "B".to_string(), "B".to_string()];
++    let shown = order_by_setting(vec![("A", 1), ("B", 2), ("C", 3)], &order);
++    assert_eq!(shown, vec![2, 1, 3]);
++}
++
++#[test]
++fn moving_a_panel_swaps_it_with_its_neighbour() {
++    let groups = vec![names(vec!["A", "B", "C"]), names(vec!["X", "Y"])];
++    assert_eq!(
++        move_panel(&groups, "B", -1),
++        vec!["B", "A", "C", "X", "Y"],
++        "up swaps with the one before"
++    );
++    assert_eq!(move_panel(&groups, "X", 1), vec!["A", "B", "C", "Y", "X"]);
++}
++
++/// Hostile: the ends do not wrap, and a move never crosses into another dock's group.
++#[test]
++fn moving_stops_at_the_ends_of_its_own_side() {
++    let groups = vec![names(vec!["A", "B"]), names(vec!["X", "Y"])];
++    assert_eq!(move_panel(&groups, "A", -1), vec!["A", "B", "X", "Y"]);
++    assert_eq!(move_panel(&groups, "B", 1), vec!["A", "B", "X", "Y"]);
++    assert_eq!(move_panel(&groups, "missing", 1), vec!["A", "B", "X", "Y"]);
++}
++
++#[test]
++fn labels_split_the_persistent_name() {
++    assert_eq!(panel_label("GitPanel"), "Git Panel");
++    assert_eq!(panel_label("AgentPanel"), "Agent Panel");
++    assert_eq!(panel_label("Project Panel"), "Project Panel");
++    assert_eq!(panel_label("DebugPanel"), "Debug Panel");
++}
+diff --git a/crates/workspace/src/workspace.rs b/crates/workspace/src/workspace.rs
+index a501378..b2262a9 100644
+--- a/crates/workspace/src/workspace.rs
++++ b/crates/workspace/src/workspace.rs
+@@ -13,6 +13,7 @@ pub mod pane_group;
+ pub mod path_list {
+     pub use util::path_list::{PathList, SerializedPathList};
+ }
++pub mod panel_button_order;
+ pub mod path_link;
+ mod persistence;
+ pub mod searchable;
+diff --git a/crates/workspace/src/workspace_settings.rs b/crates/workspace/src/workspace_settings.rs
+index a6df916..55e628e 100644
+--- a/crates/workspace/src/workspace_settings.rs
++++ b/crates/workspace/src/workspace_settings.rs
+@@ -227,6 +227,7 @@ pub struct StatusBarSettings {
+     pub active_encoding_button: EncodingDisplayOptions,
+     pub pending_keystrokes_indicator: bool,
+     pub remote_projects_button: bool,
++    pub panel_button_order: Vec<String>,
+ }
+ 
+ impl Settings for StatusBarSettings {
+@@ -241,6 +242,7 @@ impl Settings for StatusBarSettings {
+             active_encoding_button: status_bar.active_encoding_button.unwrap(),
+             pending_keystrokes_indicator: status_bar.pending_keystrokes_indicator.unwrap(),
+             remote_projects_button: status_bar.remote_projects_button.unwrap(),
++            panel_button_order: status_bar.panel_button_order.unwrap(),
+         }
+     }
+ }

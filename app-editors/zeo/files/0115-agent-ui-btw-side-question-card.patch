@@ -1,0 +1,668 @@
+From da2702c347218dc933ac4c326acb723bac2698f4 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Sun, 15 Nov 2026 18:05:39 -0300
+Subject: [PATCH] agent_ui: /btw asks a side question, answered in a card
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.8 (ask 29), the `/btw` half. A composer message that
+starts with `/btw` goes to the agent at once -- while a turn runs it is
+not queued behind it, and Send Now does not stop the turn for it --
+through Claude Agent (Plus) 0.38.0's `_claude/btw`, and the answer shows
+in a dismissable card above the composer. The answer never enters the
+conversation: the agent keeps it out of the session's transcript.
+
+- acp_thread: AgentConnection gains supports_side_question and
+  ask_side_question -> SideAnswer {answer, fallback_model}; the default
+  refuses. SIDE_QUESTION_MAX_CHARS (8000) is plus's own limit
+  (BTW_MAX_QUESTION_CHARS), checked before asking.
+- agent_servers (v1): `_claude/btw` {sessionId, question} through
+  send_task_request when the agent advertises `_claude/btw`.
+  parse_side_question_answer reads `answered` (an answer without text is
+  an error, never an empty card) and turns no_answer, unsupported and
+  failed into words.
+- agent_ui: send() and interrupt_and_send() hand the composer to
+  send_side_question first; it takes the message only when the agent
+  answers side questions and the text is `/btw` as the whole first word
+  (side_question_invocation, as plus's parseBtwInvocation reads it), and
+  clears the composer. A bare `/btw` shows how to use it; a question past
+  the limit is refused in the card. The card (SideQuestionCard, per
+  thread view) keeps to the composer's column (§6.30) below the context
+  card: "By the way", the question, a dismiss button, the answer as
+  Markdown in a 240 px body that scrolls with an always-visible bar, and
+  "Not added to the conversation" (with the fallback model when one
+  answered). A new question replaces the card and drops the earlier
+  request's task, so a late answer never lands in a newer card.
+
+An agent that does not advertise `_claude/btw` gets `/btw` as before, as
+a prompt (plus answers that too, as an agent message). The composer's
+history (0044) is read from the transcript, so Up does not recall a
+side question.
+
+Tests: v1::side_question_tests (4) -- an answer with and without its
+fallback model, `answered` without text is an error, every other status
+in words; side_question_card::tests (4) -- the question after the
+command, a bare command asks for usage, anything else is not a side
+question (`/btwx`, a prompt that mentions /btw), the limit counted in
+characters. Seen failing: three probes at once, each on its own function
+(the whole-word check removed, the limit counted in bytes, an answer
+without text accepted) failed exactly those three tests. Xvfb proof with
+a stub agent that holds its turn for 25 s, in the hub:
+docs/assets/zeo-6.8-btw-and-steer-2026-11-15/ (the stub received one
+prompt and one `_claude/btw` with the question; the card answered while
+the turn ran, nothing was queued, and the transcript after the turn held
+the prompt and its reply only).
+---
+
+diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
+index 4fdf6a0..2abae80 100644
+--- a/crates/acp_thread/src/connection.rs
++++ b/crates/acp_thread/src/connection.rs
+@@ -103,6 +103,21 @@ pub struct RewindOutcome {
+     pub files_restored: bool,
+ }
+ 
++/// The most a side question (`AgentConnection::ask_side_question`) may carry: Claude Agent
++/// (Plus) 0.38.0 refuses a longer one (`BTW_MAX_QUESTION_CHARS`, its `side-question.ts`), so the
++/// client says so before asking (Zeo next proposal §6.8).
++pub const SIDE_QUESTION_MAX_CHARS: usize = 8000;
++
++/// An answered side question, `/btw` (Zeo next proposal §6.8, ask 29). The answer never enters
++/// the session's transcript: the model's history is unchanged.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct SideAnswer {
++    /// Markdown, as the model wrote it.
++    pub answer: String,
++    /// The model that answered when the session's own model refused, as the agent reports it.
++    pub fallback_model: Option<String>,
++}
++
+ pub trait AgentConnection {
+     fn agent_id(&self) -> AgentId;
+ 
+@@ -255,6 +270,23 @@ pub trait AgentConnection {
+         )))
+     }
+ 
++    /// Whether `ask_side_question` is offered (Zeo next proposal §6.8).
++    fn supports_side_question(&self) -> bool {
++        false
++    }
++
++    /// Ask a side question (`/btw`) beside the running turn, or between turns (Zeo next
++    /// proposal §6.8, ask 29). The answer goes back to the caller and never into the
++    /// transcript. The default refuses.
++    fn ask_side_question(
++        self: Rc<Self>,
++        _session_id: &acp_v2::SessionId,
++        _question: String,
++        _cx: &mut App,
++    ) -> Task<Result<SideAnswer>> {
++        Task::ready(Err(anyhow::Error::msg("Side questions are not supported")))
++    }
++
+     /// Read the end of one of the session's tasks' output (`_claude/tasks/output`,
+     /// version 2). Unsupported unless the connection overrides it.
+     fn fetch_task_output(
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index f3a475e..350e920 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -69,6 +69,10 @@ const CLAUDE_REWIND_METHOD: &str = "_claude/rewind";
+ const CLAUDE_CONTEXT_CAPABILITY: &str = "_claude/context";
+ /// What fills a session's context window, by category (plus 0.38.0).
+ const CLAUDE_CONTEXT_USAGE_METHOD: &str = "_claude/context/usage";
++/// Advertised by the plus adapter from 0.38.0, with the method of the same name (Zeo next §6.8).
++const CLAUDE_BTW_CAPABILITY: &str = "_claude/btw";
++/// A side question, answered outside the transcript (plus 0.38.0).
++const CLAUDE_BTW_METHOD: &str = "_claude/btw";
+ /// Where a `session/fork` names the turn it keeps up to (plus 0.38.0).
+ const CLAUDE_FORK_AT_META_KEY: &str = "_claude/forkAt";
+ /// The most `_claude/tasks/output` serves; the adapter clamps to the same value.
+@@ -190,6 +194,40 @@ fn parse_context_usage_answer(
+     }
+ }
+ 
++/// Reads a `_claude/btw` answer (plus 0.38.0's `SideQuestionResult`) into the answer, or an
++/// error in words the user can act on: the card shows it as it is.
++fn parse_side_question_answer(answer: &serde_json::Value) -> Result<acp_thread::SideAnswer> {
++    match answer.get("status").and_then(|status| status.as_str()) {
++        Some("answered") => {
++            let text = answer
++                .get("answer")
++                .and_then(|text| text.as_str())
++                .ok_or_else(|| anyhow!("{CLAUDE_BTW_METHOD} answered without an answer"))?;
++            Ok(acp_thread::SideAnswer {
++                answer: text.to_string(),
++                fallback_model: answer
++                    .get("fallbackModel")
++                    .and_then(|model| model.as_str())
++                    .map(str::to_string),
++            })
++        }
++        Some("no_answer") => Err(anyhow!("The side question got no answer.")),
++        Some("unsupported") => Err(anyhow!(
++            "This Claude Code version cannot answer side questions."
++        )),
++        Some("failed") => Err(anyhow!(
++            "The side question failed: {}",
++            answer
++                .get("message")
++                .and_then(|message| message.as_str())
++                .unwrap_or("no reason given")
++        )),
++        other => Err(anyhow!(
++            "{CLAUDE_BTW_METHOD} answered an unknown status {other:?}"
++        )),
++    }
++}
++
+ /// Reads a `_claude/tasks/output` result strictly: a missing or wrong-typed field is an
+ /// error naming it, never a default value.
+ fn parse_task_output(response: &serde_json::Value) -> Result<acp_thread::TaskOutput> {
+@@ -2095,6 +2133,9 @@ mod rewind_tests;
+ #[cfg(test)]
+ mod context_usage_tests;
+ 
++#[cfg(test)]
++mod side_question_tests;
++
+ #[cfg(test)]
+ mod fork_config_tests;
+ 
+@@ -2410,6 +2451,29 @@ impl AgentConnection for AcpConnection {
+             .spawn(async move { parse_context_usage_answer(request.await?) })
+     }
+ 
++    fn supports_side_question(&self) -> bool {
++        self.agent_advertises(CLAUDE_BTW_CAPABILITY)
++    }
++
++    fn ask_side_question(
++        self: Rc<Self>,
++        session_id: &acp_v2::SessionId,
++        question: String,
++        cx: &mut App,
++    ) -> Task<Result<acp_thread::SideAnswer>> {
++        if !self.supports_side_question() {
++            return Task::ready(Err(anyhow!("This agent does not answer side questions.")));
++        }
++        let request = send_task_request(
++            self.connection.clone(),
++            CLAUDE_BTW_METHOD,
++            serde_json::json!({ "sessionId": session_id, "question": question }),
++            session_id.to_string(),
++        );
++        cx.foreground_executor()
++            .spawn(async move { parse_side_question_answer(&request.await?) })
++    }
++
+     fn fork_session_at(
+         self: Rc<Self>,
+         session_id: &acp_v2::SessionId,
+diff --git a/crates/agent_servers/src/acp/v1/side_question_tests.rs b/crates/agent_servers/src/acp/v1/side_question_tests.rs
+new file mode 100644
+index 0000000..087badf
+--- /dev/null
++++ b/crates/agent_servers/src/acp/v1/side_question_tests.rs
+@@ -0,0 +1,55 @@
++// Zeo next proposal §6.8 (ask 29): reading Claude Agent (Plus) 0.38.0's `_claude/btw` answer.
++// Filter: `v1::side_question_tests`.
++
++use serde_json::json;
++
++use super::parse_side_question_answer;
++
++#[test]
++fn an_answer_is_read_with_its_fallback_model() {
++    let answer = parse_side_question_answer(&json!({
++        "status": "answered",
++        "answer": "It is **42**.",
++        "synthetic": false,
++        "fallbackModel": "claude-sonnet-5-5",
++    }))
++    .expect("answered");
++    assert_eq!(answer.answer, "It is **42**.");
++    assert_eq!(answer.fallback_model.as_deref(), Some("claude-sonnet-5-5"));
++}
++
++#[test]
++fn an_answer_without_a_fallback_has_none() {
++    let answer = parse_side_question_answer(&json!({
++        "status": "answered", "answer": "Yes.", "synthetic": false,
++    }))
++    .expect("answered");
++    assert_eq!(answer.fallback_model, None);
++}
++
++/// Hostile: `answered` with no text must not show an empty card as if the model said nothing.
++#[test]
++fn an_answered_status_without_text_is_an_error() {
++    let error = parse_side_question_answer(&json!({ "status": "answered" }))
++        .unwrap_err()
++        .to_string();
++    assert!(error.contains("without an answer"), "{error}");
++}
++
++#[test]
++fn every_other_status_reads_as_words() {
++    let read = |answer| parse_side_question_answer(&answer).unwrap_err().to_string();
++    assert_eq!(
++        read(json!({ "status": "no_answer" })),
++        "The side question got no answer."
++    );
++    assert_eq!(
++        read(json!({ "status": "unsupported" })),
++        "This Claude Code version cannot answer side questions."
++    );
++    assert_eq!(
++        read(json!({ "status": "failed", "message": "rate limited" })),
++        "The side question failed: rate limited"
++    );
++    assert!(read(json!({ "status": "later" })).contains("unknown status"));
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 5c92b94..679269c 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -600,6 +600,7 @@ mod content_column;
+ mod context_usage_card;
+ mod context_usage_report;
+ mod pinned_message;
++mod side_question_card;
+ 
+ #[cfg(test)]
+ mod numbered_code_block_tests {
+@@ -834,6 +835,8 @@ pub struct ThreadView {
+     pinned_message_fit: pinned_message::PinnedMessageFit,
+     /// §6.34: the context ring's breakdown card, while it is open.
+     context_usage_card: Option<context_usage_card::ContextUsageCard>,
++    /// §6.8: the `/btw` card, while it is open.
++    side_question_card: Option<side_question_card::SideQuestionCard>,
+     /// The bottom edge, in window coordinates, of whatever floats over the top of the
+     /// conversation in the frame being drawn -- today the pinned user message -- or `None`.
+     /// Written at prepaint by the overlay itself; the tasks card reads it to sit below.
+@@ -1405,6 +1408,7 @@ impl ThreadView {
+             pinned_message_scroll: ScrollHandle::new(),
+             pinned_message_fit: Default::default(),
+             context_usage_card: None,
++            side_question_card: None,
+             top_overlay_bottom: Default::default(),
+             _cancel_task: None,
+             _save_task: None,
+@@ -2311,6 +2315,10 @@ impl ThreadView {
+             );
+             return;
+         }
++        // §6.8: a `/btw` goes out at once, whether or not a turn runs, instead of queueing.
++        if !self.is_loading_contents && self.send_side_question(window, cx) {
++            return;
++        }
+         let thread = &self.thread;
+ 
+         if self.is_loading_contents {
+@@ -2781,6 +2789,10 @@ impl ThreadView {
+             );
+             return;
+         }
++        // §6.8: a side question never stops the turn it is asked beside.
++        if !self.is_loading_contents && self.send_side_question(window, cx) {
++            return;
++        }
+         let thread = &self.thread;
+ 
+         if self.is_loading_contents {
+@@ -16436,6 +16448,7 @@ impl Render for ThreadView {
+             .children(self.render_token_limit_callout(cx))
+             .children(self.render_docked_tasks_card(cx))
+             .children(self.render_context_usage_card(cx))
++            .children(self.render_side_question_card(window, cx))
+             .children(self.render_pinned_elicitations(cx))
+             .children(self.render_request_elicitations(cx))
+             .child(self.render_message_editor(window, cx))
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+new file mode 100644
+index 0000000..5783f28
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+@@ -0,0 +1,276 @@
++//! `/btw`: a side question answered in a card (Zeo next proposal §6.8, ask 29).
++//!
++//! A composer message that starts with `/btw` goes to the agent at once — while a turn runs it
++//! is not queued behind it — through `_claude/btw` (Claude Agent (Plus) 0.38.0), and the answer
++//! shows in a dismissable card above the composer. The answer never enters the conversation:
++//! the agent keeps it out of the session's transcript, so the next turn does not see it and a
++//! reloaded thread does not show it. One card per thread view; a new question replaces it.
++//!
++//! An agent that does not advertise `_claude/btw` gets the text as before, as a prompt.
++
++use acp_thread::{SIDE_QUESTION_MAX_CHARS, SideAnswer};
++use gpui::{AnyElement, Context, Entity, ScrollHandle, SharedString, Task, Window, px};
++use markdown::{Markdown, MarkdownFont, MarkdownStyle};
++use ui::{
++    Icon, IconButton, IconName, IconSize, Label, LabelSize, ScrollAxes, Scrollbars, Tooltip,
++    WithScrollbar, prelude::*,
++};
++
++use super::ThreadView;
++use super::content_column::content_column;
++
++/// The most of an answer the card shows before it scrolls.
++const SIDE_ANSWER_MAX_HEIGHT: f32 = 240.;
++
++const SIDE_QUESTION_USAGE: &str = "Type /btw and a question to ask something on the side. \
++     The agent answers here, even while it works, and the answer is not added to the \
++     conversation.";
++
++/// What a composer message beginning with `/btw` asks for.
++#[derive(Debug, PartialEq, Eq)]
++pub(crate) enum SideQuestionInvocation {
++    Ask(String),
++    /// A bare `/btw`.
++    Usage,
++    /// Longer than the agent accepts, in characters.
++    TooLong(usize),
++}
++
++/// The side question in a composer message, as plus reads `/btw`: the command must be the
++/// whole first word (`/btwx` is not it), and the question is the rest, trimmed. Leading
++/// whitespace before the command is ignored. `None` for any other message.
++pub(crate) fn side_question_invocation(text: &str) -> Option<SideQuestionInvocation> {
++    let rest = text.trim_start().strip_prefix("/btw")?;
++    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
++        return None;
++    }
++    let question = rest.trim();
++    if question.is_empty() {
++        return Some(SideQuestionInvocation::Usage);
++    }
++    let chars = question.chars().count();
++    if chars > SIDE_QUESTION_MAX_CHARS {
++        return Some(SideQuestionInvocation::TooLong(chars));
++    }
++    Some(SideQuestionInvocation::Ask(question.to_string()))
++}
++
++enum SideQuestionState {
++    Asking,
++    Answered {
++        markdown: Entity<Markdown>,
++        fallback_model: Option<SharedString>,
++    },
++    /// Words for the reader that are not an error: the usage of a bare `/btw`.
++    Note(SharedString),
++    Failed(SharedString),
++}
++
++/// The open card, with the request that fills it. Replacing the card drops the request's task,
++/// so a late answer to an earlier question never lands in a newer card.
++pub(crate) struct SideQuestionCard {
++    question: SharedString,
++    state: SideQuestionState,
++    scroll: ScrollHandle,
++    _ask: Task<()>,
++}
++
++impl ThreadView {
++    /// Sends the composer's `/btw` as a side question when the agent answers them, and clears
++    /// the composer. Returns `false`, touching nothing, when the message is not a side
++    /// question for this agent, so the send goes on as before.
++    pub(super) fn send_side_question(
++        &mut self,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> bool {
++        let connection = self.thread.read(cx).connection().clone();
++        if !connection.supports_side_question() {
++            return false;
++        }
++        let text = self.message_editor.read(cx).text(cx);
++        let Some(invocation) = side_question_invocation(&text) else {
++            return false;
++        };
++        self.message_editor
++            .update(cx, |editor, cx| editor.clear(window, cx));
++
++        let (question, state, ask): (SharedString, _, _) = match invocation {
++            SideQuestionInvocation::Usage => (
++                "/btw".into(),
++                SideQuestionState::Note(SIDE_QUESTION_USAGE.into()),
++                Task::ready(()),
++            ),
++            SideQuestionInvocation::TooLong(chars) => (
++                "/btw".into(),
++                SideQuestionState::Failed(
++                    format!(
++                        "The question is {chars} characters long; a side question takes at \
++                         most {SIDE_QUESTION_MAX_CHARS}."
++                    )
++                    .into(),
++                ),
++                Task::ready(()),
++            ),
++            SideQuestionInvocation::Ask(question) => {
++                let session_id = self.thread.read(cx).session_id().clone();
++                let request = connection.ask_side_question(&session_id, question.clone(), cx);
++                let languages = self
++                    .project
++                    .upgrade()
++                    .map(|project| project.read(cx).languages().clone());
++                let ask = cx.spawn(async move |this, cx| {
++                    let result = request.await;
++                    this.update(cx, |this, cx| {
++                        let Some(card) = this.side_question_card.as_mut() else {
++                            return;
++                        };
++                        card.state = match result {
++                            Ok(SideAnswer {
++                                answer,
++                                fallback_model,
++                            }) => SideQuestionState::Answered {
++                                markdown: cx
++                                    .new(|cx| Markdown::new(answer.into(), languages, None, cx)),
++                                fallback_model: fallback_model.map(Into::into),
++                            },
++                            Err(error) => {
++                                log::warn!(
++                                    "side question failed: session={session_id} error={error:#}"
++                                );
++                                SideQuestionState::Failed(error.to_string().into())
++                            }
++                        };
++                        cx.notify();
++                    })
++                    .ok();
++                });
++                (question.into(), SideQuestionState::Asking, ask)
++            }
++        };
++        self.side_question_card = Some(SideQuestionCard {
++            question,
++            state,
++            scroll: ScrollHandle::new(),
++            _ask: ask,
++        });
++        cx.notify();
++        true
++    }
++
++    pub(super) fn render_side_question_card(
++        &self,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> Option<AnyElement> {
++        let card = self.side_question_card.as_ref()?;
++
++        let header = h_flex()
++            .w_full()
++            .gap_2()
++            .justify_between()
++            .child(
++                h_flex()
++                    .min_w_0()
++                    .gap_1p5()
++                    .child(
++                        Icon::new(IconName::Chat)
++                            .size(IconSize::XSmall)
++                            .color(Color::Muted),
++                    )
++                    .child(Label::new("By the way").size(LabelSize::Small))
++                    .child(
++                        Label::new(card.question.clone())
++                            .size(LabelSize::Small)
++                            .color(Color::Muted)
++                            .truncate(),
++                    ),
++            )
++            .child(
++                IconButton::new("side-question-dismiss", IconName::Close)
++                    .icon_size(IconSize::Small)
++                    .icon_color(Color::Muted)
++                    .aria_label("Dismiss the side question")
++                    .tooltip(Tooltip::text("Dismiss"))
++                    .on_click(cx.listener(|this, _, _, cx| {
++                        this.side_question_card = None;
++                        cx.notify();
++                    })),
++            );
++
++        let body = match &card.state {
++            SideQuestionState::Asking => Label::new("Asking on the side…")
++                .size(LabelSize::Small)
++                .color(Color::Muted)
++                .into_any_element(),
++            SideQuestionState::Note(note) => Label::new(note.clone())
++                .size(LabelSize::Small)
++                .color(Color::Muted)
++                .into_any_element(),
++            SideQuestionState::Failed(reason) => Label::new(reason.clone())
++                .size(LabelSize::Small)
++                .color(Color::Error)
++                .into_any_element(),
++            SideQuestionState::Answered { markdown, .. } => {
++                let style = MarkdownStyle::themed(MarkdownFont::Agent, window, cx);
++                div()
++                    .w_full()
++                    .max_h(px(SIDE_ANSWER_MAX_HEIGHT))
++                    .child(
++                        div()
++                            .id("side-question-answer")
++                            .max_h(px(SIDE_ANSWER_MAX_HEIGHT))
++                            .pr_3()
++                            .overflow_y_scroll()
++                            .track_scroll(&card.scroll)
++                            .child(self.render_markdown(markdown.clone(), style, cx)),
++                    )
++                    // Always visible: `Scrollbars::new` hides itself when idle, and a cut-off
++                    // answer then reads as the whole one (the trap §6.32 met).
++                    .custom_scrollbars(
++                        Scrollbars::always_visible(ScrollAxes::Vertical)
++                            .tracked_scroll_handle(&card.scroll),
++                        window,
++                        cx,
++                    )
++                    .into_any_element()
++            }
++        };
++
++        let footer = match &card.state {
++            SideQuestionState::Answered { fallback_model, .. } => Some(
++                Label::new(match fallback_model {
++                    Some(model) => format!("Not added to the conversation · answered by {model}"),
++                    None => "Not added to the conversation".to_string(),
++                })
++                .size(LabelSize::XSmall)
++                .color(Color::Muted),
++            ),
++            _ => None,
++        };
++
++        // Read after the body: the scrollbar above borrows `cx` mutably.
++        let colors = cx.theme().colors();
++        let card = v_flex()
++            .id("side-question-card")
++            .debug_selector(|| "side-question-card".into())
++            .mx_2()
++            .mb_1()
++            .p_2()
++            .gap_1p5()
++            .rounded_md()
++            .border_1()
++            .border_color(colors.border)
++            .bg(colors.panel_background)
++            .shadow_sm()
++            .child(header)
++            .child(body)
++            .children(footer);
++        // The composer's column (§6.30), as the context card beside it.
++        Some(content_column(card, cx).into_any_element())
++    }
++}
++
++#[cfg(test)]
++#[path = "side_question_card_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/side_question_card_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/side_question_card_tests.rs
+new file mode 100644
+index 0000000..6af7a38
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/side_question_card_tests.rs
+@@ -0,0 +1,57 @@
++// Zeo next proposal §6.8 (ask 29): which composer messages are side questions. Filter:
++// `side_question_card`.
++
++use acp_thread::SIDE_QUESTION_MAX_CHARS;
++
++use super::{SideQuestionInvocation, side_question_invocation};
++
++#[test]
++fn a_question_after_the_command_is_asked() {
++    assert_eq!(
++        side_question_invocation("/btw what does this flag do?"),
++        Some(SideQuestionInvocation::Ask(
++            "what does this flag do?".into()
++        ))
++    );
++    // Leading whitespace and a newline after the command are still the command.
++    assert_eq!(
++        side_question_invocation("  /btw\nmultiline\nquestion  "),
++        Some(SideQuestionInvocation::Ask("multiline\nquestion".into()))
++    );
++}
++
++#[test]
++fn a_bare_command_asks_for_usage() {
++    assert_eq!(
++        side_question_invocation("/btw"),
++        Some(SideQuestionInvocation::Usage)
++    );
++    assert_eq!(
++        side_question_invocation("/btw   "),
++        Some(SideQuestionInvocation::Usage)
++    );
++}
++
++/// Hostile: only the whole first word counts, or `/btwx` and a prompt that merely mentions
++/// `/btw` would be taken out of the conversation.
++#[test]
++fn anything_else_is_not_a_side_question() {
++    assert_eq!(side_question_invocation("/btwx question"), None);
++    assert_eq!(side_question_invocation("please run /btw later"), None);
++    assert_eq!(side_question_invocation("/compact"), None);
++    assert_eq!(side_question_invocation(""), None);
++}
++
++#[test]
++fn a_question_longer_than_the_agent_takes_is_refused_here() {
++    let long = "x".repeat(SIDE_QUESTION_MAX_CHARS + 1);
++    assert_eq!(
++        side_question_invocation(&format!("/btw {long}")),
++        Some(SideQuestionInvocation::TooLong(SIDE_QUESTION_MAX_CHARS + 1))
++    );
++    let fits = "é".repeat(SIDE_QUESTION_MAX_CHARS);
++    assert!(matches!(
++        side_question_invocation(&format!("/btw {fits}")),
++        Some(SideQuestionInvocation::Ask(_))
++    ));
++}

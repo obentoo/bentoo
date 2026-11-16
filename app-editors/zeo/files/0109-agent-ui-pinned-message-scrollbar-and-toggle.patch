@@ -1,0 +1,325 @@
+From f37bef42e0d334cc0425ff19f13d676eb17b01d2 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Sat, 14 Nov 2026 03:25:44 -0300
+Subject: [PATCH] agent_ui: the pinned message scrolls with a scrollbar, its
+ toggle shows only when needed
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.32 (asks 52-54), from the operator's session on Zeo
+0.11.0 (2026-11-14). Three fixes to 0102's pinned last-user-message card,
+in the column 0108 keeps it to:
+
+- Expanded, the message already scrolled past 160 px through
+  overflow_y_scroll, but GPUI's overflow draws no bar, so the card read as
+  cut off. The body now tracks a ScrollHandle (ThreadView's
+  pinned_message_scroll) and draws Scrollbars::always_visible along it,
+  the plan card's pattern. always_visible because Scrollbars::new hides
+  itself when idle (the trap story 034 recorded).
+- The toggle showed for every message, even a short one the minimized line
+  already shows whole. It now shows only when the message has more than one
+  non-blank line, or when its one line is wider than the space the header
+  leaves for it; expanded, it always shows, as the way back. The width is
+  known only after layout: a canvas inside the minimized body shapes the
+  line with the label's own size (TextSize::Small) and records
+  (entry, line width, available width) in pinned_message_fit; when that
+  changes it asks for a new frame. Before the first measurement the toggle
+  stays, so a long message is never left without a way to expand it. The
+  rule is one pure function, needs_toggle.
+- The chevron becomes the expand/collapse pair Zed ships, ExpandVertical
+  ("Expand Message") and FoldVertical ("Collapse Message"), and the card
+  sits on the panel's background (panel_background) instead of the lighter
+  elevated surface; the border and shadow keep it apart from the entries.
+
+Tests: pinned_message::tests gains five (a short line that fits needs no
+toggle; a line wider than its space does; a second line always does; blank
+lines are not a second line; an unmeasured line keeps it). Each rule was
+seen failing alone: with the width comparison answering false, only the
+wide-line test failed; with the line count raised to 99, only the
+second-line test. Xvfb proof (debug build, a stub agent, no model):
+docs/assets/zeo-6.32-pinned-card-2026-11-15/ in the hub.
+---
+
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index fe57cab..d86650e 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -826,6 +826,10 @@ pub struct ThreadView {
+     /// The pinned user message shown whole, by entry index (Zeo next §6.3); any other pinned
+     /// message shows minimized.
+     pinned_message_expanded: Option<usize>,
++    /// §6.32: the expanded pinned message's scroll, for its scrollbar.
++    pinned_message_scroll: ScrollHandle,
++    /// §6.32: whether the minimized pinned line fits, measured on the last frame.
++    pinned_message_fit: pinned_message::PinnedMessageFit,
+     /// The bottom edge, in window coordinates, of whatever floats over the top of the
+     /// conversation in the frame being drawn -- today the pinned user message -- or `None`.
+     /// Written at prepaint by the overlay itself; the tasks card reads it to sit below.
+@@ -1394,6 +1398,8 @@ impl ThreadView {
+             question_card_minimized: false,
+             auto_scroll_paused_at: None,
+             pinned_message_expanded: None,
++            pinned_message_scroll: ScrollHandle::new(),
++            pinned_message_fit: Default::default(),
+             top_overlay_bottom: Default::default(),
+             _cancel_task: None,
+             _save_task: None,
+@@ -16046,7 +16052,7 @@ impl Render for ThreadView {
+                         .flex_1()
+                         .size_full()
+                         .child(self.render_entries(cx))
+-                        .children(self.render_pinned_user_message(cx))
++                        .children(self.render_pinned_user_message(window, cx))
+                         .child(self.render_floating_thread_navigation(cx))
+                         .vertical_scrollbar_for(&list_state, window, cx)
+                         .into_any()
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
+index fabed7c..26d9123 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
+@@ -4,11 +4,17 @@
+ //! of the conversation while the reply scrolls under it -- one sticky header per user message,
+ //! as Cursor does. Scrolling up into an earlier turn pins that turn's message instead; the
+ //! header hides while the message itself is on screen. A click on the line jumps to the
+-//! message; the chevron expands it in place.
++//! message; the toggle expands it in place.
++//!
++//! §6.32 (asks 52–54): expanded, the message scrolls with a visible scrollbar; the toggle shows
++//! only when the minimized line hides something; the card sits on the panel's background.
+ 
+ use acp_thread::AgentThreadEntry;
+-use gpui::{AnyElement, Context, ListOffset, canvas, px};
+-use ui::{IconButton, IconName, IconSize, Label, LabelSize, Tooltip, prelude::*};
++use gpui::{AnyElement, Context, ListOffset, Pixels, canvas, px};
++use ui::{
++    IconButton, IconName, IconSize, Label, LabelSize, ScrollAxes, Scrollbars, TextSize, Tooltip,
++    WithScrollbar, prelude::*,
++};
+ 
+ use super::ThreadView;
+ use super::content_column::content_column;
+@@ -31,6 +37,25 @@ pub(super) fn pinned_user_message_ix(
+     (0..top).rev().find(|&ix| is_user_message(ix))
+ }
+ 
++/// Whether the minimized header hides part of the message, so the expand toggle is worth
++/// showing. `measured` is the first line's shaped width and the width the header leaves for it,
++/// from the last frame; before the first measurement the toggle stays, so a long message is never
++/// left without a way to expand it.
++pub(super) fn needs_toggle(text: &str, measured: Option<(Pixels, Pixels)>) -> bool {
++    let non_blank_lines = text.lines().filter(|line| !line.trim().is_empty()).count();
++    if non_blank_lines > 1 {
++        return true;
++    }
++    match measured {
++        Some((line_width, available)) => line_width > available,
++        None => true,
++    }
++}
++
++/// What the last frame measured for a pinned message: its entry, the first line's shaped
++/// width, and the width the header left for it.
++pub(crate) type PinnedMessageFit = std::rc::Rc<std::cell::Cell<Option<(usize, Pixels, Pixels)>>>;
++
+ /// The first non-blank line of a message, for the minimized header.
+ pub(super) fn first_line(text: &str) -> &str {
+     text.lines()
+@@ -40,7 +65,11 @@ pub(super) fn first_line(text: &str) -> &str {
+ }
+ 
+ impl ThreadView {
+-    pub(super) fn render_pinned_user_message(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
++    pub(super) fn render_pinned_user_message(
++        &self,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> Option<AnyElement> {
+         // Nothing floats over the top until the header below is prepainted again.
+         self.top_overlay_bottom.set(None);
+         let thread = self.thread.read(cx);
+@@ -58,30 +87,79 @@ impl ThreadView {
+             return None;
+         }
+         let expanded = self.pinned_message_expanded == Some(ix);
+-        let (chevron, chevron_tooltip) = if expanded {
+-            (IconName::ChevronUp, "Minimize Message")
++        let measured = self
++            .pinned_message_fit
++            .get()
++            .filter(|(fit_ix, _, _)| *fit_ix == ix)
++            .map(|(_, line_width, available)| (line_width, available));
++        // Expanded, the toggle always shows: it is the way back.
++        let show_toggle = expanded || needs_toggle(&text, measured);
++        let (toggle_icon, toggle_tooltip) = if expanded {
++            (IconName::FoldVertical, "Collapse Message")
+         } else {
+-            (IconName::ChevronDown, "Show the Whole Message")
++            (IconName::ExpandVertical, "Expand Message")
+         };
++        let line = first_line(&text).to_string();
+         let body = if expanded {
+             div()
+-                .id("thread-pinned-user-message-text")
+                 .flex_1()
+                 .min_w_0()
+                 .max_h(px(PINNED_EXPANDED_MAX_HEIGHT))
+-                .overflow_y_scroll()
+-                .child(Label::new(text.trim().to_string()).size(LabelSize::Small))
++                .child(
++                    div()
++                        .id("thread-pinned-user-message-text")
++                        .max_h(px(PINNED_EXPANDED_MAX_HEIGHT))
++                        .pr_3()
++                        .overflow_y_scroll()
++                        .track_scroll(&self.pinned_message_scroll)
++                        .child(Label::new(text.trim().to_string()).size(LabelSize::Small)),
++                )
++                .custom_scrollbars(
++                    Scrollbars::always_visible(ScrollAxes::Vertical)
++                        .tracked_scroll_handle(&self.pinned_message_scroll),
++                    window,
++                    cx,
++                )
+                 .into_any_element()
+         } else {
++            // The label's own size, so the measurement matches what is drawn.
++            let font_size = TextSize::Small.rems(cx);
++            let fit = self.pinned_message_fit.clone();
++            let measured_line = line.clone();
+             div()
++                .relative()
+                 .flex_1()
+                 .min_w_0()
+                 .child(
+-                    Label::new(first_line(&text).to_string())
++                    Label::new(line)
+                         .size(LabelSize::Small)
+                         .single_line()
+                         .truncate(),
+                 )
++                .child(
++                    canvas(
++                        move |bounds, window, _| {
++                            let style = window.text_style();
++                            let run = style.to_run(measured_line.len());
++                            let size = font_size.to_pixels(window.rem_size());
++                            let width = window
++                                .text_system()
++                                .shape_line(measured_line.clone().into(), size, &[run], None)
++                                .width;
++                            let next = Some((ix, width, bounds.size.width));
++                            if fit.get() != next {
++                                fit.set(next);
++                                // The toggle is decided from this; show the change now.
++                                window.refresh();
++                            }
++                        },
++                        |_, _, _, _| {},
++                    )
++                    .absolute()
++                    .top_0()
++                    .left_0()
++                    .size_full(),
++                )
+                 .into_any_element()
+         };
+         let header = h_flex()
+@@ -95,7 +173,7 @@ impl ThreadView {
+             .rounded_md()
+             .border_1()
+             .border_color(cx.theme().colors().border)
+-            .bg(cx.theme().colors().elevated_surface_background)
++            .bg(cx.theme().colors().panel_background)
+             .shadow_sm()
+             .cursor_pointer()
+             .tooltip(Tooltip::text("Go to This Message"))
+@@ -112,20 +190,22 @@ impl ThreadView {
+                     .color(Color::Muted),
+             )
+             .child(body)
+-            .child(
+-                div()
+-                    .debug_selector(|| "thread-pinned-user-message-toggle".to_string())
+-                    .child(
+-                        IconButton::new("thread-pinned-user-message-toggle", chevron)
+-                            .icon_size(IconSize::Small)
+-                            .tooltip(Tooltip::text(chevron_tooltip))
+-                            .on_click(cx.listener(move |this, _, _, cx| {
+-                                cx.stop_propagation();
+-                                this.pinned_message_expanded = (!expanded).then_some(ix);
+-                                cx.notify();
+-                            })),
+-                    ),
+-            )
++            .when(show_toggle, |header| {
++                header.child(
++                    div()
++                        .debug_selector(|| "thread-pinned-user-message-toggle".to_string())
++                        .child(
++                            IconButton::new("thread-pinned-user-message-toggle", toggle_icon)
++                                .icon_size(IconSize::Small)
++                                .tooltip(Tooltip::text(toggle_tooltip))
++                                .on_click(cx.listener(move |this, _, _, cx| {
++                                    cx.stop_propagation();
++                                    this.pinned_message_expanded = (!expanded).then_some(ix);
++                                    cx.notify();
++                                })),
++                        ),
++                )
++            })
+             // The header reports where it ends, so what shares the top of the conversation
+             // with it -- the tasks card -- sits below instead of over it. Its height is
+             // only known here: minimized, expanded, or wrapped at the panel's width.
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/pinned_message_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/pinned_message_tests.rs
+index c3670f8..dad584d 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/pinned_message_tests.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/pinned_message_tests.rs
+@@ -3,7 +3,7 @@
+ 
+ use gpui::{ListOffset, px};
+ 
+-use super::{first_line, pinned_user_message_ix};
++use super::{first_line, needs_toggle, pinned_user_message_ix};
+ 
+ /// `true` marks a user message: [user, reply, tool, user, reply, reply].
+ const TURNS: [bool; 6] = [true, false, false, true, false, false];
+@@ -67,3 +67,38 @@ fn the_minimized_line_is_the_first_non_blank_one() {
+     );
+     assert_eq!(first_line(" \n "), "");
+ }
++
++// Zeo next proposal §6.32 (ask 53): the expand/collapse toggle shows only when the minimized
++// line hides something.
++
++#[test]
++fn a_short_single_line_that_fits_needs_no_toggle() {
++    assert!(!needs_toggle("fix the test", Some((px(80.), px(300.)))));
++}
++
++#[test]
++fn a_single_line_wider_than_its_space_needs_the_toggle() {
++    assert!(needs_toggle(
++        "a very long request",
++        Some((px(420.), px(300.)))
++    ));
++}
++
++#[test]
++fn a_second_line_always_needs_the_toggle() {
++    assert!(needs_toggle("first\nsecond", Some((px(20.), px(300.)))));
++}
++
++/// Hostile: blank lines around one line are not a second line -- the minimized header already
++/// shows everything there is.
++#[test]
++fn blank_lines_are_not_a_second_line() {
++    assert!(!needs_toggle("\n  fix it  \n\n", Some((px(30.), px(300.)))));
++}
++
++/// Hostile: before the first measurement the toggle stays, so a long message is never left
++/// without a way to expand it.
++#[test]
++fn an_unmeasured_line_keeps_the_toggle() {
++    assert!(needs_toggle("fix it", None));
++}

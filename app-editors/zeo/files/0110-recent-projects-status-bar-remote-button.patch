@@ -1,0 +1,296 @@
+From 01c96ecedc30fa0997fa6a6c53cc8a4e3e99183a Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Sun, 15 Nov 2026 14:22:36 -0300
+Subject: [PATCH] recent_projects: a status bar button that opens a remote
+ project
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.36 (ask 59), first half, from the operator's session
+on Zeo 0.11.0 (2026-11-14). Zed reaches its remote projects modal through
+the title bar's project menu or the command palette; the operator asked
+for it beside the other status bar buttons.
+
+RemoteProjectsButton (recent_projects/src/remote_projects_button.rs) is a
+StatusItemView added to the left of the status bar, right after Project
+Search: a Server icon whose tooltip names upstream's action, "Open Remote
+Project", with its binding, and whose click dispatches upstream's own
+`projects::OpenRemote` -- from_existing_connection false, create_new_window
+None, so the chosen project opens where the user's default open behaviour
+says, exactly as the menu entries do. The button adds no behaviour of its
+own.
+
+A new setting, `status_bar.remote_projects_button` (default true), hides
+it; it is in default.json, StatusBarSettings, the settings window's Status
+Bar section ("Remote Projects Button"), and the status bar's own
+right-click "Hide" writes it through hide_setting. The VS Code import,
+which builds StatusBarSettingsContent field by field, leaves it None (VS
+Code has no equivalent).
+
+The second half of §6.36 -- the order of the status bar's panel buttons,
+set in the settings window -- is a separate patch.
+
+Tests: remote_projects_button::tests (hiding writes the setting false; the
+button opens the modal in this window; it shows by default). Seen failing
+with the hide writer set to true. The settings, settings_content and
+settings_ui packages pass with the new field. Xvfb proof:
+docs/assets/zeo-6.36-remote-button-2026-11-15/ in the hub.
+---
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index ce9e4b7..27202b2 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -2102,6 +2102,8 @@
+     "show_active_file": false,
+     // Whether to show the active language button in the status bar.
+     "active_language_button": true,
++    // Whether to show the button that opens a remote project in the status bar.
++    "remote_projects_button": true,
+     // Whether to show the cursor position button in the status bar.
+     "cursor_position_button": true,
+     // Whether to show active line endings button in the status bar.
+diff --git a/crates/recent_projects/src/recent_projects.rs b/crates/recent_projects/src/recent_projects.rs
+index c4447cd..f709442 100644
+--- a/crates/recent_projects/src/recent_projects.rs
++++ b/crates/recent_projects/src/recent_projects.rs
+@@ -1,6 +1,7 @@
+ mod dev_container_suggest;
+ pub mod disconnected_overlay;
+ mod remote_connections;
++pub mod remote_projects_button;
+ mod remote_servers;
+ pub mod sidebar_recent_projects;
+ mod ssh_config;
+diff --git a/crates/recent_projects/src/remote_projects_button.rs b/crates/recent_projects/src/remote_projects_button.rs
+new file mode 100644
+index 0000000..08eccff
+--- /dev/null
++++ b/crates/recent_projects/src/remote_projects_button.rs
+@@ -0,0 +1,113 @@
++//! A status bar button that opens a remote project (Zeo next proposal §6.36, ask 59).
++//!
++//! Zed reaches its remote projects modal only through the title bar's project menu or the
++//! command palette (`projects::OpenRemote`). The operator asked for it beside the other
++//! status bar buttons. It is upstream's own action, so the button adds no behaviour of its
++//! own; `status_bar.remote_projects_button` hides it, and so does the status bar's
++//! right-click "Hide" through `hide_setting`.
++
++use gpui::App;
++use settings::{Settings as _, SettingsContent};
++use ui::{Context, IconButton, IconName, IconSize, Render, Tooltip, Window, prelude::*};
++use workspace::{HideStatusItem, ItemHandle, StatusBarSettings, StatusItemView};
++use zed_actions::OpenRemote;
++
++/// The tooltip, shared with the tests.
++pub const REMOTE_PROJECTS_BUTTON_TOOLTIP: &str = "Open Remote Project";
++
++/// The action the button dispatches: upstream's modal, in the current window.
++fn open_remote_action() -> OpenRemote {
++    OpenRemote {
++        from_existing_connection: false,
++        create_new_window: None,
++    }
++}
++
++/// Writes the hidden state, for the status bar's "Hide" entry.
++fn hide_remote_projects_button(settings: &mut SettingsContent) {
++    settings
++        .status_bar
++        .get_or_insert_default()
++        .remote_projects_button = Some(false);
++}
++
++#[derive(Default)]
++pub struct RemoteProjectsButton;
++
++impl RemoteProjectsButton {
++    pub fn new() -> Self {
++        Self
++    }
++}
++
++impl Render for RemoteProjectsButton {
++    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++        let button = div();
++        if !StatusBarSettings::get_global(cx).remote_projects_button {
++            return button.hidden();
++        }
++        button.child(
++            IconButton::new("remote-projects-button", IconName::Server)
++                .icon_size(IconSize::Small)
++                .aria_label(REMOTE_PROJECTS_BUTTON_TOOLTIP)
++                .tooltip(|_window, cx| {
++                    Tooltip::for_action(REMOTE_PROJECTS_BUTTON_TOOLTIP, &open_remote_action(), cx)
++                })
++                .on_click(|_, window, cx| {
++                    window.dispatch_action(Box::new(open_remote_action()), cx);
++                }),
++        )
++    }
++}
++
++impl StatusItemView for RemoteProjectsButton {
++    fn set_active_pane_item(
++        &mut self,
++        _active_pane_item: Option<&dyn ItemHandle>,
++        _window: &mut Window,
++        _cx: &mut Context<Self>,
++    ) {
++        // The button does not depend on the active item.
++    }
++
++    fn hide_setting(&self, _: &App) -> Option<HideStatusItem> {
++        Some(HideStatusItem::new(hide_remote_projects_button))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn hiding_writes_the_status_bar_setting() {
++        let mut settings = SettingsContent::default();
++        hide_remote_projects_button(&mut settings);
++        assert_eq!(
++            settings
++                .status_bar
++                .as_ref()
++                .and_then(|status_bar| status_bar.remote_projects_button),
++            Some(false)
++        );
++    }
++
++    /// Hostile: the button must open the modal in place, not a new window or an existing
++    /// connection's picker.
++    #[test]
++    fn the_button_opens_the_remote_modal_in_this_window() {
++        let action = open_remote_action();
++        assert!(!action.from_existing_connection);
++        assert_eq!(action.create_new_window, None);
++    }
++
++    #[gpui::test]
++    fn the_button_shows_by_default(cx: &mut gpui::TestAppContext) {
++        cx.update(|cx| {
++            let store = settings::SettingsStore::test(cx);
++            cx.set_global(store);
++            StatusBarSettings::register(cx);
++            assert!(StatusBarSettings::get_global(cx).remote_projects_button);
++        });
++    }
++}
+diff --git a/crates/settings/src/vscode_import.rs b/crates/settings/src/vscode_import.rs
+index 1c9775c..07b619a 100644
+--- a/crates/settings/src/vscode_import.rs
++++ b/crates/settings/src/vscode_import.rs
+@@ -850,6 +850,7 @@ impl VsCodeSettings {
+             line_endings_button: None,
+             active_encoding_button: None,
+             pending_keystrokes_indicator: None,
++            remote_projects_button: None,
+         })
+     }
+ 
+diff --git a/crates/settings_content/src/workspace.rs b/crates/settings_content/src/workspace.rs
+index 0dfbb6a..bfab556 100644
+--- a/crates/settings_content/src/workspace.rs
++++ b/crates/settings_content/src/workspace.rs
+@@ -624,6 +624,10 @@ pub struct StatusBarSettingsContent {
+     ///
+     /// Default: true
+     pub pending_keystrokes_indicator: Option<bool>,
++    /// Whether to show the button that opens a remote project in the status bar.
++    ///
++    /// Default: true
++    pub remote_projects_button: Option<bool>,
+ }
+ 
+ #[derive(
+diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_data.rs
+index 52964ec..1b78911 100644
+--- a/crates/settings_ui/src/page_data.rs
++++ b/crates/settings_ui/src/page_data.rs
+@@ -4172,7 +4172,7 @@ fn search_and_files_page() -> SettingsPage {
+ }
+ 
+ fn window_and_layout_page() -> SettingsPage {
+-    fn status_bar_section() -> [SettingsPageItem; 13] {
++    fn status_bar_section() -> [SettingsPageItem; 14] {
+         [
+             SettingsPageItem::SectionHeader("Status Bar"),
+             SettingsPageItem::SettingItem(SettingItem {
+@@ -4194,6 +4194,29 @@ fn window_and_layout_page() -> SettingsPage {
+                 metadata: None,
+                 files: USER,
+             }),
++            SettingsPageItem::SettingItem(SettingItem {
++                title: "Remote Projects Button",
++                description: "Show the button that opens a remote project in the status bar.",
++                field: Box::new(SettingField {
++                    organization_override: None,
++                    json_path: Some("status_bar.remote_projects_button"),
++                    pick: |settings_content| {
++                        settings_content
++                            .status_bar
++                            .as_ref()?
++                            .remote_projects_button
++                            .as_ref()
++                    },
++                    write: |settings_content, value, _| {
++                        settings_content
++                            .status_bar
++                            .get_or_insert_default()
++                            .remote_projects_button = value;
++                    },
++                }),
++                metadata: None,
++                files: USER,
++            }),
+             SettingsPageItem::SettingItem(SettingItem {
+                 title: "Active Language Button",
+                 description: "Show the active language button in the status bar.",
+diff --git a/crates/workspace/src/workspace_settings.rs b/crates/workspace/src/workspace_settings.rs
+index 8e33e14..a6df916 100644
+--- a/crates/workspace/src/workspace_settings.rs
++++ b/crates/workspace/src/workspace_settings.rs
+@@ -226,6 +226,7 @@ pub struct StatusBarSettings {
+     pub line_endings_button: bool,
+     pub active_encoding_button: EncodingDisplayOptions,
+     pub pending_keystrokes_indicator: bool,
++    pub remote_projects_button: bool,
+ }
+ 
+ impl Settings for StatusBarSettings {
+@@ -239,6 +240,7 @@ impl Settings for StatusBarSettings {
+             line_endings_button: status_bar.line_endings_button.unwrap(),
+             active_encoding_button: status_bar.active_encoding_button.unwrap(),
+             pending_keystrokes_indicator: status_bar.pending_keystrokes_indicator.unwrap(),
++            remote_projects_button: status_bar.remote_projects_button.unwrap(),
+         }
+     }
+ }
+diff --git a/crates/zed/src/zed.rs b/crates/zed/src/zed.rs
+index c6ed32a..cf1bbf9 100644
+--- a/crates/zed/src/zed.rs
++++ b/crates/zed/src/zed.rs
+@@ -601,6 +601,8 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
+         });
+ 
+         let search_button = cx.new(|_| search::search_status_button::SearchButton::new());
++        let remote_projects_button =
++            cx.new(|_| recent_projects::remote_projects_button::RemoteProjectsButton::new());
+         let diagnostic_summary =
+             cx.new(|cx| diagnostics::items::DiagnosticIndicator::new(workspace, cx));
+         let active_file_name = cx.new(|_| workspace::active_file_name::ActiveFileName::new());
+@@ -634,6 +636,8 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
+             cx.new(|cx| git_ui::MergeConflictIndicator::new(workspace, cx));
+         workspace.status_bar().update(cx, |status_bar, cx| {
+             status_bar.add_left_item(search_button, window, cx);
++            // Zeo next §6.36: the remote projects modal, one click away.
++            status_bar.add_left_item(remote_projects_button, window, cx);
+             status_bar.add_left_item(lsp_button, window, cx);
+             status_bar.add_left_item(diagnostic_summary, window, cx);
+             status_bar.add_left_item(active_file_name, window, cx);

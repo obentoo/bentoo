@@ -1,0 +1,1387 @@
+From 5890bec5f44f493f105fea7c3bd6bb28fdd2f98a Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Sun, 15 Nov 2026 17:28:19 -0300
+Subject: [PATCH] agent_ui: the context ring's usage card and its report
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.34 (asks 57, 58). A click on the context ring opens
+a "Context Usage" card above the composer: how full the window is, a
+segmented bar and one row per category; "View Report" opens the same
+breakdown as a Markdown document with its preview. The adapter side is
+Claude Agent (Plus) 0.38.0's `_claude/context/usage`, advertised as
+`_claude/context`.
+
+- acp_thread: context_usage::ContextUsageReport, read from plus's answer
+  (categories with an optional stable id, tools by call and result,
+  MCP tools by server, memory files, skills, subagents). Unknown fields
+  are ignored and a category's id is optional, as the SDK asks.
+  AgentConnection gains supports_context_usage and context_usage; the
+  default refuses.
+- agent_servers (v1): `_claude/context/usage` {sessionId} through
+  send_task_request when the agent advertises `_claude/context`.
+  parse_context_usage_answer reads `ok` strictly (a missing field is
+  named, never a zero) and passes `unavailable`'s reason through.
+- agent_ui: the ring's click keeps its quota refresh (§6.16) and also
+  opens or closes the card (ContextUsageCard, per thread view). It is
+  asked for on a click only: plus's full count costs token-count calls,
+  and while a turn runs plus answers an estimate, which the card says.
+  The card keeps to the composer's column (content_column, §6.30), sits
+  under the docked tasks bar and above a pending question, and paints
+  each category by its SDK id from the theme's accents (the system
+  prompt muted): the agent's colour is the CLI's theme name, which Zeo's
+  themes do not have. Free space and the compaction buffer are the bar's
+  empty part, not rows.
+- "View Report" writes context_usage_markdown into an untitled Markdown
+  buffer (open_markdown_in_workspace, as Open Thread as Markdown does)
+  and dispatches markdown::OpenPreview on it: thread title, repository,
+  window size, tokens used, model and auto-compact, an explanation of
+  the window, a table of categories with their share, then one section
+  per category saying what it is and whether it is the agent's or the
+  user's to control, with its sub-rows as a table. Sub-rows sent without
+  their category get a section of their own, so nothing is dropped.
+
+Tests: v1::context_usage_tests (6) read plus's answer -- whole, unknown
+fields and ids tolerated, the mid-turn estimate, a missing field named,
+`unavailable`'s reason, an unknown status; context_usage_card::tests (6)
+-- a category keeps its colour wherever it sorts, unknown rows never share
+one, shares of the window, no overflow past the bar, a zero window, the
+labels; context_usage_report::tests (3) -- the Markdown as a snapshot, a
+full count without the estimate note, thousands grouped. Seen failing:
+four probes at once, each on its own function (the bar's scale removed,
+unknown rows painted by position alone, orphan sub-rows dropped,
+`unavailable`'s reason replaced) failed exactly those four tests. Xvfb
+proof with a stub agent in the hub:
+docs/assets/zeo-6.34-context-card-2026-11-15/ (the stub received
+`_claude/context/usage` {"sessionId": "stub-context"} once per opening;
+the report opened as "Context Usage" beside its preview).
+---
+
+diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
+index b22895e..4cb5e3f 100644
+--- a/crates/acp_thread/src/acp_thread.rs
++++ b/crates/acp_thread/src/acp_thread.rs
+@@ -4,6 +4,7 @@ pub mod compaction;
+ pub mod config_options;
+ mod connection;
+ pub mod content;
++pub mod context_usage;
+ mod diff;
+ pub mod elicitation;
+ mod mention;
+diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
+index 2911257..4fdf6a0 100644
+--- a/crates/acp_thread/src/connection.rs
++++ b/crates/acp_thread/src/connection.rs
+@@ -237,6 +237,24 @@ pub trait AgentConnection {
+         )))
+     }
+ 
++    /// Whether `context_usage` is offered (Zeo next proposal §6.34).
++    fn supports_context_usage(&self) -> bool {
++        false
++    }
++
++    /// What fills the session's context window, by category (Zeo next proposal §6.34, asks 57
++    /// and 58). Asked on a click, never per turn: a full count costs the agent token-count
++    /// calls. The default refuses.
++    fn context_usage(
++        self: Rc<Self>,
++        _session_id: &acp_v2::SessionId,
++        _cx: &mut App,
++    ) -> Task<Result<crate::context_usage::ContextUsageReport>> {
++        Task::ready(Err(anyhow::Error::msg(
++            "Reading the context usage is not supported",
++        )))
++    }
++
+     /// Read the end of one of the session's tasks' output (`_claude/tasks/output`,
+     /// version 2). Unsupported unless the connection overrides it.
+     fn fetch_task_output(
+diff --git a/crates/acp_thread/src/context_usage.rs b/crates/acp_thread/src/context_usage.rs
+new file mode 100644
+index 0000000..4d7f070
+--- /dev/null
++++ b/crates/acp_thread/src/context_usage.rs
+@@ -0,0 +1,111 @@
++//! What fills a session's context window (Zeo next proposal §6.34, asks 57 and 58).
++//!
++//! The shape is Claude Agent (Plus) 0.38.0's `_claude/context/usage` answer (its
++//! `context-usage.ts`), which keeps the Agent SDK's `getContextUsage` breakdown and drops the
++//! CLI's grid. Only `used` categories arrive: free space and the compaction buffer are the
++//! window's remainder, so the client draws them as the bar's empty part, never as rows.
++//!
++//! Fields a later adapter adds are ignored, and a category's `id` stays optional, because the
++//! SDK says a CLI that predates it omits it and a later one may add values.
++
++use serde::Deserialize;
++
++/// Whether the agent counted the window with the API (`Full`) or estimated it locally while a
++/// turn was running (`Summary`): plus asks for the full count on an idle session only.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
++#[serde(rename_all = "lowercase")]
++pub enum ContextUsageDetail {
++    Full,
++    Summary,
++}
++
++/// One `used` row of the window: the system prompt, tool definitions, memory files, skills,
++/// the conversation, and so on.
++#[derive(Clone, Debug, PartialEq, Deserialize)]
++pub struct ContextUsageCategory {
++    /// The SDK's stable name for the row (`system_prompt`, `messages`, ...); match on this,
++    /// never on `name`, which is English text.
++    #[serde(default)]
++    pub id: Option<String>,
++    pub name: String,
++    pub tokens: u64,
++}
++
++/// The tokens one tool's calls and results take in the conversation.
++#[derive(Clone, Debug, PartialEq, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ContextUsageTool {
++    pub name: String,
++    pub call_tokens: u64,
++    pub result_tokens: u64,
++}
++
++/// One MCP tool's definition.
++#[derive(Clone, Debug, PartialEq, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ContextUsageMcpTool {
++    pub name: String,
++    pub server_name: String,
++    pub tokens: u64,
++}
++
++/// One memory file (CLAUDE.md and the like) loaded into the window.
++#[derive(Clone, Debug, PartialEq, Deserialize)]
++pub struct ContextUsageMemoryFile {
++    pub path: String,
++    /// Where the file comes from (`Project`, `User`, ...), as the SDK names it.
++    #[serde(rename = "type")]
++    pub kind: String,
++    pub tokens: u64,
++}
++
++/// One skill's frontmatter in the window.
++#[derive(Clone, Debug, PartialEq, Deserialize)]
++pub struct ContextUsageSkill {
++    pub name: String,
++    pub source: String,
++    pub tokens: u64,
++}
++
++/// One subagent definition in the window.
++#[derive(Clone, Debug, PartialEq, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ContextUsageAgent {
++    pub agent_type: String,
++    pub source: String,
++    pub tokens: u64,
++}
++
++/// The whole breakdown, as `AgentConnection::context_usage` answers it.
++#[derive(Clone, Debug, PartialEq, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ContextUsageReport {
++    pub detail: ContextUsageDetail,
++    pub model: String,
++    pub total_tokens: u64,
++    pub max_tokens: u64,
++    /// How full the window is, 0 to 100, as the agent computed it.
++    pub percentage: f64,
++    pub auto_compact: ContextUsageAutoCompact,
++    /// Sorted by tokens, largest first, by the adapter.
++    pub categories: Vec<ContextUsageCategory>,
++    #[serde(default)]
++    pub tools: Vec<ContextUsageTool>,
++    #[serde(default)]
++    pub mcp_tools: Vec<ContextUsageMcpTool>,
++    #[serde(default)]
++    pub memory_files: Vec<ContextUsageMemoryFile>,
++    #[serde(default)]
++    pub skills: Vec<ContextUsageSkill>,
++    #[serde(default)]
++    pub agents: Vec<ContextUsageAgent>,
++}
++
++/// Whether the agent compacts the conversation on its own, and at how many tokens.
++#[derive(Clone, Debug, PartialEq, Deserialize)]
++pub struct ContextUsageAutoCompact {
++    pub enabled: bool,
++    /// A token count, kept as the agent sent it (a JSON number).
++    #[serde(default)]
++    pub threshold: Option<f64>,
++}
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index 5a934e7..f3a475e 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -65,6 +65,10 @@ const CLAUDE_TASKS_OUTPUT_METHOD: &str = "_claude/tasks/output";
+ const CLAUDE_REWIND_CAPABILITY: &str = "_claude/rewind";
+ /// Takes a session back to the end of a turn (plus 0.38.0).
+ const CLAUDE_REWIND_METHOD: &str = "_claude/rewind";
++/// Advertised by the plus adapter from 0.38.0, with the method below (Zeo next §6.34).
++const CLAUDE_CONTEXT_CAPABILITY: &str = "_claude/context";
++/// What fills a session's context window, by category (plus 0.38.0).
++const CLAUDE_CONTEXT_USAGE_METHOD: &str = "_claude/context/usage";
+ /// Where a `session/fork` names the turn it keeps up to (plus 0.38.0).
+ const CLAUDE_FORK_AT_META_KEY: &str = "_claude/forkAt";
+ /// The most `_claude/tasks/output` serves; the adapter clamps to the same value.
+@@ -164,6 +168,28 @@ fn parse_rewind_answer(answer: &serde_json::Value) -> Result<acp_thread::RewindO
+     }
+ }
+ 
++/// Reads a `_claude/context/usage` answer (plus 0.38.0's `ContextUsageReport`). `ok` is read
++/// strictly, so a missing or wrong-typed field is an error naming it; `unavailable` carries the
++/// agent's reason (the session ended, the SDK refused), which the card shows as it is.
++fn parse_context_usage_answer(
++    answer: serde_json::Value,
++) -> Result<acp_thread::context_usage::ContextUsageReport> {
++    match answer.get("status").and_then(|status| status.as_str()) {
++        Some("ok") => serde_json::from_value(answer)
++            .map_err(|error| anyhow!("{CLAUDE_CONTEXT_USAGE_METHOD} answered: {error}")),
++        Some("unavailable") => Err(anyhow!(
++            "{}",
++            answer
++                .get("message")
++                .and_then(|message| message.as_str())
++                .unwrap_or("The agent could not read its context window.")
++        )),
++        other => Err(anyhow!(
++            "{CLAUDE_CONTEXT_USAGE_METHOD} answered an unknown status {other:?}"
++        )),
++    }
++}
++
+ /// Reads a `_claude/tasks/output` result strictly: a missing or wrong-typed field is an
+ /// error naming it, never a default value.
+ fn parse_task_output(response: &serde_json::Value) -> Result<acp_thread::TaskOutput> {
+@@ -2066,6 +2092,9 @@ mod fork_session_tests;
+ #[cfg(test)]
+ mod rewind_tests;
+ 
++#[cfg(test)]
++mod context_usage_tests;
++
+ #[cfg(test)]
+ mod fork_config_tests;
+ 
+@@ -2357,6 +2386,30 @@ impl AgentConnection for AcpConnection {
+             .spawn(async move { parse_rewind_answer(&request.await?) })
+     }
+ 
++    fn supports_context_usage(&self) -> bool {
++        self.agent_advertises(CLAUDE_CONTEXT_CAPABILITY)
++    }
++
++    fn context_usage(
++        self: Rc<Self>,
++        session_id: &acp_v2::SessionId,
++        cx: &mut App,
++    ) -> Task<Result<acp_thread::context_usage::ContextUsageReport>> {
++        if !self.supports_context_usage() {
++            return Task::ready(Err(anyhow!(
++                "This agent does not report its context usage."
++            )));
++        }
++        let request = send_task_request(
++            self.connection.clone(),
++            CLAUDE_CONTEXT_USAGE_METHOD,
++            serde_json::json!({ "sessionId": session_id }),
++            session_id.to_string(),
++        );
++        cx.foreground_executor()
++            .spawn(async move { parse_context_usage_answer(request.await?) })
++    }
++
+     fn fork_session_at(
+         self: Rc<Self>,
+         session_id: &acp_v2::SessionId,
+diff --git a/crates/agent_servers/src/acp/v1/context_usage_tests.rs b/crates/agent_servers/src/acp/v1/context_usage_tests.rs
+new file mode 100644
+index 0000000..5dd79de
+--- /dev/null
++++ b/crates/agent_servers/src/acp/v1/context_usage_tests.rs
+@@ -0,0 +1,98 @@
++// Zeo next proposal §6.34 (asks 57, 58): reading Claude Agent (Plus) 0.38.0's
++// `_claude/context/usage` answer. Filter: `v1::context_usage_tests`.
++
++use acp_thread::context_usage::ContextUsageDetail;
++use serde_json::json;
++
++use super::parse_context_usage_answer;
++
++/// An `ok` answer as plus 0.38.0's `shapeContextUsage` writes it, `color` included: the client
++/// paints by `id`, so the CLI's colour names are read past.
++fn ok_answer() -> serde_json::Value {
++    json!({
++        "status": "ok",
++        "detail": "full",
++        "model": "claude-opus-5-5",
++        "totalTokens": 31_400,
++        "maxTokens": 256_000,
++        "percentage": 12.3,
++        "autoCompact": { "enabled": true, "threshold": 200_000 },
++        "categories": [
++            { "id": "memory_files", "name": "Memory files", "tokens": 13_600, "color": "claude" },
++            { "id": "system_prompt", "name": "System prompt", "tokens": 1_800, "color": "promptBorder" },
++            { "name": "Messages", "tokens": 855, "color": "purple" },
++        ],
++        "tools": [{ "name": "Read", "callTokens": 120, "resultTokens": 4_000 }],
++        "mcpTools": [{ "name": "search", "serverName": "brave", "tokens": 300 }],
++        "memoryFiles": [{ "path": "/w/CLAUDE.md", "type": "Project", "tokens": 13_600 }],
++        "skills": [{ "name": "zeo-proof", "source": "projectSettings", "tokens": 90 }],
++        "agents": [{ "agentType": "Explore", "source": "built-in", "tokens": 400 }],
++    })
++}
++
++#[test]
++fn an_ok_answer_is_read_whole() {
++    let report = parse_context_usage_answer(ok_answer()).expect("ok");
++    assert_eq!(report.detail, ContextUsageDetail::Full);
++    assert_eq!(report.total_tokens, 31_400);
++    assert_eq!(report.max_tokens, 256_000);
++    assert_eq!(report.auto_compact.threshold, Some(200_000.0));
++    assert_eq!(report.categories.len(), 3);
++    assert_eq!(report.categories[0].id.as_deref(), Some("memory_files"));
++    // A CLI that predates `id` omits it; the row is kept, without one.
++    assert_eq!(report.categories[2].id, None);
++    assert_eq!(report.tools[0].result_tokens, 4_000);
++    assert_eq!(report.mcp_tools[0].server_name, "brave");
++    assert_eq!(report.memory_files[0].kind, "Project");
++    assert_eq!(report.agents[0].agent_type, "Explore");
++}
++
++/// A later adapter may add fields and ids; neither may cost the user the card.
++#[test]
++fn unknown_fields_and_ids_are_tolerated() {
++    let mut answer = ok_answer();
++    answer["slashCommands"] = json!({ "totalCommands": 3 });
++    answer["categories"][0]["id"] = json!("a_category_from_the_future");
++    answer["categories"][0]["isDeferred"] = json!(false);
++    let report = parse_context_usage_answer(answer).expect("ok");
++    assert_eq!(
++        report.categories[0].id.as_deref(),
++        Some("a_category_from_the_future")
++    );
++}
++
++#[test]
++fn the_estimate_while_a_turn_runs_says_so() {
++    let mut answer = ok_answer();
++    answer["detail"] = json!("summary");
++    let report = parse_context_usage_answer(answer).expect("ok");
++    assert_eq!(report.detail, ContextUsageDetail::Summary);
++}
++
++/// Hostile: a missing total must be an error naming it, never a zero that draws an empty bar.
++#[test]
++fn a_missing_field_is_named() {
++    let mut answer = ok_answer();
++    answer.as_object_mut().unwrap().remove("maxTokens");
++    let error = parse_context_usage_answer(answer).unwrap_err().to_string();
++    assert!(error.contains("maxTokens"), "{error}");
++}
++
++#[test]
++fn unavailable_carries_the_agents_reason() {
++    let error = parse_context_usage_answer(json!({
++        "status": "unavailable",
++        "message": "The session has ended.",
++    }))
++    .unwrap_err()
++    .to_string();
++    assert_eq!(error, "The session has ended.");
++}
++
++#[test]
++fn an_unknown_status_is_an_error() {
++    let error = parse_context_usage_answer(json!({ "status": "later" }))
++        .unwrap_err()
++        .to_string();
++    assert!(error.contains("unknown status"), "{error}");
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 02cd249..5c92b94 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -597,6 +597,8 @@ fn highlight_code_runs(
+ }
+ 
+ mod content_column;
++mod context_usage_card;
++mod context_usage_report;
+ mod pinned_message;
+ 
+ #[cfg(test)]
+@@ -830,6 +832,8 @@ pub struct ThreadView {
+     pinned_message_scroll: ScrollHandle,
+     /// §6.32: whether the minimized pinned line fits, measured on the last frame.
+     pinned_message_fit: pinned_message::PinnedMessageFit,
++    /// §6.34: the context ring's breakdown card, while it is open.
++    context_usage_card: Option<context_usage_card::ContextUsageCard>,
+     /// The bottom edge, in window coordinates, of whatever floats over the top of the
+     /// conversation in the frame being drawn -- today the pinned user message -- or `None`.
+     /// Written at prepaint by the overlay itself; the tasks card reads it to sit below.
+@@ -1400,6 +1404,7 @@ impl ThreadView {
+             pinned_message_expanded: None,
+             pinned_message_scroll: ScrollHandle::new(),
+             pinned_message_fit: Default::default(),
++            context_usage_card: None,
+             top_overlay_bottom: Default::default(),
+             _cancel_task: None,
+             _save_task: None,
+@@ -6936,7 +6941,8 @@ impl ThreadView {
+     }
+ 
+     /// A click on the ring asks for the quota even inside the hover interval, for a
+-    /// pointer that cannot hover (Zeo next §6.16).
++    /// pointer that cannot hover (Zeo next §6.16), and opens or closes the context usage card
++    /// (§6.34) when the agent reports its breakdown.
+     fn refresh_account_usage_on_click(
+         &mut self,
+         _event: &ClickEvent,
+@@ -6945,6 +6951,7 @@ impl ThreadView {
+     ) {
+         self.thread
+             .update(cx, |thread, cx| thread.refresh_account_usage(true, cx));
++        self.toggle_context_usage_card(cx);
+     }
+ 
+     fn fast_mode_available(&self, cx: &Context<Self>) -> bool {
+@@ -16428,6 +16435,7 @@ impl Render for ThreadView {
+             )
+             .children(self.render_token_limit_callout(cx))
+             .children(self.render_docked_tasks_card(cx))
++            .children(self.render_context_usage_card(cx))
+             .children(self.render_pinned_elicitations(cx))
+             .children(self.render_request_elicitations(cx))
+             .child(self.render_message_editor(window, cx))
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/context_usage_card.rs b/crates/agent_ui/src/conversation_view/thread_view/context_usage_card.rs
+new file mode 100644
+index 0000000..625bd3e
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/context_usage_card.rs
+@@ -0,0 +1,366 @@
++//! The context ring's breakdown card (Zeo next proposal §6.34, ask 57).
++//!
++//! A click on the context ring asks the agent what fills the window (`_claude/context/usage`,
++//! Claude Agent (Plus) 0.38.0) and opens a card above the composer: "Context Usage", a "View
++//! Report" link (ask 58, `context_usage_report`), a control that hides it, how full the window
++//! is, a segmented bar and one row per category. Free space and the compaction buffer are the
++//! bar's empty part, never rows. Hover keeps the ring's tooltip; the card is asked for on a
++//! click only, because the agent's full count costs it token-count calls.
++//!
++//! The card belongs to the thread view, so each thread keeps its own; a second click on the
++//! ring, or the hide control, closes it, and the next click asks again.
++
++use acp_thread::context_usage::{ContextUsageDetail, ContextUsageReport};
++use gpui::{AnyElement, App, Context, Hsla, SharedString, Task, Window, px, relative};
++use ui::{IconButton, IconName, IconSize, Label, LabelSize, Tooltip, prelude::*};
++
++use super::ThreadView;
++use super::content_column::content_column;
++
++/// What the card shows while it is open.
++pub(crate) enum ContextUsageCardState {
++    Loading,
++    Ready(ContextUsageReport),
++    Failed(SharedString),
++}
++
++/// The open card, with the request that fills it.
++pub(crate) struct ContextUsageCard {
++    pub(crate) state: ContextUsageCardState,
++    _fetch: Task<()>,
++}
++
++/// How a category is painted: the agent's own instructions muted, every other row in one of
++/// the theme's accents. The agent sends a colour too, but it is the CLI's theme name
++/// (`promptBorder`, `claude`, ...), which means nothing to Zeo's themes.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum CategoryPaint {
++    Muted,
++    Accent(usize),
++}
++
++/// The SDK's stable category ids, in the order their accents are handed out, so a category
++/// keeps its colour from one card to the next however the rows are sorted.
++const ACCENT_ORDER: [&str; 8] = [
++    "system_tools",
++    "memory_files",
++    "skills",
++    "mcp_tools",
++    "mcp_instructions",
++    "custom_agents",
++    "messages",
++    "system_tools_deferred",
++];
++
++/// The paint for the row at `position`: by `id` when it is one the SDK documents, else after
++/// the documented ones, by position, so two unknown rows still differ.
++pub(crate) fn category_paint(id: Option<&str>, position: usize) -> CategoryPaint {
++    if id == Some("system_prompt") {
++        return CategoryPaint::Muted;
++    }
++    let documented = id.and_then(|id| ACCENT_ORDER.iter().position(|known| *known == id));
++    CategoryPaint::Accent(documented.unwrap_or(ACCENT_ORDER.len() + position))
++}
++
++/// Each category's share of the window, for the bar's segments. A total the agent reports
++/// above the window (it can, while a compaction is due) is scaled down, so the segments never
++/// overflow the bar.
++pub(crate) fn segment_fractions(report: &ContextUsageReport) -> Vec<f32> {
++    if report.max_tokens == 0 {
++        return vec![0.; report.categories.len()];
++    }
++    let used: u64 = report
++        .categories
++        .iter()
++        .map(|category| category.tokens)
++        .sum();
++    let scale = if used > report.max_tokens {
++        report.max_tokens as f64 / used as f64
++    } else {
++        1.
++    };
++    report
++        .categories
++        .iter()
++        .map(|category| (category.tokens as f64 * scale / report.max_tokens as f64) as f32)
++        .collect()
++}
++
++/// "12% Full", from the agent's own percentage.
++pub(crate) fn full_label(percentage: f64) -> String {
++    format!("{}% Full", percentage.clamp(0., 100.).round() as u32)
++}
++
++/// "~31.4K / 256K Tokens": approximate, because a mid-turn answer is an estimate and a full
++/// one is already stale by the next message.
++pub(crate) fn tokens_label(total_tokens: u64, max_tokens: u64) -> String {
++    format!(
++        "~{} / {} Tokens",
++        crate::humanize_token_count(total_tokens),
++        crate::humanize_token_count(max_tokens)
++    )
++}
++
++impl ThreadView {
++    /// Opens the card and asks the agent for the breakdown, or closes an open card. Nothing
++    /// happens when the agent does not report its context usage, so the ring's click keeps
++    /// only its quota refresh there.
++    pub(super) fn toggle_context_usage_card(&mut self, cx: &mut Context<Self>) {
++        if self.context_usage_card.take().is_some() {
++            cx.notify();
++            return;
++        }
++        let connection = self.thread.read(cx).connection().clone();
++        if !connection.supports_context_usage() {
++            return;
++        }
++        let session_id = self.thread.read(cx).session_id().clone();
++        let request = connection.context_usage(&session_id, cx);
++        let fetch = cx.spawn(async move |this, cx| {
++            let result = request.await;
++            this.update(cx, |this, cx| {
++                // Closed while the agent answered: the answer has nowhere to go.
++                let Some(card) = this.context_usage_card.as_mut() else {
++                    return;
++                };
++                card.state = match result {
++                    Ok(report) => ContextUsageCardState::Ready(report),
++                    Err(error) => {
++                        log::warn!(
++                            "context usage request failed: session={session_id} error={error:#}"
++                        );
++                        ContextUsageCardState::Failed(error.to_string().into())
++                    }
++                };
++                cx.notify();
++            })
++            .ok();
++        });
++        self.context_usage_card = Some(ContextUsageCard {
++            state: ContextUsageCardState::Loading,
++            _fetch: fetch,
++        });
++        cx.notify();
++    }
++
++    pub(super) fn render_context_usage_card(&self, cx: &Context<Self>) -> Option<AnyElement> {
++        let card = self.context_usage_card.as_ref()?;
++        let colors = cx.theme().colors();
++        let report = match &card.state {
++            ContextUsageCardState::Ready(report) => Some(report),
++            _ => None,
++        };
++
++        let header = h_flex()
++            .w_full()
++            .justify_between()
++            .child(
++                h_flex()
++                    .gap_2()
++                    .child(Label::new("Context Usage").size(LabelSize::Small))
++                    .child(
++                        Button::new("context-usage-view-report", "View Report")
++                            .label_size(LabelSize::Small)
++                            .color(Color::Muted)
++                            .disabled(report.is_none())
++                            .tooltip(Tooltip::text("Open the full report in an editor tab"))
++                            .on_click(cx.listener(|this, _, window, cx| {
++                                this.open_context_usage_report(window, cx);
++                            })),
++                    ),
++            )
++            .child(
++                IconButton::new("context-usage-hide", IconName::Dash)
++                    .icon_size(IconSize::Small)
++                    .icon_color(Color::Muted)
++                    .aria_label("Hide Context Usage")
++                    .tooltip(Tooltip::text("Hide Context Usage"))
++                    .on_click(cx.listener(|this, _, _, cx| {
++                        this.context_usage_card = None;
++                        cx.notify();
++                    })),
++            );
++
++        let body = match &card.state {
++            ContextUsageCardState::Loading => Label::new("Reading the context window…")
++                .size(LabelSize::Small)
++                .color(Color::Muted)
++                .into_any_element(),
++            ContextUsageCardState::Failed(reason) => {
++                Label::new(format!("Couldn't read the context usage: {reason}"))
++                    .size(LabelSize::Small)
++                    .color(Color::Error)
++                    .into_any_element()
++            }
++            ContextUsageCardState::Ready(report) => self.render_context_usage_body(report, cx),
++        };
++
++        let card = v_flex()
++            .id("context-usage-card")
++            .debug_selector(|| "context-usage-card".into())
++            .mx_2()
++            .mb_1()
++            .p_2()
++            .gap_1p5()
++            .rounded_md()
++            .border_1()
++            .border_color(colors.border)
++            .bg(colors.panel_background)
++            .shadow_sm()
++            .child(header)
++            .child(body);
++        // The composer's column (§6.30), as the question card and the docked tasks bar.
++        Some(content_column(card, cx).into_any_element())
++    }
++
++    fn render_context_usage_body(
++        &self,
++        report: &ContextUsageReport,
++        cx: &Context<Self>,
++    ) -> AnyElement {
++        let colors = cx.theme().colors();
++        let paints: Vec<Hsla> = report
++            .categories
++            .iter()
++            .enumerate()
++            .map(|(position, category)| {
++                category_hsla(category_paint(category.id.as_deref(), position), cx)
++            })
++            .collect();
++
++        let bar = h_flex()
++            .debug_selector(|| "context-usage-bar".into())
++            .w_full()
++            .h(px(6.))
++            .gap_px()
++            .rounded_sm()
++            .overflow_hidden()
++            .bg(colors.element_background)
++            .children(
++                segment_fractions(report)
++                    .into_iter()
++                    .zip(paints.iter().copied())
++                    .filter(|(fraction, _)| *fraction > 0.)
++                    .map(|(fraction, paint)| {
++                        div().h_full().w(relative(fraction)).flex_none().bg(paint)
++                    }),
++            );
++
++        let rows =
++            report
++                .categories
++                .iter()
++                .zip(paints)
++                .enumerate()
++                .map(|(ix, (category, paint))| {
++                    category_row(ix, &category.name, category.tokens, paint, cx)
++                });
++
++        v_flex()
++            .gap_1p5()
++            .child(
++                h_flex()
++                    .w_full()
++                    .justify_between()
++                    .child(
++                        Label::new(full_label(report.percentage))
++                            .size(LabelSize::XSmall)
++                            .color(Color::Muted),
++                    )
++                    .child(
++                        Label::new(tokens_label(report.total_tokens, report.max_tokens))
++                            .size(LabelSize::XSmall)
++                            .color(Color::Muted),
++                    ),
++            )
++            .child(bar)
++            .child(v_flex().children(rows))
++            .when(report.detail == ContextUsageDetail::Summary, |this| {
++                this.child(
++                    Label::new(
++                        "Estimated while the agent works. Reopen the card when the turn ends \
++                         for the full count.",
++                    )
++                    .size(LabelSize::XSmall)
++                    .color(Color::Muted),
++                )
++            })
++            .into_any_element()
++    }
++
++    /// "View Report": the breakdown as a Markdown document, in an editor tab with its preview.
++    fn open_context_usage_report(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        let Some(ContextUsageCard {
++            state: ContextUsageCardState::Ready(report),
++            ..
++        }) = self.context_usage_card.as_ref()
++        else {
++            return;
++        };
++        let Some(workspace) = self.workspace.upgrade() else {
++            return;
++        };
++        let thread_title = self
++            .thread
++            .read(cx)
++            .title()
++            .unwrap_or_else(|| crate::DEFAULT_THREAD_TITLE.into())
++            .to_string();
++        let repository = self.project.upgrade().map(|project| {
++            project
++                .read(cx)
++                .visible_worktrees(cx)
++                .map(|worktree| worktree.read(cx).root_name_str().to_string())
++                .collect::<Vec<_>>()
++                .join(", ")
++        });
++        let markdown = super::context_usage_report::context_usage_markdown(
++            report,
++            &thread_title,
++            repository.as_deref().filter(|names| !names.is_empty()),
++        );
++        super::context_usage_report::open_context_usage_report(markdown, workspace, window, cx)
++            .detach_and_log_err(cx);
++    }
++}
++
++/// One category: its colour, its name, its tokens.
++fn category_row(ix: usize, name: &str, tokens: u64, paint: Hsla, cx: &App) -> impl IntoElement {
++    h_flex()
++        .id(("context-usage-row", ix))
++        .w_full()
++        .px_1()
++        .py_0p5()
++        .justify_between()
++        .rounded_sm()
++        .hover(|style| style.bg(cx.theme().colors().element_hover))
++        .child(
++            h_flex()
++                .gap_2()
++                .child(div().size(px(10.)).rounded_xs().flex_none().bg(paint))
++                .child(Label::new(name.to_string()).size(LabelSize::Small)),
++        )
++        .child(
++            Label::new(crate::humanize_token_count(tokens))
++                .size(LabelSize::Small)
++                .color(Color::Muted),
++        )
++}
++
++fn category_hsla(paint: CategoryPaint, cx: &App) -> Hsla {
++    match paint {
++        CategoryPaint::Muted => cx.theme().colors().text_muted,
++        CategoryPaint::Accent(slot) => {
++            let accents = &cx.theme().accents().0;
++            if accents.is_empty() {
++                cx.theme().colors().text_accent
++            } else {
++                accents[slot % accents.len()]
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++#[path = "context_usage_card_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/context_usage_card_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/context_usage_card_tests.rs
+new file mode 100644
+index 0000000..f0adcad
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/context_usage_card_tests.rs
+@@ -0,0 +1,91 @@
++// Zeo next proposal §6.34 (ask 57): the context card's pure parts. Filter: `context_usage_card`.
++
++use acp_thread::context_usage::{
++    ContextUsageAutoCompact, ContextUsageCategory, ContextUsageDetail, ContextUsageReport,
++};
++
++use super::{CategoryPaint, category_paint, full_label, segment_fractions, tokens_label};
++
++fn report(max_tokens: u64, tokens: &[u64]) -> ContextUsageReport {
++    ContextUsageReport {
++        detail: ContextUsageDetail::Full,
++        model: "m".into(),
++        total_tokens: tokens.iter().sum(),
++        max_tokens,
++        percentage: 0.,
++        auto_compact: ContextUsageAutoCompact {
++            enabled: true,
++            threshold: None,
++        },
++        categories: tokens
++            .iter()
++            .map(|&tokens| ContextUsageCategory {
++                id: None,
++                name: "c".into(),
++                tokens,
++            })
++            .collect(),
++        tools: Vec::new(),
++        mcp_tools: Vec::new(),
++        memory_files: Vec::new(),
++        skills: Vec::new(),
++        agents: Vec::new(),
++    }
++}
++
++#[test]
++fn a_category_keeps_its_colour_wherever_it_sorts() {
++    assert_eq!(
++        category_paint(Some("memory_files"), 0),
++        category_paint(Some("memory_files"), 5)
++    );
++    assert_eq!(
++        category_paint(Some("system_prompt"), 3),
++        CategoryPaint::Muted
++    );
++    assert_ne!(
++        category_paint(Some("skills"), 0),
++        category_paint(Some("messages"), 0)
++    );
++}
++
++/// Unknown ids, and rows from a CLI that predates `id`, are painted after the documented ones
++/// and by position, so two of them never share a colour with each other or a known row.
++#[test]
++fn unknown_rows_get_their_own_colours() {
++    let first = category_paint(Some("from_the_future"), 0);
++    let second = category_paint(None, 1);
++    assert_ne!(first, second);
++    for (position, known) in super::ACCENT_ORDER.iter().enumerate() {
++        let known = category_paint(Some(known), position);
++        assert_ne!(first, known);
++        assert_ne!(second, known);
++    }
++}
++
++#[test]
++fn segments_are_shares_of_the_window() {
++    let fractions = segment_fractions(&report(1_000, &[500, 250]));
++    assert_eq!(fractions, vec![0.5, 0.25]);
++}
++
++/// Hostile: a total above the window must not draw segments past the bar's end.
++#[test]
++fn segments_never_overflow_the_bar() {
++    let fractions = segment_fractions(&report(1_000, &[900, 600]));
++    let sum: f32 = fractions.iter().sum();
++    assert!(sum <= 1.0 + f32::EPSILON, "{fractions:?}");
++    assert!(fractions[0] > fractions[1]);
++}
++
++#[test]
++fn a_window_of_zero_draws_nothing() {
++    assert_eq!(segment_fractions(&report(0, &[10])), vec![0.]);
++}
++
++#[test]
++fn the_labels_read_as_the_reference_does() {
++    assert_eq!(full_label(12.3), "12% Full");
++    assert_eq!(full_label(140.), "100% Full");
++    assert_eq!(tokens_label(31_400, 256_000), "~31k / 256k Tokens");
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/context_usage_report.rs b/crates/agent_ui/src/conversation_view/thread_view/context_usage_report.rs
+new file mode 100644
+index 0000000..299e221
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/context_usage_report.rs
+@@ -0,0 +1,288 @@
++//! "View Report" on the context card (Zeo next proposal §6.34, ask 58), in its simplest form
++//! (operator, 2026-11-14): the breakdown written as a Markdown document into an untitled
++//! buffer, opened with Zed's Markdown preview. The donut chart of the reference is a later step.
++//!
++//! The document says what each category is and whether it is the agent's or the user's to
++//! control, because the numbers alone do not tell a reader what to do about them.
++
++use std::fmt::Write as _;
++
++use acp_thread::context_usage::{ContextUsageDetail, ContextUsageReport};
++use anyhow::Result;
++use gpui::{App, Entity, Task, Window};
++use workspace::Workspace;
++
++/// The tab's title.
++const REPORT_TITLE: &str = "Context Usage";
++
++/// What a category is, by the SDK's stable id. An id the SDK adds later gets no description,
++/// never a wrong one.
++fn category_description(id: &str) -> Option<&'static str> {
++    Some(match id {
++        "system_prompt" => {
++            "The agent's own instructions, sent at the start of every turn: how it behaves, how \
++             it uses its tools, the rules of the session. Set up by the agent."
++        }
++        "system_tools" => {
++            "The definitions of the agent's built-in tools (reading files, running commands, \
++             searching), which the model reads on every turn to know what it can call. Set up by \
++             the agent."
++        }
++        "mcp_tools" => {
++            "The definitions of the tools your MCP servers expose. Yours to control: a server \
++             you turn off takes its tools out of the window."
++        }
++        "mcp_instructions" => {
++            "The instructions your MCP servers add to the agent's prompt. Yours to control, with \
++             the servers themselves."
++        }
++        "custom_agents" => {
++            "The descriptions of the subagents the agent can delegate to, so it knows when to \
++             call each one. Yours to control, beyond the built-in ones."
++        }
++        "memory_files" => {
++            "Memory files (CLAUDE.md and the files it imports), read into every turn. Yours to \
++             control: shorter memory files leave more room for the work."
++        }
++        "skills" => {
++            "The name and description of every skill the agent can load; a skill's body enters \
++             the window only once it is used. Yours to control."
++        }
++        "messages" => {
++            "The conversation itself: your messages, the agent's replies, and every tool call \
++             and result. It grows with each turn until a compaction summarizes it."
++        }
++        _ => return None,
++    })
++}
++
++/// `13600` as `13,600`.
++pub(crate) fn group_thousands(value: u64) -> String {
++    let digits = value.to_string();
++    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
++    for (ix, digit) in digits.chars().enumerate() {
++        if ix > 0 && (digits.len() - ix).is_multiple_of(3) {
++            grouped.push(',');
++        }
++        grouped.push(digit);
++    }
++    grouped
++}
++
++/// Text from the agent made safe for one table cell: a `|` would end the cell, a newline the
++/// row.
++fn cell(text: &str) -> String {
++    text.replace('|', "\\|").replace(['\r', '\n'], " ")
++}
++
++fn share(tokens: u64, max_tokens: u64) -> String {
++    if max_tokens == 0 {
++        return "–".to_string();
++    }
++    format!("{:.1}%", tokens as f64 * 100. / max_tokens as f64)
++}
++
++/// The sub-rows a category has, as a Markdown table, or `None` when the agent sent none.
++fn sub_table(id: &str, report: &ContextUsageReport) -> Option<String> {
++    let mut table = String::new();
++    match id {
++        "messages" if !report.tools.is_empty() => {
++            table.push_str("| Tool | Calls | Results | Total |\n| --- | ---: | ---: | ---: |\n");
++            for tool in &report.tools {
++                let _ = writeln!(
++                    table,
++                    "| {} | {} | {} | {} |",
++                    cell(&tool.name),
++                    group_thousands(tool.call_tokens),
++                    group_thousands(tool.result_tokens),
++                    group_thousands(tool.call_tokens + tool.result_tokens)
++                );
++            }
++        }
++        "mcp_tools" if !report.mcp_tools.is_empty() => {
++            // By server, as the proposal asks; within one, the agent's order (largest first).
++            let mut tools: Vec<_> = report.mcp_tools.iter().collect();
++            tools.sort_by(|a, b| a.server_name.cmp(&b.server_name));
++            table.push_str("| Server | Tool | Tokens |\n| --- | --- | ---: |\n");
++            for tool in tools {
++                let _ = writeln!(
++                    table,
++                    "| {} | {} | {} |",
++                    cell(&tool.server_name),
++                    cell(&tool.name),
++                    group_thousands(tool.tokens)
++                );
++            }
++        }
++        "memory_files" if !report.memory_files.is_empty() => {
++            table.push_str("| File | Kind | Tokens |\n| --- | --- | ---: |\n");
++            for file in &report.memory_files {
++                let _ = writeln!(
++                    table,
++                    "| `{}` | {} | {} |",
++                    cell(&file.path).replace('`', "'"),
++                    cell(&file.kind),
++                    group_thousands(file.tokens)
++                );
++            }
++        }
++        "skills" if !report.skills.is_empty() => {
++            table.push_str("| Skill | Source | Tokens |\n| --- | --- | ---: |\n");
++            for skill in &report.skills {
++                let _ = writeln!(
++                    table,
++                    "| {} | {} | {} |",
++                    cell(&skill.name),
++                    cell(&skill.source),
++                    group_thousands(skill.tokens)
++                );
++            }
++        }
++        "custom_agents" if !report.agents.is_empty() => {
++            table.push_str("| Agent | Source | Tokens |\n| --- | --- | ---: |\n");
++            for agent in &report.agents {
++                let _ = writeln!(
++                    table,
++                    "| {} | {} | {} |",
++                    cell(&agent.agent_type),
++                    cell(&agent.source),
++                    group_thousands(agent.tokens)
++                );
++            }
++        }
++        _ => return None,
++    }
++    Some(table)
++}
++
++/// The sub-tables by the category they belong to, with the heading each gets when the agent
++/// sent its rows without the category (so nothing it sent is dropped).
++const SUB_TABLES: [(&str, &str); 5] = [
++    ("messages", "Tools in the conversation"),
++    ("mcp_tools", "MCP tools"),
++    ("memory_files", "Memory files"),
++    ("skills", "Skills"),
++    ("custom_agents", "Subagents"),
++];
++
++/// The report, as the Markdown the editor tab shows.
++pub(crate) fn context_usage_markdown(
++    report: &ContextUsageReport,
++    thread_title: &str,
++    repository: Option<&str>,
++) -> String {
++    let mut md = String::new();
++    let used = crate::humanize_token_count(report.total_tokens);
++    let window = crate::humanize_token_count(report.max_tokens);
++    let percentage = report.percentage.clamp(0., 100.).round() as u32;
++
++    md.push_str("Context Usage Report\n\n");
++    let _ = writeln!(md, "# {}\n", thread_title.replace(['\r', '\n'], " "));
++    md.push_str("| Repository | Context size | Tokens used |\n| --- | --- | --- |\n");
++    let _ = writeln!(
++        md,
++        "| {} | {window} | ~{used} ({percentage}%) |\n",
++        cell(repository.unwrap_or("–"))
++    );
++    let _ = write!(md, "Model: `{}`. ", report.model.replace('`', "'"));
++    match (report.auto_compact.enabled, report.auto_compact.threshold) {
++        (true, Some(threshold)) => {
++            let _ = writeln!(
++                md,
++                "Auto-compact: on, at {} tokens.\n",
++                group_thousands(threshold.max(0.).round() as u64)
++            );
++        }
++        (true, None) => md.push_str("Auto-compact: on.\n\n"),
++        (false, _) => md.push_str("Auto-compact: off.\n\n"),
++    }
++    if report.detail == ContextUsageDetail::Summary {
++        md.push_str(
++            "> Estimated: a turn was running, so the agent counted locally instead of asking \
++             for an exact count. Open the report again when the turn ends for the full count.\n\n",
++        );
++    }
++    md.push_str(
++        "The context window holds everything the agent reads on every turn: its own \
++         instructions, the tools it can call, your memory files and skills, and the conversation \
++         itself. It can only hold so much. As it fills, the agent has less room to work, and \
++         near the limit the conversation is compacted: older turns are summarized to make room. \
++         Some of what is here is set up by the agent; the rest is yours to control.\n\n",
++    );
++
++    md.push_str("## Categories\n\n");
++    md.push_str("| Category | Tokens | Share of the window |\n| --- | ---: | ---: |\n");
++    for category in &report.categories {
++        let _ = writeln!(
++            md,
++            "| {} | {} | {} |",
++            cell(&category.name),
++            group_thousands(category.tokens),
++            share(category.tokens, report.max_tokens)
++        );
++    }
++    let free = report.max_tokens.saturating_sub(report.total_tokens);
++    let _ = writeln!(
++        md,
++        "| Free space and compaction buffer | {} | {} |\n",
++        group_thousands(free),
++        share(free, report.max_tokens)
++    );
++
++    let mut emitted = Vec::new();
++    for category in &report.categories {
++        let id = category.id.as_deref().unwrap_or_default();
++        let _ = writeln!(
++            md,
++            "## {} — {} tokens\n",
++            category.name.replace(['\r', '\n'], " "),
++            group_thousands(category.tokens)
++        );
++        if let Some(description) = category_description(id) {
++            let _ = writeln!(md, "{description}\n");
++        }
++        if let Some(table) = sub_table(id, report) {
++            let _ = writeln!(md, "{table}");
++            emitted.push(id);
++        }
++    }
++    for (id, heading) in SUB_TABLES {
++        if emitted.contains(&id) {
++            continue;
++        }
++        if let Some(table) = sub_table(id, report) {
++            let _ = writeln!(md, "## {heading}\n\n{table}");
++        }
++    }
++    md.truncate(md.trim_end().len());
++    md.push('\n');
++    md
++}
++
++/// Writes `markdown` into an untitled buffer and opens Zed's Markdown preview of it.
++pub(crate) fn open_context_usage_report(
++    markdown: String,
++    workspace: Entity<Workspace>,
++    window: &mut Window,
++    cx: &mut App,
++) -> Task<Result<()>> {
++    let opened = super::open_markdown_in_workspace(
++        REPORT_TITLE.to_string(),
++        markdown,
++        workspace,
++        window,
++        cx,
++    );
++    window.spawn(cx, async move |cx| {
++        opened.await?;
++        // The editor just opened is the focused item, which is what OpenPreview previews.
++        cx.update(|window, cx| {
++            window.dispatch_action(Box::new(zed_actions::preview::markdown::OpenPreview), cx)
++        })?;
++        anyhow::Ok(())
++    })
++}
++
++#[cfg(test)]
++#[path = "context_usage_report_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/context_usage_report_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/context_usage_report_tests.rs
+new file mode 100644
+index 0000000..262a4fc
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/context_usage_report_tests.rs
+@@ -0,0 +1,155 @@
++// Zeo next proposal §6.34 (ask 58): the "View Report" document. Filter: `context_usage_report`.
++
++use acp_thread::context_usage::{
++    ContextUsageAutoCompact, ContextUsageCategory, ContextUsageDetail, ContextUsageMcpTool,
++    ContextUsageMemoryFile, ContextUsageReport, ContextUsageSkill, ContextUsageTool,
++};
++use indoc::indoc;
++use pretty_assertions::assert_eq;
++
++use super::{context_usage_markdown, group_thousands};
++
++fn category(id: Option<&str>, name: &str, tokens: u64) -> ContextUsageCategory {
++    ContextUsageCategory {
++        id: id.map(Into::into),
++        name: name.into(),
++        tokens,
++    }
++}
++
++/// An estimate taken mid-turn, with a row the SDK gave no id, a `|` in a name, MCP tools out
++/// of server order, and skills sent without their category.
++fn report() -> ContextUsageReport {
++    ContextUsageReport {
++        detail: ContextUsageDetail::Summary,
++        model: "claude-opus-5-5".into(),
++        total_tokens: 15_045,
++        max_tokens: 200_000,
++        percentage: 7.52,
++        auto_compact: ContextUsageAutoCompact {
++            enabled: true,
++            threshold: Some(180_000.),
++        },
++        categories: vec![
++            category(Some("memory_files"), "Memory files", 13_600),
++            category(Some("messages"), "Messages", 1_000),
++            category(Some("mcp_tools"), "MCP tools", 400),
++            category(None, "Mystery | row", 45),
++        ],
++        tools: vec![ContextUsageTool {
++            name: "Read".into(),
++            call_tokens: 120,
++            result_tokens: 4_000,
++        }],
++        mcp_tools: vec![
++            ContextUsageMcpTool {
++                name: "search".into(),
++                server_name: "brave".into(),
++                tokens: 300,
++            },
++            ContextUsageMcpTool {
++                name: "fetch".into(),
++                server_name: "alpha".into(),
++                tokens: 100,
++            },
++        ],
++        memory_files: vec![ContextUsageMemoryFile {
++            path: "/w/CLAUDE.md".into(),
++            kind: "Project".into(),
++            tokens: 13_600,
++        }],
++        skills: vec![ContextUsageSkill {
++            name: "zeo-proof".into(),
++            source: "projectSettings".into(),
++            tokens: 90,
++        }],
++        agents: Vec::new(),
++    }
++}
++
++#[test]
++fn the_report_snapshot() {
++    let markdown = context_usage_markdown(&report(), "Fix the\nbuild", Some("zeo"));
++    assert_eq!(
++        markdown,
++        indoc! {"
++            Context Usage Report
++
++            # Fix the build
++
++            | Repository | Context size | Tokens used |
++            | --- | --- | --- |
++            | zeo | 200k | ~15k (8%) |
++
++            Model: `claude-opus-5-5`. Auto-compact: on, at 180,000 tokens.
++
++            > Estimated: a turn was running, so the agent counted locally instead of asking for an exact count. Open the report again when the turn ends for the full count.
++
++            The context window holds everything the agent reads on every turn: its own instructions, the tools it can call, your memory files and skills, and the conversation itself. It can only hold so much. As it fills, the agent has less room to work, and near the limit the conversation is compacted: older turns are summarized to make room. Some of what is here is set up by the agent; the rest is yours to control.
++
++            ## Categories
++
++            | Category | Tokens | Share of the window |
++            | --- | ---: | ---: |
++            | Memory files | 13,600 | 6.8% |
++            | Messages | 1,000 | 0.5% |
++            | MCP tools | 400 | 0.2% |
++            | Mystery \\| row | 45 | 0.0% |
++            | Free space and compaction buffer | 184,955 | 92.5% |
++
++            ## Memory files — 13,600 tokens
++
++            Memory files (CLAUDE.md and the files it imports), read into every turn. Yours to control: shorter memory files leave more room for the work.
++
++            | File | Kind | Tokens |
++            | --- | --- | ---: |
++            | `/w/CLAUDE.md` | Project | 13,600 |
++
++            ## Messages — 1,000 tokens
++
++            The conversation itself: your messages, the agent's replies, and every tool call and result. It grows with each turn until a compaction summarizes it.
++
++            | Tool | Calls | Results | Total |
++            | --- | ---: | ---: | ---: |
++            | Read | 120 | 4,000 | 4,120 |
++
++            ## MCP tools — 400 tokens
++
++            The definitions of the tools your MCP servers expose. Yours to control: a server you turn off takes its tools out of the window.
++
++            | Server | Tool | Tokens |
++            | --- | --- | ---: |
++            | alpha | fetch | 100 |
++            | brave | search | 300 |
++
++            ## Mystery | row — 45 tokens
++
++            ## Skills
++
++            | Skill | Source | Tokens |
++            | --- | --- | ---: |
++            | zeo-proof | projectSettings | 90 |
++        "}
++    );
++}
++
++/// A full count carries no estimate note, and a window with no repository says so.
++#[test]
++fn a_full_count_has_no_estimate_note() {
++    let mut report = report();
++    report.detail = ContextUsageDetail::Full;
++    report.auto_compact.enabled = false;
++    let markdown = context_usage_markdown(&report, "T", None);
++    assert!(!markdown.contains("Estimated"), "{markdown}");
++    assert!(markdown.contains("| – | 200k |"), "{markdown}");
++    assert!(markdown.contains("Auto-compact: off."), "{markdown}");
++}
++
++#[test]
++fn thousands_are_grouped() {
++    assert_eq!(group_thousands(0), "0");
++    assert_eq!(group_thousands(999), "999");
++    assert_eq!(group_thousands(1_000), "1,000");
++    assert_eq!(group_thousands(184_955), "184,955");
++    assert_eq!(group_thousands(1_234_567), "1,234,567");
++}

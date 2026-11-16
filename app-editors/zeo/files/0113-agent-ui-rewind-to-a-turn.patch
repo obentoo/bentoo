@@ -1,0 +1,659 @@
+From 566f3a6236943f8c562da84ae2ea6ad63cc5de3f Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Sun, 15 Nov 2026 16:24:20 -0300
+Subject: [PATCH] agent_ui: rewind to a turn, opened as a sub-thread
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.33 (ask 61; zed discussion #50192), with the
+operator's choices of 2026-11-15: the rewound conversation opens as a
+sub-thread and the original thread is kept as it was; the confirmation
+asks every time whether the files go back too.
+
+- acp_thread: AgentConnection gains supports_rewind_session and
+  rewind_session(session, cut, restore_files) -> RewindOutcome {session_id,
+  dropped_turns, files_restored}; the default refuses.
+- agent_servers (v1): `_claude/rewind` {sessionId, at, restoreFiles}
+  through send_task_request, offered when the agent advertises
+  `_claude/rewind` (Claude Agent (Plus) 0.38.0). parse_rewind_answer reads
+  plus's RewindResult strictly and turns every other status into words
+  the user can act on; a conversation failure after the files were
+  restored says the files were restored.
+- agent_ui: beside 0112's fork button, a RotateCcw "Rewind to Here" on
+  every finished turn but the last (has_later_turn: nothing after the last
+  turn to rewind), root session only, disabled while a turn runs. The
+  click (deferred past the view's update, as the fork's) asks "Rewind to
+  this turn?" with Conversation Only / Conversation and Files / Cancel
+  (rewind_choice), calls rewind_session with the turn's cut (turn_cut),
+  and AgentPanel::open_rewound_sub_thread loads the answered session as a
+  sub-thread linked to the parent (kind with_context, the kept turns'
+  inherited count). A failure shows "Couldn't rewind: <reason>".
+  sub_thread_request_at is shared by the fork and the rewind.
+
+Known detail: the loaded sub-thread is titled "New Agent Thread" until
+its first message, as the fork's is.
+
+Tests: turn_fork::tests gains the confirmation's answers and "only a
+turn with a later prompt can be rewound"; v1::rewind_tests (4) cover the
+answer's statuses. Seen failing, each probe alone: rewind offered on
+every turn (the later-prompt test), the files-restored warning dropped
+(its test). Xvfb proof with a stub agent in the hub:
+docs/assets/zeo-6.33-fork-from-turn-2026-11-15/ (the stub received
+{"at": {"messageId": "msg_1"}, "restoreFiles": true} and the sub-thread
+held the first turn only).
+---
+
+diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
+index f13fa7a..2911257 100644
+--- a/crates/acp_thread/src/connection.rs
++++ b/crates/acp_thread/src/connection.rs
+@@ -92,6 +92,17 @@ pub fn build_terminal_auth_task(
+     }
+ }
+ 
++/// What a rewind (`AgentConnection::rewind_session`) produced (Zeo next proposal §6.33).
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct RewindOutcome {
++    /// The new session holding the kept turns.
++    pub session_id: acp_v2::SessionId,
++    /// How many turns were left out.
++    pub dropped_turns: usize,
++    /// Whether the files were taken back too.
++    pub files_restored: bool,
++}
++
+ pub trait AgentConnection {
+     fn agent_id(&self) -> AgentId;
+ 
+@@ -205,6 +216,27 @@ pub trait AgentConnection {
+         )))
+     }
+ 
++    /// Whether `rewind_session` is offered (Zeo next proposal §6.33).
++    fn supports_rewind_session(&self) -> bool {
++        false
++    }
++
++    /// Take the conversation back to the end of one turn, files too when `restore_files`
++    /// (Zeo next proposal §6.33, ask 61). `cut` names the turn as `fork_session_at` does. The
++    /// agent copies the kept turns into a new session and answers its id; the original
++    /// session is left as it is. The default refuses.
++    fn rewind_session(
++        self: Rc<Self>,
++        _session_id: &acp_v2::SessionId,
++        _cut: serde_json::Value,
++        _restore_files: bool,
++        _cx: &mut App,
++    ) -> Task<Result<RewindOutcome>> {
++        Task::ready(Err(anyhow::Error::msg(
++            "Rewinding sessions is not supported",
++        )))
++    }
++
+     /// Read the end of one of the session's tasks' output (`_claude/tasks/output`,
+     /// version 2). Unsupported unless the connection overrides it.
+     fn fetch_task_output(
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index 989720e..5a934e7 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -63,6 +63,8 @@ const CLAUDE_USAGE_REFRESH_METHOD: &str = "_claude/usage/refresh";
+ const CLAUDE_TASKS_OUTPUT_METHOD: &str = "_claude/tasks/output";
+ /// Advertised by the plus adapter from 0.38.0, with `session/fork`'s cut point (Zeo next §6.33).
+ const CLAUDE_REWIND_CAPABILITY: &str = "_claude/rewind";
++/// Takes a session back to the end of a turn (plus 0.38.0).
++const CLAUDE_REWIND_METHOD: &str = "_claude/rewind";
+ /// Where a `session/fork` names the turn it keeps up to (plus 0.38.0).
+ const CLAUDE_FORK_AT_META_KEY: &str = "_claude/forkAt";
+ /// The most `_claude/tasks/output` serves; the adapter clamps to the same value.
+@@ -105,6 +107,63 @@ async fn send_task_request(
+         .map_err(failed)
+ }
+ 
++/// Reads a `_claude/rewind` answer (plus 0.38.0's `RewindResult`) into an outcome, or an
++/// error that says what happened in words the user can act on.
++fn parse_rewind_answer(answer: &serde_json::Value) -> Result<acp_thread::RewindOutcome> {
++    let status = answer.get("status").and_then(|status| status.as_str());
++    let message = || {
++        answer
++            .get("message")
++            .and_then(|message| message.as_str())
++            .unwrap_or("no reason given")
++    };
++    match status {
++        Some("rewound") => {
++            let session_id = answer
++                .get("sessionId")
++                .and_then(|id| id.as_str())
++                .ok_or_else(|| anyhow!("{CLAUDE_REWIND_METHOD} answered without a sessionId"))?;
++            Ok(acp_thread::RewindOutcome {
++                session_id: acp_v2::SessionId::new(session_id.to_string()),
++                dropped_turns: answer
++                    .get("droppedTurns")
++                    .and_then(|turns| turns.as_u64())
++                    .unwrap_or(0) as usize,
++                files_restored: answer
++                    .get("filesRestored")
++                    .and_then(|restored| restored.as_bool())
++                    .unwrap_or(false),
++            })
++        }
++        Some("nothing_to_rewind") => Err(anyhow!("There is nothing after this turn to rewind.")),
++        Some("not_found") => Err(anyhow!("The agent could not find this turn.")),
++        Some("busy") => Err(anyhow!("Wait for the turn to end, then rewind.")),
++        Some("failed") => {
++            let files_restored = answer
++                .get("filesRestored")
++                .and_then(|restored| restored.as_bool())
++                .unwrap_or(false);
++            match answer.get("stage").and_then(|stage| stage.as_str()) {
++                Some("files") => Err(anyhow!(
++                    "The files could not be restored, so nothing was changed: {}",
++                    message()
++                )),
++                _ if files_restored => Err(anyhow!(
++                    "The files were restored, but the conversation could not be: {}",
++                    message()
++                )),
++                _ => Err(anyhow!(
++                    "The conversation could not be rewound: {}",
++                    message()
++                )),
++            }
++        }
++        other => Err(anyhow!(
++            "{CLAUDE_REWIND_METHOD} answered an unknown status {other:?}"
++        )),
++    }
++}
++
+ /// Reads a `_claude/tasks/output` result strictly: a missing or wrong-typed field is an
+ /// error naming it, never a default value.
+ fn parse_task_output(response: &serde_json::Value) -> Result<acp_thread::TaskOutput> {
+@@ -2004,6 +2063,9 @@ mod round_trip_tests;
+ #[cfg(test)]
+ mod fork_session_tests;
+ 
++#[cfg(test)]
++mod rewind_tests;
++
+ #[cfg(test)]
+ mod fork_config_tests;
+ 
+@@ -2266,6 +2328,35 @@ impl AgentConnection for AcpConnection {
+         self.agent_supports_session_fork() && self.agent_advertises(CLAUDE_REWIND_CAPABILITY)
+     }
+ 
++    fn supports_rewind_session(&self) -> bool {
++        self.agent_advertises(CLAUDE_REWIND_CAPABILITY)
++    }
++
++    fn rewind_session(
++        self: Rc<Self>,
++        session_id: &acp_v2::SessionId,
++        cut: serde_json::Value,
++        restore_files: bool,
++        cx: &mut App,
++    ) -> Task<Result<acp_thread::RewindOutcome>> {
++        if !self.supports_rewind_session() {
++            return Task::ready(Err(anyhow!("Rewinding is not supported by this agent.")));
++        }
++        let params = serde_json::json!({
++            "sessionId": session_id,
++            "at": cut,
++            "restoreFiles": restore_files,
++        });
++        let request = send_task_request(
++            self.connection.clone(),
++            CLAUDE_REWIND_METHOD,
++            params,
++            session_id.to_string(),
++        );
++        cx.foreground_executor()
++            .spawn(async move { parse_rewind_answer(&request.await?) })
++    }
++
+     fn fork_session_at(
+         self: Rc<Self>,
+         session_id: &acp_v2::SessionId,
+diff --git a/crates/agent_servers/src/acp/v1/rewind_tests.rs b/crates/agent_servers/src/acp/v1/rewind_tests.rs
+new file mode 100644
+index 0000000..7be0011
+--- /dev/null
++++ b/crates/agent_servers/src/acp/v1/rewind_tests.rs
+@@ -0,0 +1,66 @@
++// Zeo next proposal §6.33 (ask 61): reading Claude Agent (Plus) 0.38.0's `_claude/rewind`
++// answer. Filter: `v1::rewind_tests`.
++
++use agent_client_protocol::v2::schema as acp_v2;
++use serde_json::json;
++
++use super::parse_rewind_answer;
++
++#[test]
++fn a_rewound_answer_names_the_new_session() {
++    let outcome = parse_rewind_answer(&json!({
++        "status": "rewound",
++        "sessionId": "forked-1",
++        "droppedTurns": 2,
++        "filesRestored": true,
++    }))
++    .expect("rewound");
++    assert_eq!(outcome.session_id, acp_v2::SessionId::new("forked-1"));
++    assert_eq!(outcome.dropped_turns, 2);
++    assert!(outcome.files_restored);
++}
++
++/// Hostile: a conversation failure after the files were restored must say so, or the user
++/// believes nothing changed while their files did.
++#[test]
++fn a_conversation_failure_after_restored_files_says_so() {
++    let error = parse_rewind_answer(&json!({
++        "status": "failed",
++        "stage": "conversation",
++        "message": "disk full",
++        "filesRestored": true,
++    }))
++    .unwrap_err()
++    .to_string();
++    assert!(error.contains("files were restored"), "{error}");
++    assert!(error.contains("disk full"), "{error}");
++}
++
++#[test]
++fn a_files_failure_says_nothing_changed() {
++    let error = parse_rewind_answer(&json!({
++        "status": "failed", "stage": "files", "message": "no checkpoint",
++    }))
++    .unwrap_err()
++    .to_string();
++    assert!(error.contains("nothing was changed"), "{error}");
++}
++
++#[test]
++fn every_other_status_is_an_error_in_words() {
++    for (status, words) in [
++        ("busy", "Wait for the turn"),
++        ("not_found", "could not find"),
++        ("nothing_to_rewind", "nothing after"),
++        ("something_new", "unknown status"),
++    ] {
++        let error = parse_rewind_answer(&json!({ "status": status }))
++            .unwrap_err()
++            .to_string();
++        assert!(error.contains(words), "{status}: {error}");
++    }
++    assert!(
++        parse_rewind_answer(&json!({ "status": "rewound" })).is_err(),
++        "rewound without a session id"
++    );
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 8ead1b0..02cd249 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -9362,10 +9362,16 @@ impl ThreadView {
+         // the row regardless leaves an invisible band of padding exactly where
+         // the buttons used to be.
+         // Zeo next §6.33: actions on the turn ending here, after the stats on the left.
+-        let turn_actions = self.render_fork_turn_button(entry_ix, cx);
++        let turn_actions: Vec<AnyElement> = [
++            self.render_fork_turn_button(entry_ix, cx),
++            self.render_rewind_turn_button(entry_ix, cx),
++        ]
++        .into_iter()
++        .flatten()
++        .collect();
+ 
+         if feedback_buttons.is_none()
+-            && turn_actions.is_none()
++            && turn_actions.is_empty()
+             && last_turn_clock.is_none()
+             && last_turn_tokens_label.is_none()
+             && session_clock.is_none()
+diff --git a/crates/agent_ui/src/sub_thread/forked_sub_thread.rs b/crates/agent_ui/src/sub_thread/forked_sub_thread.rs
+index b341721..5742f4e 100644
+--- a/crates/agent_ui/src/sub_thread/forked_sub_thread.rs
++++ b/crates/agent_ui/src/sub_thread/forked_sub_thread.rs
+@@ -151,6 +151,76 @@ impl AgentPanel {
+         view
+     }
+ 
++    /// A rewind's new session (Zeo next §6.33) opens as a sub-thread of the thread it came from,
++    /// which is kept as it was (operator, 2026-11-15). The session already holds the kept turns,
++    /// so it is loaded like any other, and linked to its parent as a fork is.
++    pub(super) fn open_rewound_sub_thread(
++        &mut self,
++        request: SubThreadRequest,
++        outcome: acp_thread::RewindOutcome,
++        focus: bool,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> Option<Entity<ConversationView>> {
++        let Some(work_dirs) = request.work_dirs.clone() else {
++            self.rewind_failed(
++                &request.parent_session_id,
++                anyhow!("the parent thread has no working directories"),
++                cx,
++            );
++            return None;
++        };
++        let opened = self.create_agent_thread_with_server_for_external_session(
++            request.agent,
++            None,
++            outcome.session_id.clone(),
++            Some(work_dirs),
++            None,
++            None,
++            AgentThreadSource::AgentPanel,
++            window,
++            cx,
++        );
++        let view = self.show_agent_thread(opened, focus, window, cx);
++        let child = view.read(cx).thread_id;
++        view.update(cx, |view, _| {
++            view.set_pending_parent_link(PendingParentLink {
++                child,
++                parent: request.parent_thread_id,
++                kind: ForkKind::WithContext,
++            });
++            view.sub_thread.inherited_messages = request.inherited_messages;
++        });
++        log::info!(
++            "zeo_sub_thread event=rewound parent_session={} session={} dropped_turns={} files_restored={}",
++            request.parent_session_id,
++            outcome.session_id,
++            outcome.dropped_turns,
++            outcome.files_restored
++        );
++        Some(view)
++    }
++
++    /// A rewind that did not happen says why: the agent's reason, in words (§6.33).
++    pub(super) fn rewind_failed(
++        &self,
++        parent_session: &acp_v2::SessionId,
++        error: anyhow::Error,
++        cx: &mut Context<Self>,
++    ) {
++        struct RewindFailedToast;
++        log::warn!("zeo_sub_thread event=rewind_failed parent_session={parent_session}: {error:#}");
++        let text = format!("Couldn't rewind: {error}");
++        self.panel_workspace()
++            .update(cx, |workspace, cx| {
++                workspace.show_toast(
++                    Toast::new(NotificationId::unique::<RewindFailedToast>(), text),
++                    cx,
++                );
++            })
++            .log_err();
++    }
++
+     fn sub_thread_fork_failed(
+         &self,
+         parent_session: &acp_v2::SessionId,
+diff --git a/crates/agent_ui/src/sub_thread/turn_fork.rs b/crates/agent_ui/src/sub_thread/turn_fork.rs
+index a7eaeff..4a4303f 100644
+--- a/crates/agent_ui/src/sub_thread/turn_fork.rs
++++ b/crates/agent_ui/src/sub_thread/turn_fork.rs
+@@ -1,4 +1,4 @@
+-//! Fork from a turn (Zeo next proposal §6.33, ask 55).
++//! Fork from a turn, and rewind to it (Zeo next proposal §6.33, asks 55 and 61).
+ //!
+ //! The row of controls under each finished turn gains a fork button: it opens a "with context"
+ //! sub-thread (story 039's fork, `0070`) that keeps the conversation only up to the end of that
+@@ -7,9 +7,14 @@
+ //! among the user's prompts. The button shows only when the agent takes a cut point
+ //! (`supports_fork_at_turn`), on the root session's view, and waits while a turn runs, as
+ //! `0070`'s menu entry does.
++//!
++//! "Rewind to Here" sits beside it on every turn but the last: after a confirmation that asks
++//! whether the files go back too, the agent (`_claude/rewind`) copies the kept turns into a new
++//! session, restoring the files first when asked, and that session opens as a sub-thread of this
++//! one, which is kept as it was (operator, 2026-11-15).
+ 
+ use acp_thread::{AgentThreadEntry, ThreadStatus};
+-use gpui::{AnyElement, App, Context, Entity, Window};
++use gpui::{AnyElement, App, Context, Entity, PromptLevel, Window};
+ use serde_json::json;
+ use ui::{IconButton, IconName, IconSize, Tooltip, prelude::*};
+ 
+@@ -19,6 +24,28 @@ use crate::conversation_view::ThreadView;
+ use crate::thread_organization::ForkKind;
+ 
+ pub(crate) const FORK_TURN_TOOLTIP: &str = "Fork to a Sub-thread from Here";
++pub(crate) const REWIND_TURN_TOOLTIP: &str = "Rewind to Here";
++/// The confirmation's answers, in prompt order (index 0, 1, 2).
++pub(crate) const REWIND_ANSWERS: [&str; 3] =
++    ["Conversation Only", "Conversation and Files", "Cancel"];
++
++/// What a confirmation answer asks for: `Some(restore_files)`, or `None` to do nothing.
++pub(crate) fn rewind_choice(answer: usize) -> Option<bool> {
++    match answer {
++        0 => Some(false),
++        1 => Some(true),
++        _ => None,
++    }
++}
++
++/// Whether a turn ending at `entry_ix` has anything after it to rewind: a later prompt.
++pub(crate) fn has_later_turn(entries: &[AgentThreadEntry], entry_ix: usize) -> bool {
++    entries.get(entry_ix + 1..).is_some_and(|later| {
++        later
++            .iter()
++            .any(|entry| matches!(entry, AgentThreadEntry::UserMessage(_)))
++    })
++}
+ const WAIT_FOR_TURN: &str = "Wait for the turn to end";
+ 
+ /// How the agent is told which turn a fork keeps up to, for the turn that ends at
+@@ -84,15 +111,114 @@ impl ThreadView {
+                 .into_any_element(),
+         )
+     }
++
++    /// The rewind button for the turn ending at `entry_ix`: not on the last turn, which has
++    /// nothing after it, and only when the agent rewinds (`supports_rewind_session`).
++    pub(crate) fn render_rewind_turn_button(
++        &self,
++        entry_ix: usize,
++        cx: &Context<Self>,
++    ) -> Option<AnyElement> {
++        let thread = self.thread.read(cx);
++        let connection = thread.connection();
++        let offered = connection.supports_rewind_session()
++            && (connection.supports_load_session() || connection.supports_resume_session())
++            && self.shows_root_session(cx)
++            && has_later_turn(thread.entries(), entry_ix);
++        if !offered {
++            return None;
++        }
++        let cut = turn_cut(thread.entries(), entry_ix)?;
++        let turn_running = thread.status() != ThreadStatus::Idle;
++        Some(
++            IconButton::new(("rewind-turn", entry_ix), IconName::RotateCcw)
++                .icon_size(IconSize::Small)
++                .icon_color(Color::Muted)
++                .disabled(turn_running)
++                .tooltip(Tooltip::text(if turn_running {
++                    WAIT_FOR_TURN
++                } else {
++                    REWIND_TURN_TOOLTIP
++                }))
++                .on_click(cx.listener(move |_, _, window, cx| {
++                    let thread_view = cx.entity();
++                    let cut = cut.clone();
++                    window.defer(cx, move |window, cx| {
++                        confirm_rewind(thread_view, entry_ix, cut, window, cx);
++                    });
++                }))
++                .into_any_element(),
++        )
++    }
+ }
+ 
+-fn open_fork_at_turn(
++fn confirm_rewind(
++    thread_view: Entity<ThreadView>,
++    entry_ix: usize,
++    cut: serde_json::Value,
++    window: &mut Window,
++    cx: &mut App,
++) {
++    let answer = window.prompt(
++        PromptLevel::Warning,
++        "Rewind to this turn?",
++        Some(
++            "The conversation up to here opens as a sub-thread; this thread is kept as it is. \
++             Conversation and Files also takes back the edits the agent made after this turn.",
++        ),
++        &REWIND_ANSWERS,
++        cx,
++    );
++    window
++        .spawn(cx, async move |cx| {
++            let Some(restore_files) = answer.await.ok().and_then(rewind_choice) else {
++                return;
++            };
++            cx.update(|window, cx| {
++                start_rewind(&thread_view, entry_ix, cut, restore_files, window, cx)
++            })
++            .ok();
++        })
++        .detach();
++}
++
++fn start_rewind(
+     thread_view: &Entity<ThreadView>,
+     entry_ix: usize,
+     cut: serde_json::Value,
++    restore_files: bool,
+     window: &mut Window,
+     cx: &mut App,
+ ) {
++    let Some((request, panel)) = sub_thread_request_at(thread_view, entry_ix, "rewind", cx) else {
++        return;
++    };
++    let parent_session = request.parent_session_id.clone();
++    let connection = thread_view.read(cx).thread.read(cx).connection().clone();
++    let rewinding = connection.rewind_session(&parent_session, cut, restore_files, cx);
++    window
++        .spawn(cx, async move |cx| {
++            let outcome = rewinding.await;
++            cx.update(|window, cx| {
++                panel.update(cx, |panel, cx| match outcome {
++                    Ok(outcome) => {
++                        panel.open_rewound_sub_thread(request, outcome, true, window, cx);
++                    }
++                    Err(error) => panel.rewind_failed(&parent_session, error, cx),
++                })
++            })
++            .ok();
++        })
++        .detach();
++}
++
++/// The sub-thread request for the turn ending at `entry_ix`, and the panel to open it in.
++fn sub_thread_request_at(
++    thread_view: &Entity<ThreadView>,
++    entry_ix: usize,
++    source: &str,
++    cx: &App,
++) -> Option<(SubThreadRequest, Entity<AgentPanel>)> {
+     let view = thread_view.read(cx);
+     let thread = view.thread.read(cx);
+     let parent_session_id = thread.session_id().clone();
+@@ -102,9 +228,9 @@ fn open_fork_at_turn(
+         .map(|conversation| conversation.read(cx).agent_key().clone())
+     else {
+         log::warn!(
+-            "zeo_sub_thread event=open_failed parent_session={parent_session_id} kind=with_context source=turn reason=no_conversation"
++            "zeo_sub_thread event=open_failed parent_session={parent_session_id} kind=with_context source={source} reason=no_conversation"
+         );
+-        return;
++        return None;
+     };
+     let entries = thread.entries();
+     let kept = entries.get(..=entry_ix).unwrap_or(entries);
+@@ -123,10 +249,24 @@ fn open_fork_at_turn(
+         .and_then(|workspace| workspace.read(cx).panel::<AgentPanel>(cx))
+     else {
+         log::warn!(
+-            "zeo_sub_thread event=open_failed parent_session={parent_session_id} kind=with_context source=turn reason=no_agent_panel"
++            "zeo_sub_thread event=open_failed parent_session={parent_session_id} kind=with_context source={source} reason=no_agent_panel"
+         );
++        return None;
++    };
++    Some((request, panel))
++}
++
++fn open_fork_at_turn(
++    thread_view: &Entity<ThreadView>,
++    entry_ix: usize,
++    cut: serde_json::Value,
++    window: &mut Window,
++    cx: &mut App,
++) {
++    let Some((request, panel)) = sub_thread_request_at(thread_view, entry_ix, "turn", cx) else {
+         return;
+     };
++    let parent_session_id = request.parent_session_id.clone();
+     let opening = panel.update(cx, |panel, cx| {
+         panel.open_sub_thread_at(request, cut, true, window, cx)
+     });
+diff --git a/crates/agent_ui/src/sub_thread/turn_fork_tests.rs b/crates/agent_ui/src/sub_thread/turn_fork_tests.rs
+index 33aee43..0b0f7a2 100644
+--- a/crates/agent_ui/src/sub_thread/turn_fork_tests.rs
++++ b/crates/agent_ui/src/sub_thread/turn_fork_tests.rs
+@@ -12,7 +12,7 @@ use project::Project;
+ use serde_json::json;
+ use util::path_list::PathList;
+ 
+-use super::turn_cut;
++use super::{REWIND_ANSWERS, has_later_turn, rewind_choice, turn_cut};
+ 
+ fn user(text: &str) -> acp_v1::SessionUpdate {
+     acp_v1::SessionUpdate::UserMessageChunk(acp_v1::ContentChunk::new(text.into()))
+@@ -123,3 +123,41 @@ async fn nothing_to_fork_before_the_first_prompt(cx: &mut TestAppContext) {
+     assert_eq!(cut_at(&empty, 0, cx), None);
+     assert_eq!(cut_at(&empty, 9, cx), None, "an index past the entries");
+ }
++
++// Rewind (ask 61).
++
++#[test]
++fn the_confirmation_answers_map_to_what_is_restored() {
++    assert_eq!(REWIND_ANSWERS[0], "Conversation Only");
++    assert_eq!(rewind_choice(0), Some(false));
++    assert_eq!(REWIND_ANSWERS[1], "Conversation and Files");
++    assert_eq!(rewind_choice(1), Some(true));
++    assert_eq!(rewind_choice(2), None, "Cancel does nothing");
++    assert_eq!(rewind_choice(7), None, "an unknown answer does nothing");
++}
++
++/// Hostile: the last turn has nothing after it, so it offers no rewind -- one would only copy
++/// the conversation as it is.
++#[gpui::test]
++async fn only_a_turn_with_a_later_prompt_can_be_rewound(cx: &mut TestAppContext) {
++    let thread = thread_of(
++        vec![
++            user("first"),
++            says("one", Some("msg_1")),
++            user("second"),
++            says("two", Some("msg_2")),
++            tool("t2"),
++        ],
++        cx,
++    )
++    .await;
++    thread.read_with(cx, |thread, _| {
++        assert!(has_later_turn(thread.entries(), 1), "the first turn");
++        assert!(!has_later_turn(thread.entries(), 3), "the last turn");
++        assert!(
++            !has_later_turn(thread.entries(), 4),
++            "its trailing tool call"
++        );
++        assert!(!has_later_turn(thread.entries(), 99), "past the end");
++    });
++}

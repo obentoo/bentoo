@@ -2223,6 +2223,23 @@ src_prepare() {
 			# 0108 (Zeo next proposal §6.30): the series' floating elements keep to
 			# the conversation's column. On 0026, 0027, 0037, 0082, 0092, 0094, 0102.
 			"${FILESDIR}/0108-agent-ui-floating-elements-keep-to-the-content-column.patch"
+			# 0109 (Zeo 0.12.0, §6.32): the pinned message's scrollbar, toggle and
+			# background. On 0102 and 0108.
+			"${FILESDIR}/0109-agent-ui-pinned-message-scrollbar-and-toggle.patch"
+			# 0110 (Zeo 0.12.0, §6.36): a status bar button that opens a remote project.
+			"${FILESDIR}/0110-recent-projects-status-bar-remote-button.patch"
+			# 0111 (Zeo 0.12.0, §6.36): the panel buttons' order, set in Settings. On 0110.
+			"${FILESDIR}/0111-workspace-panel-button-order.patch"
+			# 0112 (Zeo 0.12.0, §6.33): fork to a sub-thread from any turn. On 0070.
+			"${FILESDIR}/0112-agent-ui-fork-from-a-turn.patch"
+			# 0113 (Zeo 0.12.0, §6.33): rewind to a turn, as a sub-thread. On 0112.
+			"${FILESDIR}/0113-agent-ui-rewind-to-a-turn.patch"
+			# 0114 (Zeo 0.12.0, §6.34): the context ring's usage card and report.
+			"${FILESDIR}/0114-agent-ui-context-usage-card-and-report.patch"
+			# 0115 (Zeo 0.12.0, §6.8): /btw side question, answered in a card.
+			"${FILESDIR}/0115-agent-ui-btw-side-question-card.patch"
+			# 0116 (Zeo 0.12.0, §6.8): Steer into an ACP agent's running turn.
+			"${FILESDIR}/0116-agent-ui-steer-into-an-acp-agents-turn.patch"
 		)
 	fi
 
