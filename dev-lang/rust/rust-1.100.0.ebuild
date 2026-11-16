@@ -17,7 +17,16 @@ PYTHON_COMPAT=( python3_{12..15} )
 # Uncomment this line when the ebuild needs a patchset update but no revbump.
 RUST_PATCH_VER=1.98.1
 
-RUST_MAX_VER=${PV%%_*}
+# BENTOO-DIVERGENCE: RUST_MAX_VER - stage0 is pinned to the previous series
+# (1.99.x), the only one upstream tested 1.100.0 with (src/stage0 says
+# compiler_version=1.99.0). A 1.100 stage0 no longer fires
+# unused_crate_dependencies on compiler/rustc, so its
+# `#![expect(unused_crate_dependencies)]` is unfulfilled and deny-warnings
+# kills stage1-rustc; cargo 1.100's new `unused_dependencies` lint hits
+# library/ the same way. Upstream dropped both in daa2432490 (#163483, the
+# 1.100 beta stage0 bump), which is not in this release. ::gentoo's
+# ${PV%%_*} allows a same-version stage0 and breaks here.
+RUST_MAX_VER="$(ver_cut 1).$(($(ver_cut 2) - 1)).9999"
 RUST_PV=${PV%%_p*}
 RUST_P=${PN}-${RUST_PV}
 [[ -z ${RUST_PATCH_VER} ]] && RUST_PATCH_VER=${PV}
