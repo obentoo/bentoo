@@ -41,11 +41,14 @@ BDEPEND="
 # explicitly here. ::gentoo does not name them because its vendored tree
 # resolves them at link time; ours names them because they are cgo
 # libraries, which Go vendoring does not supply.
+# The binary links libcbor.so.<subslot> and libfido2.so.1 directly, so both
+# carry := : without it a libcbor subslot bump (0.14 -> 0.15) left the bridge
+# on a removed soname, kept alive only by preserve-libs.
 # BENTOO-DIVERGENCE: DEPEND - same three, through RDEPEND.
 RDEPEND="
 	app-crypt/libsecret
-	dev-libs/libcbor
-	dev-libs/libfido2
+	dev-libs/libcbor:=
+	dev-libs/libfido2:=
 	dev-libs/openssl:=
 	gui? (
 		>=dev-libs/protobuf-21.12:=
