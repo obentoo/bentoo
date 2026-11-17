@@ -519,7 +519,12 @@ src_configure() {
 	use clippy && tools+=',"clippy"'
 	use rustfmt && tools+=',"rustfmt"'
 	use rust-analyzer && tools+=',"rust-analyzer","rust-analyzer-proc-macro-srv"'
-	use rust-src && tools+=',"src"'
+	# BENTOO-DIVERGENCE: tools - bootstrap 1.100 matches the rust-src component
+	# as "rust-src" (src/bootstrap/src/core/build_steps/install.rs, Src step;
+	# 1.99 matched "src"). The old key is silently ignored: USE=rust-src then
+	# installs no library source, and the kernel's rust_is_available.sh, which
+	# needs lib/rustlib/src/rust/library/core, turns CONFIG_RUST off.
+	use rust-src && tools+=',"rust-src"'
 
 	if [[ ${PV} == *9999* ]]; then
 		use miri && tools+=',"miri"'
