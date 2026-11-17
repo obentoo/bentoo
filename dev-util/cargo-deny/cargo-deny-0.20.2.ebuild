@@ -220,7 +220,7 @@ RUST_MIN_VER="1.88.0"
 
 inherit cargo
 
-DESCRIPTION="Cargo plugin to lint your project's dependency graph (licenses, advisories, bans, sources)"
+DESCRIPTION="Cargo plugin to lint licenses, advisories, bans and sources of dependencies"
 HOMEPAGE="https://github.com/EmbarkStudios/cargo-deny"
 
 if [[ ${PV} == *9999* ]]; then
