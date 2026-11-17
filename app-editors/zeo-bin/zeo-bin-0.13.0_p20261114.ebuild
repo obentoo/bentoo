@@ -77,6 +77,7 @@ RDEPEND="
 QA_PREBUILT="
 	usr/bin/zeo
 	usr/libexec/zeo-editor
+	usr/libexec/zeo-remote-server
 "
 
 pkg_pretend() {
