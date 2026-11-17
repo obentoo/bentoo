@@ -3,9 +3,16 @@
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
-# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# Mirrored from ::gentoo for two reasons:
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: src_install - installs a compatibility libclc.pc.
+# LLVM 23 dropped libclc.pc.in from libclc, but mesa (27.0 and upstream main
+# as of 2026-11-17) still finds libclc through pkg-config: meson's
+# dependency('libclc') fails and media-libs/mesa[opencl] with LLVM_SLOT=23 dies
+# in configure. Mesa reads only libexecdir from it and already knows the
+# LLVM 23 file names (<triple>/libclc.spv), so a .pc with LLVM 22's content is
+# enough. Drop the shim when mesa stops asking for libclc.pc or ::gentoo adds
+# one; drop the copy when both divergences are gone.
 PYTHON_COMPAT=( python3_{12..15} )
 inherit cmake llvm.org multibuild python-any-r1
 
@@ -81,4 +88,15 @@ src_test() {
 
 src_install() {
 	multibuild_foreach_variant cmake_src_install
+
+	# Same content as LLVM 22's libclc.pc.in; see the header comment.
+	insinto /usr/share/pkgconfig
+	newins - libclc.pc <<-EOF
+		libexecdir=${EPREFIX}/usr/share/clc
+
+		Name: libclc
+		Description: Library requirements of the OpenCL C programming language
+		Version: ${PV}
+		Libs: -L\${libexecdir}
+	EOF
 }
