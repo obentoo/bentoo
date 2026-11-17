@@ -8,12 +8,12 @@
 EAPI=8
 
 CRATES="
-	glycin@4.0.0
-	glycin-builtin@4.0.0
+	glycin@4.0.5
+	glycin-builtin@4.0.5
 	glycin-common@2.0.0
-	glycin-core@4.0.0
-	glycin-external@4.0.0
-	glycin-image-rs@2.2.0
+	glycin-core@4.0.5
+	glycin-external@4.0.5
+	glycin-image-rs@2.2.4
 	glycin-test@2.2.0
 	glycin-utils@5.0.1
 "

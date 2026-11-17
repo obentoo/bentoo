@@ -2,6 +2,8 @@
 # Distributed under the terms of the GNU General Public License v2
 # GNOME 51 mirror ahead of ::gentoo; drop each tag below when ::gentoo reaches this version
 # BENTOO-DIVERGENCE: PATCHES - optional-gstreamer patch rebased onto 51.0.1
+# BENTOO-DIVERGENCE: DEPEND - 51.1 meson.build raises gtk4 to >= 4.24.0
+# BENTOO-DIVERGENCE: RDEPEND - 51.1 meson.build raises gtk4 to >= 4.24.0
 
 EAPI=8
 
@@ -27,7 +29,7 @@ DEPEND="
 	>=app-arch/gnome-autoar-0.4.4
 	>=gnome-base/gnome-desktop-43:4=
 	>=gnome-base/gsettings-desktop-schemas-42
-	>=gui-libs/gtk-4.22.0:4[X,introspection?,wayland]
+	>=gui-libs/gtk-4.24.0:4[X,introspection?,wayland]
 	dev-libs/wayland
 	>=gui-libs/libadwaita-1.8_alpha:1
 	>=dev-libs/libportal-0.7:=[gtk]

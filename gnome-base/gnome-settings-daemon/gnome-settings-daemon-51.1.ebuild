@@ -1,6 +1,8 @@
 # Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 # GNOME 51 mirror ahead of ::gentoo; drop each tag below when ::gentoo reaches this version
+# BENTOO-DIVERGENCE: DEPEND - 51.1 meson.build raises glib_min_version to 2.80
+# BENTOO-DIVERGENCE: RDEPEND - 51.1 meson.build raises glib_min_version to 2.80
 
 EAPI=8
 PYTHON_COMPAT=( python3_{12..14} )
@@ -21,7 +23,7 @@ REQUIRED_USE="^^ ( elogind systemd )"
 
 COMMON_DEPEND="
 	>=sci-geosciences/geocode-glib-3.10:2
-	>=dev-libs/glib-2.70:2
+	>=dev-libs/glib-2.80:2
 	gnome-base/gnome-desktop:4=
 	>=gnome-base/gsettings-desktop-schemas-46.0
 	>=dev-libs/libgweather-4.2.0:4=

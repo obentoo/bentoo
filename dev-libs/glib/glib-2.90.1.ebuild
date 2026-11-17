@@ -2,6 +2,7 @@
 # Distributed under the terms of the GNU General Public License v2
 
 # GNOME 51 mirror ahead of ::gentoo; drop each tag below when ::gentoo reaches this version
+# BENTOO-DIVERGENCE: PATCHES - gdbus-server-auth flaky patch rebased onto 2.90.1 (test table gained can_fail)
 
 EAPI=8
 PYTHON_REQ_USE="xml(+)"
@@ -92,7 +93,7 @@ MULTILIB_CHOST_TOOLS=(
 )
 
 PATCHES=(
-	"${FILESDIR}"/${PN}-2.64.1-mark-gdbus-server-auth-test-flaky.patch
+	"${FILESDIR}"/${PN}-2.90.1-mark-gdbus-server-auth-test-flaky.patch
 )
 
 python_check_deps() {

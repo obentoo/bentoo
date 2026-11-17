@@ -105,13 +105,13 @@ CRATES="
 	glib-macros@0.22.6
 	glib-sys@0.22.8
 	glib@0.22.8
-	glycin-builtin@4.0.0
+	glycin-builtin@4.0.5
 	glycin-common@2.0.0
-	glycin-core@4.0.0
-	glycin-external@4.0.0
+	glycin-core@4.0.5
+	glycin-external@4.0.5
 	glycin-image-rs@2.2.0
 	glycin-utils@5.0.0
-	glycin@4.0.0
+	glycin@4.0.5
 	gobject-sys@0.22.6
 	graphene-rs@0.22.8
 	graphene-sys@0.22.8
@@ -121,13 +121,13 @@ CRATES="
 	gtk4-sys@0.11.4
 	gtk4@0.11.4
 	gufo-common@2.0.0
-	gufo-exif@0.5.0
+	gufo-exif@0.5.5
 	gufo-jpeg@0.5.1
 	gufo-png@0.5.0
 	gufo-tiff@0.5.0
 	gufo-webp@0.5.0
 	gufo-xmp@0.5.0
-	gufo@0.5.0
+	gufo@0.5.4
 	gvdb-macros@0.1.16
 	gvdb@0.10.0
 	gweather-sys@4.8.0

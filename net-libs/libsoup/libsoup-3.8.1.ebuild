@@ -2,6 +2,8 @@
 # BENTOO-DIVERGENCE: IUSE - +zstd for the new zstd meson feature in 3.8.0
 # BENTOO-DIVERGENCE: DEPEND - zstd? ( >=app-arch/zstd-1.4.0 ) from 3.8.0 meson.build
 # BENTOO-DIVERGENCE: RDEPEND - zstd? ( >=app-arch/zstd-1.4.0 ) from 3.8.0 meson.build
+# BENTOO-DIVERGENCE: DEPEND - brotli? ( >=app-arch/brotli-1.1.0 ) from 3.8.1 meson.build
+# BENTOO-DIVERGENCE: RDEPEND - brotli? ( >=app-arch/brotli-1.1.0 ) from 3.8.1 meson.build
 # Copyright 1999-2026 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
@@ -28,7 +30,7 @@ DEPEND="
 	>=dev-libs/glib-2.70.0:2[${MULTILIB_USEDEP}]
 	net-libs/nghttp2:=[${MULTILIB_USEDEP}]
 	>=dev-db/sqlite-3.8.2:3[${MULTILIB_USEDEP}]
-	brotli? ( >=app-arch/brotli-1.0.6-r1:=[${MULTILIB_USEDEP}] )
+	brotli? ( >=app-arch/brotli-1.1.0:=[${MULTILIB_USEDEP}] )
 	>=net-libs/libpsl-0.20[${MULTILIB_USEDEP}]
 	sysprof? ( >=dev-util/sysprof-capture-3.40.1:4[${MULTILIB_USEDEP}] )
 	virtual/zlib:=
