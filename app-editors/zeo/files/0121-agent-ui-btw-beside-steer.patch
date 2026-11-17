@@ -1,0 +1,276 @@
+From dc1c9cd510865d360abce9da6fe528061ac99ace Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 16 Nov 2026 14:26:25 -0300
+Subject: [PATCH] agent_ui: BTW beside Steer asks a queued message on the side
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.45 (ask 69, 2026-11-16). 0115 answers a composer
+message that starts with /btw at once, in a card; 0116 gave each queued
+message a Steer. A message already queued behind a running turn had no way
+to become a side question short of retyping it. Each queued row now has a
+BTW button, offered when the agent takes side questions: the message
+leaves the queue and is asked through 0115's path, answered in its card
+and kept out of the conversation. A message already written as `/btw ...`
+is read as the composer reads it.
+
+A side question is text only, so a queued message carrying a mention or an
+image keeps BTW disabled, with the reason in its tooltip. 0115's card
+building moved into ThreadView::show_side_question so both paths share it.
+Tests in thread_view/queue_side_question_tests.rs; Red seen with a
+non-text block accepted.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/conversation_view/thread_view.rs      |  10 ++
+ .../thread_view/queue_side_question.rs        | 119 ++++++++++++++++++
+ .../thread_view/queue_side_question_tests.rs  |  39 ++++++
+ .../thread_view/side_question_card.rs         |  12 +-
+ 4 files changed, 179 insertions(+), 1 deletion(-)
+ create mode 100644 crates/agent_ui/src/conversation_view/thread_view/queue_side_question.rs
+ create mode 100644 crates/agent_ui/src/conversation_view/thread_view/queue_side_question_tests.rs
+
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 6f3774d..43c9a15 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -600,6 +600,7 @@ mod content_column;
+ mod context_usage_card;
+ mod context_usage_report;
+ mod pinned_message;
++mod queue_side_question;
+ mod queue_steering;
+ mod side_question_card;
+ 
+@@ -6481,6 +6482,7 @@ impl ThreadView {
+         // §6.8: Steer is offered too for an ACP agent that takes steering.
+         let steer_offered = self.as_native_thread(cx).is_some()
+             || self.thread.read(cx).connection().supports_steering();
++        let btw_offered = self.queue_offers_side_question(cx);
+ 
+         v_flex()
+             .id("message_queue_list")
+@@ -6555,6 +6557,10 @@ impl ThreadView {
+                                     entry_id, index, is_next, steer_on, cx,
+                                 ))
+                             })
++                            // §6.45: BTW asks the queued message on the side instead.
++                            .when(btw_offered, |row| {
++                                row.child(self.render_queue_btw_button(entry_id, index, cx))
++                            })
+                             .child(
+                                 Button::new(("send_now_focused", index), "Send Now")
+                                     .label_size(LabelSize::Small)
+@@ -6629,6 +6635,10 @@ impl ThreadView {
+                                     entry_id, index, is_next, steer_on, cx,
+                                 ))
+                             })
++                            // §6.45: BTW asks the queued message on the side instead.
++                            .when(btw_offered, |row| {
++                                row.child(self.render_queue_btw_button(entry_id, index, cx))
++                            })
+                             .child(
+                                 Button::new(("send_now", index), "Send Now")
+                                     .label_size(LabelSize::Small)
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/queue_side_question.rs b/crates/agent_ui/src/conversation_view/thread_view/queue_side_question.rs
+new file mode 100644
+index 0000000..bfbf083
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/queue_side_question.rs
+@@ -0,0 +1,119 @@
++//! `/btw` beside Steer on a queued message (Zeo next proposal §6.45, ask 69).
++//!
++//! `0115` answers a composer message that starts with `/btw` at once, in a card; `0116` gave each
++//! queued message a Steer. A message already queued behind a running turn had no way to become a
++//! side question short of retyping it. This adds that third way to send it: the message leaves
++//! the queue and is asked on the side, answered in `0115`'s card and kept out of the
++//! conversation.
++//!
++//! A side question is text only, so a queued message that carries a mention or an image keeps
++//! the button disabled, with the reason in its tooltip.
++
++use acp_thread::SIDE_QUESTION_MAX_CHARS;
++use agent_client_protocol::v2::schema as acp_v2;
++use gpui::{Context, IntoElement};
++use ui::{Button, ButtonCommon, Clickable, Disableable, LabelSize, Tooltip, prelude::*};
++
++use super::ThreadView;
++use super::side_question_card::{SideQuestionInvocation, side_question_invocation};
++use crate::conversation_view::QueueEntryId;
++
++const BTW_TOOLTIP: &str = "Ask this on the side instead: the agent answers it in a card while it \
++     works, and neither the question nor the answer joins the conversation.";
++const BTW_TEXT_ONLY: &str =
++    "A side question is text only; this message carries a mention or an image.";
++
++/// The text a side question can carry for a queued message: its text blocks, trimmed. `None`
++/// when it holds anything but text, or no text at all.
++pub(crate) fn queued_side_question_text(content: &[acp_v2::ContentBlock]) -> Option<String> {
++    let mut text = String::new();
++    for block in content {
++        let acp_v2::ContentBlock::Text(block) = block else {
++            return None;
++        };
++        text.push_str(&block.text);
++    }
++    let text = text.trim();
++    (!text.is_empty()).then(|| text.to_string())
++}
++
++/// What asking `text` on the side sends: a message already written as `/btw …` is read as
++/// `0115` reads it, and any other text is the question itself.
++pub(crate) fn queued_side_question(text: &str) -> SideQuestionInvocation {
++    if let Some(invocation) = side_question_invocation(text) {
++        return invocation;
++    }
++    let chars = text.chars().count();
++    if chars > SIDE_QUESTION_MAX_CHARS {
++        SideQuestionInvocation::TooLong(chars)
++    } else {
++        SideQuestionInvocation::Ask(text.to_string())
++    }
++}
++
++impl ThreadView {
++    /// Whether the queue offers BTW: the agent answers side questions.
++    pub(super) fn queue_offers_side_question(&self, cx: &Context<Self>) -> bool {
++        self.thread.read(cx).connection().supports_side_question()
++    }
++
++    /// Takes queued message `id` out of the queue and asks it on the side. Returns `false`,
++    /// touching nothing, when the agent takes no side questions or the message is not text.
++    pub(super) fn ask_queued_entry_aside(
++        &mut self,
++        id: QueueEntryId,
++        cx: &mut Context<Self>,
++    ) -> bool {
++        if !self.queue_offers_side_question(cx) {
++            return false;
++        }
++        let Some(text) = self
++            .message_queue
++            .entry_by_id(id)
++            .and_then(|entry| queued_side_question_text(&entry.content))
++        else {
++            return false;
++        };
++        // Out of the queue first, so the queue never also sends it as a prompt.
++        if self.message_queue.remove(id).is_none() {
++            return false;
++        }
++        log::info!("side question from queue: chars={}", text.chars().count());
++        self.show_side_question(queued_side_question(&text), cx);
++        true
++    }
++
++    pub(super) fn render_queue_btw_button(
++        &self,
++        entry_id: QueueEntryId,
++        index: usize,
++        cx: &Context<Self>,
++    ) -> impl IntoElement {
++        let text_only = self
++            .message_queue
++            .entry_by_id(entry_id)
++            .is_some_and(|entry| queued_side_question_text(&entry.content).is_some());
++        let meta = if text_only {
++            BTW_TOOLTIP
++        } else {
++            BTW_TEXT_ONLY
++        };
++        div()
++            .debug_selector(move || format!("queue-btw-{index}"))
++            .child(
++                Button::new(("btw", index), "BTW")
++                    .label_size(LabelSize::Small)
++                    .disabled(!text_only)
++                    .tooltip(move |_window, cx| {
++                        Tooltip::with_meta("Ask on the Side (/btw)", None, meta, cx)
++                    })
++                    .on_click(cx.listener(move |this, _, _, cx| {
++                        this.ask_queued_entry_aside(entry_id, cx);
++                    })),
++            )
++    }
++}
++
++#[cfg(test)]
++#[path = "queue_side_question_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/queue_side_question_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/queue_side_question_tests.rs
+new file mode 100644
+index 0000000..196adb6
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/queue_side_question_tests.rs
+@@ -0,0 +1,39 @@
++// Zeo next proposal §6.45 (ask 69): BTW beside Steer on a queued message.
++// Filter: `queue_side_question`.
++use super::*;
++
++fn text(text: &str) -> acp_v2::ContentBlock {
++    acp_v2::ContentBlock::Text(acp_v2::TextContent::new(text))
++}
++
++#[test]
++fn only_a_text_message_can_be_asked_on_the_side() {
++    assert_eq!(
++        queued_side_question_text(&[text("  why is "), text("this slow?  ")]),
++        Some("why is this slow?".to_string())
++    );
++    assert_eq!(queued_side_question_text(&[text("   ")]), None);
++    assert_eq!(queued_side_question_text(&[]), None);
++    let link = acp_v2::ContentBlock::ResourceLink(acp_v2::ResourceLink::new(
++        "main.rs",
++        "file:///w/main.rs",
++    ));
++    assert_eq!(queued_side_question_text(&[text("see"), link]), None);
++}
++
++#[test]
++fn a_queued_btw_is_read_as_the_composer_reads_it() {
++    assert_eq!(
++        queued_side_question("/btw what changed?"),
++        SideQuestionInvocation::Ask("what changed?".into())
++    );
++    assert_eq!(
++        queued_side_question("what changed?"),
++        SideQuestionInvocation::Ask("what changed?".into())
++    );
++    let long = "x".repeat(SIDE_QUESTION_MAX_CHARS + 1);
++    assert_eq!(
++        queued_side_question(&long),
++        SideQuestionInvocation::TooLong(SIDE_QUESTION_MAX_CHARS + 1)
++    );
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+index 5783f28..246a8f7 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+@@ -94,7 +94,18 @@ impl ThreadView {
+         };
+         self.message_editor
+             .update(cx, |editor, cx| editor.clear(window, cx));
++        self.show_side_question(invocation, cx);
++        true
++    }
+ 
++    /// Asks `invocation` and shows it in the card, replacing any card already open. The agent
++    /// must take side questions (`supports_side_question`); both callers check it first.
++    pub(super) fn show_side_question(
++        &mut self,
++        invocation: SideQuestionInvocation,
++        cx: &mut Context<Self>,
++    ) {
++        let connection = self.thread.read(cx).connection().clone();
+         let (question, state, ask): (SharedString, _, _) = match invocation {
+             SideQuestionInvocation::Usage => (
+                 "/btw".into(),
+@@ -155,7 +166,6 @@ impl ThreadView {
+             _ask: ask,
+         });
+         cx.notify();
+-        true
+     }
+ 
+     pub(super) fn render_side_question_card(

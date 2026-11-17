@@ -3,6 +3,9 @@ From: lucascouts <lucascs@protonmail.com>
 Date: Wed, 26 Aug 2026 14:12:46 -0300
 Subject: [PATCH] feat(agent_ui): require Shift to make a thread menu choice
  the default
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 Picking a permission mode, a model, a thinking effort or one of the config
 options an ACP agent exposes used to do two things at once: move the thread
@@ -45,7 +48,14 @@ can mark the default without the UI knowing how an agent stores it.
 `LanguageModels::model_id` for the same model -- if the two drift, the picker's
 default marker silently disappears.
 
+Zeo next proposal §6.48 (ask 72, 2026-11-16): the model picker's hover
+slot replaces the resting one (EndSlotVisibility::SwapOnHover), so the
+default pin vanished exactly when its row was pointed at and never sat
+beside the favourite star. The hover slot now repeats the pin and the
+check before the star; hovering only adds the star.
+
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
@@ -792,7 +802,7 @@ index 61baf85..b152270 100644
  
      #[gpui::test]
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 63d90a9..dc3d5d8 100644
+index 63d90a9..561aa1d 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -26,6 +26,7 @@ use sandbox::{SandboxFsPolicy, SandboxNetPolicy, SandboxPolicy};
@@ -875,9 +885,8 @@ index 63d90a9..dc3d5d8 100644
 +                        };
  
 -                        menu.push_item(entry.handler({
--                            let effort = effort_level.value;
 +                        menu = menu.custom_entry(render_entry, {
-+                            let effort = effort_level.value.clone();
+                             let effort = effort_level.value;
                              let weak_self = weak_self.clone();
 -                            move |_window, cx| {
 +                            move |window, cx| {
@@ -922,7 +931,7 @@ index 63d90a9..dc3d5d8 100644
              select.await?;
              this.update(cx, |this, cx| this.retry_generation(cx))?;
 diff --git a/crates/agent_ui/src/mode_selector.rs b/crates/agent_ui/src/mode_selector.rs
-index 38e292e..ef604f9 100644
+index 38e292e..4c6f09f 100644
 --- a/crates/agent_ui/src/mode_selector.rs
 +++ b/crates/agent_ui/src/mode_selector.rs
 @@ -7,10 +7,11 @@ use gpui::{Context, Entity, WeakEntity, Window, prelude::*};
@@ -1055,7 +1064,7 @@ index 38e292e..ef604f9 100644
 +                            .into_any_element()
 +                    },
 +                    {
-+                        let mode_id = mode.value.clone();
++                        let mode_id = mode.value;
 +                        let weak_self = weak_self.clone();
 +                        move |window, cx| {
 +                            let persist_default = persists_default(window);
@@ -1338,7 +1347,7 @@ index 0000000..a633d24
 +        )
 +}
 diff --git a/crates/agent_ui/src/ui/model_selector_components.rs b/crates/agent_ui/src/ui/model_selector_components.rs
-index 34e01d7..29c5f7d 100644
+index 34e01d7..27d0b7a 100644
 --- a/crates/agent_ui/src/ui/model_selector_components.rs
 +++ b/crates/agent_ui/src/ui/model_selector_components.rs
 @@ -50,6 +50,7 @@ pub struct ModelSelectorListItem {
@@ -1384,3 +1393,64 @@ index 34e01d7..29c5f7d 100644
                      .when(self.is_selected, |this| {
                          this.child(Icon::new(IconName::Check).color(Color::Accent))
                      })
+@@ -189,25 +204,41 @@ impl RenderOnce for ModelSelectorListItem {
+                     }),
+             )
+             .when(!is_disabled, |this| {
+-                this.end_slot_on_hover(div().pr_1p5().when_some(self.on_toggle_favorite, {
+-                    |this, handle_click| {
+-                        let (icon, color, tooltip) = if is_favorite {
+-                            (IconName::StarFilled, Color::Accent, "Unfavorite Model")
+-                        } else {
+-                            (IconName::Star, Color::Default, "Favorite Model")
+-                        };
+-                        this.child(
+-                            IconButton::new(("toggle-favorite", self.index), icon)
+-                                .layer(ElevationIndex::ElevatedSurface)
+-                                .icon_color(color)
+-                                .icon_size(IconSize::Small)
+-                                .tooltip(Tooltip::text(tooltip))
+-                                .on_click(move |event, window, cx| {
+-                                    (handle_click)(event, window, cx)
+-                                }),
+-                        )
+-                    }
+-                }))
++                // Zeo next §6.48 (ask 72): the hover slot replaces the resting one, so it repeats
++                // the default pin and the check before the star; hovering only adds the star.
++                this.end_slot_on_hover(
++                    h_flex()
++                        .pr_1p5()
++                        .gap_1p5()
++                        .when(self.is_default, |this| {
++                            this.child(crate::set_as_default::default_marker((
++                                "model-default-hover",
++                                self.index,
++                            )))
++                        })
++                        .when(self.is_selected, |this| {
++                            this.child(Icon::new(IconName::Check).color(Color::Accent))
++                        })
++                        .when_some(self.on_toggle_favorite, {
++                            |this, handle_click| {
++                                let (icon, color, tooltip) = if is_favorite {
++                                    (IconName::StarFilled, Color::Accent, "Unfavorite Model")
++                                } else {
++                                    (IconName::Star, Color::Default, "Favorite Model")
++                                };
++                                this.child(
++                                    IconButton::new(("toggle-favorite", self.index), icon)
++                                        .layer(ElevationIndex::ElevatedSurface)
++                                        .icon_color(color)
++                                        .icon_size(IconSize::Small)
++                                        .tooltip(Tooltip::text(tooltip))
++                                        .on_click(move |event, window, cx| {
++                                            (handle_click)(event, window, cx)
++                                        }),
++                                )
++                            }
++                        }),
++                )
+             })
+     }
+ }

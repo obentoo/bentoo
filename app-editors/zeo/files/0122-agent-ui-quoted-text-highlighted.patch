@@ -1,0 +1,497 @@
+From 59ddb3d0dbc9a9023d6e3ea6ad6dc538e4eaf74c Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 16 Nov 2026 16:46:59 -0300
+Subject: [PATCH] agent_ui, editor: text in quotation marks is highlighted in
+ the composer
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.40 (ask 64). A quotation sits inside a sentence, so
+§6.12's row look would paint whole lines that hold other text. The quoted
+text, marks included, gets a background of its own instead, through the
+editor's text background highlights under a new key,
+`HighlightKey::ComposerQuotation`. `HighlightKey::Editor` was not reused:
+the editor's own navigation paints it, and clearing one would clear the
+other. The colour is the theme's text accent at 20% opacity, as search
+matches use a low-opacity accent, so it reads in light and dark themes
+without reading as a search match.
+
+It is recomputed at the end of `refresh_composer_blocks`, so the composer
+and a sent message (§6.39, `set_source_message`) agree. Presentation only:
+the text the agent receives does not change.
+
+Pairs: "…", “…”, „…“, «…», ‹…›, 「…」, 『…』, and ‘…’ only when it opens
+after whitespace or at a line start. The ASCII single quote is left out on
+purpose: it is also the apostrophe (don't, d'água), and a scanner cannot
+tell the two apart without guessing. The symmetric " opens only where an
+opener can stand (not after a letter or digit, as in 6'2", nor before
+whitespace) and closes only after a non-blank. A pair never spans a blank
+line or a fenced block (the fenced rows come from `scan_composer_blocks`,
+so the two scanners cannot disagree), marks inside an inline code span are
+syntax, an unclosed mark highlights nothing, and a nested pair is covered
+by its outer one, so ranges never overlap.
+
+Tests in composer_quotations_tests.rs; Red seen with the refresh call
+removed and `‘` opening anywhere (exactly the two GPUI tests and the
+apostrophe test failed).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/agent_ui/src/agent_ui.rs               |   1 +
+ crates/agent_ui/src/composer_blocks.rs        |   1 +
+ crates/agent_ui/src/composer_quotations.rs    | 185 +++++++++++++++
+ .../agent_ui/src/composer_quotations_tests.rs | 214 ++++++++++++++++++
+ crates/editor/src/display_map.rs              |   2 +
+ 5 files changed, 403 insertions(+)
+ create mode 100644 crates/agent_ui/src/composer_quotations.rs
+ create mode 100644 crates/agent_ui/src/composer_quotations_tests.rs
+
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index 3195c00..cb89684 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -12,6 +12,7 @@ pub mod browser_wire;
+ mod buffer_codegen;
+ mod completion_provider;
+ mod composer_blocks;
++mod composer_quotations;
+ mod config_options;
+ mod context;
+ mod context_server_configuration;
+diff --git a/crates/agent_ui/src/composer_blocks.rs b/crates/agent_ui/src/composer_blocks.rs
+index e4453ac..c6185e6 100644
+--- a/crates/agent_ui/src/composer_blocks.rs
++++ b/crates/agent_ui/src/composer_blocks.rs
+@@ -135,6 +135,7 @@ pub(crate) fn refresh_composer_blocks(editor: &mut Editor, cx: &mut Context<Edit
+             cx,
+         );
+     }
++    crate::composer_quotations::refresh_composer_quotations(editor, cx);
+ }
+ 
+ /// After typed input, closes a fence the input just opened. The closing fence is its own undo
+diff --git a/crates/agent_ui/src/composer_quotations.rs b/crates/agent_ui/src/composer_quotations.rs
+new file mode 100644
+index 0000000..da2a215
+--- /dev/null
++++ b/crates/agent_ui/src/composer_quotations.rs
+@@ -0,0 +1,185 @@
++//! Text in quotation marks, highlighted in the agent composer and in a sent message (Zeo next
++//! proposal §6.40, ask 64).
++//!
++//! A quotation sits inside a sentence, so the row look of §6.12's blocks would paint whole lines
++//! holding other text. The quoted text, marks included, gets a background of its own instead.
++//! Presentation only: the text the agent receives is unchanged.
++//!
++//! The ASCII single quote is left out on purpose: it is also the apostrophe (`don't`, `d'água`),
++//! and a scanner cannot tell the two apart without guessing. `‘…’` counts only when it opens
++//! after whitespace or at a line start, for the same reason — `’` is the typographic apostrophe.
++
++use std::ops::Range;
++
++use editor::{Editor, HighlightKey, MultiBufferOffset};
++use gpui::Context;
++
++use crate::composer_blocks::scan_composer_blocks;
++
++/// Opening mark, closing mark. `„…“` reuses `“` as its closer, so `“` closes a `„` that is open
++/// and opens a pair otherwise.
++const QUOTATION_PAIRS: &[(char, char)] = &[
++    ('"', '"'),
++    ('“', '”'),
++    ('„', '“'),
++    ('«', '»'),
++    ('‹', '›'),
++    ('「', '」'),
++    ('『', '』'),
++    ('‘', '’'),
++];
++
++/// An open mark: its closer, and the opener's byte offset and length.
++struct OpenQuotation {
++    close: char,
++    start: usize,
++    open_len: usize,
++}
++
++/// The byte ranges of every outermost quotation in `text`, marks included, in order.
++///
++/// A pair never spans a blank line or a fenced code block, and marks inside an inline code span
++/// are not quotation marks. An unclosed mark highlights nothing. A pair nested in another is
++/// covered by the outer range, so ranges never overlap.
++pub(crate) fn scan_quotations(text: &str) -> Vec<Range<usize>> {
++    let code_rows = scan_composer_blocks(text).code;
++    let mut ranges = Vec::new();
++    let mut paragraph: Option<Range<usize>> = None;
++    let mut offset = 0;
++    for (row, line) in text.split('\n').enumerate() {
++        let line_range = offset..offset + line.len();
++        offset = line_range.end + 1;
++        let in_code = code_rows.iter().any(|rows| rows.contains(&(row as u32)));
++        if in_code || line.trim().is_empty() {
++            if let Some(range) = paragraph.take() {
++                scan_paragraph(text, range, &mut ranges);
++            }
++            continue;
++        }
++        match &mut paragraph {
++            Some(range) => range.end = line_range.end,
++            None => paragraph = Some(line_range),
++        }
++    }
++    if let Some(range) = paragraph {
++        scan_paragraph(text, range, &mut ranges);
++    }
++    ranges
++}
++
++/// The length of the backtick run starting at `at`.
++fn backtick_run(paragraph: &str, at: usize) -> usize {
++    paragraph[at..].len() - paragraph[at..].trim_start_matches('`').len()
++}
++
++/// Where the inline code span opened by the backtick run at `at` ends, if an equal run closes it
++/// (CommonMark: a run with no equal partner is literal backticks, not a span).
++fn code_span_end(paragraph: &str, at: usize) -> Option<usize> {
++    let run = backtick_run(paragraph, at);
++    let mut search = at + run;
++    while let Some(ix) = paragraph[search..].find('`') {
++        let start = search + ix;
++        let len = backtick_run(paragraph, start);
++        if len == run {
++            return Some(start + len);
++        }
++        search = start + len;
++    }
++    None
++}
++
++fn scan_paragraph(text: &str, range: Range<usize>, ranges: &mut Vec<Range<usize>>) {
++    let paragraph = &text[range.clone()];
++    let mut stack: Vec<OpenQuotation> = Vec::new();
++    let mut prev: Option<char> = None;
++    let mut chars = paragraph.char_indices().peekable();
++    while let Some((ix, ch)) = chars.next() {
++        if ch == '`' {
++            match code_span_end(paragraph, ix) {
++                // Skip the whole span: quotes inside it are syntax.
++                Some(end) => {
++                    while chars.peek().is_some_and(|(next_ix, _)| *next_ix < end) {
++                        chars.next();
++                    }
++                }
++                // Skip the rest of a literal run, so its tail is not read as a span opener.
++                None => {
++                    while chars.peek().is_some_and(|(_, next)| *next == '`') {
++                        chars.next();
++                    }
++                }
++            }
++            prev = Some('`');
++            continue;
++        }
++        let next = chars.peek().map(|(_, next)| *next);
++        let can_close = prev.is_some_and(|p| !p.is_whitespace());
++        // A closer pops everything opened after its opener: an inner mark never closed is
++        // dropped rather than left to swallow the rest of the paragraph.
++        let closes = stack
++            .iter()
++            .rposition(|open| open.close == ch && (ch != '"' || can_close));
++        if let Some(depth) = closes {
++            let OpenQuotation {
++                start, open_len, ..
++            } = stack[depth];
++            stack.truncate(depth);
++            let end = ix + ch.len_utf8();
++            if depth == 0 && !paragraph[start + open_len..ix].trim().is_empty() {
++                ranges.push(range.start + start..range.start + end);
++            }
++        } else if let Some(&(_, close)) = QUOTATION_PAIRS.iter().find(|(open, _)| *open == ch)
++            && opens(ch, prev, next)
++        {
++            stack.push(OpenQuotation {
++                close,
++                start: ix,
++                open_len: ch.len_utf8(),
++            });
++        }
++        prev = Some(ch);
++    }
++}
++
++/// Whether `ch`, an opening mark, opens a pair here. The symmetric `"` opens only where an
++/// opener can stand — not after a letter or digit (`6'2"`), and not before whitespace — and
++/// `‘` only after whitespace or at a line start, because `’` doubles as the apostrophe.
++fn opens(ch: char, prev: Option<char>, next: Option<char>) -> bool {
++    match ch {
++        '"' => {
++            prev.is_none_or(|p| !p.is_alphanumeric()) && next.is_some_and(|n| !n.is_whitespace())
++        }
++        '‘' => prev.is_none_or(|p| p.is_whitespace()),
++        _ => true,
++    }
++}
++
++/// Re-highlights the quotations of the editor's text as it stands. Called from
++/// `composer_blocks::refresh_composer_blocks`, so the composer and a sent message recompute in
++/// the same places (§6.39).
++pub(crate) fn refresh_composer_quotations(editor: &mut Editor, cx: &mut Context<Editor>) {
++    let snapshot = editor.buffer().read(cx).snapshot(cx);
++    let ranges = scan_quotations(&snapshot.text())
++        .into_iter()
++        .map(|range| {
++            snapshot.anchor_after(MultiBufferOffset(range.start))
++                ..snapshot.anchor_before(MultiBufferOffset(range.end))
++        })
++        .collect::<Vec<_>>();
++    if ranges.is_empty() {
++        editor.clear_background_highlights(HighlightKey::ComposerQuotation, cx);
++        return;
++    }
++    // A low-opacity accent, as search matches use one, so it reads in light and dark themes;
++    // not the search colour itself, which would read as a match.
++    editor.highlight_background(
++        HighlightKey::ComposerQuotation,
++        &ranges,
++        |_, theme| theme.colors().text_accent.opacity(0.2),
++        cx,
++    );
++}
++
++#[cfg(test)]
++#[path = "composer_quotations_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/composer_quotations_tests.rs b/crates/agent_ui/src/composer_quotations_tests.rs
+new file mode 100644
+index 0000000..91804f5
+--- /dev/null
++++ b/crates/agent_ui/src/composer_quotations_tests.rs
+@@ -0,0 +1,214 @@
++// Zeo next proposal §6.40 (ask 64): text in quotation marks, highlighted.
++// Filter: `composer_quotations`.
++
++use std::ops::Range;
++use std::path::Path;
++
++use editor::{Editor, EditorMode};
++use fs::FakeFs;
++use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
++use pretty_assertions::assert_eq;
++use project::Project;
++use serde_json::json;
++use util::path;
++use workspace::MultiWorkspace;
++
++use super::*;
++use crate::conversation_view::tests::init_test;
++use crate::message_editor::MessageEditor;
++use agent_client_protocol::v2::schema as acp_v2;
++
++/// The quoted slices of `text`, for assertions that read as text rather than offsets.
++fn quoted(text: &str) -> Vec<&str> {
++    scan_quotations(text)
++        .into_iter()
++        .map(|range| &text[range])
++        .collect()
++}
++
++#[test]
++fn every_pair_is_recognised_marks_included() {
++    for (open, close) in QUOTATION_PAIRS {
++        let text = format!("say {open}hi there{close} now");
++        assert_eq!(
++            quoted(&text),
++            vec![format!("{open}hi there{close}")],
++            "pair {open}…{close}"
++        );
++    }
++}
++
++#[test]
++fn ranges_are_byte_offsets_into_the_text() {
++    let text = "é «ação» \"x\"";
++    let start = text.find('«').unwrap();
++    let end = text.find('»').unwrap() + '»'.len_utf8();
++    assert_eq!(
++        scan_quotations(text),
++        vec![start..end, text.len() - 3..text.len()]
++    );
++}
++
++#[test]
++fn a_nested_pair_is_covered_by_the_outer_one() {
++    assert_eq!(
++        quoted("he said \"read “this” first\" ok"),
++        vec!["\"read “this” first\""]
++    );
++    assert_eq!(quoted("“a “b” c”"), vec!["“a “b” c”"]);
++    // Two ASCII quotes cannot nest by direction, so the inner pair is told by position.
++    assert_eq!(quoted("\"a \"b\" c\""), vec!["\"a \"b\" c\""]);
++}
++
++#[test]
++fn the_low_double_mark_closes_with_the_high_one() {
++    assert_eq!(quoted("er sagte „hallo“ und ging"), vec!["„hallo“"]);
++}
++
++#[test]
++fn apostrophes_are_not_quotation_marks() {
++    assert!(quoted("don't stop, it's fine").is_empty());
++    assert!(quoted("copo d'água e d’água, it’s here").is_empty());
++    assert_eq!(quoted("it’s ‘quoted’ and that’s it"), vec!["‘quoted’"]);
++    // `‘` opens only after whitespace or at a line start.
++    assert!(quoted("a‘b’ c").is_empty());
++    assert_eq!(quoted("‘start’ of the line"), vec!["‘start’"]);
++}
++
++#[test]
++fn an_inch_mark_does_not_open_a_pair() {
++    assert_eq!(quoted("he is 6'2\" tall and said \"hi\""), vec!["\"hi\""]);
++}
++
++#[test]
++fn an_unclosed_mark_highlights_nothing() {
++    assert!(quoted("say \"hi and go").is_empty());
++    assert!(quoted("«open only").is_empty());
++    // An inner mark never closed is dropped; the outer pair still closes.
++    assert_eq!(quoted("«a \"b» c"), vec!["«a \"b»"]);
++}
++
++#[test]
++fn empty_quotes_highlight_nothing() {
++    assert!(quoted("an empty \"\" and « » pair").is_empty());
++}
++
++#[test]
++fn a_pair_spans_a_line_but_not_a_blank_line() {
++    assert_eq!(quoted("\"one\ntwo\""), vec!["\"one\ntwo\""]);
++    assert!(quoted("\"one\n\ntwo\"").is_empty());
++    assert!(quoted("\"one\n   \ntwo\"").is_empty());
++}
++
++#[test]
++fn quotes_inside_code_are_syntax() {
++    assert!(quoted("run `echo \"x\"` now").is_empty());
++    assert!(quoted("```\nlet s = \"x\";\n```").is_empty());
++    // A fence breaks a paragraph, so a pair cannot run through a block.
++    assert!(quoted("\"before\n```\ncode\n```\nafter\"").is_empty());
++    // A double-backtick span holds a single backtick.
++    assert!(quoted("``a ` \"b\" c`` d").is_empty());
++    // Code inside a quotation is content of the quotation.
++    assert_eq!(quoted("type \"run `ls`\" here"), vec!["\"run `ls`\""]);
++    // A backtick with no partner is a literal, not a span that hides what follows.
++    assert_eq!(quoted("a ` b \"c\""), vec!["\"c\""]);
++}
++
++#[test]
++fn quotes_after_a_fenced_block_are_found() {
++    assert_eq!(quoted("```\n\"x\"\n```\nthen \"y\""), vec!["\"y\""]);
++}
++
++/// The composer's editor with the `MessageEditor` that owns it: the subscriptions under test live
++/// as long as that entity, so a test must hold it.
++async fn quotation_composer(
++    cx: &mut TestAppContext,
++) -> (
++    Entity<MessageEditor>,
++    Entity<Editor>,
++    &mut VisualTestContext,
++) {
++    init_test(cx);
++    let fs = FakeFs::new(cx.executor());
++    fs.insert_tree("/project", json!({"file": ""})).await;
++    let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
++    let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
++    let message_editor = cx.update(|window, cx| {
++        cx.new(|cx| {
++            MessageEditor::new(
++                workspace.downgrade(),
++                project.downgrade(),
++                None,
++                Default::default(),
++                "Test Agent".into(),
++                "Test",
++                EditorMode::AutoHeight {
++                    min_lines: 1,
++                    max_lines: None,
++                },
++                window,
++                cx,
++            )
++        })
++    });
++    let editor = message_editor.read_with(cx, |message_editor, _| message_editor.editor().clone());
++    cx.run_until_parked();
++    (message_editor, editor, cx)
++}
++
++/// The highlighted text backgrounds as `(row, column)` ranges. Nothing else paints a text
++/// background in a bare composer, so every one is a quotation.
++fn quotation_backgrounds(
++    editor: &Entity<Editor>,
++    cx: &mut VisualTestContext,
++) -> Vec<Range<(u32, u32)>> {
++    editor.update_in(cx, |editor, window, cx| {
++        editor
++            .all_text_background_highlights(window, cx)
++            .into_iter()
++            .map(|(range, _)| {
++                (range.start.row().0, range.start.column())..(range.end.row().0, range.end.column())
++            })
++            .collect()
++    })
++}
++
++#[gpui::test]
++async fn the_composer_highlights_quotations_and_drops_them_when_removed(cx: &mut TestAppContext) {
++    let (_message_editor, editor, cx) = quotation_composer(cx).await;
++    editor.update_in(cx, |editor, window, cx| {
++        editor.set_text("say \"hi\" and \"yo\"\n`\"no\"`", window, cx)
++    });
++    cx.run_until_parked();
++    assert_eq!(
++        quotation_backgrounds(&editor, cx),
++        vec![(0, 4)..(0, 8), (0, 13)..(0, 17)]
++    );
++
++    editor.update_in(cx, |editor, window, cx| {
++        editor.set_text("plain", window, cx)
++    });
++    cx.run_until_parked();
++    assert!(quotation_backgrounds(&editor, cx).is_empty());
++}
++
++/// A sent message is a read-only editor filled through `set_source_message` (§6.39), and shows
++/// the same highlight the composer did.
++#[gpui::test]
++async fn a_sent_message_keeps_its_quotations_highlighted(cx: &mut TestAppContext) {
++    let (message_editor, editor, cx) = quotation_composer(cx).await;
++    message_editor.update_in(cx, |message_editor, window, cx| {
++        message_editor.set_read_only(true, cx);
++        message_editor.set_source_message(
++            vec![acp_v2::ContentBlock::Text(acp_v2::TextContent::new(
++                "he said \"hi\"",
++            ))],
++            window,
++            cx,
++        );
++    });
++    cx.run_until_parked();
++    assert_eq!(quotation_backgrounds(&editor, cx), vec![(0, 8)..(0, 12)]);
++}
+diff --git a/crates/editor/src/display_map.rs b/crates/editor/src/display_map.rs
+index e759efc..317f01b 100644
+--- a/crates/editor/src/display_map.rs
++++ b/crates/editor/src/display_map.rs
+@@ -168,6 +168,8 @@ pub enum HighlightKey {
+     SemanticToken(u32),
+     // below is sorted lexicographically, as there is no relevant ordering for these aside from coming after the above
+     BufferSearchHighlights,
++    // Zeo next §6.40: quoted text in the agent composer and in a sent message.
++    ComposerQuotation,
+     ConsoleAnsiHighlight(usize),
+     DebugStackFrameLine,
+     DocumentHighlightRead,

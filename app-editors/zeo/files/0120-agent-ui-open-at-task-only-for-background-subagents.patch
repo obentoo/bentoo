@@ -1,0 +1,438 @@
+From 23d8eef109f58fb2edf5f913efe5aca85eb72b9e Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 16 Nov 2026 14:26:25 -0300
+Subject: [PATCH] agent_ui, agent_tasks_panel: Open Thread at This Task only
+ for a background subagent
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.47 (ask 71, 2026-11-16). The tasks card and the
+Agent Tasks panel drew "Open Thread at This Task" on every row. For a
+subagent it opens the child thread; for anything else -- a shell or other
+task of the main agent -- it only scrolled the same thread to the tool
+call, which is not another thread to open. One rule,
+tasks_card::offers_open_at_task, now decides it on both surfaces: a
+subagent, running in the background, with a child thread or output. The
+card makes the button's focus handle only with the button, so Tab never
+stops on a missing one; the group header's open is unchanged.
+
+Tests: the rule as a pure function (open_at_task_rule_tests.rs); the card's
+accessibility test now uses a background subagent and asserts a shell row
+has no Open; the panel's card-buttons test likewise. Two layout tests that
+used Open as the first control on a shell row use the eye instead. Red
+seen with the rule made always true.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/agent_tasks_panel/src/panel.rs         | 58 ++++++++------
+ .../src/panel/card_buttons_tests.rs           | 18 ++++-
+ crates/agent_ui/src/agent_ui.rs               |  2 +-
+ crates/agent_ui/src/tasks_card.rs             | 80 ++++++++++++-------
+ .../src/tasks_card/accessibility_tests.rs     | 18 ++++-
+ crates/agent_ui/src/tasks_card/label_tests.rs |  3 +-
+ .../src/tasks_card/open_at_task_rule_tests.rs | 16 ++++
+ .../src/tasks_card/progress_line_tests.rs     |  5 +-
+ .../agent_ui/src/tasks_card/test_helpers.rs   | 13 +++
+ 9 files changed, 154 insertions(+), 59 deletions(-)
+ create mode 100644 crates/agent_ui/src/tasks_card/open_at_task_rule_tests.rs
+
+diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
+index e9db93a..d152dc2 100644
+--- a/crates/agent_tasks_panel/src/panel.rs
++++ b/crates/agent_tasks_panel/src/panel.rs
+@@ -16,8 +16,8 @@ use agent_client_protocol::v2::schema as acp_v2;
+ use agent_ui::{
+     AgentPanel, DEFAULT_THREAD_TITLE, OpenAgentSessionOptions, OpenedAgentSession,
+     OpenedAgentSubagent, SUBAGENT_TASK_ID_PREFIX, TASK_WAITING_LABEL, TaskRecord, TasksCard,
+-    can_send_to_background, collapse_label, display_label, open_agent_session, open_agent_subagent,
+-    task_log, thread_metadata_store::ThreadMetadataStore,
++    can_send_to_background, collapse_label, display_label, offers_open_at_task, open_agent_session,
++    open_agent_subagent, task_log, thread_metadata_store::ThreadMetadataStore,
+ };
+ use anyhow::{Result, anyhow};
+ use collections::HashMap;
+@@ -230,6 +230,8 @@ pub struct PanelRow {
+     pub can_background: bool,
+     /// A running task with output can follow its log in a tab of the panel (§6.1, §6.27).
+     pub can_follow_log: bool,
++    /// A background subagent with a thread or output: "Open Thread at This Task" (§6.47).
++    pub can_open_at_task: bool,
+     /// The card's eye is on for it (Zeo next §6.21).
+     pub watched: bool,
+     /// The row is in the panel's selection (story 034 R5).
+@@ -2250,27 +2252,30 @@ fn render_row(
+                 })),
+             )
+     });
+-    let open_at_task_button = div()
+-        .debug_selector({
+-            let task_id = record.task_id.clone();
+-            move || format!("agent-tasks-open-at-task-{task_id}")
+-        })
+-        .child(
+-            action_button(
+-                control_id("open-at-task"),
+-                IconName::ArrowUpRight,
+-                format!("Open at task: {shown_label}"),
+-                "Open Thread at This Task",
+-                &focus.open_at_task,
++    // §6.47: a main-agent task has no other thread to open at it.
++    let open_at_task_button = row.can_open_at_task.then(|| {
++        div()
++            .debug_selector({
++                let task_id = record.task_id.clone();
++                move || format!("agent-tasks-open-at-task-{task_id}")
++            })
++            .child(
++                action_button(
++                    control_id("open-at-task"),
++                    IconName::ArrowUpRight,
++                    format!("Open at task: {shown_label}"),
++                    "Open Thread at This Task",
++                    &focus.open_at_task,
++                )
++                .on_click(cx.listener({
++                    let key = key.clone();
++                    move |panel, _, window, cx| {
++                        cx.stop_propagation();
++                        panel.open_task(&key, window, cx)
++                    }
++                })),
+             )
+-            .on_click(cx.listener({
+-                let key = key.clone();
+-                move |panel, _, window, cx| {
+-                    cx.stop_propagation();
+-                    panel.open_task(&key, window, cx)
+-                }
+-            })),
+-        );
++    });
+     let background_button = row.can_background.then(|| {
+         div()
+             .debug_selector({
+@@ -2361,7 +2366,7 @@ fn render_row(
+         .gap_1()
+         .child(div().min_w_0().flex_1().child(open_or_rename))
+         .child(rename_button)
+-        .child(open_at_task_button)
++        .children(open_at_task_button)
+         .children(open_log_button)
+         .children(follow_log_button)
+         .children(watch_button)
+@@ -2576,6 +2581,12 @@ fn panel_row(
+         .is_some_and(|live| can_send_to_background(&live.task));
+     let can_follow_log = live.as_ref().is_some_and(|live| live.task.has_output);
+     let watched = live.as_ref().is_some_and(|live| live.watched);
++    let can_open_at_task = offers_open_at_task(
++        &entry.record.kind,
++        entry.record.background,
++        entry.record.child_session_id.is_some(),
++        can_follow_log || entry.log_bytes.is_some(),
++    );
+     if let Some(LiveTask { task, waiting, .. }) = live {
+         let record = &mut entry.record;
+         record.waiting = waiting;
+@@ -2586,6 +2597,7 @@ fn panel_row(
+     }
+     PanelRow {
+         can_follow_log,
++        can_open_at_task,
+         can_stop,
+         can_archive: !entry.archived && !entry.record.status.is_running(),
+         can_open_log: entry.log_bytes.is_some(),
+diff --git a/crates/agent_tasks_panel/src/panel/card_buttons_tests.rs b/crates/agent_tasks_panel/src/panel/card_buttons_tests.rs
+index d1a09f1..ff03b99 100644
+--- a/crates/agent_tasks_panel/src/panel/card_buttons_tests.rs
++++ b/crates/agent_tasks_panel/src/panel/card_buttons_tests.rs
+@@ -33,29 +33,41 @@ fn painted(panels: &mut Panels, selector: String) -> bool {
+     panels.cx.debug_bounds(selector).is_some()
+ }
+ 
+-/// Hostile: an ended row gets ↑ only -- no eye, no ↓ -- and a running foreground one all three.
++/// Hostile: an ended row gets no eye and no ↓, a running foreground one both; ↑ ("Open Thread
++/// at This Task") only on a background subagent with something to show (§6.47, ask 71).
+ #[gpui::test]
+ async fn card_buttons_follow_the_cards_conditions(cx: &mut TestAppContext) {
+     init_base(cx);
+     let mut panels = open_panels(cx).await;
+     let thread = open_live_thread(&mut panels, "Live");
++    let mut subagent = wire_task("sub", "running", 3_000, None);
++    subagent["type"] = serde_json::json!("subagent");
++    subagent["background"] = serde_json::json!(true);
++    subagent["hasOutput"] = serde_json::json!(true);
+     send_tasks(
+         &thread,
+         vec![
+             wire_task("run", "running", 2_000, None),
+             wire_task("done", "completed", 1_000, None),
++            subagent,
+         ],
+         &mut panels.cx,
+     );
+     show(&mut panels);
+ 
+-    for button in ["watch", "open-at-task", "background"] {
++    for button in ["watch", "background"] {
+         assert!(
+             painted(&mut panels, format!("agent-tasks-{button}-run")),
+             "{button} on the running row"
+         );
+     }
+-    assert!(painted(&mut panels, "agent-tasks-open-at-task-done".into()));
++    for task in ["run", "done"] {
++        assert!(
++            !painted(&mut panels, format!("agent-tasks-open-at-task-{task}")),
++            "a main-agent task has no other thread to open at it: {task}"
++        );
++    }
++    assert!(painted(&mut panels, "agent-tasks-open-at-task-sub".into()));
+     assert!(
+         !painted(&mut panels, "agent-tasks-watch-done".into()),
+         "no eye when ended"
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index 2cf82bb..3195c00 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -124,7 +124,7 @@ pub use crate::task_label::{
+ pub use crate::tasks_card::task_log;
+ pub use crate::tasks_card::{
+     SUBAGENT_TASK_ID_PREFIX, TASK_WAITING_LABEL, TaskActivity, TaskKey, TaskRecord, TasksCard,
+-    TasksCardEvent, ThreadTitleChanged, can_send_to_background,
++    TasksCardEvent, ThreadTitleChanged, can_send_to_background, offers_open_at_task,
+ };
+ pub use crate::thread_metadata_store::ThreadId;
+ pub use agent_diff::{AgentDiffPane, AgentDiffToolbar};
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index 49381f2..6d07f57 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -64,6 +64,9 @@ mod model;
+ #[path = "tasks_card/dismiss_tests.rs"]
+ mod dismiss;
+ 
++#[cfg(test)]
++#[path = "tasks_card/open_at_task_rule_tests.rs"]
++mod open_at_task_rule;
+ #[cfg(test)]
+ #[path = "tasks_card/start_minimized_tests.rs"]
+ mod start_minimized;
+@@ -2718,33 +2721,43 @@ impl TasksCard {
+                     )
+             });
+ 
+-        let open_focus_handle = self.row_focus_handle(&key, RowControl::Open, cx);
+-        let open_button = IconButton::new(
+-            SharedString::from(format!("tasks-card-open-{element_key}")),
+-            IconName::ArrowUpRight,
+-        )
+-        .icon_size(IconSize::Small)
+-        .icon_color(Color::Muted)
+-        .aria_label(row_aria_label(format!("Open in thread: {shown_label}")))
+-        .tooltip(card_tooltip(
+-            format!("open-{task_id}").into(),
+-            "Open Thread at This Task".into(),
+-        ))
+-        .track_focus(&open_focus_handle)
+-        .on_click(cx.listener({
+-            let session_id = session_id.clone();
+-            let task_id = task_id.clone();
+-            move |card, _, window, cx| {
+-                card.open_task(session_id.clone(), task_id.clone(), window, cx)
+-            }
+-        }));
+-        let open_button = div()
+-            .debug_selector({
++        let offers_open = offers_open_at_task(
++            &task.kind,
++            task.background,
++            task.child_session_id.is_some(),
++            task.has_output,
++        );
++        // §6.47: only a background subagent's row opens another thread at the task; the
++        // focus handle is made only with the button, so Tab never stops on a missing one.
++        let open_button = offers_open.then(|| {
++            let open_focus_handle = self.row_focus_handle(&key, RowControl::Open, cx);
++            let open_button = IconButton::new(
++                SharedString::from(format!("tasks-card-open-{element_key}")),
++                IconName::ArrowUpRight,
++            )
++            .icon_size(IconSize::Small)
++            .icon_color(Color::Muted)
++            .aria_label(row_aria_label(format!("Open in thread: {shown_label}")))
++            .tooltip(card_tooltip(
++                format!("open-{task_id}").into(),
++                "Open Thread at This Task".into(),
++            ))
++            .track_focus(&open_focus_handle)
++            .on_click(cx.listener({
++                let session_id = session_id.clone();
+                 let task_id = task_id.clone();
+-                move || format!("tasks-card-open-{task_id}")
+-            })
+-            .flex_none()
+-            .child(open_button);
++                move |card, _, window, cx| {
++                    card.open_task(session_id.clone(), task_id.clone(), window, cx)
++                }
++            }));
++            div()
++                .debug_selector({
++                    let task_id = task_id.clone();
++                    move || format!("tasks-card-open-{task_id}")
++                })
++                .flex_none()
++                .child(open_button)
++        });
+ 
+         // Only a shell the agent can serve the output of has a log to open (R5.1).
+         let open_log_button = (task.kind == SHELL_KIND && task.has_output).then(|| {
+@@ -2900,7 +2913,7 @@ impl TasksCard {
+                     .child(Chip::new(purpose.label()).label_size(LabelSize::XSmall))
+             }))
+             .children(timing)
+-            .child(open_button)
++            .children(open_button)
+             .children(open_log_button)
+             .children(open_thread_button)
+             .child(watch_button)
+@@ -2990,6 +3003,19 @@ impl TasksCard {
+ /// Whether "Send to Background" applies to `task`: a running foreground task with a tool
+ /// call to address. The Agent Tasks panel offers the card's ↓ on the same condition
+ /// (Zeo next §6.21).
++/// Whether a row offers "Open Thread at This Task" (Zeo next §6.47, ask 71): only a subagent
++/// running in the background with something to show -- its own thread or output. A task of
++/// the main agent lives in the thread the row already belongs to, so there is no other thread
++/// to open at it.
++pub fn offers_open_at_task(
++    kind: &str,
++    background: bool,
++    has_child_thread: bool,
++    has_output: bool,
++) -> bool {
++    kind == SUBAGENT_KIND && background && (has_child_thread || has_output)
++}
++
+ pub fn can_send_to_background(task: &AgentTask) -> bool {
+     task.status.is_running() && background_target(task).is_some()
+ }
+diff --git a/crates/agent_ui/src/tasks_card/accessibility_tests.rs b/crates/agent_ui/src/tasks_card/accessibility_tests.rs
+index 3ee252b..f0f0cbb 100644
+--- a/crates/agent_ui/src/tasks_card/accessibility_tests.rs
++++ b/crates/agent_ui/src/tasks_card/accessibility_tests.rs
+@@ -267,7 +267,12 @@ async fn test_the_open_controls_have_a_tooltip_and_are_reachable_by_keyboard(
+     let (panel, mut cx) = setup_card_panel(cx).await;
+     let connection = TaskActionsConnection::new();
+     let a = open_titled_thread(&panel, &connection, "A", &mut cx);
+-    send_tasks(&a, vec![wire_task("t1", "running", true, 1_000)], &mut cx);
++    // §6.47: the row's Open is offered for a background subagent only.
++    send_tasks(
++        &a,
++        vec![wire_background_subagent("t1", "running", 1_000)],
++        &mut cx,
++    );
+     draw(&mut cx);
+ 
+     let session = session_of(&a, &cx);
+@@ -304,7 +309,16 @@ async fn test_the_open_controls_have_a_tooltip_and_are_reachable_by_keyboard(
+     );
+ 
+     // An ended row still opens its thread.
+-    send_tasks(&a, vec![wire_task("t1", "completed", true, 1_000)], &mut cx);
++    send_tasks(
++        &a,
++        vec![wire_background_subagent("t1", "completed", 1_000)],
++        &mut cx,
++    );
+     draw(&mut cx);
+     assert!(cx.debug_bounds("tasks-card-open-t1").is_some());
++
++    // A task of the main agent has no other thread to open at it (§6.47, ask 71).
++    send_tasks(&a, vec![wire_task("t2", "running", true, 2_000)], &mut cx);
++    draw(&mut cx);
++    assert!(cx.debug_bounds("tasks-card-open-t2").is_none());
+ }
+diff --git a/crates/agent_ui/src/tasks_card/label_tests.rs b/crates/agent_ui/src/tasks_card/label_tests.rs
+index 9d03fd5..9c272c9 100644
+--- a/crates/agent_ui/src/tasks_card/label_tests.rs
++++ b/crates/agent_ui/src/tasks_card/label_tests.rs
+@@ -190,7 +190,8 @@ async fn test_label_screen_reader_labels_use_the_displayed_label(cx: &mut TestAp
+     );
+     let strings = a11y_strings(&mut cx);
+ 
+-    for prefix in ["Watch", "Open in thread", "Stop"] {
++    // A shell row offers no "Open in thread" (§6.47); accessibility_tests covers that label.
++    for prefix in ["Watch", "Stop"] {
+         assert_eq!(
+             count(&strings, &format!("{prefix}: {HEREDOC_SHOWN}")),
+             1,
+diff --git a/crates/agent_ui/src/tasks_card/open_at_task_rule_tests.rs b/crates/agent_ui/src/tasks_card/open_at_task_rule_tests.rs
+new file mode 100644
+index 0000000..b8f8598
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/open_at_task_rule_tests.rs
+@@ -0,0 +1,16 @@
++// Zeo next proposal §6.47 (ask 71): "Open Thread at This Task" only for a background subagent
++// with something to show. Filter: `open_at_task_rule`.
++use super::*;
++
++#[test]
++fn only_a_background_subagent_with_a_thread_or_output_opens_at_its_task() {
++    // A task of the main agent lives in the thread its row belongs to.
++    assert!(!offers_open_at_task(SHELL_KIND, true, false, true));
++    assert!(!offers_open_at_task(SHELL_KIND, false, false, true));
++    // A subagent in the foreground, or with nothing to show yet.
++    assert!(!offers_open_at_task(SUBAGENT_KIND, false, true, true));
++    assert!(!offers_open_at_task(SUBAGENT_KIND, true, false, false));
++    // A background subagent with its own thread, or with output.
++    assert!(offers_open_at_task(SUBAGENT_KIND, true, true, false));
++    assert!(offers_open_at_task(SUBAGENT_KIND, true, false, true));
++}
+diff --git a/crates/agent_ui/src/tasks_card/progress_line_tests.rs b/crates/agent_ui/src/tasks_card/progress_line_tests.rs
+index e809712..9f03835 100644
+--- a/crates/agent_ui/src/tasks_card/progress_line_tests.rs
++++ b/crates/agent_ui/src/tasks_card/progress_line_tests.rs
+@@ -110,7 +110,7 @@ async fn tasks_card_progress_line_is_painted_below_the_description(cx: &mut Test
+     );
+     for control in [
+         "tasks-card-mode-t1",
+-        "tasks-card-open-t1",
++        "tasks-card-watch-t1",
+         "tasks-card-stop-t1",
+     ] {
+         let control_bounds = bounds(control, &mut cx);
+@@ -148,7 +148,8 @@ async fn tasks_card_progress_line_leaves_the_description_the_whole_line(cx: &mut
+     );
+     let label = bounds("tasks-card-label-t1", &mut cx);
+     let chip = bounds("tasks-card-mode-t1", &mut cx);
+-    let open = bounds("tasks-card-open-t1", &mut cx);
++    // A shell row's first control is the eye: Open is a background subagent's (§6.47).
++    let open = bounds("tasks-card-watch-t1", &mut cx);
+     // `gap_1` is 4px; one gap plus rounding, never a whole element.
+     let one_gap = px(8.);
+     assert!(
+diff --git a/crates/agent_ui/src/tasks_card/test_helpers.rs b/crates/agent_ui/src/tasks_card/test_helpers.rs
+index c0d1b0c..763d9d8 100644
+--- a/crates/agent_ui/src/tasks_card/test_helpers.rs
++++ b/crates/agent_ui/src/tasks_card/test_helpers.rs
+@@ -334,6 +334,19 @@ pub(crate) fn session_of(thread: &Entity<AcpThread>, cx: &VisualTestContext) ->
+ }
+ 
+ /// One `_claude/tasks` wire task, in the adapter's camelCase shape (story 012).
++/// A background subagent with output: the one kind of row that offers "Open Thread at This
++/// Task" (Zeo next §6.47).
++pub(crate) fn wire_background_subagent(
++    id: &str,
++    status: &str,
++    started_at_ms: u64,
++) -> serde_json::Value {
++    let mut task = wire_task(id, status, true, started_at_ms);
++    task["type"] = json!("subagent");
++    task["hasOutput"] = json!(true);
++    task
++}
++
+ pub(crate) fn wire_task(
+     id: &str,
+     status: &str,

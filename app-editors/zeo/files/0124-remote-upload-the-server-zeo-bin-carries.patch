@@ -1,0 +1,255 @@
+From 778aab01a6b00e210babef7bc69b8bf7cac3a303 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 16 Nov 2026 19:59:48 -0300
+Subject: [PATCH] remote: upload the server zeo-bin carries to a host that
+ lacks one
+
+A release Zeo never fetches a remote server from zed.dev: patch 0021 makes
+`download_remote_server_release(Zeo)` an error, so Zeo cannot self-replace
+with an official Zed artefact. The cost was that a remote project only opened
+on a host where somebody had already put
+`~/.zed_server/zed-remote-server-zeo-<version>` by hand -- the release build
+compiles out `ZED_COPY_REMOTE_SERVER` and `ZED_BUILD_REMOTE_SERVER`, which
+live behind `debug_assertions` or the `build-remote-server-binary` feature.
+
+Measured 2026-11-16 against a Shidashi dev VM on bentoo-lab, reached over
+ssh through the worker: with the server placed by hand as
+`zed-remote-server-zeo-1.30.0+zeo`, Zeo connected, the remote server
+installed Node and the Claude Agent (Plus) adapter itself, and the agent ran
+`hostname; pwd` in the guest. Without it, nothing opened.
+
+zeo-bin now carries `zeo-remote-server` beside the editor binary, built in
+the same portable run from the same Zed commit and series, so it speaks the
+editor's protocol. When the host has no server, `ensure_server_binary` --
+over ssh and in a dev container alike -- uploads that file through the path
+upstream's dev builds use (`upload_local_server_binary`, then
+`extract_server_binary`, which takes an uncompressed file as it is), then
+runs it with `version`: the server is built for x86-64-v3, and a host whose
+CPU lacks it is told so in words instead of failing on an illegal
+instruction later.
+
+It is offered to Linux x86-64 hosts only, and only by the Zeo channel. A Zeo
+built from source carries no server (app-editors/zeo installs none), so for
+it nothing changes. `ZEO_REMOTE_SERVER` names a server kept elsewhere.
+
+Tests: transport.rs, the four ways `bundled_remote_server_at` answers --
+beside the editor, absent, a configured path, a platform it does not serve.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/remote/src/transport.rs        | 103 ++++++++++++++++++++++++++
+ crates/remote/src/transport/docker.rs |  35 +++++++++
+ crates/remote/src/transport/ssh.rs    |  30 ++++++++
+ 3 files changed, 168 insertions(+)
+
+diff --git a/crates/remote/src/transport.rs b/crates/remote/src/transport.rs
+index 8c2d313..2fdf0b7 100644
+--- a/crates/remote/src/transport.rs
++++ b/crates/remote/src/transport.rs
+@@ -20,6 +20,45 @@ pub mod mock;
+ pub mod ssh;
+ pub mod wsl;
+ 
++/// The remote server zeo-bin carries beside the editor binary (patch 0124).
++///
++/// A release Zeo never fetches a server from zed.dev (patch 0021), so a host without one
++/// had no way to get it: Zeo could only open remote projects on a host where somebody had
++/// put `~/.zed_server/zed-remote-server-zeo-<version>` by hand. zeo-bin is built from the
++/// same Zed commit and series as its editor, so its `remote_server` speaks the same
++/// protocol; it is built for x86-64-v3, so it is offered to Linux x86-64 hosts only.
++pub(crate) const BUNDLED_REMOTE_SERVER: &str = "zeo-remote-server";
++
++/// A path that replaces the bundled server, for a build that keeps it elsewhere.
++pub(crate) const BUNDLED_REMOTE_SERVER_ENV: &str = "ZEO_REMOTE_SERVER";
++
++/// The server to upload to a host of `platform` that lacks one, if this Zeo carries one.
++pub(crate) fn bundled_remote_server(platform: &RemotePlatform) -> Option<std::path::PathBuf> {
++    bundled_remote_server_at(
++        platform,
++        std::env::var_os(BUNDLED_REMOTE_SERVER_ENV).map(std::path::PathBuf::from),
++        std::env::current_exe().ok(),
++    )
++}
++
++fn bundled_remote_server_at(
++    platform: &RemotePlatform,
++    configured: Option<std::path::PathBuf>,
++    executable: Option<std::path::PathBuf>,
++) -> Option<std::path::PathBuf> {
++    if !matches!(
++        (platform.os, platform.arch),
++        (RemoteOs::Linux, RemoteArch::X86_64)
++    ) {
++        return None;
++    }
++    let candidate = match configured {
++        Some(path) => path,
++        None => executable?.parent()?.join(BUNDLED_REMOTE_SERVER),
++    };
++    candidate.is_file().then_some(candidate)
++}
++
+ /// Parses the output of `uname -sm` to determine the remote platform.
+ /// Takes the last line to skip possible shell initialization output.
+ fn parse_platform(output: &str) -> Result<RemotePlatform> {
+@@ -555,6 +594,70 @@ async fn which(
+ mod tests {
+     use super::*;
+ 
++    fn linux_x86_64() -> RemotePlatform {
++        RemotePlatform {
++            os: RemoteOs::Linux,
++            arch: RemoteArch::X86_64,
++        }
++    }
++
++    #[test]
++    fn test_the_bundled_server_is_the_one_beside_the_editor() {
++        let dir = tempfile::tempdir().unwrap();
++        let server = dir.path().join(super::BUNDLED_REMOTE_SERVER);
++        std::fs::write(&server, b"server").unwrap();
++        let editor = dir.path().join("zeo-editor");
++        assert_eq!(
++            bundled_remote_server_at(&linux_x86_64(), None, Some(editor)),
++            Some(server)
++        );
++    }
++
++    #[test]
++    fn test_an_editor_with_no_server_beside_it_offers_none() {
++        let dir = tempfile::tempdir().unwrap();
++        let editor = dir.path().join("zeo-editor");
++        assert_eq!(
++            bundled_remote_server_at(&linux_x86_64(), None, Some(editor)),
++            None
++        );
++    }
++
++    #[test]
++    fn test_a_configured_path_replaces_the_bundled_server() {
++        let dir = tempfile::tempdir().unwrap();
++        let elsewhere = dir.path().join("my-server");
++        std::fs::write(&elsewhere, b"server").unwrap();
++        let editor = dir.path().join("bin").join("zeo-editor");
++        assert_eq!(
++            bundled_remote_server_at(&linux_x86_64(), Some(elsewhere.clone()), Some(editor)),
++            Some(elsewhere)
++        );
++        let missing = dir.path().join("missing");
++        assert_eq!(
++            bundled_remote_server_at(&linux_x86_64(), Some(missing), None),
++            None
++        );
++    }
++
++    #[test]
++    fn test_the_bundled_server_is_offered_to_linux_x86_64_only() {
++        let dir = tempfile::tempdir().unwrap();
++        std::fs::write(dir.path().join(super::BUNDLED_REMOTE_SERVER), b"server").unwrap();
++        let editor = Some(dir.path().join("zeo-editor"));
++        for (os, arch) in [
++            (RemoteOs::Linux, RemoteArch::Aarch64),
++            (RemoteOs::MacOs, RemoteArch::X86_64),
++            (RemoteOs::Windows, RemoteArch::X86_64),
++        ] {
++            let platform = RemotePlatform { os, arch };
++            assert_eq!(
++                bundled_remote_server_at(&platform, None, editor.clone()),
++                None
++            );
++        }
++    }
++
+     #[test]
+     fn test_parse_platform() {
+         let result = parse_platform("Linux x86_64\n").unwrap();
+diff --git a/crates/remote/src/transport/docker.rs b/crates/remote/src/transport/docker.rs
+index fb7c221..fb5574d 100644
+--- a/crates/remote/src/transport/docker.rs
++++ b/crates/remote/src/transport/docker.rs
+@@ -275,6 +275,41 @@ impl DockerExecConnection {
+             return Ok(dst_path.into());
+         }
+ 
++        // Zeo: no zed.dev to fetch from (patch 0021); upload the server zeo-bin carries
++        // beside the editor (patch 0124), and say so when the container cannot run it.
++        if release_channel == ReleaseChannel::Zeo
++            && let Some(bundled) = super::bundled_remote_server(&remote_platform)
++        {
++            let tmp_path = paths::remote_server_dir_relative().join(
++                RelPath::from_unix_str(&format!("{}-upload-{}", binary_name, std::process::id()))
++                    .unwrap(),
++            );
++            self.upload_local_server_binary(
++                &bundled,
++                &tmp_path,
++                &remote_dir_for_server,
++                delegate,
++                cx,
++            )
++            .await?;
++            self.extract_server_binary(&dst_path, &tmp_path, &remote_dir_for_server, delegate, cx)
++                .await?;
++            self.run_docker_exec(
++                &dst_path.display(self.path_style()),
++                Some(&remote_dir_for_server),
++                &Default::default(),
++                &["version"],
++            )
++            .await
++            .with_context(|| {
++                format!(
++                    "the remote server Zeo carries ({}, built for x86-64-v3) does not run in this container",
++                    bundled.display()
++                )
++            })?;
++            return Ok(dst_path.into());
++        }
++
+         let wanted_version = cx.update(|cx| match release_channel {
+             ReleaseChannel::Nightly => Ok(None),
+             ReleaseChannel::Dev => {
+diff --git a/crates/remote/src/transport/ssh.rs b/crates/remote/src/transport/ssh.rs
+index 1a271d9..2752d7a 100644
+--- a/crates/remote/src/transport/ssh.rs
++++ b/crates/remote/src/transport/ssh.rs
+@@ -1078,6 +1078,36 @@ impl SshRemoteConnection {
+             return Ok(dst_path.into());
+         }
+ 
++        // Zeo: no zed.dev to fetch from (patch 0021); upload the server zeo-bin carries
++        // beside the editor (patch 0124), and say so when this host cannot run it.
++        if release_channel == ReleaseChannel::Zeo
++            && let Some(bundled) = super::bundled_remote_server(&self.ssh_platform)
++        {
++            let tmp_path = paths::remote_server_dir_relative().join(
++                RelPath::from_unix_str(&format!("{}-upload-{}", binary_name, std::process::id()))
++                    .unwrap(),
++            );
++            self.upload_local_server_binary(&bundled, &tmp_path, delegate, cx)
++                .await?;
++            self.extract_server_binary(&dst_path, &tmp_path, delegate, cx)
++                .await?;
++            self.socket
++                .run_command(
++                    self.ssh_shell_kind,
++                    &dst_path.display(self.path_style()),
++                    &["version"],
++                    true,
++                )
++                .await
++                .with_context(|| {
++                    format!(
++                        "the remote server Zeo carries ({}, built for x86-64-v3) does not run on this host",
++                        bundled.display()
++                    )
++                })?;
++            return Ok(dst_path.into());
++        }
++
+         let wanted_version = cx.update(|cx| match release_channel {
+             ReleaseChannel::Nightly => Ok(None),
+             ReleaseChannel::Dev => {
+-- 
+2.56.1
+

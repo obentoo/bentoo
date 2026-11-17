@@ -1899,6 +1899,10 @@ src_prepare() {
 		# tell Zeo's sessions from any other Claude Code process and offer the
 		# tray link (0024) only for those. Ungrouped like 0024.
 		"${FILESDIR}/0061-agent-mark-agent-servers-with-zeo-thread.patch"
+		# 0124 (Zeo 0.13.0): a remote host with no server gets the one zeo-bin
+		# carries; a Zeo built from source carries none, so this changes nothing
+		# here. Ungrouped like 0061: zeo-bin applies the whole series.
+		"${FILESDIR}/0124-remote-upload-the-server-zeo-bin-carries.patch"
 	)
 
 	if use claude-agent-acp-plus; then
@@ -2243,6 +2247,22 @@ src_prepare() {
 			"${FILESDIR}/0115-agent-ui-btw-side-question-card.patch"
 			# 0116 (Zeo 0.12.0, §6.8): Steer into an ACP agent's running turn.
 			"${FILESDIR}/0116-agent-ui-steer-into-an-acp-agents-turn.patch"
+			# 0117 (Zeo 0.13.0, §6.37): Open Recent File.
+			"${FILESDIR}/0117-recent-projects-open-recent-file.patch"
+			# 0118 (Zeo 0.13.0, §6.41): the plan card's minimize before its close.
+			"${FILESDIR}/0118-agent-ui-plan-card-minimize-on-the-right.patch"
+			# 0119 (Zeo 0.13.0, §6.42): Clear on a question of the question card.
+			"${FILESDIR}/0119-agent-ui-question-card-clear-selection.patch"
+			# 0120 (Zeo 0.13.0, §6.47): Open Thread at This Task, background subagents only.
+			"${FILESDIR}/0120-agent-ui-open-at-task-only-for-background-subagents.patch"
+			# 0121 (Zeo 0.13.0, §6.45): BTW beside Steer on a queued message. On 0115/0116.
+			"${FILESDIR}/0121-agent-ui-btw-beside-steer.patch"
+			# 0122 (Zeo 0.13.0, §6.40): text in quotation marks highlighted. On 0107.
+			"${FILESDIR}/0122-agent-ui-quoted-text-highlighted.patch"
+			# 0123 (Zeo 0.13.0, §6.49): thread lists per project and global. On 0048/0069/0106.
+			"${FILESDIR}/0123-sidebar-thread-lists-per-project.patch"
+			# 0125 (Zeo 0.13.0, §6.44): tool, terminal and edit cards in three states. On 0090.
+			"${FILESDIR}/0125-agent-ui-tool-cards-in-three-states.patch"
 		)
 	fi
 

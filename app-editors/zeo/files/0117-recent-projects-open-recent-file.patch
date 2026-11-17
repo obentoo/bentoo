@@ -1,0 +1,803 @@
+From d311733c411ab6f5835e9431d1c885f86fc5b522 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 16 Nov 2026 00:16:15 -0300
+Subject: [PATCH] recent_projects: Open Recent File lists recently opened files
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.37 (ask 60, zed discussion #38968): a picker of
+recently opened files, most recent first, files outside any project
+included, each with the project that holds it. Picking one opens it in
+the current window. The File menu's "Open Recent…" becomes "Open Recent
+Project…", as the discussion proposes, with "Open Recent File…" below it;
+the action is projects::OpenRecentFile, so the command palette lists it
+as "projects: open recent file". No keybinding.
+
+Why a table of its own: Zed keeps no cross-workspace history of files.
+recent_navigation_history is per workspace, has no timestamp and drops
+files outside a worktree on reload; the editors table holds open tabs
+only; a window opened on a single file is a workspace row the
+recent-projects query skips (it wants a directory) and the garbage
+collector removes after seven days; the OS recent-documents call is a
+no-op on Linux. So ZeoRecentFilesDb, a domain of its own -- appending to
+WorkspaceDb's migrations would collide with upstream's next one, as 0048
+avoided too -- holds recent_files(abs_path PRIMARY KEY, seq), capped at
+200 rows. seq, not unixepoch(), orders the rows: two files opened within
+one second would tie on a timestamp.
+
+- recent_files_db: record_file (upsert to the top, then trim to 200),
+  recent_file_paths (most recent first), forget_file.
+- recent_files: every workspace records the file behind its active item
+  on ActiveItemChanged, only when the file changes (that event fires on
+  every tab switch) and only in a local project -- a remote path names
+  another machine's file. Non-UTF-8 paths are not recorded: the column
+  is TEXT and a lossy copy would name a file that does not exist. The
+  picker loads the history, drops files that no longer exist (and
+  forgets them, so they do not come back; an unreadable file is skipped
+  but kept), and labels each with the deepest known project root that
+  holds it -- the window's visible worktrees plus the local recent
+  projects; a root equal to the file is a window opened on that file
+  alone, not a project ("No project"). Confirm opens with
+  OpenVisible::None, as a file opened from the file finder.
+- zed_actions: OpenRecentFile. app_menus: the two entries.
+
+Tests: recent_files_tests (6) -- the history lists the last opened file
+first and moves a reopened one to the top; it keeps only the newest 200
+(the SQL cap and the constant agree); a forgotten file leaves it; a file
+belongs to the deepest project holding it and a single-file window is
+not a project; opening files in a test window records them, in and out
+of the project; the picker lists them with their project, hides and
+forgets a deleted file, filters by query, and opens the pick in the same
+window. Seen failing: four probes, one at a time, each failed exactly
+its tests -- no recording on ActiveItemChanged (the recording test),
+ORDER BY seq ASC (the four that read the order), no forget (the picker
+test), a single-file root taken as a project (the project test).
+Xvfb proof, in the hub: docs/assets/zeo-6.37-open-recent-file-2026-11-16/
+(the palette entry; the picker after opening a project file and a loose
+one, labelled "proj" and "No project"; the query filter; the pick
+opening in the same window; the File menu's two entries; the empty
+state; and the history surviving a restart on the same data). Not
+covered: a remote project (recording is skipped there; no test), non-
+UTF-8 paths.
+---
+
+diff --git a/crates/recent_projects/src/recent_files.rs b/crates/recent_projects/src/recent_files.rs
+new file mode 100644
+index 0000000..807c309
+--- /dev/null
++++ b/crates/recent_projects/src/recent_files.rs
+@@ -0,0 +1,378 @@
++//! "Open Recent File" (Zeo next proposal §6.37, zed#38968): a picker of recently opened files,
++//! most recent first, files outside any project included, each with the project that holds it.
++//!
++//! Every window records the file its active item shows into `ZeoRecentFilesDb` -- see that
++//! module for why the history needs a table of its own. A pick opens the file in the current
++//! window, like a file opened from the file finder.
++
++use std::{
++    path::{Path, PathBuf},
++    sync::Arc,
++};
++
++use fs::Fs;
++use fuzzy_nucleo::{
++    MaxResults, StringMatch, StringMatchCandidate, StringMatchOptions, match_strings,
++};
++use gpui::{
++    App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Render, Task,
++    TaskExt, WeakEntity, Window,
++};
++use picker::{Picker, PickerDelegate};
++use ui::{HighlightedLabel, ListItem, ListItemSpacing, prelude::*};
++use util::{ResultExt, paths::PathExt};
++use workspace::{
++    ModalView, OpenOptions, OpenVisible, SerializedWorkspaceLocation, Workspace, WorkspaceDb,
++};
++use zed_actions::OpenRecentFile;
++
++use crate::recent_files_db::ZeoRecentFilesDb;
++
++pub(crate) fn init(cx: &mut App) {
++    cx.observe_new(register_recent_files).detach();
++}
++
++fn register_recent_files(
++    workspace: &mut Workspace,
++    _window: Option<&mut Window>,
++    cx: &mut Context<Workspace>,
++) {
++    workspace.register_action(|workspace, _: &OpenRecentFile, window, cx| {
++        RecentFiles::toggle(workspace, window, cx);
++    });
++
++    // `ActiveItemChanged` fires on every tab switch and focus change; only a change of file
++    // reaches the database.
++    let mut last_recorded: Option<PathBuf> = None;
++    cx.subscribe_self(move |workspace, event: &workspace::Event, cx| {
++        if !matches!(event, workspace::Event::ActiveItemChanged) {
++            return;
++        }
++        let Some(abs_path) = active_local_file(workspace, cx) else {
++            return;
++        };
++        if last_recorded.as_ref() == Some(&abs_path) {
++            return;
++        }
++        last_recorded = Some(abs_path.clone());
++        record_recent_file(abs_path, cx);
++    })
++    .detach();
++}
++
++/// The file on disk behind the active item, if there is one. A remote project's paths name
++/// another machine's files, which this window could not reopen from the history.
++pub(crate) fn active_local_file(workspace: &Workspace, cx: &App) -> Option<PathBuf> {
++    let project = workspace.project().read(cx);
++    if !project.is_local() {
++        return None;
++    }
++    let project_path = workspace.active_item(cx)?.project_path(cx)?;
++    project.absolute_path(&project_path, cx)
++}
++
++fn record_recent_file(abs_path: PathBuf, cx: &App) {
++    // The column is TEXT, and a lossy copy of a non-UTF-8 path would name a file that does
++    // not exist, so such a path is not recorded.
++    let Some(abs_path) = abs_path.to_str().map(str::to_owned) else {
++        return;
++    };
++    let db = ZeoRecentFilesDb::global(cx);
++    db::write_and_log(cx, move || async move { db.record_file(abs_path).await });
++}
++
++#[derive(Clone, Debug, PartialEq)]
++pub(crate) struct RecentFile {
++    pub(crate) abs_path: PathBuf,
++    /// The path as shown, with the home directory as `~`.
++    pub(crate) display: String,
++    /// The folder name of the deepest known project that holds the file.
++    pub(crate) project: Option<String>,
++}
++
++impl RecentFile {
++    pub(crate) fn new(abs_path: PathBuf, project_roots: &[PathBuf]) -> Self {
++        Self {
++            display: abs_path.compact().to_string_lossy().into_owned(),
++            project: project_name_for(&abs_path, project_roots),
++            abs_path,
++        }
++    }
++}
++
++/// The deepest root holding `abs_path`. A root equal to the file itself is a window opened on
++/// that file alone, which is not a project.
++pub(crate) fn project_name_for(abs_path: &Path, project_roots: &[PathBuf]) -> Option<String> {
++    project_roots
++        .iter()
++        .filter(|root| root.as_path() != abs_path && abs_path.starts_with(root))
++        .max_by_key(|root| root.components().count())
++        .and_then(|root| root.file_name())
++        .map(|name| name.to_string_lossy().into_owned())
++}
++
++/// The history, most recent first, minus files that no longer exist -- those are also
++/// dropped from the database, so a deleted file does not come back on the next open.
++pub(crate) async fn load_recent_files(
++    files_db: ZeoRecentFilesDb,
++    workspace_db: WorkspaceDb,
++    fs: Arc<dyn Fs>,
++    mut project_roots: Vec<PathBuf>,
++) -> Vec<RecentFile> {
++    let paths = files_db.recent_file_paths().log_err().unwrap_or_default();
++    if let Some(workspaces) = workspace_db
++        .recent_project_workspaces(fs.as_ref())
++        .await
++        .log_err()
++    {
++        project_roots.extend(
++            workspaces
++                .into_iter()
++                .filter(|recent| matches!(recent.location, SerializedWorkspaceLocation::Local))
++                .flat_map(|recent| recent.paths.paths().to_vec()),
++        );
++    }
++
++    let mut files = Vec::with_capacity(paths.len());
++    for path in paths {
++        let abs_path = PathBuf::from(&path);
++        match fs.metadata(&abs_path).await {
++            Ok(Some(metadata)) if !metadata.is_dir => {
++                files.push(RecentFile::new(abs_path, &project_roots));
++            }
++            Ok(_) => {
++                files_db.forget_file(path).await.log_err();
++            }
++            // Unreadable right now is not gone: keep the row, skip the entry.
++            Err(_) => {}
++        }
++    }
++    files
++}
++
++pub struct RecentFiles {
++    picker: Entity<Picker<RecentFilesDelegate>>,
++}
++
++impl RecentFiles {
++    fn toggle(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
++        let weak_workspace = cx.entity().downgrade();
++        let fs = workspace.app_state().fs.clone();
++        let open_roots = workspace
++            .visible_worktrees(cx)
++            .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
++            .collect::<Vec<_>>();
++        let files_db = ZeoRecentFilesDb::global(cx);
++        let workspace_db = WorkspaceDb::global(cx);
++
++        workspace.toggle_modal(window, cx, move |window, cx| {
++            let delegate = RecentFilesDelegate::new(cx.entity().downgrade(), weak_workspace);
++            let picker = cx.new(|cx| Picker::uniform_list(delegate, window, cx));
++            cx.spawn_in(window, async move |this, cx| {
++                let files = load_recent_files(files_db, workspace_db, fs, open_roots).await;
++                this.update_in(cx, |this, window, cx| {
++                    this.picker.update(cx, |picker, cx| {
++                        picker.delegate.files = files;
++                        picker.refresh(window, cx);
++                    });
++                })
++                .ok();
++            })
++            .detach();
++            Self { picker }
++        });
++    }
++}
++
++impl Render for RecentFiles {
++    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
++        v_flex()
++            .key_context("RecentFiles")
++            .w(rems(34.))
++            .child(self.picker.clone())
++    }
++}
++
++impl Focusable for RecentFiles {
++    fn focus_handle(&self, cx: &App) -> FocusHandle {
++        self.picker.focus_handle(cx)
++    }
++}
++
++impl EventEmitter<DismissEvent> for RecentFiles {}
++impl ModalView for RecentFiles {}
++
++pub struct RecentFilesDelegate {
++    recent_files: WeakEntity<RecentFiles>,
++    workspace: WeakEntity<Workspace>,
++    pub(crate) files: Vec<RecentFile>,
++    matches: Vec<StringMatch>,
++    selected_index: usize,
++}
++
++impl RecentFilesDelegate {
++    fn new(recent_files: WeakEntity<RecentFiles>, workspace: WeakEntity<Workspace>) -> Self {
++        Self {
++            recent_files,
++            workspace,
++            files: Vec::new(),
++            matches: Vec::new(),
++            selected_index: 0,
++        }
++    }
++
++    /// The files the list shows, in order.
++    #[cfg(test)]
++    pub(crate) fn shown_files(&self) -> Vec<&RecentFile> {
++        self.matches
++            .iter()
++            .filter_map(|mat| self.files.get(mat.candidate_id))
++            .collect()
++    }
++}
++
++impl PickerDelegate for RecentFilesDelegate {
++    type ListItem = ListItem;
++
++    fn name() -> &'static str {
++        "recent files"
++    }
++
++    fn placeholder_text(&self, _window: &mut Window, _cx: &mut App) -> Arc<str> {
++        "Search recent files…".into()
++    }
++
++    fn no_matches_text(&self, _window: &mut Window, _cx: &mut App) -> Option<SharedString> {
++        Some(if self.files.is_empty() {
++            "No recent files".into()
++        } else {
++            "No matches".into()
++        })
++    }
++
++    fn match_count(&self) -> usize {
++        self.matches.len()
++    }
++
++    fn selected_index(&self) -> usize {
++        self.selected_index
++    }
++
++    fn set_selected_index(
++        &mut self,
++        ix: usize,
++        _window: &mut Window,
++        _cx: &mut Context<Picker<Self>>,
++    ) {
++        self.selected_index = ix;
++    }
++
++    fn update_matches(
++        &mut self,
++        query: String,
++        _window: &mut Window,
++        _cx: &mut Context<Picker<Self>>,
++    ) -> Task<()> {
++        let query = query.trim();
++        self.matches = if query.is_empty() {
++            // No query keeps the history's order, most recent first.
++            self.files
++                .iter()
++                .enumerate()
++                .map(|(ix, file)| StringMatch {
++                    candidate_id: ix,
++                    score: 0.,
++                    positions: Vec::new(),
++                    string: file.display.clone().into(),
++                })
++                .collect()
++        } else {
++            let candidates = self
++                .files
++                .iter()
++                .enumerate()
++                .map(|(ix, file)| StringMatchCandidate::new(ix, &file.display))
++                .collect::<Vec<_>>();
++            match_strings(
++                &candidates,
++                query,
++                StringMatchOptions {
++                    max_results: MaxResults::limit::<100>(),
++                    ..Default::default()
++                },
++            )
++        };
++        self.selected_index = 0;
++        Task::ready(())
++    }
++
++    fn confirm(&mut self, _secondary: bool, window: &mut Window, cx: &mut Context<Picker<Self>>) {
++        let Some(file) = self
++            .matches
++            .get(self.selected_index)
++            .and_then(|mat| self.files.get(mat.candidate_id))
++        else {
++            return;
++        };
++        let abs_path = file.abs_path.clone();
++        if let Some(workspace) = self.workspace.upgrade() {
++            workspace.update(cx, |workspace, cx| {
++                // `OpenVisible::None`: a file outside the window's folders opens without
++                // becoming one of them, as a file opened from the file finder does.
++                workspace
++                    .open_abs_path(
++                        abs_path,
++                        OpenOptions {
++                            visible: Some(OpenVisible::None),
++                            ..Default::default()
++                        },
++                        window,
++                        cx,
++                    )
++                    .detach_and_log_err(cx);
++            });
++        }
++        self.dismissed(window, cx);
++    }
++
++    fn dismissed(&mut self, _window: &mut Window, cx: &mut Context<Picker<Self>>) {
++        self.recent_files
++            .update(cx, |_, cx| cx.emit(DismissEvent))
++            .ok();
++    }
++
++    fn render_match(
++        &self,
++        ix: usize,
++        selected: bool,
++        _window: &mut Window,
++        _cx: &mut Context<Picker<Self>>,
++    ) -> Option<Self::ListItem> {
++        let mat = self.matches.get(ix)?;
++        let file = self.files.get(mat.candidate_id)?;
++        let project = file
++            .project
++            .clone()
++            .map(SharedString::from)
++            .unwrap_or_else(|| "No project".into());
++        Some(
++            ListItem::new(ix)
++                .inset(true)
++                .spacing(ListItemSpacing::Sparse)
++                .toggle_state(selected)
++                .child(HighlightedLabel::new(
++                    file.display.clone(),
++                    mat.positions.clone(),
++                ))
++                .end_slot(
++                    Label::new(project)
++                        .size(LabelSize::Small)
++                        .color(Color::Muted),
++                ),
++        )
++    }
++}
++
++#[cfg(test)]
++#[path = "recent_files_tests.rs"]
++mod recent_files_tests;
+diff --git a/crates/recent_projects/src/recent_files_db.rs b/crates/recent_projects/src/recent_files_db.rs
+new file mode 100644
+index 0000000..825ce7e
+--- /dev/null
++++ b/crates/recent_projects/src/recent_files_db.rs
+@@ -0,0 +1,62 @@
++//! The history behind "Open Recent File" (Zeo next proposal §6.37, zed#38968).
++//!
++//! Zed keeps no cross-workspace history of opened files: `recent_navigation_history` is per
++//! workspace, has no timestamp and drops files outside a worktree on reload, and a workspace
++//! opened on a single file is skipped by the recent-projects query and garbage-collected after
++//! seven days. So the list lives in a table of its own, in a domain of its own -- appending to
++//! `WorkspaceDb`'s migrations would collide with upstream's next one (0048 does the same).
++//!
++//! `seq` rather than a timestamp orders the rows: `unixepoch()` has one-second resolution, and
++//! two files opened within a second would tie.
++
++use db::{
++    query,
++    sqlez::{domain::Domain, thread_safe_connection::ThreadSafeConnection},
++    sqlez_macros::sql,
++};
++
++/// How many files the history keeps; the oldest go first. The `DELETE` in
++/// `record_file` spells the same number, which keeps that batch to a single bound argument;
++/// a test pins the two together.
++#[cfg(test)]
++pub(crate) const RECENT_FILES_CAP: usize = 200;
++
++pub struct ZeoRecentFilesDb(ThreadSafeConnection);
++
++impl Domain for ZeoRecentFilesDb {
++    const NAME: &str = stringify!(ZeoRecentFilesDb);
++    const MIGRATIONS: &[&str] = &[sql!(
++        CREATE TABLE IF NOT EXISTS recent_files(
++            abs_path TEXT PRIMARY KEY NOT NULL,
++            seq INTEGER NOT NULL
++        ) STRICT;
++    )];
++}
++
++db::static_connection!(ZeoRecentFilesDb, []);
++
++impl ZeoRecentFilesDb {
++    // Moves `abs_path` to the top of the history, then trims it to `RECENT_FILES_CAP`.
++    query! {
++        pub(crate) async fn record_file(abs_path: String) -> Result<()> {
++            INSERT INTO recent_files(abs_path, seq)
++            VALUES ((?), (SELECT IFNULL(MAX(seq), 0) + 1 FROM recent_files))
++            ON CONFLICT(abs_path) DO UPDATE SET seq = excluded.seq;
++            DELETE FROM recent_files
++            WHERE seq <= (SELECT MAX(seq) FROM recent_files) - 200;
++        }
++    }
++
++    // Most recent first.
++    query! {
++        pub(crate) fn recent_file_paths() -> Result<Vec<String>> {
++            SELECT abs_path FROM recent_files ORDER BY seq DESC
++        }
++    }
++
++    query! {
++        pub(crate) async fn forget_file(abs_path: String) -> Result<()> {
++            DELETE FROM recent_files WHERE abs_path = (?)
++        }
++    }
++}
+diff --git a/crates/recent_projects/src/recent_files_tests.rs b/crates/recent_projects/src/recent_files_tests.rs
+new file mode 100644
+index 0000000..67a8dee
+--- /dev/null
++++ b/crates/recent_projects/src/recent_files_tests.rs
+@@ -0,0 +1,226 @@
++use std::{path::PathBuf, sync::Arc};
++
++use gpui::{TestAppContext, VisualTestContext};
++use serde_json::json;
++use workspace::{AppState, MultiWorkspace, OpenOptions, OpenVisible, Workspace, open_paths};
++
++use super::{RecentFiles, active_local_file, project_name_for};
++use crate::recent_files_db::{RECENT_FILES_CAP, ZeoRecentFilesDb};
++
++#[gpui::test]
++async fn the_history_lists_the_last_opened_file_first() {
++    let db = ZeoRecentFilesDb::open_test_db("the_history_lists_the_last_opened_file_first").await;
++    for path in ["/a.txt", "/b.txt", "/a.txt"] {
++        db.record_file(path.to_string()).await.unwrap();
++    }
++    assert_eq!(db.recent_file_paths().unwrap(), vec!["/a.txt", "/b.txt"]);
++}
++
++#[gpui::test]
++async fn the_history_keeps_only_the_newest_files() {
++    let db = ZeoRecentFilesDb::open_test_db("the_history_keeps_only_the_newest_files").await;
++    let recorded = RECENT_FILES_CAP + 5;
++    for ix in 0..recorded {
++        db.record_file(format!("/f{ix}")).await.unwrap();
++    }
++    let paths = db.recent_file_paths().unwrap();
++    assert_eq!(
++        paths.len(),
++        RECENT_FILES_CAP,
++        "the SQL cap and the constant agree"
++    );
++    assert_eq!(paths[0], format!("/f{}", recorded - 1));
++    assert!(
++        !paths.contains(&"/f4".to_string()),
++        "the oldest five are gone"
++    );
++    assert!(paths.contains(&"/f5".to_string()));
++}
++
++#[gpui::test]
++async fn a_forgotten_file_leaves_the_history() {
++    let db = ZeoRecentFilesDb::open_test_db("a_forgotten_file_leaves_the_history").await;
++    db.record_file("/a.txt".to_string()).await.unwrap();
++    db.record_file("/b.txt".to_string()).await.unwrap();
++    db.forget_file("/a.txt".to_string()).await.unwrap();
++    assert_eq!(db.recent_file_paths().unwrap(), vec!["/b.txt"]);
++}
++
++#[test]
++fn a_file_belongs_to_the_deepest_project_that_holds_it() {
++    let roots = [
++        PathBuf::from("/work"),
++        PathBuf::from("/work/app"),
++        PathBuf::from("/notes/todo.txt"),
++    ];
++    let project = |path: &str| project_name_for(&PathBuf::from(path), &roots);
++    assert_eq!(project("/work/app/src/main.rs").as_deref(), Some("app"));
++    assert_eq!(project("/work/readme.md").as_deref(), Some("work"));
++    assert_eq!(
++        project("/notes/todo.txt"),
++        None,
++        "a window opened on the file alone"
++    );
++    assert_eq!(project("/tmp/scratch.sh"), None);
++}
++
++fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
++    cx.update(|cx| {
++        let state = AppState::test(cx);
++        // Each test gets its own database, so histories do not leak between tests.
++        cx.set_global(db::AppDatabase::test_new());
++        crate::init(cx);
++        editor::init(cx);
++        state
++    })
++}
++
++/// A window on `/project`, with `/notes/todo.txt` outside it.
++async fn open_project_window(
++    cx: &mut TestAppContext,
++) -> (Arc<AppState>, gpui::Entity<Workspace>, VisualTestContext) {
++    let app_state = init_test(cx);
++    let fs = app_state.fs.as_fake();
++    fs.insert_tree("/project", json!({ "src": { "main.rs": "fn main() {}" } }))
++        .await;
++    fs.insert_tree("/notes", json!({ "todo.txt": "milk" }))
++        .await;
++    cx.update(|cx| {
++        open_paths(
++            &[PathBuf::from("/project")],
++            app_state.clone(),
++            OpenOptions::default(),
++            cx,
++        )
++    })
++    .await
++    .unwrap();
++    let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
++    cx.run_until_parked();
++    let workspace = multi_workspace
++        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
++        .unwrap();
++    let cx = VisualTestContext::from_window(multi_workspace.into(), cx);
++    (app_state, workspace, cx)
++}
++
++async fn open_file(workspace: &gpui::Entity<Workspace>, path: &str, cx: &mut VisualTestContext) {
++    workspace
++        .update_in(cx, |workspace, window, cx| {
++            workspace.open_abs_path(
++                PathBuf::from(path),
++                OpenOptions {
++                    visible: Some(OpenVisible::None),
++                    ..Default::default()
++                },
++                window,
++                cx,
++            )
++        })
++        .await
++        .unwrap();
++    cx.run_until_parked();
++}
++
++fn recorded_paths(cx: &mut VisualTestContext) -> Vec<String> {
++    cx.update(|_, cx| ZeoRecentFilesDb::global(cx).recent_file_paths().unwrap())
++}
++
++#[gpui::test]
++async fn opening_a_file_records_it_in_or_out_of_the_project(cx: &mut TestAppContext) {
++    let (_app_state, workspace, mut cx) = open_project_window(cx).await;
++    open_file(&workspace, "/project/src/main.rs", &mut cx).await;
++    open_file(&workspace, "/notes/todo.txt", &mut cx).await;
++    assert_eq!(
++        recorded_paths(&mut cx),
++        vec!["/notes/todo.txt", "/project/src/main.rs"]
++    );
++
++    // Back to a tab already recorded: it moves to the top.
++    open_file(&workspace, "/project/src/main.rs", &mut cx).await;
++    assert_eq!(
++        recorded_paths(&mut cx),
++        vec!["/project/src/main.rs", "/notes/todo.txt"]
++    );
++}
++
++#[gpui::test]
++async fn the_picker_lists_files_with_their_project_and_opens_one_here(cx: &mut TestAppContext) {
++    let (_app_state, workspace, mut cx) = open_project_window(cx).await;
++    let cx = &mut cx;
++    let db = cx.update(|_, cx| ZeoRecentFilesDb::global(cx));
++    for path in ["/project/src/main.rs", "/gone.txt", "/notes/todo.txt"] {
++        db.record_file(path.to_string()).await.unwrap();
++    }
++
++    workspace.update_in(cx, |workspace, window, cx| {
++        RecentFiles::toggle(workspace, window, cx);
++    });
++    cx.run_until_parked();
++
++    let modal = workspace
++        .read_with(cx, |workspace, cx| {
++            workspace.active_modal::<RecentFiles>(cx)
++        })
++        .expect("the picker is open");
++    let shown = |cx: &mut VisualTestContext| {
++        modal.read_with(cx, |modal, cx| {
++            modal
++                .picker
++                .read(cx)
++                .delegate
++                .shown_files()
++                .into_iter()
++                .map(|file| (file.display.clone(), file.project.clone()))
++                .collect::<Vec<_>>()
++        })
++    };
++    assert_eq!(
++        shown(cx),
++        vec![
++            ("/notes/todo.txt".to_string(), None),
++            (
++                "/project/src/main.rs".to_string(),
++                Some("project".to_string())
++            ),
++        ],
++        "most recent first; the deleted file is not listed"
++    );
++    assert!(
++        !db.recent_file_paths()
++            .unwrap()
++            .contains(&"/gone.txt".to_string()),
++        "a deleted file is dropped from the history too"
++    );
++
++    let picker = modal.read_with(cx, |modal, _| modal.picker.clone());
++    picker.update_in(cx, |picker, window, cx| {
++        picker.set_query("main", window, cx)
++    });
++    cx.run_until_parked();
++    assert_eq!(
++        shown(cx),
++        vec![(
++            "/project/src/main.rs".to_string(),
++            Some("project".to_string())
++        )]
++    );
++
++    picker.update_in(cx, |picker, window, cx| picker.set_query("", window, cx));
++    cx.run_until_parked();
++    cx.dispatch_action(menu::Confirm);
++    cx.run_until_parked();
++
++    assert_eq!(
++        workspace.read_with(cx, |workspace, cx| active_local_file(workspace, cx)),
++        Some(PathBuf::from("/notes/todo.txt")),
++        "the pick opens in this window"
++    );
++    assert_eq!(cx.update(|_, cx| cx.windows().len()), 1);
++    assert!(
++        workspace
++            .read_with(cx, |workspace, cx| workspace
++                .active_modal::<RecentFiles>(cx))
++            .is_none()
++    );
++}
+diff --git a/crates/recent_projects/src/recent_projects.rs b/crates/recent_projects/src/recent_projects.rs
+index f709442..ddeff9c 100644
+--- a/crates/recent_projects/src/recent_projects.rs
++++ b/crates/recent_projects/src/recent_projects.rs
+@@ -16,6 +16,10 @@ use fs::Fs;
+ #[cfg(target_os = "windows")]
+ mod wsl_picker;
+ 
++// Zeo next proposal §6.37: "Open Recent File".
++mod recent_files;
++mod recent_files_db;
++
+ use remote::RemoteConnectionOptions;
+ pub use remote_connection::{RemoteConnectionModal, connect, connect_with_modal};
+ pub use remote_connections::{navigate_to_positions, open_remote_project};
+@@ -207,6 +211,8 @@ pub(crate) fn default_open_in_new_window(cx: &App) -> bool {
+ }
+ 
+ pub fn init(cx: &mut App) {
++    recent_files::init(cx);
++
+     #[cfg(target_os = "windows")]
+     cx.on_action(|open_wsl: &zed_actions::wsl_actions::OpenFolderInWsl, cx| {
+         let create_new_window = open_wsl
+diff --git a/crates/zed/src/zed/app_menus.rs b/crates/zed/src/zed/app_menus.rs
+index 71eca2c..b6bcd37 100644
+--- a/crates/zed/src/zed/app_menus.rs
++++ b/crates/zed/src/zed/app_menus.rs
+@@ -132,7 +132,8 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
+                     },
+                     workspace::Open::default(),
+                 ),
+-                MenuItem::action("Open Recent…", zed_actions::OpenRecent::default()),
++                MenuItem::action("Open Recent Project…", zed_actions::OpenRecent::default()),
++                MenuItem::action("Open Recent File…", zed_actions::OpenRecentFile),
+                 MenuItem::action("Open Remote…", zed_actions::OpenRemote::default()),
+                 MenuItem::separator(),
+                 MenuItem::action("Add Folder to Project…", workspace::AddFolderToProject),
+diff --git a/crates/zed_actions/src/lib.rs b/crates/zed_actions/src/lib.rs
+index fee5ba1..2bdcaa2 100644
+--- a/crates/zed_actions/src/lib.rs
++++ b/crates/zed_actions/src/lib.rs
+@@ -719,6 +719,12 @@ pub struct OpenRecent {
+     pub create_new_window: Option<bool>,
+ }
+ 
++/// Opens the recent files interface: files opened lately, in any window, most recent first.
++#[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
++#[action(namespace = projects)]
++#[serde(deny_unknown_fields)]
++pub struct OpenRecentFile;
++
+ /// Creates a project from a selected template.
+ #[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
+ #[action(namespace = projects)]

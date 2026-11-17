@@ -34,14 +34,23 @@ a real MessageEditor (fence closing + undo, a closing fence left alone,
 block rows and their stripe, cleared when the text goes). Red seen with
 the module registered but not wired: the 3 editor tests failed on the
 missing highlight and the missing closing fence.
+
+Zeo next proposal §6.39 (ask 63, 2026-11-16): a sent message keeps the
+block look. It is a read-only MessageEditor filled by set_source_message
+and never typed into, so the `Edited` path above never ran for it and the
+look vanished once the message was sent. set_source_message now applies
+it after setting the text. Test a_sent_message_keeps_the_block_look; Red
+seen with the call removed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  crates/agent_ui/src/agent_ui.rs              |   3 +-
- crates/agent_ui/src/composer_blocks.rs       | 174 +++++++++++++++
- crates/agent_ui/src/composer_blocks_tests.rs | 216 +++++++++++++++++++
- crates/agent_ui/src/message_editor.rs        |  11 +
- crates/editor/src/editor.rs                  |  24 +++
- crates/editor/src/element.rs                 |  13 ++
- 6 files changed, 440 insertions(+), 1 deletion(-)
+ crates/agent_ui/src/composer_blocks.rs       | 174 ++++++++++++++
+ crates/agent_ui/src/composer_blocks_tests.rs | 237 +++++++++++++++++++
+ crates/agent_ui/src/message_editor.rs        |  25 +-
+ crates/editor/src/editor.rs                  |  24 ++
+ crates/editor/src/element.rs                 |  13 +
+ 6 files changed, 474 insertions(+), 2 deletions(-)
  create mode 100644 crates/agent_ui/src/composer_blocks.rs
  create mode 100644 crates/agent_ui/src/composer_blocks_tests.rs
 
@@ -251,10 +260,10 @@ index 0000000..e4453ac
 +mod tests;
 diff --git a/crates/agent_ui/src/composer_blocks_tests.rs b/crates/agent_ui/src/composer_blocks_tests.rs
 new file mode 100644
-index 0000000..36476fa
+index 0000000..2b214e4
 --- /dev/null
 +++ b/crates/agent_ui/src/composer_blocks_tests.rs
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,237 @@
 +// Zeo next proposal §6.12 (ask 11): code blocks and quotes in the agent composer.
 +// Filter: `composer_blocks`.
 +
@@ -275,6 +284,7 @@ index 0000000..36476fa
 +use super::*;
 +use crate::conversation_view::tests::init_test;
 +use crate::message_editor::MessageEditor;
++use agent_client_protocol::v2::schema as acp_v2;
 +
 +fn rows(code: &[Range<u32>], quote: &[Range<u32>]) -> ComposerBlockRows {
 +    ComposerBlockRows {
@@ -471,8 +481,28 @@ index 0000000..36476fa
 +    assert!(highlighted::<ComposerQuote>(&editor, cx).is_empty());
 +    assert!(highlighted::<ComposerCodeBlock>(&editor, cx).is_empty());
 +}
++
++/// Zeo next §6.39 (ask 63): a sent message is a read-only editor filled through
++/// `set_source_message`, never typed into, and keeps the block look the composer showed.
++#[gpui::test]
++async fn a_sent_message_keeps_the_block_look(cx: &mut TestAppContext) {
++    let (message_editor, editor, cx) = composer(cx).await;
++    message_editor.update_in(cx, |message_editor, window, cx| {
++        message_editor.set_read_only(true, cx);
++        message_editor.set_source_message(
++            vec![acp_v2::ContentBlock::Text(acp_v2::TextContent::new(
++                "> quoted\nplain\n```\nx\n```",
++            ))],
++            window,
++            cx,
++        );
++    });
++    cx.run_until_parked();
++    assert_eq!(highlighted::<ComposerQuote>(&editor, cx), vec![0..0]);
++    assert_eq!(highlighted::<ComposerCodeBlock>(&editor, cx), vec![2..4]);
++}
 diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message_editor.rs
-index 7fe3daa..22eec47 100644
+index 7fe3daa..40f00ae 100644
 --- a/crates/agent_ui/src/message_editor.rs
 +++ b/crates/agent_ui/src/message_editor.rs
 @@ -602,11 +602,22 @@ impl MessageEditor {
@@ -498,6 +528,29 @@ index 7fe3daa..22eec47 100644
                      editor.update(cx, |editor, cx| {
                          let snapshot = editor.snapshot(window, cx);
                          this.mention_set
+@@ -1840,9 +1851,21 @@ impl MessageEditor {
+             .all(acp_thread::content::can_convert_to_v1)
+         {
+             self.set_message(source_blocks, window, cx);
+-            return;
++        } else {
++            self.set_unsupported_source_message(source_blocks, window, cx);
+         }
++        // Zeo next §6.39: a sent message is a read-only editor filled here, never typed into,
++        // so the block look `Edited` gives the composer has to be applied once it is set.
++        self.editor
++            .update(cx, crate::composer_blocks::refresh_composer_blocks);
++    }
+ 
++    fn set_unsupported_source_message(
++        &mut self,
++        source_blocks: Vec<acp_v2::ContentBlock>,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
+         let mut visible = Vec::new();
+         for block in source_blocks {
+             if acp_thread::content::can_convert_to_v1(&block)
 diff --git a/crates/editor/src/editor.rs b/crates/editor/src/editor.rs
 index 22a0f0a..3b7a379 100644
 --- a/crates/editor/src/editor.rs

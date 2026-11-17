@@ -1,0 +1,1715 @@
+From c2e5b7131743465b789e446ca7095a0256388b04 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 16 Nov 2026 17:20:31 -0300
+Subject: [PATCH] agent_ui, sidebar: thread lists belong to a project or are
+ global
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.49 (ask 73), the same two scopes pins have had since
+§6.5. While a project is active, the Lists view shows that project's lists
+first, under "This Project", then the global lists under "Global"; another
+project's lists are hidden until it is active, as 0106 hides its pins.
+Without a project list to show, the view keeps its single, unheaded run of
+lists, so nothing changes for anyone who never makes one.
+
+"New List" makes a list of the active project, as a plain "Pin" pins to it,
+and "New Global List" sits beside it while a project is active. "New List…"
+from a thread's menu makes the list in the thread's project when that is
+the active one (so the list is shown and the filing allowed), global
+otherwise. "Move to List" offers the thread's own project's lists and the
+global ones, never another project's. A header's menu gains "Make Global"
+on a project list and "Move to This Project" on a global list whose every
+thread belongs to the active project, so a move never strands a thread in a
+list its project cannot show. Move Up/Down step past lists of another scope,
+which the view does not show beside this one.
+
+Storage: a domain of its own, ThreadListScopeDb with
+thread_list_scope(list_id PRIMARY KEY, project_key), for the reason
+pin_scope gives -- 0048's migration list is appended to by 0063 under a USE
+flag. A row means "this list belongs to that project"; no row means global,
+so every existing list stays global and nothing migrates. Only
+ThreadOrganizationStore changes a scope, because it also rewrites the
+list's name_key: a global list keeps its lowercase name as the key, as
+before; a project list's key is prefixed with its project, so the column's
+UNIQUE holds per project and two projects can each have a "Bugs" list,
+beside a global one. The store refuses, with ids only in the error, a
+filing in another project's list (ListOfAnotherProject) and a move to a
+project of a list holding another project's thread (ListHoldsOtherProjects).
+Without the scope store every list is global, as before.
+
+Not done: proposal §6.49 also says a thread that changes project leaves a
+project list it no longer belongs to. A thread's project is derived from its
+worktree paths in ThreadMetadataStore, which this store has no hook on; the
+filing stays, visible with the thread's project label, and "Remove from
+List" clears it.
+
+The new methods live in thread_organization/list_scope.rs as an impl block,
+so thread_organization.rs, already past the 500-line rule, grows only by
+the hooks (errors, scoped name check and key, the filing guard, forgetting a
+deleted list's scope).
+
+Tests: thread_organization/list_scope_tests.rs (store: scope across a
+restart, names per scope with the UNIQUE column on disk, the filing guard,
+the move-to-project guard, Make Global against a taken name, forget on
+delete, no scope store), lists_view/list_scopes_tests.rs (which lists show
+with A, B and no project active; Move Up/Down neighbours) and
+sidebar_lists_tests/scopes.rs (the drawn sections). Three tests of 0069
+now create their fixture lists in the active project, where "New List"
+puts a typed one. Red seen: with other projects' lists shown, the filing
+guard open and the key unscoped, exactly the seven tests on those rules
+failed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/agent_ui/src/thread_organization.rs    | 103 ++++--
+ .../src/thread_organization/list_scope.rs     | 315 ++++++++++++++++++
+ .../thread_organization/list_scope_tests.rs   | 264 +++++++++++++++
+ crates/sidebar/src/lists_view.rs              |  55 ++-
+ crates/sidebar/src/lists_view/list_scopes.rs  | 144 ++++++++
+ .../src/lists_view/list_scopes_tests.rs       |  76 +++++
+ crates/sidebar/src/lists_view/lists_manage.rs |  94 ++++--
+ crates/sidebar/src/lists_view/lists_render.rs |  48 ++-
+ crates/sidebar/src/lists_view/move_to_list.rs |  16 +-
+ crates/sidebar/src/sidebar.rs                 |   3 +
+ crates/sidebar/src/sidebar_lists_tests.rs     |   3 +
+ .../sidebar/src/sidebar_lists_tests/manage.rs |  11 +-
+ .../sidebar/src/sidebar_lists_tests/scopes.rs |  64 ++++
+ .../src/sidebar_lists_tests/support.rs        |  24 ++
+ 14 files changed, 1141 insertions(+), 79 deletions(-)
+ create mode 100644 crates/agent_ui/src/thread_organization/list_scope.rs
+ create mode 100644 crates/agent_ui/src/thread_organization/list_scope_tests.rs
+ create mode 100644 crates/sidebar/src/lists_view/list_scopes.rs
+ create mode 100644 crates/sidebar/src/lists_view/list_scopes_tests.rs
+ create mode 100644 crates/sidebar/src/sidebar_lists_tests/scopes.rs
+
+diff --git a/crates/agent_ui/src/thread_organization.rs b/crates/agent_ui/src/thread_organization.rs
+index 1d5eb6f..decdd55 100644
+--- a/crates/agent_ui/src/thread_organization.rs
++++ b/crates/agent_ui/src/thread_organization.rs
+@@ -26,12 +26,14 @@ use project::ProjectGroupKey;
+ use remote::{RemoteConnectionIdentity, RemoteConnectionOptions};
+ 
+ use crate::thread_metadata_store::{ThreadId, ThreadMetadataStore};
++use list_scope::{forget_list_scope, list_name_key, list_scope_of};
+ 
+ const MAX_TAG_CHARS: usize = 32;
+ const MAX_LIST_NAME_CHARS: usize = 64;
+ const MAX_TAGS_PER_THREAD: usize = 20;
+ 
+ pub mod description;
++pub mod list_scope;
+ pub mod pin_scope;
+ 
+ struct ThreadOrganizationDb(ThreadSafeConnection);
+@@ -213,15 +215,38 @@ fn host_identity(options: &RemoteConnectionOptions) -> serde_json::Value {
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub enum OrganizeError {
+-    Draft { thread_id: ThreadId },
+-    UnknownThread { thread_id: ThreadId },
+-    UnknownList { list_id: ListId },
++    Draft {
++        thread_id: ThreadId,
++    },
++    UnknownThread {
++        thread_id: ThreadId,
++    },
++    UnknownList {
++        list_id: ListId,
++    },
+     InvalidListName,
+-    DuplicateListName { list_id: ListId },
++    DuplicateListName {
++        list_id: ListId,
++    },
+     InvalidTag,
+-    TooManyTags { thread_id: ThreadId },
+-    AlreadyHasParent { thread_id: ThreadId },
+-    SelfParent { thread_id: ThreadId },
++    TooManyTags {
++        thread_id: ThreadId,
++    },
++    AlreadyHasParent {
++        thread_id: ThreadId,
++    },
++    SelfParent {
++        thread_id: ThreadId,
++    },
++    /// §6.49: a thread is filed only in a global list or in a list of its own project.
++    ListOfAnotherProject {
++        list_id: ListId,
++        thread_id: ThreadId,
++    },
++    /// §6.49: a list moves to a project only when every thread in it belongs to that project.
++    ListHoldsOtherProjects {
++        list_id: ListId,
++    },
+ }
+ 
+ // Names ids only: tag and list text is the user's and never reaches an error or a log line.
+@@ -265,6 +290,14 @@ impl fmt::Display for OrganizeError {
+                 "thread {} cannot be its own parent",
+                 thread_id.to_key_string()
+             ),
++            OrganizeError::ListOfAnotherProject { list_id, thread_id } => write!(
++                formatter,
++                "list {list_id} belongs to another project than thread {}",
++                thread_id.to_key_string()
++            ),
++            OrganizeError::ListHoldsOtherProjects { list_id } => {
++                write!(formatter, "list {list_id} holds threads of another project")
++            }
+         }
+     }
+ }
+@@ -312,6 +345,7 @@ pub fn init(cx: &mut App) {
+     let store = cx.new(|cx| ThreadOrganizationStore::new(db, cx));
+     cx.set_global(GlobalThreadOrganizationStore(store));
+     description::init(cx);
++    list_scope::init(cx);
+     pin_scope::init(cx);
+ }
+ 
+@@ -670,22 +704,13 @@ impl ThreadOrganizationStore {
+         Ok(())
+     }
+ 
++    /// A global list; `create_list_in` makes a project's (§6.49).
+     pub fn create_list(
+         &mut self,
+         name: &str,
+         cx: &mut Context<Self>,
+     ) -> Result<ListId, OrganizeError> {
+-        let (key, display) = normalize_list_name(name)?;
+-        if let Some(existing) = self.list_with_key(&key) {
+-            return Err(OrganizeError::DuplicateListName { list_id: existing });
+-        }
+-        let id = ListId(self.next_list_id);
+-        self.next_list_id += 1;
+-        self.lists.push(ThreadList { id, name: display });
+-        let mut write = DbWrite::new("create_list");
+-        self.write_list_positions(&mut write);
+-        self.commit(write, cx);
+-        Ok(id)
++        self.create_list_in(name, None, cx)
+     }
+ 
+     pub fn rename_list(
+@@ -696,8 +721,9 @@ impl ThreadOrganizationStore {
+     ) -> Result<(), OrganizeError> {
+         let index = self.list_index(list)?;
+         let (key, display) = normalize_list_name(name)?;
++        let scope = list_scope_of(list, cx);
+         if let Some(existing) = self
+-            .list_with_key(&key)
++            .list_with_key(&key, scope.as_ref(), cx)
+             .filter(|existing| *existing != list)
+         {
+             return Err(OrganizeError::DuplicateListName { list_id: existing });
+@@ -707,7 +733,7 @@ impl ThreadOrganizationStore {
+         }
+         self.lists[index].name = display;
+         let mut write = DbWrite::new("rename_list");
+-        self.write_list_positions(&mut write);
++        self.write_list_positions(&mut write, cx);
+         self.commit(write, cx);
+         Ok(())
+     }
+@@ -726,7 +752,7 @@ impl ThreadOrganizationStore {
+             return Ok(());
+         }
+         let mut write = DbWrite::new("move_list");
+-        self.write_list_positions(&mut write);
++        self.write_list_positions(&mut write, cx);
+         self.commit(write, cx);
+         Ok(())
+     }
+@@ -748,7 +774,8 @@ impl ThreadOrganizationStore {
+         // Also reaches rows this build did not load.
+         write.changes.push(Change::ClearList(list));
+         write.changes.push(Change::DeleteList(list));
+-        self.write_list_positions(&mut write);
++        self.write_list_positions(&mut write, cx);
++        forget_list_scope(list, cx);
+         self.commit(write, cx);
+         Ok(())
+     }
+@@ -762,6 +789,7 @@ impl ThreadOrganizationStore {
+         admit(thread_id, cx)?;
+         if let Some(list) = list {
+             self.list_index(list)?;
++            self.admit_to_list_scope(thread_id, list, cx)?;
+         }
+         if self
+             .threads
+@@ -1022,21 +1050,34 @@ impl ThreadOrganizationStore {
+             .ok_or(OrganizeError::UnknownList { list_id: list })
+     }
+ 
+-    fn list_with_key(&self, key: &SharedString) -> Option<ListId> {
++    /// The list named `key` in `scope`: a name is unique among the global lists and among each
++    /// project's own (§6.49), so two projects may each have a "Bugs" list.
++    fn list_with_key(
++        &self,
++        key: &SharedString,
++        scope: Option<&ProjectKey>,
++        cx: &App,
++    ) -> Option<ListId> {
+         // A stored name is already trimmed, so its key is its lowercase form.
+         self.lists
+             .iter()
+-            .find(|list| list.name.to_lowercase() == key.as_ref())
++            .find(|list| {
++                list.name.to_lowercase() == key.as_ref()
++                    && list_scope_of(list.id, cx).as_ref() == scope
++            })
+             .map(|list| list.id)
+     }
+ 
+-    fn write_list_positions(&self, write: &mut DbWrite) {
++    fn write_list_positions(&self, write: &mut DbWrite, cx: &App) {
+         // Rewritten whole: a list keeps its id and name, and positions stay dense.
+         write.changes.push(Change::ListPositions(
+             self.lists
+                 .iter()
+                 .enumerate()
+-                .map(|(position, list)| (list.id, list.name.clone(), position as u32))
++                .map(|(position, list)| {
++                    let key = list_name_key(list_scope_of(list.id, cx).as_ref(), &list.name);
++                    (list.id, list.name.clone(), key, position as u32)
++                })
+                 .collect(),
+         ));
+     }
+@@ -1083,7 +1124,8 @@ enum Change {
+     ThreadTag(ThreadId, SharedString, bool),
+     Tag(SharedString, Option<SharedString>),
+     DeleteList(ListId),
+-    ListPositions(Vec<(ListId, SharedString, u32)>),
++    /// `(id, name, name_key, position)`; the key carries a project list's project (§6.49).
++    ListPositions(Vec<(ListId, SharedString, String, u32)>),
+     ProjectMode(ProjectKey, bool),
+ }
+ 
+@@ -1119,7 +1161,7 @@ impl DbWrite {
+                     lists.insert(*list_id);
+                 }
+                 Change::ListPositions(positions) => {
+-                    lists.extend(positions.iter().map(|(list_id, _, _)| *list_id));
++                    lists.extend(positions.iter().map(|(list_id, ..)| *list_id));
+                 }
+                 Change::Tag(..) | Change::ProjectMode(..) | Change::ClearManual(..) => {}
+             }
+@@ -1236,15 +1278,14 @@ fn apply_change(connection: &db::sqlez::connection::Connection, change: Change)
+             // key starts with a space, which a trimmed name never does.
+             let kept = positions
+                 .iter()
+-                .map(|(list_id, _, _)| list_id.0.to_string())
++                .map(|(list_id, ..)| list_id.0.to_string())
+                 .collect::<Vec<_>>()
+                 .join(", ");
+             connection.exec(&format!(
+                 "DELETE FROM thread_lists WHERE id NOT IN ({kept})"
+             ))?()?;
+             connection.exec("UPDATE thread_lists SET name_key = ' ' || id")?()?;
+-            for (list_id, name, position) in positions {
+-                let key = name.to_lowercase();
++            for (list_id, name, key, position) in positions {
+                 connection.exec_bound::<(i64, &str, String, i64)>(sql!(
+                     INSERT INTO thread_lists(id, name, name_key, position) VALUES (?, ?, ?, ?)
+                     ON CONFLICT(id) DO UPDATE SET
+diff --git a/crates/agent_ui/src/thread_organization/list_scope.rs b/crates/agent_ui/src/thread_organization/list_scope.rs
+new file mode 100644
+index 0000000..7bbe54e
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/list_scope.rs
+@@ -0,0 +1,315 @@
++//! Zeo next proposal §6.49 (ask 73): a list is global or belongs to a project, as a pin is
++//! (§6.5). A project's lists are shown while that project is the active one, above the global
++//! lists; another project's are hidden until it is.
++//!
++//! The list itself -- its name, order and members -- stays where `0048` keeps it. Only the scope
++//! lives here, in a domain of its own for the reason `pin_scope` gives: `0048`'s migration list is
++//! appended to by `0063` under a USE flag, so a step appended by an earlier patch would sit at a
++//! different index with and without the flag. A row in `thread_list_scope` means "this list
++//! belongs to that project"; no row means global, so every list made before this patch stays
++//! global and nothing migrates.
++//!
++//! Only `ThreadOrganizationStore` writes a scope: it also rewrites the list's `name_key`, which
++//! carries the project so two projects can each have a list of the same name.
++
++use std::collections::HashMap;
++use std::sync::atomic::Ordering;
++
++use anyhow::{Context as _, Result};
++use db::{
++    sqlez::{domain::Domain, thread_safe_connection::ThreadSafeConnection},
++    sqlez_macros::sql,
++};
++use futures::{StreamExt as _, channel::mpsc};
++use gpui::{App, AppContext as _, Context, Entity, Global, Task};
++use project::ProjectGroupKey;
++
++use super::{
++    DbWrite, ListId, OrganizeError, ProjectKey, ThreadList, ThreadOrganizationStore,
++    normalize_list_name,
++};
++use crate::thread_metadata_store::{ThreadId, ThreadMetadataStore};
++
++pub(crate) struct ThreadListScopeDb(ThreadSafeConnection);
++
++static LIST_SCOPE_MIGRATIONS: [&str; 1] = ["CREATE TABLE thread_list_scope(
++    list_id INTEGER PRIMARY KEY NOT NULL,
++    project_key TEXT NOT NULL
++) STRICT;"];
++
++impl Domain for ThreadListScopeDb {
++    const NAME: &str = stringify!(ThreadListScopeDb);
++    const MIGRATIONS: &[&str] = &LIST_SCOPE_MIGRATIONS;
++}
++
++db::static_connection!(ThreadListScopeDb, []);
++
++pub(super) struct GlobalThreadListScopeStore(pub(super) Entity<ThreadListScopeStore>);
++
++impl Global for GlobalThreadListScopeStore {}
++
++pub fn init(cx: &mut App) {
++    let db = ThreadListScopeDb::global(cx);
++    let store = cx.new(|cx| ThreadListScopeStore::new(db, cx));
++    cx.set_global(GlobalThreadListScopeStore(store));
++}
++
++enum ListScopeWrite {
++    Project(ListId, ProjectKey),
++    Global(ListId),
++}
++
++pub struct ThreadListScopeStore {
++    projects: HashMap<ListId, ProjectKey>,
++    /// `None` when loading failed or the database is the in-memory fallback: the session's
++    /// scopes stay in memory.
++    writes: Option<mpsc::UnboundedSender<ListScopeWrite>>,
++    _writer: Task<()>,
++}
++
++impl ThreadListScopeStore {
++    pub fn global(cx: &App) -> Entity<Self> {
++        cx.global::<GlobalThreadListScopeStore>().0.clone()
++    }
++
++    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
++        cx.try_global::<GlobalThreadListScopeStore>()
++            .map(|global| global.0.clone())
++    }
++
++    fn new(db: ThreadListScopeDb, cx: &mut Context<Self>) -> Self {
++        let on_fallback = db::ALL_FILE_DB_FAILED.load(Ordering::Acquire);
++        Self::with_fallback_flag(db, on_fallback, cx)
++    }
++
++    pub(super) fn with_fallback_flag(
++        db: ThreadListScopeDb,
++        on_fallback: bool,
++        cx: &mut Context<Self>,
++    ) -> Self {
++        let mut store = Self {
++            projects: HashMap::default(),
++            writes: None,
++            _writer: Task::ready(()),
++        };
++        if on_fallback {
++            log::warn!("thread_list_scope: database unavailable, list scopes will not persist");
++        }
++        match load(&db) {
++            Ok(projects) => store.projects = projects,
++            Err(error) => {
++                log::warn!(
++                    "thread_list_scope: loading failed, list scopes will not persist this \
++                     session: {error:#}"
++                );
++                return store;
++            }
++        }
++        let (writes, mut queue) = mpsc::unbounded::<ListScopeWrite>();
++        store.writes = Some(writes);
++        store._writer = cx.background_spawn(async move {
++            while let Some(write) = queue.next().await {
++                let (operation, list_id) = match &write {
++                    ListScopeWrite::Project(list_id, _) => ("project", *list_id),
++                    ListScopeWrite::Global(list_id) => ("global", *list_id),
++                };
++                if let Err(error) = db.write(move |connection| apply(connection, write)).await {
++                    log::error!(
++                        "thread_list_scope: setting {operation} failed for list {list_id}: \
++                         {error:#}"
++                    );
++                }
++            }
++        });
++        store
++    }
++
++    /// The project `list` belongs to, or `None` for a global list.
++    pub fn project_of(&self, list: ListId) -> Option<&ProjectKey> {
++        self.projects.get(&list)
++    }
++
++    /// Scopes `list` to `project`, or back to global for `None`. Only the organization store
++    /// calls this, after checking the name and the members against the new scope.
++    pub(super) fn set_scope(
++        &mut self,
++        list: ListId,
++        project: Option<ProjectKey>,
++        cx: &mut Context<Self>,
++    ) {
++        let write = match project {
++            Some(project) => {
++                if self.projects.get(&list) == Some(&project) {
++                    return;
++                }
++                self.projects.insert(list, project.clone());
++                ListScopeWrite::Project(list, project)
++            }
++            None => {
++                if self.projects.remove(&list).is_none() {
++                    return;
++                }
++                ListScopeWrite::Global(list)
++            }
++        };
++        if let Some(writes) = &self.writes
++            && let Err(error) = writes.unbounded_send(write)
++        {
++            log::error!("thread_list_scope: the writer stopped, a change was not saved: {error}");
++        }
++        cx.notify();
++    }
++}
++
++/// The project `list` belongs to; `None` for a global list, and for every list without the
++/// scope store, where lists are global as they were before §6.49.
++pub(super) fn list_scope_of(list: ListId, cx: &App) -> Option<ProjectKey> {
++    ThreadListScopeStore::try_global(cx).and_then(|store| store.read(cx).project_of(list).cloned())
++}
++
++/// The `name_key` `thread_lists` stores: the lowercase name for a global list, as before §6.49;
++/// prefixed with the project for a project list, so the column's `UNIQUE` holds per project. The
++/// project key is JSON and never contains the unit separator, and never starts with the space
++/// the placeholder keys of a rewrite start with.
++pub(super) fn list_name_key(scope: Option<&ProjectKey>, name: &str) -> String {
++    let key = name.to_lowercase();
++    match scope {
++        None => key,
++        Some(project) => format!("{}\u{1f}{key}", project.0),
++    }
++}
++
++/// A deleted list's scope goes with it.
++pub(super) fn forget_list_scope(list: ListId, cx: &mut App) {
++    if let Some(store) = ThreadListScopeStore::try_global(cx) {
++        store.update(cx, |store, cx| store.set_scope(list, None, cx));
++    }
++}
++
++/// The project of a saved thread, derived from the thread alone, as the sidebar groups it.
++pub fn thread_project(thread_id: ThreadId, cx: &App) -> Option<ProjectKey> {
++    let metadata = ThreadMetadataStore::try_global(cx)?;
++    let metadata = metadata.read(cx);
++    let entry = metadata.entry(thread_id)?;
++    Some(ProjectKey::from_group(
++        &ProjectGroupKey::from_worktree_paths(
++            &entry.worktree_paths,
++            entry.remote_connection.clone(),
++        ),
++    ))
++}
++
++impl ThreadOrganizationStore {
++    /// The project `list` belongs to, or `None` for a global list.
++    pub fn list_project(&self, list: ListId, cx: &App) -> Option<ProjectKey> {
++        list_scope_of(list, cx)
++    }
++
++    /// A new list in `project`, or a global one for `None`. Without the scope store every list is
++    /// global, so `project` is dropped rather than refused.
++    pub fn create_list_in(
++        &mut self,
++        name: &str,
++        project: Option<ProjectKey>,
++        cx: &mut Context<Self>,
++    ) -> Result<ListId, OrganizeError> {
++        let scopes = ThreadListScopeStore::try_global(cx);
++        let project = project.filter(|_| scopes.is_some());
++        let (key, display) = normalize_list_name(name)?;
++        if let Some(existing) = self.list_with_key(&key, project.as_ref(), cx) {
++            return Err(OrganizeError::DuplicateListName { list_id: existing });
++        }
++        let id = ListId(self.next_list_id);
++        self.next_list_id += 1;
++        self.lists.push(ThreadList { id, name: display });
++        // Before the positions are written: the list's `name_key` carries its scope.
++        if let (Some(scopes), Some(project)) = (scopes, project) {
++            scopes.update(cx, |scopes, cx| scopes.set_scope(id, Some(project), cx));
++        }
++        let mut write = DbWrite::new("create_list");
++        self.write_list_positions(&mut write, cx);
++        self.commit(write, cx);
++        Ok(id)
++    }
++
++    /// "Make Global" (`None`) and "Move to This Project" (`Some`). A list moves to a project only
++    /// when every thread in it belongs to that project, so no thread is left in a list its
++    /// project cannot show; and the name must be free in the new scope.
++    pub fn set_list_scope(
++        &mut self,
++        list: ListId,
++        project: Option<ProjectKey>,
++        cx: &mut Context<Self>,
++    ) -> Result<(), OrganizeError> {
++        let index = self.list_index(list)?;
++        let Some(scopes) = ThreadListScopeStore::try_global(cx) else {
++            return Ok(());
++        };
++        if list_scope_of(list, cx) == project {
++            return Ok(());
++        }
++        if let Some(project) = &project
++            && self
++                .threads_in_list(list)
++                .into_iter()
++                .any(|thread_id| thread_project(thread_id, cx).as_ref() != Some(project))
++        {
++            return Err(OrganizeError::ListHoldsOtherProjects { list_id: list });
++        }
++        let key = self.lists[index].name.to_lowercase().into();
++        if let Some(existing) = self.list_with_key(&key, project.as_ref(), cx) {
++            return Err(OrganizeError::DuplicateListName { list_id: existing });
++        }
++        scopes.update(cx, |scopes, cx| scopes.set_scope(list, project, cx));
++        let mut write = DbWrite::new("set_list_scope");
++        self.write_list_positions(&mut write, cx);
++        self.commit(write, cx);
++        Ok(())
++    }
++
++    /// A thread is filed in a global list, or in a list of its own project.
++    pub(super) fn admit_to_list_scope(
++        &self,
++        thread_id: ThreadId,
++        list: ListId,
++        cx: &App,
++    ) -> Result<(), OrganizeError> {
++        match list_scope_of(list, cx) {
++            None => Ok(()),
++            Some(project) if thread_project(thread_id, cx).as_ref() == Some(&project) => Ok(()),
++            Some(_) => Err(OrganizeError::ListOfAnotherProject {
++                list_id: list,
++                thread_id,
++            }),
++        }
++    }
++}
++
++fn apply(connection: &db::sqlez::connection::Connection, write: ListScopeWrite) -> Result<()> {
++    match write {
++        ListScopeWrite::Project(list_id, project) => {
++            connection.exec_bound::<(i64, String)>(sql!(
++                INSERT INTO thread_list_scope(list_id, project_key) VALUES (?, ?)
++                ON CONFLICT(list_id) DO UPDATE SET project_key = excluded.project_key
++            ))?((list_id.0, project.0.to_string()))
++        }
++        ListScopeWrite::Global(list_id) => connection.exec_bound::<i64>(sql!(
++            DELETE FROM thread_list_scope WHERE list_id = ?
++        ))?(list_id.0),
++    }
++}
++
++fn load(db: &ThreadListScopeDb) -> Result<HashMap<ListId, ProjectKey>> {
++    let rows = db.select::<(i64, String)>(sql!(
++        SELECT list_id, project_key FROM thread_list_scope
++    ))?()
++    .context("reading thread_list_scope")?;
++    Ok(rows
++        .into_iter()
++        .map(|(list_id, project)| (ListId(list_id), ProjectKey(project.into())))
++        .collect())
++}
++
++#[cfg(test)]
++#[path = "list_scope_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/thread_organization/list_scope_tests.rs b/crates/agent_ui/src/thread_organization/list_scope_tests.rs
+new file mode 100644
+index 0000000..047b35f
+--- /dev/null
++++ b/crates/agent_ui/src/thread_organization/list_scope_tests.rs
+@@ -0,0 +1,264 @@
++// Zeo next proposal §6.49 (ask 73): a list's scope, global or a project's. Filter:
++// `thread_organization::list_scope::tests`.
++
++use db::sqlez::connection::Connection;
++use gpui::{Entity, TestAppContext};
++
++use super::super::test_helpers::{
++    PROJECT_A, PROJECT_B, count, in_list, init, list_names, open_db, open_store, project, restart,
++    thread_in,
++};
++use super::super::{ThreadOrganizationDb, ThreadOrganizationStore};
++use super::*;
++
++/// The scope store over its own test database, installed as the global the organization store
++/// reads.
++async fn install_scopes(name: &'static str, cx: &mut TestAppContext) -> ThreadListScopeDb {
++    let db = ThreadListScopeDb::open_test_db(name).await;
++    open_scopes(&db, cx);
++    db
++}
++
++fn open_scopes(db: &ThreadListScopeDb, cx: &mut TestAppContext) {
++    let db = db.clone();
++    let store = cx.new(|cx| ThreadListScopeStore::with_fallback_flag(db, false, cx));
++    cx.update(|cx| cx.set_global(GlobalThreadListScopeStore(store)));
++    cx.run_until_parked();
++}
++
++/// A restart of both stores: each loads its own database again.
++fn restart_both(
++    store: Entity<ThreadOrganizationStore>,
++    db: &ThreadOrganizationDb,
++    scopes: &ThreadListScopeDb,
++    cx: &mut TestAppContext,
++) -> Entity<ThreadOrganizationStore> {
++    cx.run_until_parked();
++    cx.update(|cx| cx.remove_global::<GlobalThreadListScopeStore>());
++    cx.run_until_parked();
++    open_scopes(scopes, cx);
++    restart(store, db, cx)
++}
++
++fn create_in(
++    store: &Entity<ThreadOrganizationStore>,
++    name: &str,
++    folder: Option<&str>,
++    cx: &mut TestAppContext,
++) -> Result<ListId, OrganizeError> {
++    let project = folder.map(|folder| project(&[folder]));
++    let result = store.update(cx, |store, cx| store.create_list_in(name, project, cx));
++    cx.run_until_parked();
++    result
++}
++
++fn scope_of(
++    store: &Entity<ThreadOrganizationStore>,
++    list: ListId,
++    cx: &mut TestAppContext,
++) -> Option<ProjectKey> {
++    cx.update(|cx| store.read(cx).list_project(list, cx))
++}
++
++fn set_scope(
++    store: &Entity<ThreadOrganizationStore>,
++    list: ListId,
++    folder: Option<&str>,
++    cx: &mut TestAppContext,
++) -> Result<(), OrganizeError> {
++    let project = folder.map(|folder| project(&[folder]));
++    let result = store.update(cx, |store, cx| store.set_list_scope(list, project, cx));
++    cx.run_until_parked();
++    result
++}
++
++fn file(
++    store: &Entity<ThreadOrganizationStore>,
++    thread_id: ThreadId,
++    list: Option<ListId>,
++    cx: &mut TestAppContext,
++) -> Result<(), OrganizeError> {
++    let result = store.update(cx, |store, cx| store.set_list(thread_id, list, cx));
++    cx.run_until_parked();
++    result
++}
++
++/// Hostile: the scope must not share 0048's migration list, whose steps land at different
++/// indexes with and without the `devtools-panel` USE flag (0063).
++#[test]
++fn the_list_scope_has_a_migration_list_of_its_own() {
++    assert_ne!(ThreadListScopeDb::NAME, ThreadOrganizationDb::NAME);
++    assert!(
++        ThreadOrganizationDb::MIGRATIONS
++            .iter()
++            .all(|step| !step.contains("list_scope")),
++        "no step of thread_organization mentions it"
++    );
++    let connection = Connection::open_memory(Some("thread_list_scope_migration"));
++    connection
++        .migrate(
++            ThreadListScopeDb::NAME,
++            ThreadListScopeDb::MIGRATIONS,
++            &mut |_, _, _| false,
++        )
++        .expect("the list scope migration applies");
++}
++
++#[test]
++fn a_global_lists_name_key_is_unchanged_and_a_project_lists_carries_its_project() {
++    assert_eq!(list_name_key(None, "Bugs"), "bugs");
++    let a = project(&[PROJECT_A]);
++    let b = project(&[PROJECT_B]);
++    assert_ne!(
++        list_name_key(Some(&a), "Bugs"),
++        list_name_key(Some(&b), "Bugs")
++    );
++    assert_ne!(list_name_key(Some(&a), "Bugs"), list_name_key(None, "Bugs"));
++    assert!(!list_name_key(Some(&a), "Bugs").starts_with(' '));
++}
++
++#[gpui::test]
++async fn a_project_list_survives_a_restart_and_make_global_clears_it(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("list_scope_restart").await;
++    let scopes = install_scopes("list_scope_restart_scopes", cx).await;
++    let store = open_store(&db, cx);
++    let list = create_in(&store, "Bugs", Some(PROJECT_A), cx).expect("a valid name");
++    assert_eq!(scope_of(&store, list, cx), Some(project(&[PROJECT_A])));
++
++    let store = restart_both(store, &db, &scopes, cx);
++    assert_eq!(scope_of(&store, list, cx), Some(project(&[PROJECT_A])));
++
++    set_scope(&store, list, None, cx).expect("Make Global");
++    let store = restart_both(store, &db, &scopes, cx);
++    assert_eq!(scope_of(&store, list, cx), None, "cleared on disk");
++    assert_eq!(list_names(&store, cx), vec!["Bugs"]);
++}
++
++/// Two projects may each have a "Bugs" list, beside a global one; within one scope the name
++/// stays unique, case-folded as before. The column's `UNIQUE` holds on disk across a restart.
++#[gpui::test]
++async fn a_list_name_is_unique_per_scope(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("list_scope_names").await;
++    let scopes = install_scopes("list_scope_names_scopes", cx).await;
++    let store = open_store(&db, cx);
++    let in_a = create_in(&store, "Bugs", Some(PROJECT_A), cx).expect("first in A");
++    create_in(&store, "Bugs", Some(PROJECT_B), cx).expect("the same name in B");
++    create_in(&store, "bugs", None, cx).expect("the same name, global");
++    assert_eq!(
++        create_in(&store, "BUGS", Some(PROJECT_A), cx),
++        Err(OrganizeError::DuplicateListName { list_id: in_a })
++    );
++
++    let store = restart_both(store, &db, &scopes, cx);
++    assert_eq!(list_names(&store, cx), vec!["Bugs", "Bugs", "bugs"]);
++    assert_eq!(count(&db, "SELECT COUNT(*) FROM thread_lists"), 3);
++
++    // A rename is checked in the list's own scope only.
++    let renamed = store.update(cx, |store, cx| store.rename_list(in_a, "bugs", cx));
++    assert_eq!(renamed, Ok(()), "only a global list is called that");
++}
++
++#[gpui::test]
++async fn a_thread_is_filed_only_in_its_projects_lists_or_a_global_one(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("list_scope_filing").await;
++    install_scopes("list_scope_filing_scopes", cx).await;
++    let store = open_store(&db, cx);
++    let thread = thread_in(PROJECT_A, cx);
++    let of_a = create_in(&store, "A work", Some(PROJECT_A), cx).unwrap();
++    let of_b = create_in(&store, "B work", Some(PROJECT_B), cx).unwrap();
++    let global = create_in(&store, "Everything", None, cx).unwrap();
++
++    assert_eq!(
++        file(&store, thread, Some(of_b), cx),
++        Err(OrganizeError::ListOfAnotherProject {
++            list_id: of_b,
++            thread_id: thread
++        })
++    );
++    assert!(in_list(&store, of_b, cx).is_empty());
++    file(&store, thread, Some(of_a), cx).expect("its own project's list");
++    assert_eq!(in_list(&store, of_a, cx), vec![thread]);
++    file(&store, thread, Some(global), cx).expect("a global list");
++    assert_eq!(in_list(&store, global, cx), vec![thread]);
++}
++
++/// "Move to This Project" never strands a thread in a list its project cannot show.
++#[gpui::test]
++async fn a_list_moves_to_a_project_only_when_every_thread_is_of_it(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("list_scope_move_guard").await;
++    install_scopes("list_scope_move_guard_scopes", cx).await;
++    let store = open_store(&db, cx);
++    let of_a = thread_in(PROJECT_A, cx);
++    let of_b = thread_in(PROJECT_B, cx);
++    let list = create_in(&store, "Mixed", None, cx).unwrap();
++    file(&store, of_a, Some(list), cx).unwrap();
++    file(&store, of_b, Some(list), cx).unwrap();
++
++    assert_eq!(
++        set_scope(&store, list, Some(PROJECT_A), cx),
++        Err(OrganizeError::ListHoldsOtherProjects { list_id: list })
++    );
++    assert_eq!(scope_of(&store, list, cx), None, "still global");
++
++    file(&store, of_b, None, cx).unwrap();
++    set_scope(&store, list, Some(PROJECT_A), cx).expect("only A's thread left");
++    assert_eq!(scope_of(&store, list, cx), Some(project(&[PROJECT_A])));
++}
++
++#[gpui::test]
++async fn make_global_is_refused_while_a_global_list_has_the_name(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("list_scope_make_global_name").await;
++    install_scopes("list_scope_make_global_name_scopes", cx).await;
++    let store = open_store(&db, cx);
++    let global = create_in(&store, "Bugs", None, cx).unwrap();
++    let of_a = create_in(&store, "Bugs", Some(PROJECT_A), cx).unwrap();
++    assert_eq!(
++        set_scope(&store, of_a, None, cx),
++        Err(OrganizeError::DuplicateListName { list_id: global })
++    );
++    assert_eq!(scope_of(&store, of_a, cx), Some(project(&[PROJECT_A])));
++}
++
++/// A deleted list's scope goes with it, in memory and on disk.
++#[gpui::test]
++async fn a_deleted_lists_scope_is_forgotten(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("list_scope_forget").await;
++    let scopes = install_scopes("list_scope_forget_scopes", cx).await;
++    let store = open_store(&db, cx);
++    let list = create_in(&store, "Bugs", Some(PROJECT_A), cx).unwrap();
++    store
++        .update(cx, |store, cx| store.delete_list(list, cx))
++        .unwrap();
++    cx.run_until_parked();
++    assert_eq!(scope_of(&store, list, cx), None);
++    let store = restart_both(store, &db, &scopes, cx);
++    assert!(list_names(&store, cx).is_empty());
++    let on_disk = cx.update(|cx| {
++        ThreadListScopeStore::global(cx)
++            .read(cx)
++            .project_of(list)
++            .cloned()
++    });
++    assert_eq!(on_disk, None, "and from disk");
++}
++
++/// Without the scope store, lists are global as they were before §6.49: a project is dropped.
++#[gpui::test]
++async fn without_the_scope_store_every_list_is_global(cx: &mut TestAppContext) {
++    init(cx);
++    let db = open_db("list_scope_absent").await;
++    let store = open_store(&db, cx);
++    let list = create_in(&store, "Bugs", Some(PROJECT_A), cx).expect("created");
++    assert_eq!(scope_of(&store, list, cx), None);
++    assert_eq!(
++        create_in(&store, "bugs", Some(PROJECT_B), cx),
++        Err(OrganizeError::DuplicateListName { list_id: list }),
++        "one global scope, so one name"
++    );
++}
+diff --git a/crates/sidebar/src/lists_view.rs b/crates/sidebar/src/lists_view.rs
+index 1939a76..9995624 100644
+--- a/crates/sidebar/src/lists_view.rs
++++ b/crates/sidebar/src/lists_view.rs
+@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
+ use std::sync::Arc;
+ 
+ use agent_ui::thread_metadata_store::{ThreadMetadata, ThreadMetadataStore};
+-use agent_ui::thread_organization::{ListId, ThreadList, ThreadOrganizationStore};
++use agent_ui::thread_organization::{ListId, ProjectKey, ThreadList, ThreadOrganizationStore};
+ use agent_ui::{ArchiveSelectedThread, RenameSelectedThread, ThreadId};
+ use editor::Editor;
+ use editor::actions::ToggleFold;
+@@ -18,6 +18,7 @@ use zed_actions::editor::{MoveDown, MoveUp};
+ 
+ use crate::{Sidebar, SidebarView, ThreadEntry, TogglePinSelectedThread, ToggleThreadLists};
+ 
++mod list_scopes;
+ mod lists_manage;
+ mod lists_render;
+ mod move_to_list;
+@@ -42,6 +43,9 @@ pub(crate) enum ListsRow {
+     },
+     /// The "No threads" row of an expanded list with nothing to show (R2.6).
+     Empty { list_id: ListId },
++    /// "This Project" or "Global", above each scope's lists while a project list is shown
++    /// (§6.49).
++    Section { title: SharedString },
+ }
+ 
+ /// The Lists view's rows: a header per list in `lists`' order, then, unless the list is in
+@@ -105,6 +109,9 @@ pub(crate) enum ListsEntry {
+     Empty {
+         list_id: ListId,
+     },
++    Section {
++        title: SharedString,
++    },
+ }
+ 
+ impl ListsEntry {
+@@ -115,15 +122,19 @@ impl ListsEntry {
+             (Self::Header { list_id: a, .. }, Self::Header { list_id: b, .. })
+             | (Self::Empty { list_id: a }, Self::Empty { list_id: b }) => a == b,
+             (Self::Thread(a), Self::Thread(b)) => a.metadata.thread_id == b.metadata.thread_id,
++            (Self::Section { title: a }, Self::Section { title: b }) => a == b,
+             _ => false,
+         }
+     }
+ }
+ 
+ /// The Lists view's rows as drawn: `build_list_rows`' model, its threads turned into full rows by
+-/// `thread_rows`. Empty without the store, since there are no lists.
++/// `thread_rows`. Empty without the store, since there are no lists. While `active`, the project
++/// in front, has lists of its own, they come first under "This Project" and the global ones follow
++/// under "Global"; another project's lists are not shown (§6.49).
+ pub(crate) fn build_lists_contents(
+     collapsed: &HashSet<ListId>,
++    active: Option<&ProjectKey>,
+     thread_rows: impl FnOnce(&[ThreadId]) -> Vec<Arc<ThreadEntry>>,
+     cx: &App,
+ ) -> Vec<ListsEntry> {
+@@ -132,12 +143,34 @@ pub(crate) fn build_lists_contents(
+     };
+     let store = store.read(cx);
+     let metadata = ThreadMetadataStore::global(cx).read(cx);
+-    let rows = build_list_rows(
++    let scoped = list_scopes::scoped_lists(
+         store.lists(),
+-        |list| store.threads_in_list(list),
+-        |thread_id| metadata.entry(thread_id),
+-        collapsed,
++        |list: &ThreadList| store.list_project(list.id, cx),
++        active,
+     );
++    let rows_of = |lists: &[ThreadList]| {
++        build_list_rows(
++            lists,
++            |list| store.threads_in_list(list),
++            |thread_id| metadata.entry(thread_id),
++            collapsed,
++        )
++    };
++    let rows = if scoped.this_project.is_empty() {
++        rows_of(&scoped.global)
++    } else {
++        let mut rows = vec![ListsRow::Section {
++            title: list_scopes::THIS_PROJECT_SECTION.into(),
++        }];
++        rows.extend(rows_of(&scoped.this_project));
++        if !scoped.global.is_empty() {
++            rows.push(ListsRow::Section {
++                title: list_scopes::GLOBAL_SECTION.into(),
++            });
++            rows.extend(rows_of(&scoped.global));
++        }
++        rows
++    };
+ 
+     // One call for every list, so a project is labelled alike in all of them and the live state
+     // is gathered once per rebuild. A thread is in one list at most, so its id finds its row.
+@@ -145,7 +178,7 @@ pub(crate) fn build_lists_contents(
+         .iter()
+         .filter_map(|row| match row {
+             ListsRow::Thread { thread_id, .. } => Some(*thread_id),
+-            ListsRow::Header { .. } | ListsRow::Empty { .. } => None,
++            ListsRow::Header { .. } | ListsRow::Empty { .. } | ListsRow::Section { .. } => None,
+         })
+         .collect();
+     let mut rows_by_id: HashMap<ThreadId, Arc<ThreadEntry>> = thread_rows(&thread_ids)
+@@ -169,6 +202,7 @@ pub(crate) fn build_lists_contents(
+                 rows_by_id.remove(&thread_id).map(ListsEntry::Thread)
+             }
+             ListsRow::Empty { list_id } => Some(ListsEntry::Empty { list_id }),
++            ListsRow::Section { title } => Some(ListsEntry::Section { title }),
+         })
+         .collect()
+ }
+@@ -177,7 +211,7 @@ pub(crate) fn build_lists_contents(
+ pub(crate) fn lists_thread_ids(entries: &[ListsEntry]) -> impl Iterator<Item = ThreadId> + '_ {
+     entries.iter().filter_map(|entry| match entry {
+         ListsEntry::Thread(row) => Some(row.metadata.thread_id),
+-        ListsEntry::Header { .. } | ListsEntry::Empty { .. } => None,
++        ListsEntry::Header { .. } | ListsEntry::Empty { .. } | ListsEntry::Section { .. } => None,
+     })
+ }
+ 
+@@ -195,8 +229,11 @@ pub(crate) struct ListsViewState {
+ /// What confirming the Lists view's name field is for.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub(crate) enum NameFieldMode {
+-    /// The "New List" control: the list is created after the existing ones (R5.1).
++    /// The "New List" control: the list is created after the existing ones (R5.1), in the active
++    /// project while there is one (§6.49).
+     Create,
++    /// "New Global List", offered beside "New List" while a project is active (§6.49).
++    CreateGlobal,
+     /// A header menu's "Rename List…" (R5.4).
+     Rename(ListId),
+     /// Opened by a thread menu's "New List…": the new list is created and that thread filed in
+diff --git a/crates/sidebar/src/lists_view/list_scopes.rs b/crates/sidebar/src/lists_view/list_scopes.rs
+new file mode 100644
+index 0000000..63f64a2
+--- /dev/null
++++ b/crates/sidebar/src/lists_view/list_scopes.rs
+@@ -0,0 +1,144 @@
++//! Lists per project and global (Zeo next proposal §6.49, ask 73), as pins already are (§6.5).
++//!
++//! While a project is active, the Lists view shows that project's lists first, under "This
++//! Project", then the global lists under "Global"; another project's lists are hidden until that
++//! project is active, as `0106` hides its pins. Without a project list to show, the view keeps its
++//! single, unheaded run of lists. "New List" makes a list of the active project, as a plain "Pin"
++//! pins to the project; "New Global List" makes a global one. The scope itself is the store's
++//! (`ThreadListScopeStore`), and every rule a scope change must meet is checked there.
++
++use agent_ui::ThreadId;
++use agent_ui::thread_organization::list_scope::thread_project;
++use agent_ui::thread_organization::{ListId, ProjectKey, ThreadOrganizationStore};
++use ui::prelude::*;
++
++use crate::Sidebar;
++
++pub(crate) const THIS_PROJECT_SECTION: &str = "This Project";
++pub(crate) const GLOBAL_SECTION: &str = "Global";
++
++/// The lists the Lists view shows, split by scope, each in the store's order. Generic over the
++/// list and the scope key so the rule is tested without a store.
++#[derive(Debug, PartialEq)]
++pub(crate) struct ScopedLists<L> {
++    /// The active project's lists; empty without an active project.
++    pub(crate) this_project: Vec<L>,
++    pub(crate) global: Vec<L>,
++}
++
++/// Splits `lists` into the active project's and the global ones. A list of any other project is
++/// in neither, so it is not shown.
++pub(crate) fn scoped_lists<L: Clone, K: PartialEq>(
++    lists: &[L],
++    scope_of: impl Fn(&L) -> Option<K>,
++    active: Option<&K>,
++) -> ScopedLists<L> {
++    let mut scoped = ScopedLists {
++        this_project: Vec::new(),
++        global: Vec::new(),
++    };
++    for list in lists {
++        match scope_of(list) {
++            None => scoped.global.push(list.clone()),
++            Some(project) if Some(&project) == active => scoped.this_project.push(list.clone()),
++            Some(_) => {}
++        }
++    }
++    scoped
++}
++
++/// The index in the store's order that "Move Up" (`up`) or "Move Down" takes the list at `index`
++/// to: the place of the nearest list of the same scope in that direction, so a list never trades
++/// places with one the view does not show. `None` when it is already first or last of its scope.
++pub(crate) fn same_scope_neighbor<L, K: PartialEq>(
++    lists: &[L],
++    index: usize,
++    up: bool,
++    scope_of: impl Fn(&L) -> Option<K>,
++) -> Option<usize> {
++    let scope = scope_of(lists.get(index)?);
++    if up {
++        lists[..index]
++            .iter()
++            .rposition(|candidate| scope_of(candidate) == scope)
++    } else {
++        lists[index + 1..]
++            .iter()
++            .position(|candidate| scope_of(candidate) == scope)
++            .map(|offset| index + 1 + offset)
++    }
++}
++
++/// The scope a list made for a thread from its menu ("New List…") gets: the thread's project when
++/// that is the active one, so the new list is shown and the filing is allowed; global otherwise.
++pub(crate) fn scope_for_thread_list<K: PartialEq>(
++    thread_project: Option<K>,
++    active: Option<&K>,
++) -> Option<K> {
++    thread_project.filter(|project| Some(project) == active)
++}
++
++impl Sidebar {
++    /// The active project, as the lists' scope names it.
++    pub(crate) fn active_project_key(&self, cx: &App) -> Option<ProjectKey> {
++        self.active_project_group_key(cx)
++            .map(|key| ProjectKey::from_group(&key))
++    }
++
++    /// "Make Global" (`to_project: false`) or "Move to This Project". The store refuses a name
++    /// taken in the new scope and a list holding another project's threads; the menu offers the
++    /// second only when it would be accepted, so a refusal here means another window changed the
++    /// list since the menu opened.
++    pub(crate) fn set_list_scope_from_header(
++        &mut self,
++        list_id: ListId,
++        to_project: bool,
++        cx: &mut Context<Self>,
++    ) {
++        let Some(store) = ThreadOrganizationStore::try_global(cx) else {
++            return;
++        };
++        let project = if to_project {
++            let Some(active) = self.active_project_key(cx) else {
++                return;
++            };
++            Some(active)
++        } else {
++            None
++        };
++        if let Err(error) = store.update(cx, |store, cx| store.set_list_scope(list_id, project, cx))
++        {
++            log::warn!("sidebar: scope change refused for list {list_id}: {error}");
++        }
++    }
++
++    /// The scope "New List…" from a thread's menu creates the list in.
++    pub(crate) fn scope_for_new_list_of(
++        &self,
++        thread_id: ThreadId,
++        cx: &App,
++    ) -> Option<ProjectKey> {
++        scope_for_thread_list(
++            thread_project(thread_id, cx),
++            self.active_project_key(cx).as_ref(),
++        )
++    }
++}
++
++/// Whether "Move to This Project" applies to `list`: a global list, an active project, and every
++/// thread in it of that project.
++pub(crate) fn can_move_to_project(list: ListId, active: Option<&ProjectKey>, cx: &App) -> bool {
++    let (Some(active), Some(store)) = (active, ThreadOrganizationStore::try_global(cx)) else {
++        return false;
++    };
++    let store = store.read(cx);
++    store.list_project(list, cx).is_none()
++        && store
++            .threads_in_list(list)
++            .into_iter()
++            .all(|thread_id| thread_project(thread_id, cx).as_ref() == Some(active))
++}
++
++#[cfg(test)]
++#[path = "list_scopes_tests.rs"]
++mod tests;
+diff --git a/crates/sidebar/src/lists_view/list_scopes_tests.rs b/crates/sidebar/src/lists_view/list_scopes_tests.rs
+new file mode 100644
+index 0000000..19fc1dc
+--- /dev/null
++++ b/crates/sidebar/src/lists_view/list_scopes_tests.rs
+@@ -0,0 +1,76 @@
++// Zeo next proposal §6.49 (ask 73): which lists the Lists view shows, and where Move Up/Down
++// take one. Filter: `lists_view::list_scopes::tests`.
++
++use pretty_assertions::assert_eq;
++
++use super::*;
++
++/// `(name, scope)`: the rule reads a list only through `scope_of`, so a name stands in for it.
++const LISTS: &[(&str, Option<&str>)] = &[
++    ("Inbox", None),
++    ("A bugs", Some("A")),
++    ("B bugs", Some("B")),
++    ("Later", None),
++    ("A ideas", Some("A")),
++];
++
++fn scope_of(list: &(&'static str, Option<&'static str>)) -> Option<&'static str> {
++    list.1
++}
++
++fn names(lists: &[(&'static str, Option<&'static str>)]) -> Vec<&'static str> {
++    lists.iter().map(|list| list.0).collect()
++}
++
++#[test]
++fn with_a_project_active_its_lists_come_first_and_anothers_are_hidden() {
++    let scoped = scoped_lists(LISTS, scope_of, Some(&"A"));
++    assert_eq!(names(&scoped.this_project), vec!["A bugs", "A ideas"]);
++    assert_eq!(names(&scoped.global), vec!["Inbox", "Later"]);
++
++    let scoped = scoped_lists(LISTS, scope_of, Some(&"B"));
++    assert_eq!(names(&scoped.this_project), vec!["B bugs"]);
++    assert_eq!(names(&scoped.global), vec!["Inbox", "Later"]);
++}
++
++#[test]
++fn without_an_active_project_only_global_lists_show() {
++    let scoped = scoped_lists(LISTS, scope_of, None);
++    assert!(scoped.this_project.is_empty());
++    assert_eq!(names(&scoped.global), vec!["Inbox", "Later"]);
++}
++
++#[test]
++fn a_project_without_lists_shows_the_global_ones_alone() {
++    let scoped = scoped_lists(LISTS, scope_of, Some(&"C"));
++    assert!(scoped.this_project.is_empty());
++    assert_eq!(names(&scoped.global), vec!["Inbox", "Later"]);
++}
++
++/// Move Up/Down skip lists of another scope, which the view does not show beside this one.
++#[test]
++fn move_up_and_down_go_to_the_nearest_list_of_the_same_scope() {
++    // "A ideas" (4) up: past "Later" (global) and "B bugs" to "A bugs" (1).
++    assert_eq!(same_scope_neighbor(LISTS, 4, true, scope_of), Some(1));
++    // "A bugs" (1) down: to "A ideas" (4).
++    assert_eq!(same_scope_neighbor(LISTS, 1, false, scope_of), Some(4));
++    // "Inbox" (0) down: past two project lists to "Later" (3).
++    assert_eq!(same_scope_neighbor(LISTS, 0, false, scope_of), Some(3));
++    // First and last of a scope go nowhere.
++    assert_eq!(same_scope_neighbor(LISTS, 0, true, scope_of), None);
++    assert_eq!(same_scope_neighbor(LISTS, 3, false, scope_of), None);
++    assert_eq!(same_scope_neighbor(LISTS, 2, true, scope_of), None);
++    assert_eq!(
++        same_scope_neighbor(LISTS, 9, true, scope_of),
++        None,
++        "no such list"
++    );
++}
++
++#[test]
++fn a_list_made_from_a_threads_menu_is_its_project_only_when_that_is_active() {
++    assert_eq!(scope_for_thread_list(Some("A"), Some(&"A")), Some("A"));
++    assert_eq!(scope_for_thread_list(Some("B"), Some(&"A")), None);
++    assert_eq!(scope_for_thread_list(Some("A"), None), None);
++    assert_eq!(scope_for_thread_list(None::<&str>, Some(&"A")), None);
++}
+diff --git a/crates/sidebar/src/lists_view/lists_manage.rs b/crates/sidebar/src/lists_view/lists_manage.rs
+index dea0f3f..608ba54 100644
+--- a/crates/sidebar/src/lists_view/lists_manage.rs
++++ b/crates/sidebar/src/lists_view/lists_manage.rs
+@@ -1,11 +1,13 @@
+-//! Managing lists from the Lists view: its name field (New List, New List…, Rename List…) and a
+-//! header's menu (Rename List…, Delete List, Move Up, Move Down). Every rule a name must meet is
+-//! the store's: the field only maps the store's refusals to text, so the two cannot disagree.
++//! Managing lists from the Lists view: its name field (New List, New Global List, New List…,
++//! Rename List…) and a header's menu (Rename List…, Delete List, Make Global or Move to This
++//! Project, Move Up, Move Down). Every rule a name or a scope must meet is the store's: the field
++//! only maps the store's refusals to text, so the two cannot disagree.
+ 
+-use agent_ui::thread_organization::{ListId, OrganizeError, ThreadOrganizationStore};
++use agent_ui::thread_organization::{ListId, OrganizeError, ThreadList, ThreadOrganizationStore};
+ use menu::Confirm;
+ use ui::{ContextMenu, prelude::*, right_click_menu};
+ 
++use super::list_scopes::{can_move_to_project, same_scope_neighbor};
+ use super::{ListsNameField, NameFieldMode};
+ use crate::{Sidebar, SidebarView};
+ 
+@@ -20,6 +22,11 @@ impl Sidebar {
+         self.open_lists_name_field(NameFieldMode::Create, window, cx);
+     }
+ 
++    /// "New Global List" (§6.49): the name field, open to create a global list.
++    pub(crate) fn start_new_global_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        self.open_lists_name_field(NameFieldMode::CreateGlobal, window, cx);
++    }
++
+     /// "Rename List…": the name field, prefilled with the list's name and all of it selected, so
+     /// typing replaces it (R5.4).
+     fn start_rename_list(&mut self, list_id: ListId, window: &mut Window, cx: &mut Context<Self>) {
+@@ -83,9 +90,17 @@ impl Sidebar {
+         let Some(store) = ThreadOrganizationStore::try_global(cx) else {
+             return;
+         };
++        // §6.49: the scope the new list is made in.
++        let scope = match mode {
++            NameFieldMode::Create => self.active_project_key(cx),
++            NameFieldMode::CreateAndFile(thread_id) => self.scope_for_new_list_of(thread_id, cx),
++            NameFieldMode::CreateGlobal | NameFieldMode::Rename(_) => None,
++        };
+         let result = match mode {
+-            NameFieldMode::Create | NameFieldMode::CreateAndFile(_) => store
+-                .update(cx, |store, cx| store.create_list(&name, cx))
++            NameFieldMode::Create
++            | NameFieldMode::CreateGlobal
++            | NameFieldMode::CreateAndFile(_) => store
++                .update(cx, |store, cx| store.create_list_in(&name, scope, cx))
+                 .map(Some),
+             NameFieldMode::Rename(list_id) => store
+                 .update(cx, |store, cx| store.rename_list(list_id, &name, cx))
+@@ -112,7 +127,9 @@ impl Sidebar {
+                     NameFieldMode::Rename(list_id) => {
+                         log::warn!("sidebar: rename refused for list {list_id}: {error}")
+                     }
+-                    NameFieldMode::Create | NameFieldMode::CreateAndFile(_) => {
++                    NameFieldMode::Create
++                    | NameFieldMode::CreateGlobal
++                    | NameFieldMode::CreateAndFile(_) => {
+                         log::warn!("sidebar: new list refused: {error}")
+                     }
+                 }
+@@ -150,25 +167,22 @@ impl Sidebar {
+     }
+ 
+     /// "Move Up"/"Move Down": one place from where the list is when clicked, which another window
+-    /// may have changed since the menu opened (R5.6).
++    /// may have changed since the menu opened (R5.6) -- among the lists of its own scope, so it
++    /// never trades places with a list the view does not show (§6.49).
+     fn move_list_one_place(&mut self, list_id: ListId, up: bool, cx: &mut Context<Self>) {
+         let Some(store) = ThreadOrganizationStore::try_global(cx) else {
+             return;
+         };
+-        let Some(index) = store
+-            .read(cx)
+-            .lists()
+-            .iter()
+-            .position(|list| list.id == list_id)
+-        else {
++        let read = store.read(cx);
++        let Some(index) = read.lists().iter().position(|list| list.id == list_id) else {
+             let error = OrganizeError::UnknownList { list_id };
+             log::warn!("sidebar: move refused for list {list_id}: {error}");
+             return;
+         };
+-        let to_index = if up {
+-            index.saturating_sub(1)
+-        } else {
+-            index + 1
++        let Some(to_index) = same_scope_neighbor(read.lists(), index, up, |list: &ThreadList| {
++            read.list_project(list.id, cx)
++        }) else {
++            return;
+         };
+         if let Err(error) = store.update(cx, |store, cx| store.move_list(list_id, to_index, cx)) {
+             log::warn!("sidebar: move refused for list {list_id}: {error}");
+@@ -227,18 +241,26 @@ impl Sidebar {
+         cx: &mut Context<Self>,
+     ) -> AnyElement {
+         let sidebar = cx.weak_entity();
++        let active = self.active_project_key(cx);
+         right_click_menu(SharedString::from(format!("lists-header-menu-{list_id}")))
+             .trigger(move |_, _, _| header)
+             .menu(move |window, cx| {
+-                let position = ThreadOrganizationStore::try_global(cx).and_then(|store| {
+-                    let lists = store.read(cx).lists();
+-                    lists
+-                        .iter()
+-                        .position(|list| list.id == list_id)
+-                        .map(|index| (index, lists.len()))
+-                });
+-                let can_move_up = position.is_some_and(|(index, _)| index > 0);
+-                let can_move_down = position.is_some_and(|(index, count)| index + 1 < count);
++                // Read as the menu opens: another window may have moved, scoped or refiled since.
++                let (can_move_up, can_move_down, is_project_list) =
++                    ThreadOrganizationStore::try_global(cx)
++                        .and_then(|store| {
++                            let store = store.read(cx);
++                            let lists = store.lists();
++                            let index = lists.iter().position(|list| list.id == list_id)?;
++                            let scope_of = |list: &ThreadList| store.list_project(list.id, cx);
++                            Some((
++                                same_scope_neighbor(lists, index, true, scope_of).is_some(),
++                                same_scope_neighbor(lists, index, false, scope_of).is_some(),
++                                store.list_project(list_id, cx).is_some(),
++                            ))
++                        })
++                        .unwrap_or_default();
++                let can_move_to_project = can_move_to_project(list_id, active.as_ref(), cx);
+                 let sidebar = sidebar.clone();
+                 ContextMenu::build(window, cx, move |menu, _window, _cx| {
+                     let act =
+@@ -252,6 +274,24 @@ impl Sidebar {
+                         };
+                     menu.entry("Rename List…", None, act(Sidebar::start_rename_list))
+                         .entry("Delete List", None, act(Sidebar::delete_list_from_header))
++                        .when(is_project_list, |menu| {
++                            menu.entry(
++                                "Make Global",
++                                None,
++                                act(|sidebar, list_id, _, cx| {
++                                    sidebar.set_list_scope_from_header(list_id, false, cx)
++                                }),
++                            )
++                        })
++                        .when(can_move_to_project, |menu| {
++                            menu.entry(
++                                "Move to This Project",
++                                None,
++                                act(|sidebar, list_id, _, cx| {
++                                    sidebar.set_list_scope_from_header(list_id, true, cx)
++                                }),
++                            )
++                        })
+                         .when(can_move_up, |menu| {
+                             menu.entry(
+                                 "Move Up",
+diff --git a/crates/sidebar/src/lists_view/lists_render.rs b/crates/sidebar/src/lists_view/lists_render.rs
+index 1a7519d..f08fd6e 100644
+--- a/crates/sidebar/src/lists_view/lists_render.rs
++++ b/crates/sidebar/src/lists_view/lists_render.rs
+@@ -76,6 +76,20 @@ impl Sidebar {
+                 collapsed,
+             } => self.render_lists_header(ix, list_id, name, shown, collapsed, cx),
+             ListsEntry::Thread(thread) => self.render_lists_thread(ix, &thread, cx),
++            ListsEntry::Section { title } => {
++                let selector = title.clone();
++                h_flex()
++                    .debug_selector(move || format!("LISTS_SECTION-{selector}"))
++                    .h(Tab::content_height(cx))
++                    .w_full()
++                    .px_2()
++                    .child(
++                        Label::new(title)
++                            .size(LabelSize::XSmall)
++                            .color(Color::Muted),
++                    )
++                    .into_any_element()
++            }
+             ListsEntry::Empty { list_id } => {
+                 let name = list_name_above(&state.lists_entries[..ix], list_id);
+                 h_flex()
+@@ -186,14 +200,36 @@ impl Sidebar {
+         {
+             return self.render_lists_name_field(field, cx);
+         }
+-        div()
+-            .debug_selector(|| "LISTS_NEW_LIST".into())
++        // §6.49: while a project is active, "New List" makes one of that project, as a plain
++        // "Pin" pins to it, and "New Global List" is the other scope.
++        let has_project = self.active_project_key(cx).is_some();
++        h_flex()
++            .gap_1()
+             .child(
+-                Button::new("lists-new-list", "New List")
+-                    .start_icon(Icon::new(IconName::Plus).size(IconSize::Small))
+-                    .label_size(LabelSize::Small)
+-                    .on_click(cx.listener(|this, _, window, cx| this.start_new_list(window, cx))),
++                div().debug_selector(|| "LISTS_NEW_LIST".into()).child(
++                    Button::new("lists-new-list", "New List")
++                        .start_icon(Icon::new(IconName::Plus).size(IconSize::Small))
++                        .label_size(LabelSize::Small)
++                        .on_click(
++                            cx.listener(|this, _, window, cx| this.start_new_list(window, cx)),
++                        ),
++                ),
+             )
++            .when(has_project, |this| {
++                this.child(
++                    div()
++                        .debug_selector(|| "LISTS_NEW_GLOBAL_LIST".into())
++                        .child(
++                            Button::new("lists-new-global-list", "New Global List")
++                                .start_icon(Icon::new(IconName::Plus).size(IconSize::Small))
++                                .label_size(LabelSize::Small)
++                                .color(Color::Muted)
++                                .on_click(cx.listener(|this, _, window, cx| {
++                                    this.start_new_global_list(window, cx)
++                                })),
++                        ),
++                )
++            })
+             .into_any_element()
+     }
+ }
+diff --git a/crates/sidebar/src/lists_view/move_to_list.rs b/crates/sidebar/src/lists_view/move_to_list.rs
+index 6cf6d09..47b3f0d 100644
+--- a/crates/sidebar/src/lists_view/move_to_list.rs
++++ b/crates/sidebar/src/lists_view/move_to_list.rs
+@@ -1,6 +1,7 @@
+ //! The "Move to List" submenu of a thread's context menu, and the filing it does.
+ 
+ use agent_ui::ThreadId;
++use agent_ui::thread_organization::list_scope::thread_project;
+ use agent_ui::thread_organization::{ListId, ThreadOrganizationStore};
+ use gpui::WeakEntity;
+ use ui::{ContextMenu, prelude::*};
+@@ -39,8 +40,19 @@ pub(crate) fn move_to_list_submenu(
+                     .ok();
+             }
+         };
+-        let lists = store.lists();
+-        for list in lists {
++        // §6.49: the thread's own project's lists and the global ones, never another project's,
++        // which the store would refuse.
++        let project = thread_project(thread_id, cx);
++        let lists: Vec<_> = store
++            .lists()
++            .iter()
++            .filter(|list| {
++                store
++                    .list_project(list.id, cx)
++                    .is_none_or(|scope| Some(&scope) == project.as_ref())
++            })
++            .collect();
++        for list in &lists {
+             submenu = submenu.toggleable_entry(
+                 list.name.clone(),
+                 current == Some(list.id),
+diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
+index cf83d84..0db1098 100644
+--- a/crates/sidebar/src/sidebar.rs
++++ b/crates/sidebar/src/sidebar.rs
+@@ -2504,8 +2504,11 @@ impl Sidebar {
+ 
+         // Pinned's row builder, so a Lists row resolves its workspace, icon and label the same way.
+         if let SidebarView::Lists(lists) = &self.view {
++            // §6.49: the active project's lists, then the global ones.
++            let active_list_scope = self.active_project_key(cx);
+             let lists_entries = lists_view::build_lists_contents(
+                 &lists.collapsed,
++                active_list_scope.as_ref(),
+                 |thread_ids| {
+                     let context = PinnedBuildContext {
+                         workspaces: &workspaces,
+diff --git a/crates/sidebar/src/sidebar_lists_tests.rs b/crates/sidebar/src/sidebar_lists_tests.rs
+index 142413d..4d79650 100644
+--- a/crates/sidebar/src/sidebar_lists_tests.rs
++++ b/crates/sidebar/src/sidebar_lists_tests.rs
+@@ -289,3 +289,6 @@ mod move_to_list;
+ 
+ // Task 6.1
+ mod manage;
++
++// Zeo next proposal §6.49
++mod scopes;
+diff --git a/crates/sidebar/src/sidebar_lists_tests/manage.rs b/crates/sidebar/src/sidebar_lists_tests/manage.rs
+index 08ceef0..b4d1993 100644
+--- a/crates/sidebar/src/sidebar_lists_tests/manage.rs
++++ b/crates/sidebar/src/sidebar_lists_tests/manage.rs
+@@ -34,7 +34,8 @@ async fn new_list_creates_after_the_existing_ones(cx: &mut TestAppContext) {
+         "the empty state created the first list"
+     );
+ 
+-    create_list("Docs", cx);
++    // §6.49: "New List" makes a list of the active project, so the fixture's is one too.
++    create_alpha_list("Docs", cx);
+     open_new_list_field(cx);
+     type_name("Backlog", cx);
+     press_enter(cx);
+@@ -95,8 +96,9 @@ async fn names_outside_one_to_sixty_four_characters_are_refused(cx: &mut TestApp
+ #[gpui::test]
+ async fn duplicate_names_are_refused_and_near_names_are_not(cx: &mut TestAppContext) {
+     let (_mw, sidebar, cx) = alpha_window(true, cx).await;
+-    create_list("Ops", cx);
+-    create_list("Équipe", cx);
++    // §6.49: a name is unique within a scope, and "New List" works in the active project's.
++    create_alpha_list("Ops", cx);
++    create_alpha_list("Équipe", cx);
+     open_lists_view(&sidebar, cx);
+     capture_logs();
+ 
+@@ -346,7 +348,8 @@ async fn escape_closes_the_field_and_changes_nothing(cx: &mut TestAppContext) {
+ async fn new_list_from_a_thread_creates_the_list_and_files_the_thread(cx: &mut TestAppContext) {
+     let (_mw, sidebar, cx) = alpha_window(true, cx).await;
+     let fix = save_in("a1", "Fix login", ALPHA, 1, cx);
+-    let ops = create_list("Ops", cx);
++    // §6.49: the list "New List…" makes is the thread's project's, alpha, the active one.
++    let ops = create_alpha_list("Ops", cx);
+     file_in(fix, Some(ops), cx);
+ 
+     right_click_group_row(&sidebar, fix, cx);
+diff --git a/crates/sidebar/src/sidebar_lists_tests/scopes.rs b/crates/sidebar/src/sidebar_lists_tests/scopes.rs
+new file mode 100644
+index 0000000..b5e97b4
+--- /dev/null
++++ b/crates/sidebar/src/sidebar_lists_tests/scopes.rs
+@@ -0,0 +1,64 @@
++// Zeo next proposal §6.49 (ask 73): lists per project and global, as the view draws them.
++
++use super::*;
++
++const THIS_PROJECT: &str = "LISTS_SECTION-This Project";
++const GLOBAL: &str = "LISTS_SECTION-Global";
++
++/// With alpha active: alpha's list under "This Project", then the global one under "Global";
++/// beta's list is hidden until beta is active.
++#[gpui::test]
++async fn the_active_projects_lists_come_first_and_anothers_are_hidden(cx: &mut TestAppContext) {
++    let (_mw, sidebar, cx) = alpha_window(true, cx).await;
++    create_list("Inbox", cx);
++    create_list_of("/beta", "Beta work", cx);
++    create_alpha_list("Alpha work", cx);
++    open_lists_view(&sidebar, cx);
++
++    assert_top_to_bottom(
++        &[
++            THIS_PROJECT,
++            header("Alpha work", 0),
++            GLOBAL,
++            header("Inbox", 0),
++        ],
++        cx,
++    );
++    assert!(!shown(header("Beta work", 0), cx), "another project's list");
++    assert!(shown("LISTS_NEW_GLOBAL_LIST", cx), "a project is active");
++}
++
++/// No project list to show: the view keeps its single, unheaded run of global lists.
++#[gpui::test]
++async fn without_a_project_list_there_are_no_section_headings(cx: &mut TestAppContext) {
++    let (_mw, sidebar, cx) = alpha_window(true, cx).await;
++    create_list("Inbox", cx);
++    create_list_of("/beta", "Beta work", cx);
++    open_lists_view(&sidebar, cx);
++
++    assert!(shown(header("Inbox", 0), cx));
++    assert!(!shown(THIS_PROJECT, cx));
++    assert!(!shown(GLOBAL, cx));
++}
++
++/// "New List" while alpha is active makes an alpha list, shown under "This Project".
++#[gpui::test]
++async fn new_list_makes_a_list_of_the_active_project(cx: &mut TestAppContext) {
++    let (_mw, sidebar, cx) = alpha_window(true, cx).await;
++    create_list("Inbox", cx);
++    open_lists_view(&sidebar, cx);
++    click(NEW_LIST, cx);
++    assert!(shown(NAME_FIELD, cx), "fixture: the name field is open");
++    type_name("Alpha work", cx);
++    press_enter(cx);
++
++    assert_top_to_bottom(
++        &[
++            THIS_PROJECT,
++            header("Alpha work", 0),
++            GLOBAL,
++            header("Inbox", 0),
++        ],
++        cx,
++    );
++}
+diff --git a/crates/sidebar/src/sidebar_lists_tests/support.rs b/crates/sidebar/src/sidebar_lists_tests/support.rs
+index 28ecc6e..8461277 100644
+--- a/crates/sidebar/src/sidebar_lists_tests/support.rs
++++ b/crates/sidebar/src/sidebar_lists_tests/support.rs
+@@ -15,6 +15,30 @@ pub(super) fn create_list(name: &str, cx: &mut VisualTestContext) -> ListId {
+     id
+ }
+ 
++/// A list of the local project made of `folder` (§6.49).
++pub(super) fn create_list_of(folder: &str, name: &str, cx: &mut VisualTestContext) -> ListId {
++    let project =
++        agent_ui::thread_organization::ProjectKey::from_group(&workspace::ProjectGroupKey::new(
++            None,
++            workspace::PathList::new(&[std::path::Path::new(folder)]),
++        ));
++    let id = cx
++        .update(|_, cx| {
++            ThreadOrganizationStore::global(cx).update(cx, |store, cx| {
++                store.create_list_in(name, Some(project), cx)
++            })
++        })
++        .expect("fixture: the store accepts a new valid list name");
++    cx.run_until_parked();
++    id
++}
++
++/// A list of the alpha project, the active one in `alpha_window`: what the view's "New List"
++/// makes there since §6.49, so a fixture list and a typed one share a scope.
++pub(super) fn create_alpha_list(name: &str, cx: &mut VisualTestContext) -> ListId {
++    create_list_of(ALPHA, name, cx)
++}
++
+ pub(super) fn file_in(thread_id: ThreadId, list: Option<ListId>, cx: &mut VisualTestContext) {
+     cx.update(|_, cx| {
+         ThreadOrganizationStore::global(cx)

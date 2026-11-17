@@ -1,0 +1,371 @@
+From a0e233d91ff6a09c6292b85621249c0c3713cfcb Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 16 Nov 2026 14:26:25 -0300
+Subject: [PATCH] agent_ui: Clear takes a question of the question card back to
+ unanswered
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.42 (ask 66, 2026-11-16). A single-select question is
+a radio group: once an option was picked there was no way back to no
+answer, and a multi-select could only be undone box by box. Each select
+question now shows a Clear at the end of its title while it has an
+answer. It resets the select and the question's own "Other" box -- the
+companion that names it through `_askUserQuestionCustomAnswer`, the pair a
+page already keeps together -- and drops their validation errors, so a
+required question fails Submit again exactly as an untouched one does.
+
+The handler is set with ElicitationCardHandlers::with_clear_selection
+rather than one more constructor argument, so the card's other callers
+keep compiling unchanged; unset it is a no-op. Tests in
+elicitation/clear_selection_tests.rs; Red seen with clear_answers made a
+no-op.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/conversation_view/elicitation.rs      |  36 ++++++-
+ .../elicitation/clear_selection.rs            | 101 ++++++++++++++++++
+ .../elicitation/clear_selection_tests.rs      |  88 +++++++++++++++
+ .../src/conversation_view/thread_view.rs      |  29 +++--
+ 4 files changed, 245 insertions(+), 9 deletions(-)
+ create mode 100644 crates/agent_ui/src/conversation_view/elicitation/clear_selection.rs
+ create mode 100644 crates/agent_ui/src/conversation_view/elicitation/clear_selection_tests.rs
+
+diff --git a/crates/agent_ui/src/conversation_view/elicitation.rs b/crates/agent_ui/src/conversation_view/elicitation.rs
+index 6afaab1..bdb65cf 100644
+--- a/crates/agent_ui/src/conversation_view/elicitation.rs
++++ b/crates/agent_ui/src/conversation_view/elicitation.rs
+@@ -593,6 +593,14 @@ mod tests {
+                         events.borrow_mut().push(format!("page: {page}"));
+                     })
+                 },
++                on_clear_selection: {
++                    let events = self.events.clone();
++                    Rc::new(move |_, fields, _, _| {
++                        events
++                            .borrow_mut()
++                            .push(format!("clear: {}", fields.join(",")));
++                    })
++                },
+             };
+ 
+             div()
+@@ -2599,6 +2607,8 @@ pub(crate) struct ElicitationCardHandlers {
+     on_multi_select_change: MultiSelectHandler,
+     on_toggle_preview: TogglePreviewHandler,
+     on_page_change: PageHandler,
++    /// §6.42: a question's Clear. A no-op until `with_clear_selection` sets it.
++    on_clear_selection: clear_selection::ClearSelectionHandler,
+ }
+ 
+ impl ElicitationCardHandlers {
+@@ -2625,9 +2635,19 @@ impl ElicitationCardHandlers {
+             on_multi_select_change: Rc::new(on_multi_select_change),
+             on_toggle_preview: Rc::new(on_toggle_preview),
+             on_page_change: Rc::new(on_page_change),
++            on_clear_selection: Rc::new(|_, _, _, _| {}),
+         }
+     }
+ 
++    /// What a question's Clear does (§6.42): handed the question and its own "Other" box.
++    pub(crate) fn with_clear_selection(
++        mut self,
++        on_clear_selection: impl Fn(ElicitationEntryId, Vec<String>, &mut Window, &mut App) + 'static,
++    ) -> Self {
++        self.on_clear_selection = Rc::new(on_clear_selection);
++        self
++    }
++
+     pub(crate) fn noop() -> Self {
+         Self::new(
+             |_, _, _| {},
+@@ -2949,11 +2969,14 @@ impl<'a> ElicitationCard<'a> {
+                         return None;
+                     }
+                     let field = state.fields.get(field_name)?;
++                    let clear =
++                        self.render_clear_selection(field_name, field, &mode.requested_schema, cx);
+                     Some(self.render_field(
+                         field_name,
+                         property,
+                         field,
+                         state.field_errors.get(field_name),
++                        clear,
+                         cx,
+                     ))
+                 },
+@@ -2967,6 +2990,7 @@ impl<'a> ElicitationCard<'a> {
+         property: &acp::ElicitationPropertySchema,
+         field: &ElicitationFieldState,
+         error: Option<&SharedString>,
++        clear: Option<AnyElement>,
+         cx: &App,
+     ) -> AnyElement {
+         let label = property_title(field_name, property);
+@@ -3046,7 +3070,15 @@ impl<'a> ElicitationCard<'a> {
+ 
+         v_flex()
+             .gap_1()
+-            .child(label)
++            // §6.42: the question's Clear sits at the end of its title, while it has an answer.
++            .child(
++                h_flex()
++                    .w_full()
++                    .justify_between()
++                    .gap_1()
++                    .child(label)
++                    .children(clear),
++            )
+             .when_some(description, |this, description| {
+                 this.child(
+                     Label::new(description)
+@@ -3461,3 +3493,5 @@ impl<'a> ElicitationCard<'a> {
+ 
+ #[cfg(test)]
+ mod elicitation_has_input_tests;
++
++mod clear_selection;
+diff --git a/crates/agent_ui/src/conversation_view/elicitation/clear_selection.rs b/crates/agent_ui/src/conversation_view/elicitation/clear_selection.rs
+new file mode 100644
+index 0000000..1de025d
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/elicitation/clear_selection.rs
+@@ -0,0 +1,101 @@
++//! "Clear" on a question of the question card (Zeo next proposal §6.42, ask 66).
++//!
++//! A single-select question is a radio group: once an option is picked there was no way back to
++//! no answer, and a multi-select could only be undone box by box. Clear takes the question back
++//! to unanswered -- the select and its own "Other" box together, the pair a page already keeps
++//! together -- so a required question fails validation again exactly as an untouched one does.
++
++use super::*;
++use ui::Tooltip;
++
++/// What a Clear on a question resets, by field name: the question and the custom-answer box
++/// that names it.
++pub(super) type ClearSelectionHandler =
++    Rc<dyn Fn(ElicitationEntryId, Vec<String>, &mut Window, &mut App)>;
++
++/// The question `field_name` and every custom-answer companion that belongs to it, in schema
++/// order.
++pub(super) fn clear_targets(schema: &acp::ElicitationSchema, field_name: &str) -> Vec<String> {
++    let mut targets = vec![field_name.to_string()];
++    targets.extend(
++        schema
++            .properties
++            .iter()
++            .filter(|(_, property)| custom_answer_companion_of(property) == Some(field_name))
++            .map(|(name, _)| name.clone()),
++    );
++    targets
++}
++
++impl ElicitationFormState {
++    /// Whether any of `fields` holds an answer Clear would remove.
++    pub(crate) fn has_answer(&self, fields: &[String], cx: &App) -> bool {
++        fields.iter().any(|name| match self.fields.get(name) {
++            Some(ElicitationFieldState::SingleSelect { value }) => value.is_some(),
++            Some(ElicitationFieldState::MultiSelect(values)) => !values.is_empty(),
++            Some(ElicitationFieldState::Text(editor)) => !editor.read(cx).text(cx).is_empty(),
++            Some(ElicitationFieldState::Boolean(_)) | None => false,
++        })
++    }
++
++    /// Takes `fields` back to unanswered, and drops their validation errors.
++    pub(crate) fn clear_answers(&mut self, fields: &[String], window: &mut Window, cx: &mut App) {
++        for name in fields {
++            match self.fields.get_mut(name) {
++                Some(ElicitationFieldState::SingleSelect { value }) => *value = None,
++                Some(ElicitationFieldState::MultiSelect(values)) => values.clear(),
++                Some(ElicitationFieldState::Text(editor)) => {
++                    editor.update(cx, |editor, cx| editor.set_text("", window, cx))
++                }
++                Some(ElicitationFieldState::Boolean(_)) | None => {}
++            }
++            self.field_errors.remove(name.as_str());
++        }
++    }
++}
++
++impl ElicitationCard<'_> {
++    /// The question's Clear, while it has an answer; `None` on any other field.
++    pub(super) fn render_clear_selection(
++        &self,
++        field_name: &str,
++        field: &ElicitationFieldState,
++        schema: &acp::ElicitationSchema,
++        cx: &App,
++    ) -> Option<AnyElement> {
++        if !matches!(
++            field,
++            ElicitationFieldState::SingleSelect { .. } | ElicitationFieldState::MultiSelect(_)
++        ) {
++            return None;
++        }
++        let targets = clear_targets(schema, field_name);
++        if !self.form_state?.has_answer(&targets, cx) {
++            return None;
++        }
++        let on_clear = self.handlers.on_clear_selection.clone();
++        let elicitation_id = self.elicitation.id.clone();
++        let button_id = format!("elicitation-clear-{}-{field_name}", self.entry_ix);
++        Some(
++            div()
++                .debug_selector({
++                    let field_name = field_name.to_string();
++                    move || format!("elicitation-clear-{field_name}")
++                })
++                .child(
++                    Button::new(button_id, "Clear")
++                        .label_size(LabelSize::Small)
++                        .color(Color::Muted)
++                        .tooltip(Tooltip::text("Clear This Answer"))
++                        .on_click(move |_, window, cx| {
++                            on_clear(elicitation_id.clone(), targets.clone(), window, cx)
++                        }),
++                )
++                .into_any_element(),
++        )
++    }
++}
++
++#[cfg(test)]
++#[path = "clear_selection_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/conversation_view/elicitation/clear_selection_tests.rs b/crates/agent_ui/src/conversation_view/elicitation/clear_selection_tests.rs
+new file mode 100644
+index 0000000..f54368a
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/elicitation/clear_selection_tests.rs
+@@ -0,0 +1,88 @@
++// Zeo next proposal §6.42 (ask 66): Clear on a question of the question card.
++// Filter: `clear_selection`.
++use gpui::TestAppContext;
++
++use super::*;
++
++/// A free-text box paired with `question_id`, as the adapter emits beside every question.
++fn other_box(question_id: &str) -> acp::StringPropertySchema {
++    let mut schema = acp::StringPropertySchema::new().title("Other");
++    let mut meta = serde_json::Map::new();
++    meta.insert(
++        ASK_USER_QUESTION_CUSTOM_ANSWER_META_KEY.to_string(),
++        serde_json::json!({ "questionId": question_id, "isCustomAnswer": true }),
++    );
++    schema.meta = Some(meta);
++    schema
++}
++
++/// One single-select and one multi-select question, each with its own "Other" box.
++fn two_questions() -> acp::ElicitationSchema {
++    acp::ElicitationSchema::new()
++        .property(
++            "pick",
++            acp::StringPropertySchema::new().enum_values(vec!["a".into(), "b".into()]),
++            true,
++        )
++        .property("pick_other", other_box("pick"), false)
++        .property(
++            "many",
++            acp::MultiSelectPropertySchema::new(vec!["x".into(), "y".into()]),
++            false,
++        )
++        .property("many_other", other_box("many"), false)
++}
++
++fn names(names: &[&str]) -> Vec<String> {
++    names.iter().map(|name| name.to_string()).collect()
++}
++
++#[test]
++fn a_question_is_cleared_with_its_own_other_box_only() {
++    let schema = two_questions();
++    assert_eq!(
++        clear_targets(&schema, "pick"),
++        names(&["pick", "pick_other"])
++    );
++    assert_eq!(
++        clear_targets(&schema, "many"),
++        names(&["many", "many_other"])
++    );
++}
++
++#[gpui::test]
++fn clear_takes_a_question_back_to_unanswered(cx: &mut TestAppContext) {
++    crate::conversation_view::tests::init_test(cx);
++    let cx = cx.add_empty_window();
++    cx.update(|window, cx| {
++        let schema = two_questions();
++        let mut form = ElicitationFormState::new(&schema, window, cx);
++        let pick = clear_targets(&schema, "pick");
++        let many = clear_targets(&schema, "many");
++
++        form.set_single_select("pick", "b".into());
++        form.set_multi_select("many", "x".into(), true);
++        if let Some(ElicitationFieldState::Text(editor)) = form.fields.get("pick_other") {
++            editor.update(cx, |editor, cx| editor.set_text("mine", window, cx));
++        }
++        assert!(form.has_answer(&pick, cx));
++        assert!(form.has_answer(&many, cx));
++
++        form.clear_answers(&pick, window, cx);
++        assert!(
++            !form.has_answer(&pick, cx),
++            "the radio and its Other box are empty"
++        );
++        assert!(
++            form.has_answer(&many, cx),
++            "another question keeps its answer"
++        );
++        assert!(matches!(
++            form.fields.get("pick"),
++            Some(ElicitationFieldState::SingleSelect { value: None })
++        ));
++
++        form.clear_answers(&many, window, cx);
++        assert!(!form.has_answer(&many, cx));
++    });
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index d91ef77..6f3774d 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -9222,16 +9222,29 @@ impl ThreadView {
+                     .log_err();
+                 }
+             },
+-            move |elicitation_id, page, cx| {
+-                view.update(cx, |this, cx| {
+-                    if let Some(form) = this.elicitation_form_states.get_mut(&elicitation_id) {
+-                        form.set_page(page);
+-                        cx.notify();
+-                    }
+-                })
+-                .log_err();
++            {
++                let view = view.clone();
++                move |elicitation_id, page, cx| {
++                    view.update(cx, |this, cx| {
++                        if let Some(form) = this.elicitation_form_states.get_mut(&elicitation_id) {
++                            form.set_page(page);
++                            cx.notify();
++                        }
++                    })
++                    .log_err();
++                }
+             },
+         )
++        // §6.42: a question's Clear takes it and its own "Other" box back to unanswered.
++        .with_clear_selection(move |elicitation_id, fields, window, cx| {
++            view.update(cx, |this, cx| {
++                if let Some(form) = this.elicitation_form_states.get_mut(&elicitation_id) {
++                    form.clear_answers(&fields, window, cx);
++                    cx.notify();
++                }
++            })
++            .log_err();
++        })
+     }
+ 
+     fn render_feedback_feedback_editor(editor: Entity<Editor>, cx: &Context<Self>) -> Div {

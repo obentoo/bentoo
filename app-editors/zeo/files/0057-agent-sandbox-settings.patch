@@ -3,6 +3,9 @@ From: lucascouts <lucascs@protonmail.com>
 Date: Mon, 12 Oct 2026 17:55:05 -0300
 Subject: [PATCH] agent_sandbox: run the Claude agent adapters inside ai-jail,
  set from Settings
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 Running the Claude agent jailed meant hand-writing a second agent_servers
 entry whose command was `ai-jail ... claude-agent-acp-plus`, keeping its
@@ -134,6 +137,19 @@ patch jails the adapter process at spawn and leaves the native agent out of
 scope, so the two never meet: argv, cleared env, v2 spawn and fail-closed are
 unchanged. Terminals an ACP agent asks Zeo to create still run outside the jail,
 as before. No code change needed.
+
+Zeo next proposal §6.50 (ask 74, 2026-11-16): the icon shows how the
+running agent was started, so turning the jail on changed nothing visible
+but a tooltip line. A change of the jail itself since the start now shows
+as pending -- the closed lock in warning once the jail is turned on, the
+open one once it is turned off -- and a click restarts the agent
+(ConversationView::retry_connection, which resumes the thread; a running
+turn asks first). The closed lock is never drawn as if in force:
+launch::jailed_on_next_start reads what the restart would apply. Tests:
+pending_tests (pure) and agent_jail_status_jail_turned_on_shows_the_
+pending_closed_lock (GUI); Red seen with with_pending made a no-op.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
@@ -1755,10 +1771,10 @@ index 0000000..b0ec4f9
 +}
 diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
 new file mode 100644
-index 0000000..911139f
+index 0000000..01c4622
 --- /dev/null
 +++ b/crates/agent_sandbox/src/launch.rs
-@@ -0,0 +1,1104 @@
+@@ -0,0 +1,1129 @@
 +//! The launch decision for an external agent: jailed through ai-jail, started unchanged, or
 +//! refused (R1, R2.6–R2.10, R7.4), and the registry of what each running agent was started with,
 +//! read by the toolbar icon and the settings page.
@@ -2763,14 +2779,39 @@ index 0000000..911139f
 +    match record.reason {
 +        Reason::OwnCommand | Reason::Remote | Reason::NotClaude => false,
 +        Reason::On | Reason::Off => {
-+            let key = record
-+                .settings_key
-+                .as_deref()
-+                .filter(|key| settings.projects.contains_key(*key))
-+                .or_else(|| lexical_match(settings.project_keys(), &record.project_root));
++            let key = record_settings_key(record, settings);
 +            settings_fingerprint(settings, &settings.policy_for_key(key))
 +                != record.settings_fingerprint
 +        }
++    }
++}
++
++/// The `agent_sandbox.projects` key that governs `record`'s root now: the one it started with
++/// while it still exists, else the lexical match.
++fn record_settings_key<'a>(
++    record: &'a LaunchRecord,
++    settings: &'a AgentSandboxSettings,
++) -> Option<&'a str> {
++    record
++        .settings_key
++        .as_deref()
++        .filter(|key| settings.projects.contains_key(*key))
++        .or_else(|| lexical_match(settings.project_keys(), &record.project_root))
++}
++
++/// Whether the settings of now jail `record`'s agent on its next start (Zeo next §6.50, ask 74).
++/// `None` for a start Zeo does not decide -- its own command, a remote project, not Claude.
++pub fn jailed_on_next_start(
++    record: &LaunchRecord,
++    settings: &AgentSandboxSettings,
++) -> Option<bool> {
++    match record.reason {
++        Reason::OwnCommand | Reason::Remote | Reason::NotClaude => None,
++        Reason::On | Reason::Off => Some(
++            settings
++                .policy_for_key(record_settings_key(record, settings))
++                .enabled,
++        ),
 +    }
 +}
 +
@@ -12552,17 +12593,17 @@ index 4e9c635..b3c9b39 100644
  agent_skills.workspace = true
 diff --git a/crates/agent_ui/src/agent_jail_status.rs b/crates/agent_ui/src/agent_jail_status.rs
 new file mode 100644
-index 0000000..2a1819e
+index 0000000..71ef764
 --- /dev/null
 +++ b/crates/agent_ui/src/agent_jail_status.rs
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,212 @@
 +//! The agent thread's jail icon (story 043, R5): how an external agent was started, read from
 +//! the `LaunchRegistry` record of its (agent, root), drawn where Zed draws its native sandbox
 +//! icon.
 +
 +use agent_sandbox::launch::{self, LaunchRecord, MemoryPort, Reason};
 +use agent_sandbox::probe;
-+use gpui::{AnyElement, SharedString};
++use gpui::{AnyElement, App, SharedString, Window};
 +use ui::{Divider, Tooltip, prelude::*};
 +
 +const REMOTE: &str = "The agent sandbox is not available for remote projects.";
@@ -12577,6 +12618,54 @@ index 0000000..2a1819e
 +    pub icon: IconName,
 +    pub color: Color,
 +    pub lines: Vec<SharedString>,
++    /// A sandbox setting the running agent does not have yet (§6.50).
++    pub pending: Option<JailPending>,
++}
++
++/// The sandbox setting changed since the running agent started, and a restart applies it
++/// (Zeo next §6.50, ask 74). Turning the jail on writes the setting and starts nothing, so the
++/// icon -- which shows how the running process was started -- stayed open with no sign but a
++/// tooltip line. The closed lock is not drawn as if in force: it is drawn as pending.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum JailPending {
++    TurnsOn,
++    TurnsOff,
++}
++
++/// The pending change for an agent started with `reason`, whose next start the settings of now
++/// would jail (`Some(true)`) or not; `None` when nothing about the jail itself changes.
++pub fn jail_pending(reason: Reason, jailed_on_next_start: Option<bool>) -> Option<JailPending> {
++    match (reason, jailed_on_next_start?) {
++        (Reason::Off, true) => Some(JailPending::TurnsOn),
++        (Reason::On, false) => Some(JailPending::TurnsOff),
++        _ => None,
++    }
++}
++
++impl JailStatusSummary {
++    /// The summary with `pending` laid over it: the lock the restart will give, in warning, and
++    /// the line that says so first.
++    pub fn with_pending(mut self, pending: Option<JailPending>) -> Self {
++        let Some(change) = pending else {
++            return self;
++        };
++        let (icon, line) = match change {
++            JailPending::TurnsOn => (
++                IconName::Lock,
++                "Sandbox on \u{2014} restart the agent to apply it. Click to restart.",
++            ),
++            JailPending::TurnsOff => (
++                IconName::LockOff,
++                "Sandbox off \u{2014} restart the agent to apply it. Click to restart.",
++            ),
++        };
++        self.icon = icon;
++        self.color = Color::Warning;
++        self.lines.retain(|existing| existing.as_ref() != DRIFTED);
++        self.lines.insert(0, line.into());
++        self.pending = pending;
++        self
++    }
 +}
 +
 +/// The icon's presentation for `record`; `drifted` is whether the settings of now differ from
@@ -12649,7 +12738,12 @@ index 0000000..2a1819e
 +    } else {
 +        Color::Muted
 +    };
-+    JailStatusSummary { icon, color, lines }
++    JailStatusSummary {
++        icon,
++        color,
++        lines,
++        pending: None,
++    }
 +}
 +
 +fn list_line(label: &str, items: impl Iterator<Item = String>) -> SharedString {
@@ -12663,8 +12757,19 @@ index 0000000..2a1819e
 +
 +/// The toolbar button for `summary`: the lock, its tooltip and a divider, like
 +/// `ThreadView::render_sandbox_status`. A click opens the Agent Sandbox settings page (R5.5).
-+pub fn render_jail_status_button(summary: JailStatusSummary) -> AnyElement {
-+    let JailStatusSummary { icon, color, lines } = summary;
++/// The icon; `on_restart` is what a click does while a change is pending (§6.50) -- otherwise
++/// the click opens the sandbox settings, as before.
++pub fn render_jail_status_button(
++    summary: JailStatusSummary,
++    on_restart: Option<Box<dyn Fn(&mut Window, &mut App)>>,
++) -> AnyElement {
++    let JailStatusSummary {
++        icon,
++        color,
++        lines,
++        pending,
++    } = summary;
++    let on_restart = pending.and(on_restart);
 +    h_flex()
 +        .gap_1()
 +        .child(
@@ -12683,7 +12788,11 @@ index 0000000..2a1819e
 +                        }))
 +                        .into_any_element()
 +                }))
-+                .on_click(|_, window, cx| {
++                .on_click(move |_, window, cx| {
++                    if let Some(on_restart) = &on_restart {
++                        on_restart(window, cx);
++                        return;
++                    }
 +                    window.dispatch_action(
 +                        Box::new(zed_actions::OpenSettingsAt {
 +                            path: zed_actions::AGENT_JAIL_SETTINGS_PATH.to_string(),
@@ -12696,12 +12805,102 @@ index 0000000..2a1819e
 +        .child(Divider::vertical())
 +        .into_any_element()
 +}
++
++#[cfg(test)]
++#[path = "agent_jail_status_pending_tests.rs"]
++mod pending_tests;
+diff --git a/crates/agent_ui/src/agent_jail_status_pending_tests.rs b/crates/agent_ui/src/agent_jail_status_pending_tests.rs
+new file mode 100644
+index 0000000..903b4c1
+--- /dev/null
++++ b/crates/agent_ui/src/agent_jail_status_pending_tests.rs
+@@ -0,0 +1,80 @@
++// Zeo next proposal §6.50 (ask 74): a sandbox setting the running agent does not have yet shows
++// as pending, and a click restarts the agent. Filter: `pending_tests`.
++use std::path::PathBuf;
++
++use agent_sandbox::launch::{LaunchRecord, MemoryPort, Reason};
++use project::agent_server_store::AgentId;
++use ui::{Color, IconName};
++
++use super::*;
++
++fn record(reason: Reason) -> LaunchRecord {
++    LaunchRecord {
++        agent_id: AgentId::new("Test"),
++        project_root: PathBuf::from("/w/app"),
++        reason,
++        ai_jail_version: Some(semver::Version::parse("2.9.0").expect("version")),
++        ai_jail_path: None,
++        rw_maps: Vec::new(),
++        allow_hosts: Vec::new(),
++        forward_ports: Vec::new(),
++        memory_port: MemoryPort::Off,
++        settings_fingerprint: 0,
++        memory_fingerprint: 0,
++        settings_key: None,
++    }
++}
++
++#[test]
++fn only_a_change_of_the_jail_itself_is_pending() {
++    assert_eq!(
++        jail_pending(Reason::Off, Some(true)),
++        Some(JailPending::TurnsOn)
++    );
++    assert_eq!(
++        jail_pending(Reason::On, Some(false)),
++        Some(JailPending::TurnsOff)
++    );
++    // The same jail, other settings: the drift line covers it, the lock does not change.
++    assert_eq!(jail_pending(Reason::On, Some(true)), None);
++    assert_eq!(jail_pending(Reason::Off, Some(false)), None);
++    // A start Zeo does not decide.
++    assert_eq!(jail_pending(Reason::OwnCommand, None), None);
++    assert_eq!(jail_pending(Reason::Remote, None), None);
++}
++
++#[test]
++fn turning_the_jail_on_shows_a_closed_lock_in_warning_until_the_restart() {
++    let summary =
++        jail_status_summary(&record(Reason::Off), true).with_pending(Some(JailPending::TurnsOn));
++    assert_eq!(summary.icon, IconName::Lock);
++    assert_eq!(summary.color, Color::Warning);
++    assert!(summary.lines[0].contains("Sandbox on"));
++    assert!(
++        summary.lines.iter().all(|line| line.as_ref() != DRIFTED),
++        "the pending line replaces the generic drift line"
++    );
++    assert!(
++        summary
++            .lines
++            .iter()
++            .any(|line| line.contains("Started without")),
++        "it still says how the running agent was started"
++    );
++}
++
++#[test]
++fn turning_the_jail_off_shows_an_open_lock_in_warning() {
++    let summary =
++        jail_status_summary(&record(Reason::On), true).with_pending(Some(JailPending::TurnsOff));
++    assert_eq!(summary.icon, IconName::LockOff);
++    assert_eq!(summary.color, Color::Warning);
++    assert!(summary.lines[0].contains("Sandbox off"));
++}
++
++#[test]
++fn nothing_pending_keeps_todays_look() {
++    let plain = jail_status_summary(&record(Reason::Off), false);
++    assert_eq!(plain.clone().with_pending(None), plain);
++    assert_eq!(plain.icon, IconName::LockOff);
++}
 diff --git a/crates/agent_ui/src/agent_jail_status_tests.rs b/crates/agent_ui/src/agent_jail_status_tests.rs
 new file mode 100644
-index 0000000..1a9c116
+index 0000000..0c6c92d
 --- /dev/null
 +++ b/crates/agent_ui/src/agent_jail_status_tests.rs
-@@ -0,0 +1,559 @@
+@@ -0,0 +1,599 @@
 +// Story 043, tasks 4.1 and 8.1 — the thread's jail icon (R1.7, R1.8, R5.1–R5.7) and the palette
 +// actions (R8.1–R8.4). Wired in the crate root `src/agent_ui.rs` as
 +//
@@ -12825,6 +13024,20 @@ index 0000000..1a9c116
 +
 +mod icon {
 +    use super::*;
++    use gpui::UpdateGlobal as _;
++    use settings::SettingsStore;
++
++    /// The sandbox settings of now, so a record's lock reads against them (§6.50).
++    fn sandbox_settings(value: serde_json::Value, cx: &mut TestAppContext) {
++        cx.update(|cx| {
++            SettingsStore::update_global(cx, |store, cx| {
++                store
++                    .set_user_settings(&value.to_string(), cx)
++                    .result()
++                    .expect("settings");
++            })
++        });
++    }
 +
 +    // --- presentation (R5.1–R5.6, R1.8) -----------------------------------------------------
 +
@@ -12974,6 +13187,8 @@ index 0000000..1a9c116
 +    #[gpui::test]
 +    async fn agent_jail_status_closed_lock_opens_the_agent_sandbox_page(cx: &mut TestAppContext) {
 +        let fs = init(cx);
++        // The jail is still on in the settings, so nothing is pending (§6.50).
++        sandbox_settings(json!({ "agent_sandbox": { "enabled": true } }), cx);
 +        cx.update(|cx| LaunchRegistry::register(record("/w/app", Reason::On, Some("2.8.1")), cx));
 +        let opened: Arc<Mutex<Vec<String>>> = Arc::default();
 +        cx.update({
@@ -12999,6 +13214,30 @@ index 0000000..1a9c116
 +            vec![zed_actions::AGENT_JAIL_SETTINGS_PATH.to_string()]
 +        );
 +        assert_eq!(zed_actions::AGENT_JAIL_SETTINGS_PATH, "agent_sandbox");
++    }
++
++    /// §6.50 (ask 74): the jail turned on after the agent started -- the agent still runs
++    /// unjailed, so the lock is the closed one in warning, pending a restart, not the open one.
++    #[gpui::test]
++    async fn agent_jail_status_jail_turned_on_shows_the_pending_closed_lock(
++        cx: &mut TestAppContext,
++    ) {
++        let fs = init(cx);
++        cx.update(|cx| LaunchRegistry::register(record("/w/app", Reason::Off, None), cx));
++        let mut win = window_with_stub_thread(&fs, &["/w/app"], cx).await;
++        win.cx.run_until_parked();
++        assert!(
++            win.cx.debug_bounds("ICON-LockOff").is_some(),
++            "started without the jail"
++        );
++
++        sandbox_settings(json!({ "agent_sandbox": { "enabled": true } }), &mut win.cx);
++        win.cx.run_until_parked();
++        assert!(
++            win.cx.debug_bounds("ICON-Lock").is_some(),
++            "the closed lock, pending, as soon as the setting changes"
++        );
++        assert!(win.cx.debug_bounds("ICON-LockOff").is_none());
 +    }
 +
 +    #[gpui::test]
@@ -13559,10 +13798,10 @@ index ff651a8..be863af 100644
  mod devtools_delivery_tests;
  
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 594dd3c..997caa6 100644
+index 594dd3c..d604f2b 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
-@@ -6851,6 +6851,22 @@ impl ThreadView {
+@@ -6851,6 +6851,68 @@ impl ThreadView {
          )
      }
  
@@ -13577,9 +13816,55 @@ index 594dd3c..997caa6 100644
 +        let root = agent_sandbox::launch::project_root(&project, cx)?;
 +        let record = agent_sandbox::LaunchRegistry::get(&self.agent_id, &root, cx)?;
 +        let drifted = agent_sandbox::launch::drifted_now(&record, cx);
++        // §6.50: a jail turned on (or off) since the agent started shows as pending, and a
++        // click restarts the agent so it applies.
++        let pending = crate::agent_jail_status::jail_pending(
++            record.reason,
++            agent_sandbox::launch::jailed_on_next_start(
++                &record,
++                agent_sandbox::AgentSandboxSettings::get_global(cx),
++            ),
++        );
++        let summary =
++            crate::agent_jail_status::jail_status_summary(&record, drifted).with_pending(pending);
 +        Some(crate::agent_jail_status::render_jail_status_button(
-+            crate::agent_jail_status::jail_status_summary(&record, drifted),
++            summary,
++            Some(self.restart_agent_for_jail()),
 +        ))
++    }
++
++    /// Restarts the agent so a changed sandbox setting applies (§6.50). The thread is resumed
++    /// on the new process; a turn in progress would be cut, so that case asks first.
++    fn restart_agent_for_jail(&self) -> Box<dyn Fn(&mut Window, &mut App)> {
++        let server_view = self.server_view.clone();
++        let thread = self.thread.clone();
++        Box::new(move |window, cx| {
++            let generating = thread.read(cx).status() == ThreadStatus::Generating;
++            log::info!("agent_sandbox event=restart_for_jail generating={generating}");
++            if !generating {
++                server_view
++                    .update(cx, |view, cx| view.retry_connection(window, cx))
++                    .log_err();
++                return;
++            }
++            let answer = window.prompt(
++                PromptLevel::Warning,
++                "Restart the agent?",
++                Some("The turn in progress will be stopped. The thread is kept."),
++                &["Restart Agent", "Cancel"],
++                cx,
++            );
++            let server_view = server_view.clone();
++            window
++                .spawn(cx, async move |cx| {
++                    if answer.await == Ok(0) {
++                        server_view
++                            .update_in(cx, |view, window, cx| view.retry_connection(window, cx))
++                            .log_err();
++                    }
++                })
++                .detach();
++        })
 +    }
 +
      fn render_fast_mode_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

@@ -39,10 +39,18 @@ seen failing alone: with the width comparison answering false, only the
 wide-line test failed; with the line count raised to 99, only the
 second-line test. Xvfb proof (debug build, a stub agent, no model):
 docs/assets/zeo-6.32-pinned-card-2026-11-15/ in the hub.
+
+§6.46 (ask 70, 2026-11-16) corrects ask 54 as this patch first read it:
+the dark background belongs to an inner area around the message, as an
+editor's text sits on its own surface, while the card and its border keep
+the default elevated_surface_background. The icon and the toggle stay on
+the card, outside the inner area.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index fe57cab..d86650e 100644
+index 1e10be2..727971e 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -826,6 +826,10 @@ pub struct ThreadView {
@@ -65,7 +73,7 @@ index fe57cab..d86650e 100644
              top_overlay_bottom: Default::default(),
              _cancel_task: None,
              _save_task: None,
-@@ -16046,7 +16052,7 @@ impl Render for ThreadView {
+@@ -16092,7 +16098,7 @@ impl Render for ThreadView {
                          .flex_1()
                          .size_full()
                          .child(self.render_entries(cx))
@@ -75,10 +83,10 @@ index fe57cab..d86650e 100644
                          .vertical_scrollbar_for(&list_state, window, cx)
                          .into_any()
 diff --git a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
-index fabed7c..26d9123 100644
+index fabed7c..6ec0796 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
-@@ -4,11 +4,17 @@
+@@ -4,11 +4,18 @@
  //! of the conversation while the reply scrolls under it -- one sticky header per user message,
  //! as Cursor does. Scrolling up into an earlier turn pins that turn's message instead; the
  //! header hides while the message itself is on screen. A click on the line jumps to the
@@ -86,7 +94,8 @@ index fabed7c..26d9123 100644
 +//! message; the toggle expands it in place.
 +//!
 +//! §6.32 (asks 52–54): expanded, the message scrolls with a visible scrollbar; the toggle shows
-+//! only when the minimized line hides something; the card sits on the panel's background.
++//! only when the minimized line hides something. §6.46 (ask 70) corrects ask 54: the message sits
++//! on an inner area with the editor's background, while the card keeps its default surface.
  
  use acp_thread::AgentThreadEntry;
 -use gpui::{AnyElement, Context, ListOffset, canvas, px};
@@ -99,7 +108,7 @@ index fabed7c..26d9123 100644
  
  use super::ThreadView;
  use super::content_column::content_column;
-@@ -31,6 +37,25 @@ pub(super) fn pinned_user_message_ix(
+@@ -31,6 +38,25 @@ pub(super) fn pinned_user_message_ix(
      (0..top).rev().find(|&ix| is_user_message(ix))
  }
  
@@ -125,7 +134,7 @@ index fabed7c..26d9123 100644
  /// The first non-blank line of a message, for the minimized header.
  pub(super) fn first_line(text: &str) -> &str {
      text.lines()
-@@ -40,7 +65,11 @@ pub(super) fn first_line(text: &str) -> &str {
+@@ -40,7 +66,11 @@ pub(super) fn first_line(text: &str) -> &str {
  }
  
  impl ThreadView {
@@ -138,7 +147,7 @@ index fabed7c..26d9123 100644
          // Nothing floats over the top until the header below is prepainted again.
          self.top_overlay_bottom.set(None);
          let thread = self.thread.read(cx);
-@@ -58,30 +87,79 @@ impl ThreadView {
+@@ -58,30 +88,79 @@ impl ThreadView {
              return None;
          }
          let expanded = self.pinned_message_expanded == Some(ix);
@@ -225,21 +234,15 @@ index fabed7c..26d9123 100644
                  .into_any_element()
          };
          let header = h_flex()
-@@ -95,7 +173,7 @@ impl ThreadView {
-             .rounded_md()
-             .border_1()
-             .border_color(cx.theme().colors().border)
--            .bg(cx.theme().colors().elevated_surface_background)
-+            .bg(cx.theme().colors().panel_background)
-             .shadow_sm()
-             .cursor_pointer()
-             .tooltip(Tooltip::text("Go to This Message"))
-@@ -112,20 +190,22 @@ impl ThreadView {
+@@ -111,21 +190,35 @@ impl ThreadView {
+                     .size(IconSize::Small)
                      .color(Color::Muted),
              )
-             .child(body)
--            .child(
--                div()
+-            .child(body)
++            // §6.46 (ask 70, which corrects ask 54): the dark background is an inner area, as an
++            // editor's text sits on its own surface; the card and its border keep their colours.
+             .child(
+                 div()
 -                    .debug_selector(|| "thread-pinned-user-message-toggle".to_string())
 -                    .child(
 -                        IconButton::new("thread-pinned-user-message-toggle", chevron)
@@ -251,7 +254,15 @@ index fabed7c..26d9123 100644
 -                                cx.notify();
 -                            })),
 -                    ),
--            )
++                    .debug_selector(|| "thread-pinned-user-message-body".to_string())
++                    .flex_1()
++                    .min_w_0()
++                    .px_1p5()
++                    .py_0p5()
++                    .rounded_sm()
++                    .bg(cx.theme().colors().editor_background)
++                    .child(body),
+             )
 +            .when(show_toggle, |header| {
 +                header.child(
 +                    div()

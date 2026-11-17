@@ -1,0 +1,1285 @@
+From 48eb353da9a53c743bc1113c4eac7bd9234a9f97 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 16 Nov 2026 22:37:44 -0300
+Subject: [PATCH] agent_ui, settings: tool, terminal and edit cards in three
+ states
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.44 (ask 68). A card was open or closed, and a closed
+terminal card still showed its whole command, wrapped, so a long command took
+several lines. A card now has three states, and a click on its chevron steps through
+them:
+
+- collapsed: one line -- the icon and the start of the command or title, cut
+  with `…` where the card ends; a multi-line command shows its first line and
+  ` …`. The label cuts it, never the stored command: the copy button copies it
+  whole.
+- minimized: the whole command or title, wrapped; no output. A title is put in
+  a block as wide as the header (wrap_title): as a flex item it would be as
+  wide as its text and the header would clip it -- the Xvfb proof caught that.
+- maximized: the command or title and the content (terminal output, diff,
+  input and output) -- what "expanded" was.
+
+A card with nothing to maximize steps between the first two. A card waiting
+for confirmation still always shows its content.
+
+Each kind has its own default (operator, 2026-11-16): new settings
+agent.terminal_card_default, agent.edit_card_default and
+agent.tool_card_default (collapsed | minimized | maximized), on the Settings
+page beside Expand Terminal/Edit Card. Until one is set each kind keeps its
+old look: upstream's expand_terminal_card and expand_edit_card choose
+maximized; otherwise a terminal shows its whole command and an edit or any
+other tool its one-line title. A kind's own setting wins over expand_*_card.
+The agent menu's "Terminals Minimized by Default" toggle (0090, §6.17)
+becomes three submenus -- Terminal Cards, Tool Cards, Edit Cards -- each with
+Collapsed, Minimized and Maximized; choosing one for a terminal or an edit
+also writes expand_*_card (on for maximized), so the Settings page and the
+menu never disagree. terminals_minimized.rs goes; tool_card_display.rs holds
+the rules.
+
+EntryViewState's expanded set becomes a map to the state, with no entry
+meaning the kind's default. expand/collapse/toggle keep their meaning for
+every upstream caller: expand is maximized, collapse is minimized
+(explicitly, so a kind that defaults to maximized does not reopen a terminal
+moved to the background), toggle is a subagent card's two states.
+
+Tests: tool_card_display_tests.rs (defaults with and without a choice, the
+cycle, the menu keeping expand_*_card in step), thread_view/
+tool_card_state_tests.rs (the collapsed line) and conversation_view/tests/
+tool_card_display_tests.rs (the thread view: a tool card's three states,
+the kind's setting as default, an edit kind's choice winning over
+expand_edit_card). Red seen: with the explicit choice ignored and the cycle
+never reaching maximized, exactly the five tests on those rules failed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/agent/src/tool_permissions.rs          |   3 +
+ crates/agent_settings/src/agent_settings.rs   |  10 +-
+ crates/agent_ui/src/agent_panel.rs            |  62 ++++----
+ crates/agent_ui/src/agent_ui.rs               |   5 +-
+ crates/agent_ui/src/conversation_view.rs      |   2 +
+ .../tests/tool_card_display_tests.rs          | 135 ++++++++++++++++++
+ .../src/conversation_view/thread_view.rs      | 129 +++++++++++------
+ .../thread_view/tool_card_state.rs            | 110 ++++++++++++++
+ .../thread_view/tool_card_state_tests.rs      |  26 ++++
+ crates/agent_ui/src/entry_view_state.rs       |  39 +++--
+ crates/agent_ui/src/terminals_minimized.rs    |  70 ---------
+ crates/agent_ui/src/tool_card_display.rs      | 118 +++++++++++++++
+ .../agent_ui/src/tool_card_display_tests.rs   |  90 ++++++++++++
+ crates/settings_content/src/agent.rs          |  41 ++++++
+ crates/settings_ui/src/page_data.rs           |  48 +++++++
+ crates/settings_ui/src/settings_ui.rs         |   1 +
+ 16 files changed, 744 insertions(+), 145 deletions(-)
+ create mode 100644 crates/agent_ui/src/conversation_view/tests/tool_card_display_tests.rs
+ create mode 100644 crates/agent_ui/src/conversation_view/thread_view/tool_card_state.rs
+ create mode 100644 crates/agent_ui/src/conversation_view/thread_view/tool_card_state_tests.rs
+ delete mode 100644 crates/agent_ui/src/terminals_minimized.rs
+ create mode 100644 crates/agent_ui/src/tool_card_display.rs
+ create mode 100644 crates/agent_ui/src/tool_card_display_tests.rs
+
+diff --git a/crates/agent/src/tool_permissions.rs b/crates/agent/src/tool_permissions.rs
+index 9f6b03a..8359bdc 100644
+--- a/crates/agent/src/tool_permissions.rs
++++ b/crates/agent/src/tool_permissions.rs
+@@ -600,6 +600,9 @@ mod tests {
+             enable_feedback: false,
+             expand_edit_card: true,
+             expand_terminal_card: true,
++            terminal_card_default: None,
++            edit_card_default: None,
++            tool_card_default: None,
+             terminal_init_command: None,
+             cancel_generation_on_terminal_stop: true,
+             use_modifier_to_send: true,
+diff --git a/crates/agent_settings/src/agent_settings.rs b/crates/agent_settings/src/agent_settings.rs
+index 863ab51..89a6f21 100644
+--- a/crates/agent_settings/src/agent_settings.rs
++++ b/crates/agent_settings/src/agent_settings.rs
+@@ -19,7 +19,7 @@ use settings::{
+     DockPosition, DockSide, ElicitationPlacement, IntoGpui, LanguageModelParameters,
+     LanguageModelSelection, NotifyWhenAgentWaiting, PlaySoundWhenAgentDone, RegisterSetting,
+     Settings, SettingsContent, SettingsStore, SidebarDockPosition, SidebarSide, TasksCardPosition,
+-    ThinkingBlockDisplay, ToolPermissionMode, update_settings_file,
++    ThinkingBlockDisplay, ToolCardDisplay, ToolPermissionMode, update_settings_file,
+     update_settings_file_with_completion,
+ };
+ use util::ResultExt as _;
+@@ -242,6 +242,11 @@ pub struct AgentSettings {
+     pub enable_feedback: bool,
+     pub expand_edit_card: bool,
+     pub expand_terminal_card: bool,
++    /// Zeo next proposal §6.44: the explicit first state of each card kind, when set; resolved
++    /// against `expand_*_card` by `agent_ui::tool_card_display`.
++    pub terminal_card_default: Option<ToolCardDisplay>,
++    pub edit_card_default: Option<ToolCardDisplay>,
++    pub tool_card_default: Option<ToolCardDisplay>,
+     pub terminal_init_command: Option<String>,
+     pub thinking_display: ThinkingBlockDisplay,
+     pub cancel_generation_on_terminal_stop: bool,
+@@ -850,6 +855,9 @@ impl Settings for AgentSettings {
+             enable_feedback: agent.enable_feedback.unwrap(),
+             expand_edit_card: agent.expand_edit_card.unwrap(),
+             expand_terminal_card: agent.expand_terminal_card.unwrap(),
++            terminal_card_default: agent.terminal_card_default,
++            edit_card_default: agent.edit_card_default,
++            tool_card_default: agent.tool_card_default,
+             terminal_init_command: agent
+                 .terminal_init_command
+                 .filter(|command| !command.trim().is_empty()),
+diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
+index 216d88e..ba06b39 100644
+--- a/crates/agent_ui/src/agent_panel.rs
++++ b/crates/agent_ui/src/agent_panel.rs
+@@ -45,13 +45,12 @@ use crate::terminal_thread_metadata_store::{
+     TerminalThreadMetadata, TerminalThreadMetadataStore, compose_terminal_thread_title,
+     normalize_terminal_custom_title, terminal_title_without_prefix,
+ };
+-use crate::terminals_minimized::{
+-    TERMINALS_MINIMIZED_MENU_LABEL, set_terminals_minimized_by_default,
+-    terminals_minimized_by_default,
+-};
+ use crate::thread_description_modal::{EDIT_DESCRIPTION_MENU_LABEL, ThreadDescriptionModal};
+ use crate::thread_metadata_store::{ThreadId, ThreadMetadataStore, ThreadMetadataStoreEvent};
+ use crate::thread_organization::description::ThreadDescriptionStore;
++use crate::tool_card_display::{
++    DISPLAYS, ToolCardKind, default_display, display_menu_label, set_default_display,
++};
+ use crate::{
+     Agent, AgentInitialContent, AgentThreadSource, ExternalSourcePrompt, NewExternalAgentThread,
+     NewNativeAgentThreadFromSummary,
+@@ -6861,28 +6860,41 @@ impl AgentPanel {
+                             );
+                         }
+ 
+-                        // Zeo next §6.17: inline terminals start minimized, so a
+-                        // long run of tool calls takes less of the scroll. Applies
+-                        // to terminals created after the change.
+-                        let terminals_minimized =
+-                            terminals_minimized_by_default(AgentSettings::get_global(cx));
+-                        menu = menu.separator().header("Conversation").toggleable_entry(
+-                            TERMINALS_MINIMIZED_MENU_LABEL,
+-                            terminals_minimized,
+-                            IconPosition::End,
+-                            None,
+-                            {
+-                                let fs = fs.clone();
+-                                move |_window, cx| {
+-                                    update_settings_file(fs.clone(), cx, move |settings, _| {
+-                                        set_terminals_minimized_by_default(
+-                                            settings,
+-                                            !terminals_minimized,
++                        // Zeo next §6.44 (which replaces §6.17's "Terminals Minimized by
++                        // Default"): each kind of card starts collapsed, minimized or
++                        // maximized. Applies to cards that appear after the change, and to
++                        // cards nobody has stepped yet.
++                        menu = menu.separator().header("Conversation");
++                        for kind in ToolCardKind::ALL {
++                            let current = default_display(kind, AgentSettings::get_global(cx));
++                            let fs = fs.clone();
++                            menu = menu.submenu(
++                                kind.menu_label(),
++                                move |mut submenu, _window, _cx| {
++                                    for display in DISPLAYS {
++                                        let fs = fs.clone();
++                                        submenu = submenu.toggleable_entry(
++                                            display_menu_label(display),
++                                            current == display,
++                                            IconPosition::Start,
++                                            None,
++                                            move |_window, cx| {
++                                                update_settings_file(
++                                                    fs.clone(),
++                                                    cx,
++                                                    move |settings, _| {
++                                                        set_default_display(
++                                                            settings, kind, display,
++                                                        );
++                                                    },
++                                                );
++                                            },
+                                         );
+-                                    });
+-                                }
+-                            },
+-                        );
++                                    }
++                                    submenu
++                                },
++                            );
++                        }
+ 
+                         if has_auth_methods || supports_logout {
+                             menu = menu.separator()
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index cb89684..9c88480 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -48,7 +48,7 @@ mod tasks_card;
+ mod terminal_codegen;
+ mod terminal_inline_assistant;
+ pub mod terminal_thread_metadata_store;
+-mod terminals_minimized;
++mod tool_card_display;
+ #[cfg(any(test, feature = "test-support"))]
+ pub mod test_support;
+ pub mod thread_description_modal;
+@@ -1258,6 +1258,9 @@ mod tests {
+             enable_feedback: false,
+             expand_edit_card: true,
+             expand_terminal_card: true,
++            terminal_card_default: None,
++            edit_card_default: None,
++            tool_card_default: None,
+             terminal_init_command: None,
+             cancel_generation_on_terminal_stop: true,
+             use_modifier_to_send: true,
+diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
+index b1b1127..6880bb5 100644
+--- a/crates/agent_ui/src/conversation_view.rs
++++ b/crates/agent_ui/src/conversation_view.rs
+@@ -4524,6 +4524,8 @@ pub(crate) mod tests {
+ 
+     mod recall_end_point_tests;
+ 
++    mod tool_card_display_tests;
++
+     #[test]
+     fn test_thread_error_protocol_codes_preserve_context_and_data() {
+         let data = json!({"detail": {"retry": false, "values": [1, 2]}});
+diff --git a/crates/agent_ui/src/conversation_view/tests/tool_card_display_tests.rs b/crates/agent_ui/src/conversation_view/tests/tool_card_display_tests.rs
+new file mode 100644
+index 0000000..573529c
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/tests/tool_card_display_tests.rs
+@@ -0,0 +1,135 @@
++//! Zeo next proposal §6.44 (ask 68): a card's three states, as the thread view reads and steps
++//! them. Filter: `tests::tool_card_display_tests`.
++//!
++//! Wiring: inside `conversation_view.rs`'s `mod tests { .. }`, `mod tool_card_display_tests;`
++//! resolves to this file.
++
++use super::*;
++use crate::tool_card_display::ToolCardKind;
++use agent_client_protocol::v2::schema as acp_v2;
++use settings::ToolCardDisplay::{Collapsed, Maximized, Minimized};
++
++/// A finished read with output: a tool card with something to maximize.
++async fn read_tool_call(
++    cx: &mut TestAppContext,
++) -> (
++    Entity<ThreadView>,
++    acp_v2::ToolCallId,
++    &mut VisualTestContext,
++) {
++    let (conversation_view, cx) =
++        setup_conversation_view(StubAgentServer::default_response(), cx).await;
++    let thread_view = active_thread(&conversation_view, cx);
++    let thread = thread_view.read_with(cx, |view, _| view.thread.clone());
++    let read: acp_v2::ToolCallUpdate = serde_json::from_value(json!({
++        "toolCallId": "read-long",
++        "title": "Read crates/agent_ui/src/conversation_view/thread_view/tool_card_state.rs",
++        "kind": "read",
++        "status": "completed",
++        "rawOutput": "fn collapsed_command_line"
++    }))
++    .expect("the read should deserialize");
++    thread
++        .update(cx, |thread, cx| thread.upsert_wire_tool_call(read, cx))
++        .expect("the read should apply");
++    cx.run_until_parked();
++    (thread_view, acp_v2::ToolCallId::new("read-long"), cx)
++}
++
++fn display_of(
++    view: &Entity<ThreadView>,
++    id: &acp_v2::ToolCallId,
++    kind: ToolCardKind,
++    cx: &mut VisualTestContext,
++) -> settings::ToolCardDisplay {
++    view.read_with(cx, |view, cx| view.tool_card_display(id, kind, cx))
++}
++
++fn step(view: &Entity<ThreadView>, id: &acp_v2::ToolCallId, cx: &mut VisualTestContext) {
++    view.update_in(cx, |view, window, cx| {
++        view.step_tool_card(id, ToolCardKind::Tool, true, 0, window, cx)
++    });
++    cx.run_until_parked();
++}
++
++/// Upstream's look: a tool's title on one line, and a click steps through the three states.
++#[gpui::test]
++async fn a_tool_card_starts_collapsed_and_steps_through_three_states(cx: &mut TestAppContext) {
++    init_test(cx);
++    let (view, id, cx) = read_tool_call(cx).await;
++    assert_eq!(display_of(&view, &id, ToolCardKind::Tool, cx), Collapsed);
++
++    step(&view, &id, cx);
++    assert_eq!(display_of(&view, &id, ToolCardKind::Tool, cx), Minimized);
++    step(&view, &id, cx);
++    assert_eq!(display_of(&view, &id, ToolCardKind::Tool, cx), Maximized);
++    view.read_with(cx, |view, cx| {
++        assert!(
++            view.entry_view_state.read(cx).is_tool_call_expanded(&id),
++            "maximized is the old 'expanded', so search and views see the content"
++        );
++    });
++    step(&view, &id, cx);
++    assert_eq!(display_of(&view, &id, ToolCardKind::Tool, cx), Collapsed);
++}
++
++/// The kind's setting is the default of a card nobody has stepped.
++#[gpui::test]
++async fn the_tool_kinds_setting_is_its_default(cx: &mut TestAppContext) {
++    init_test(cx);
++    cx.update(|cx| {
++        AgentSettings::override_global(
++            AgentSettings {
++                tool_card_default: Some(Maximized),
++                ..AgentSettings::get_global(cx).clone()
++            },
++            cx,
++        );
++    });
++    let (view, id, cx) = read_tool_call(cx).await;
++    assert_eq!(display_of(&view, &id, ToolCardKind::Tool, cx), Maximized);
++}
++
++/// The edit kind's own setting wins over upstream's `expand_edit_card`: a new diff does not open
++/// a card whose kind starts collapsed.
++#[gpui::test]
++async fn an_edit_kinds_choice_wins_over_expand_edit_card(cx: &mut TestAppContext) {
++    init_test(cx);
++    cx.update(|cx| {
++        AgentSettings::override_global(
++            AgentSettings {
++                expand_edit_card: true,
++                edit_card_default: Some(Collapsed),
++                ..AgentSettings::get_global(cx).clone()
++            },
++            cx,
++        );
++    });
++    let (conversation_view, cx) =
++        setup_conversation_view(StubAgentServer::default_response(), cx).await;
++    let view = active_thread(&conversation_view, cx);
++    let thread = view.read_with(cx, |view, _| view.thread.clone());
++    let patch: acp_v2::ToolCallUpdate = serde_json::from_value(json!({
++        "toolCallId": "edit-collapsed",
++        "title": "Edit file",
++        "kind": "edit",
++        "content": [{
++            "type": "diff",
++            "changes": [{"operation": "modify", "path": "/tmp/edit-collapsed"}],
++            "patch": {
++                "format": "git_patch",
++                "text": "diff --git a//tmp/edit-collapsed b//tmp/edit-collapsed\n--- a//tmp/edit-collapsed\n+++ b//tmp/edit-collapsed\n@@ -1 +1 @@\n-old\n+new\n"
++            }
++        }]
++    }))
++    .expect("the edit should deserialize");
++    thread
++        .update(cx, |thread, cx| thread.upsert_wire_tool_call(patch, cx))
++        .expect("the edit should apply");
++    cx.run_until_parked();
++    let id = acp_v2::ToolCallId::new("edit-collapsed");
++    view.read_with(cx, |view, cx| {
++        assert!(!view.entry_view_state.read(cx).is_tool_call_expanded(&id));
++    });
++    assert_eq!(display_of(&view, &id, ToolCardKind::Edit, cx), Collapsed);
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 3c38d0b..759e11f 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -603,6 +603,8 @@ mod pinned_message;
+ mod queue_side_question;
+ mod queue_steering;
+ mod side_question_card;
++mod tool_card_state;
++use tool_card_state::wrap_title;
+ 
+ #[cfg(test)]
+ mod numbered_code_block_tests {
+@@ -1711,14 +1713,23 @@ impl ThreadView {
+     ) {
+         match &event.view_event {
+             ViewEvent::NewDiff(tool_call_id) => {
+-                if AgentSettings::get_global(cx).expand_edit_card {
++                // §6.44: the edit kind's default, which upstream's `expand_edit_card` feeds.
++                if crate::tool_card_display::default_display(
++                    crate::tool_card_display::ToolCardKind::Edit,
++                    AgentSettings::get_global(cx),
++                ) == settings::ToolCardDisplay::Maximized
++                {
+                     self.entry_view_state.update(cx, |state, _cx| {
+                         state.expand_tool_call(tool_call_id.clone());
+                     });
+                 }
+             }
+             ViewEvent::NewTerminal(tool_call_id) => {
+-                if AgentSettings::get_global(cx).expand_terminal_card {
++                if crate::tool_card_display::default_display(
++                    crate::tool_card_display::ToolCardKind::Terminal,
++                    AgentSettings::get_global(cx),
++                ) == settings::ToolCardDisplay::Maximized
++                {
+                     self.entry_view_state.update(cx, |state, _cx| {
+                         state.expand_tool_call(tool_call_id.clone());
+                     });
+@@ -11446,18 +11457,32 @@ impl ThreadView {
+             .map(|path| path.display().to_string())
+             .unwrap_or_else(|| "current directory".to_string());
+ 
+-        let command_element = self.render_collapsible_command(
+-            header_group.clone(),
+-            false,
+-            tool_call.label.clone(),
+-            window,
++        // Zeo next §6.44: collapsed shows one line of the command, minimized all of it, and
++        // maximized adds the output.
++        let card_display = self.tool_card_display(
++            &tool_call.id,
++            crate::tool_card_display::ToolCardKind::Terminal,
+             cx,
+         );
++        let command_element = if card_display == settings::ToolCardDisplay::Collapsed {
++            let command_source = tool_call.label.read(cx).source();
++            let command_text = command_source
++                .strip_prefix("```\n")
++                .and_then(|s| s.strip_suffix("\n```"))
++                .unwrap_or(&command_source)
++                .to_string();
++            self.render_collapsed_command(header_group.clone(), command_text, cx)
++        } else {
++            self.render_collapsible_command(
++                header_group.clone(),
++                false,
++                tool_call.label.clone(),
++                window,
++                cx,
++            )
++        };
+ 
+-        let is_expanded = self
+-            .entry_view_state
+-            .read(cx)
+-            .is_tool_call_expanded(&tool_call.id);
++        let is_expanded = card_display == settings::ToolCardDisplay::Maximized;
+ 
+         let truncated_tooltip = truncated_output.then(|| {
+             if let Some(output) = output {
+@@ -11501,12 +11526,14 @@ impl ThreadView {
+         .on_toggle_expand(cx.listener({
+             let id = tool_call.id.clone();
+             move |this, _event, window, cx| {
+-                this.entry_view_state.update(cx, |state, _cx| {
+-                    state.toggle_tool_call_expansion(&id);
+-                });
+-                this.materialize_tool_call_views(entry_ix, window, cx);
+-                this.refresh_thread_search(window, cx);
+-                cx.notify();
++                this.step_tool_card(
++                    &id,
++                    crate::tool_card_display::ToolCardKind::Terminal,
++                    true,
++                    entry_ix,
++                    window,
++                    cx,
++                );
+             }
+         }))
+         .when(terminal_data.is_process_backed(), |header| {
+@@ -11812,11 +11839,19 @@ impl ThreadView {
+         let has_content = !tool_call.content().is_empty()
+             || (should_show_raw_input && tool_call.raw_input.is_some());
+ 
+-        let is_collapsible = has_content && !needs_confirmation;
+-        let is_open = self
+-            .entry_view_state
+-            .read(cx)
+-            .is_tool_call_content_visible(tool_call)
++        // Zeo next §6.44: collapsed (one-line title), minimized (the whole title) or maximized
++        // (input and output). A card waiting for confirmation always shows its content.
++        let card_kind = if is_edit {
++            crate::tool_card_display::ToolCardKind::Edit
++        } else if is_terminal_tool {
++            crate::tool_card_display::ToolCardKind::Terminal
++        } else {
++            crate::tool_card_display::ToolCardKind::Tool
++        };
++        let card_display = self.tool_card_display(&tool_call.id, card_kind, cx);
++        let is_collapsible = !needs_confirmation;
++        let is_open = card_display == settings::ToolCardDisplay::Maximized
++            || tool_call.authorization_id().is_some()
+             || generic_permissions.is_some();
+ 
+         let input_output_header = |label: SharedString| {
+@@ -12086,6 +12121,7 @@ impl ThreadView {
+                                 is_cancelled_edit,
+                                 has_diff_changes,
+                                 use_card_layout,
++                                card_display != settings::ToolCardDisplay::Collapsed,
+                                 window,
+                                 cx,
+                             ))
+@@ -12119,18 +12155,14 @@ impl ThreadView {
+                                                                   _,
+                                                                   window,
+                                                                   cx: &mut Context<Self>| {
+-                                                                this.entry_view_state.update(
++                                                                this.step_tool_card(
++                                                                    &id,
++                                                                    card_kind,
++                                                                    has_content,
++                                                                    entry_ix,
++                                                                    window,
+                                                                     cx,
+-                                                                    |state, _cx| {
+-                                                                        state
+-                                                                            .toggle_tool_call_expansion(
+-                                                                                &id,
+-                                                                            );
+-                                                                    },
+                                                                 );
+-                                                                this.materialize_tool_call_views(entry_ix, window, cx);
+-                                                                this.refresh_thread_search(window, cx);
+-                                                                cx.notify();
+                                                             }
+                                                         })),
+                                                     )
+@@ -13622,6 +13654,8 @@ impl ThreadView {
+         has_failed: bool,
+         has_diff_changes: bool,
+         use_card_layout: bool,
++        // Zeo next §6.44: the whole title, wrapped, instead of one line cut by the fade.
++        wrap: bool,
+         window: &Window,
+         cx: &Context<Self>,
+     ) -> Div {
+@@ -13711,7 +13745,13 @@ impl ThreadView {
+         h_flex()
+             .relative()
+             .w_full()
+-            .h(window.line_height() - px(2.))
++            .map(|this| {
++                if wrap {
++                    this.items_start().min_h(window.line_height() - px(2.))
++                } else {
++                    this.h(window.line_height() - px(2.))
++                }
++            })
+             .text_size(self.tool_name_font_size())
+             .gap_1p5()
+             .when(has_location || use_card_layout, |this| this.px_1())
+@@ -13738,6 +13778,9 @@ impl ThreadView {
+                 h_flex()
+                     .id(("open-tool-call-location", entry_ix))
+                     .w_full()
++                    // A flex child is as wide as its text unless it may shrink; without this the
++                    // whole title (§6.44's minimized) is clipped instead of wrapped.
++                    .when(wrap, |this| this.flex_1().min_w_0())
+                     .map(|this| {
+                         if use_card_layout {
+                             this.text_color(cx.theme().colors().text)
+@@ -13745,7 +13788,8 @@ impl ThreadView {
+                             this.text_color(cx.theme().colors().text_muted)
+                         }
+                     })
+-                    .child(
++                    .child(wrap_title(
++                        wrap,
+                         self.render_markdown(
+                             tool_call.label.clone(),
+                             MarkdownStyle {
+@@ -13755,7 +13799,7 @@ impl ThreadView {
+                             },
+                             cx,
+                         ),
+-                    )
++                    ))
+                     .tooltip(Tooltip::text("Go to File"))
+                     .on_click(cx.listener(move |this, _, window, cx| {
+                         this.open_tool_call_location(entry_ix, 0, window, cx);
+@@ -13764,14 +13808,19 @@ impl ThreadView {
+             } else {
+                 h_flex()
+                     .w_full()
+-                    .child(self.render_markdown(
+-                        tool_call.label.clone(),
+-                        MarkdownStyle::themed(MarkdownFont::Agent, window, cx).with_muted_text(cx),
+-                        cx,
++                    .when(wrap, |this| this.flex_1().min_w_0())
++                    .child(wrap_title(
++                        wrap,
++                        self.render_markdown(
++                            tool_call.label.clone(),
++                            MarkdownStyle::themed(MarkdownFont::Agent, window, cx)
++                                .with_muted_text(cx),
++                            cx,
++                        ),
+                     ))
+                     .into_any()
+             })
+-            .when(!is_edit, |this| this.child(gradient_overlay))
++            .when(!is_edit && !wrap, |this| this.child(gradient_overlay))
+     }
+ 
+     fn open_tool_call_location(
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/tool_card_state.rs b/crates/agent_ui/src/conversation_view/thread_view/tool_card_state.rs
+new file mode 100644
+index 0000000..8334698
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/tool_card_state.rs
+@@ -0,0 +1,110 @@
++//! A tool, terminal or edit card's three states, as `ThreadView` reads and steps them (Zeo next
++//! proposal §6.44, ask 68). The rules are `tool_card_display`'s; this is where a card's header
++//! asks for its state and where a click on it moves to the next one.
++
++use agent_client_protocol::v2::schema as acp_v2;
++use agent_settings::AgentSettings;
++use gpui::{App, Context, SharedString, Window};
++use settings::{Settings as _, ToolCardDisplay};
++use ui::{CopyButton, Label, LabelCommon, LabelSize, prelude::*};
++
++use super::ThreadView;
++use crate::tool_card_display::{ToolCardKind, default_display, next_display};
++
++/// The one line a collapsed terminal card shows: the command's first line, with `…` after it
++/// when more lines follow. The label cuts what does not fit the card with `…` too, so the stored
++/// command is never shortened, and the copy button still copies it whole.
++pub(crate) fn collapsed_command_line(command: &str) -> String {
++    let mut lines = command.lines();
++    let first = lines.next().unwrap_or_default().trim_end();
++    if lines.next().is_some() {
++        format!("{first} …")
++    } else {
++        first.to_string()
++    }
++}
++
++/// A card's title: as it is on one line, or, for a minimized or maximized card, in a block as
++/// wide as the header, so it wraps -- as a flex item its width would be the whole text's, and the
++/// header would clip it.
++pub(crate) fn wrap_title(wrap: bool, title: impl IntoElement) -> AnyElement {
++    if wrap {
++        div().w_full().min_w_0().child(title).into_any_element()
++    } else {
++        title.into_any_element()
++    }
++}
++
++impl ThreadView {
++    /// The state `tool_call_id`'s card shows: the one it was stepped to, else its kind's default.
++    pub(crate) fn tool_card_display(
++        &self,
++        tool_call_id: &acp_v2::ToolCallId,
++        kind: ToolCardKind,
++        cx: &App,
++    ) -> ToolCardDisplay {
++        self.entry_view_state
++            .read(cx)
++            .tool_card_display(tool_call_id)
++            .unwrap_or_else(|| default_display(kind, AgentSettings::get_global(cx)))
++    }
++
++    /// A click on the card's header or chevron: the next state, with the card's views made when
++    /// it opens to show its content.
++    pub(crate) fn step_tool_card(
++        &mut self,
++        tool_call_id: &acp_v2::ToolCallId,
++        kind: ToolCardKind,
++        has_content: bool,
++        entry_ix: usize,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        let next = next_display(self.tool_card_display(tool_call_id, kind, cx), has_content);
++        self.entry_view_state.update(cx, |state, _cx| {
++            state.set_tool_card_display(tool_call_id.clone(), next);
++        });
++        self.materialize_tool_call_views(entry_ix, window, cx);
++        self.refresh_thread_search(window, cx);
++        cx.notify();
++    }
++
++    /// A collapsed terminal card's command: one line, cut with `…` where the card ends, beside the
++    /// same copy button the whole command has.
++    pub(crate) fn render_collapsed_command(
++        &self,
++        group: SharedString,
++        command_text: String,
++        cx: &Context<Self>,
++    ) -> Div {
++        let copy_button = CopyButton::new(
++            SharedString::from(format!("{group}-copy-command")),
++            command_text.clone(),
++        )
++        .tooltip_label("Copy Command")
++        .visible_on_hover(group.clone());
++        h_flex()
++            .group(group)
++            .debug_selector(|| "TOOL_CARD_COLLAPSED_COMMAND".into())
++            .relative()
++            .w_full()
++            .min_w_0()
++            .px_1p5()
++            .py_1()
++            .gap_1()
++            .child(
++                div().flex_1().min_w_0().child(
++                    Label::new(collapsed_command_line(&command_text))
++                        .buffer_font(cx)
++                        .size(LabelSize::Small)
++                        .single_line()
++                        .truncate(),
++                ),
++            )
++            .child(copy_button)
++    }
++}
++
++#[cfg(test)]
++#[path = "tool_card_state_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/tool_card_state_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tool_card_state_tests.rs
+new file mode 100644
+index 0000000..6f129ac
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/tool_card_state_tests.rs
+@@ -0,0 +1,26 @@
++// Zeo next proposal §6.44 (ask 68): a collapsed terminal card's one line. Filter:
++// `tool_card_state`.
++
++use super::*;
++
++#[test]
++fn a_one_line_command_is_shown_as_it_is() {
++    assert_eq!(
++        collapsed_command_line("cargo test -p agent_ui"),
++        "cargo test -p agent_ui"
++    );
++}
++
++#[test]
++fn a_multi_line_command_shows_its_first_line_and_says_more_follows() {
++    assert_eq!(
++        collapsed_command_line("cd crates/agent_ui\ncargo test\n"),
++        "cd crates/agent_ui …"
++    );
++}
++
++#[test]
++fn trailing_spaces_of_the_first_line_go() {
++    assert_eq!(collapsed_command_line("ls   \nwc -l"), "ls …");
++    assert_eq!(collapsed_command_line(""), "");
++}
+diff --git a/crates/agent_ui/src/entry_view_state.rs b/crates/agent_ui/src/entry_view_state.rs
+index 774d8ce..7557172 100644
+--- a/crates/agent_ui/src/entry_view_state.rs
++++ b/crates/agent_ui/src/entry_view_state.rs
+@@ -17,7 +17,7 @@ use language::language_settings::SoftWrap;
+ use multi_buffer::MultiBuffer;
+ use project::{AgentId, Project, project_settings::DiagnosticSeverity};
+ use rope::Point;
+-use settings::{Settings as _, ThinkingBlockDisplay};
++use settings::{Settings as _, ThinkingBlockDisplay, ToolCardDisplay};
+ use terminal_view::TerminalView;
+ use theme_settings::ThemeSettings;
+ use ui::{Context, TextSize};
+@@ -64,7 +64,9 @@ pub struct EntryViewState {
+     auto_expanded_thinking_block: Option<(usize, usize)>,
+     user_toggled_thinking_blocks: HashSet<(usize, usize)>,
+     expanded_compactions: HashSet<usize>,
+-    expanded_tool_calls: HashSet<acp_v2::ToolCallId>,
++    /// Zeo next §6.44: each card's state once it differs from its kind's default; a card with no
++    /// entry shows the default (`tool_card_display::default_display`).
++    tool_card_displays: HashMap<acp_v2::ToolCallId, ToolCardDisplay>,
+     /// Subagent cards shown for an ACP parent's outgoing session messages.
+     expanded_session_message_cards: HashSet<acp_v2::MessageId>,
+ }
+@@ -88,13 +90,29 @@ impl EntryViewState {
+             auto_expanded_thinking_block: None,
+             user_toggled_thinking_blocks: HashSet::default(),
+             expanded_compactions: HashSet::default(),
+-            expanded_tool_calls: HashSet::default(),
++            tool_card_displays: HashMap::default(),
+             expanded_session_message_cards: HashSet::default(),
+         }
+     }
+ 
+     pub(crate) fn is_tool_call_expanded(&self, tool_call_id: &acp_v2::ToolCallId) -> bool {
+-        self.expanded_tool_calls.contains(tool_call_id)
++        self.tool_card_displays.get(tool_call_id) == Some(&ToolCardDisplay::Maximized)
++    }
++
++    /// The card's state, or `None` while it shows its kind's default.
++    pub(crate) fn tool_card_display(
++        &self,
++        tool_call_id: &acp_v2::ToolCallId,
++    ) -> Option<ToolCardDisplay> {
++        self.tool_card_displays.get(tool_call_id).copied()
++    }
++
++    pub(crate) fn set_tool_card_display(
++        &mut self,
++        tool_call_id: acp_v2::ToolCallId,
++        display: ToolCardDisplay,
++    ) {
++        self.tool_card_displays.insert(tool_call_id, display);
+     }
+ 
+     pub(crate) fn is_tool_call_content_visible(&self, tool_call: &ToolCall) -> bool {
+@@ -102,16 +120,21 @@ impl EntryViewState {
+     }
+ 
+     pub(crate) fn expand_tool_call(&mut self, tool_call_id: acp_v2::ToolCallId) {
+-        self.expanded_tool_calls.insert(tool_call_id);
++        self.set_tool_card_display(tool_call_id, ToolCardDisplay::Maximized);
+     }
+ 
++    /// Closes the card's content but keeps its command or title whole: minimized, explicitly, so
++    /// a kind whose default is maximized does not reopen it.
+     pub(crate) fn collapse_tool_call(&mut self, tool_call_id: &acp_v2::ToolCallId) {
+-        self.expanded_tool_calls.remove(tool_call_id);
++        self.set_tool_card_display(tool_call_id.clone(), ToolCardDisplay::Minimized);
+     }
+ 
++    /// Open or closed, for the cards that have only those two (a subagent's).
+     pub(crate) fn toggle_tool_call_expansion(&mut self, tool_call_id: &acp_v2::ToolCallId) {
+-        if !self.expanded_tool_calls.remove(tool_call_id) {
+-            self.expanded_tool_calls.insert(tool_call_id.clone());
++        if self.is_tool_call_expanded(tool_call_id) {
++            self.tool_card_displays.remove(tool_call_id);
++        } else {
++            self.expand_tool_call(tool_call_id.clone());
+         }
+     }
+ 
+diff --git a/crates/agent_ui/src/terminals_minimized.rs b/crates/agent_ui/src/terminals_minimized.rs
+deleted file mode 100644
+index d16961e..0000000
+--- a/crates/agent_ui/src/terminals_minimized.rs
++++ /dev/null
+@@ -1,70 +0,0 @@
+-//! Zeo next proposal §6.17 (ask 37): an agent-menu toggle that starts every inline
+-//! terminal minimized, so a long run of tool calls takes less of the conversation's
+-//! scroll. It is upstream's `agent.expand_terminal_card` seen from the other side --
+-//! "minimized" is "not expanded" -- so the menu owns no setting of its own, and a
+-//! terminal already on screen keeps the state it has.
+-
+-use agent_settings::AgentSettings;
+-use settings::SettingsContent;
+-
+-/// The agent-menu label, shared with the menu and its tests.
+-pub(crate) const TERMINALS_MINIMIZED_MENU_LABEL: &str = "Terminals Minimized by Default";
+-
+-/// Whether the toggle shows checked.
+-pub(crate) fn terminals_minimized_by_default(settings: &AgentSettings) -> bool {
+-    !settings.expand_terminal_card
+-}
+-
+-/// Writes the toggle's new state into the user's settings.
+-pub(crate) fn set_terminals_minimized_by_default(settings: &mut SettingsContent, minimized: bool) {
+-    settings.agent.get_or_insert_default().expand_terminal_card = Some(!minimized);
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-    use gpui::UpdateGlobal as _;
+-    use settings::Settings as _;
+-
+-    #[test]
+-    fn minimized_is_the_terminal_card_not_expanded() {
+-        let mut settings = SettingsContent::default();
+-        set_terminals_minimized_by_default(&mut settings, true);
+-        assert_eq!(
+-            settings
+-                .agent
+-                .as_ref()
+-                .and_then(|agent| agent.expand_terminal_card),
+-            Some(false)
+-        );
+-        set_terminals_minimized_by_default(&mut settings, false);
+-        assert_eq!(
+-            settings
+-                .agent
+-                .as_ref()
+-                .and_then(|agent| agent.expand_terminal_card),
+-            Some(true)
+-        );
+-    }
+-
+-    #[gpui::test]
+-    fn the_toggle_reads_the_upstream_setting(cx: &mut gpui::TestAppContext) {
+-        cx.update(|cx| {
+-            let store = settings::SettingsStore::test(cx);
+-            cx.set_global(store);
+-            AgentSettings::register(cx);
+-            assert!(
+-                !terminals_minimized_by_default(AgentSettings::get_global(cx)),
+-                "upstream's default expands the card"
+-            );
+-            settings::SettingsStore::update_global(cx, |store, cx| {
+-                store.update_user_settings(cx, |settings| {
+-                    set_terminals_minimized_by_default(settings, true)
+-                });
+-            });
+-            assert!(terminals_minimized_by_default(AgentSettings::get_global(
+-                cx
+-            )));
+-        });
+-    }
+-}
+diff --git a/crates/agent_ui/src/tool_card_display.rs b/crates/agent_ui/src/tool_card_display.rs
+new file mode 100644
+index 0000000..b8610d2
+--- /dev/null
++++ b/crates/agent_ui/src/tool_card_display.rs
+@@ -0,0 +1,118 @@
++//! Tool, terminal and edit cards in three states (Zeo next proposal §6.44, ask 68): collapsed (one
++//! line of the command or title, cut with `…`), minimized (the whole command or title) and
++//! maximized (the command or title and the card's content). A click on the card's header or its
++//! chevron steps through them.
++//!
++//! Each kind has a default of its own, chosen in the agent menu (which replaces §6.17's
++//! "Terminals Minimized by Default" toggle). Until one is chosen, each kind keeps the look it had:
++//! upstream's `expand_terminal_card` and `expand_edit_card` choose maximized, and otherwise a
++//! terminal shows its whole command and an edit or another tool its one-line title.
++
++use agent_settings::AgentSettings;
++use settings::{SettingsContent, ToolCardDisplay};
++
++/// The three kinds of card, each with its own default.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum ToolCardKind {
++    Terminal,
++    Edit,
++    Tool,
++}
++
++impl ToolCardKind {
++    pub(crate) const ALL: [ToolCardKind; 3] = [
++        ToolCardKind::Terminal,
++        ToolCardKind::Tool,
++        ToolCardKind::Edit,
++    ];
++
++    /// The agent menu's submenu for this kind.
++    pub(crate) fn menu_label(self) -> &'static str {
++        match self {
++            ToolCardKind::Terminal => "Terminal Cards",
++            ToolCardKind::Edit => "Edit Cards",
++            ToolCardKind::Tool => "Tool Cards",
++        }
++    }
++}
++
++/// The label of each state in the agent menu.
++pub(crate) fn display_menu_label(display: ToolCardDisplay) -> &'static str {
++    match display {
++        ToolCardDisplay::Collapsed => "Collapsed",
++        ToolCardDisplay::Minimized => "Minimized",
++        ToolCardDisplay::Maximized => "Maximized",
++    }
++}
++
++pub(crate) const DISPLAYS: [ToolCardDisplay; 3] = [
++    ToolCardDisplay::Collapsed,
++    ToolCardDisplay::Minimized,
++    ToolCardDisplay::Maximized,
++];
++
++/// How a card of `kind` first appears: the kind's own setting when set, else what the card showed
++/// before §6.44.
++pub(crate) fn default_display(kind: ToolCardKind, settings: &AgentSettings) -> ToolCardDisplay {
++    let (explicit, expanded, closed) = match kind {
++        ToolCardKind::Terminal => (
++            settings.terminal_card_default,
++            settings.expand_terminal_card,
++            // A terminal's header has always shown its whole command, wrapped.
++            ToolCardDisplay::Minimized,
++        ),
++        ToolCardKind::Edit => (
++            settings.edit_card_default,
++            settings.expand_edit_card,
++            // An edit's header has always been one line.
++            ToolCardDisplay::Collapsed,
++        ),
++        ToolCardKind::Tool => (
++            settings.tool_card_default,
++            false,
++            ToolCardDisplay::Collapsed,
++        ),
++    };
++    explicit.unwrap_or(if expanded {
++        ToolCardDisplay::Maximized
++    } else {
++        closed
++    })
++}
++
++/// The state a click on the header steps to: collapsed, minimized, maximized, and round again. A
++/// card with no content has nothing to maximize, so it steps between the first two.
++pub(crate) fn next_display(current: ToolCardDisplay, has_content: bool) -> ToolCardDisplay {
++    match current {
++        ToolCardDisplay::Collapsed => ToolCardDisplay::Minimized,
++        ToolCardDisplay::Minimized if has_content => ToolCardDisplay::Maximized,
++        ToolCardDisplay::Minimized | ToolCardDisplay::Maximized => ToolCardDisplay::Collapsed,
++    }
++}
++
++/// Writes the agent menu's choice for `kind`. For a terminal or an edit, upstream's
++/// `expand_*_card` is kept in step (on for maximized, off otherwise), so the Settings page and
++/// the menu never disagree about whether the card opens maximized.
++pub(crate) fn set_default_display(
++    settings: &mut SettingsContent,
++    kind: ToolCardKind,
++    display: ToolCardDisplay,
++) {
++    let agent = settings.agent.get_or_insert_default();
++    let maximized = display == ToolCardDisplay::Maximized;
++    match kind {
++        ToolCardKind::Terminal => {
++            agent.terminal_card_default = Some(display);
++            agent.expand_terminal_card = Some(maximized);
++        }
++        ToolCardKind::Edit => {
++            agent.edit_card_default = Some(display);
++            agent.expand_edit_card = Some(maximized);
++        }
++        ToolCardKind::Tool => agent.tool_card_default = Some(display),
++    }
++}
++
++#[cfg(test)]
++#[path = "tool_card_display_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/tool_card_display_tests.rs b/crates/agent_ui/src/tool_card_display_tests.rs
+new file mode 100644
+index 0000000..4bde368
+--- /dev/null
++++ b/crates/agent_ui/src/tool_card_display_tests.rs
+@@ -0,0 +1,90 @@
++// Zeo next proposal §6.44 (ask 68): the three card states, their defaults and the menu's
++// settings. Filter: `tool_card_display`.
++
++use gpui::{TestAppContext, UpdateGlobal as _};
++use pretty_assertions::assert_eq;
++use settings::Settings as _;
++
++use super::*;
++
++fn with_settings(
++    cx: &mut TestAppContext,
++    update: impl FnOnce(&mut SettingsContent),
++) -> [ToolCardDisplay; 3] {
++    cx.update(|cx| {
++        let store = settings::SettingsStore::test(cx);
++        cx.set_global(store);
++        AgentSettings::register(cx);
++        settings::SettingsStore::update_global(cx, |store, cx| {
++            store.update_user_settings(cx, update);
++        });
++        let settings = AgentSettings::get_global(cx);
++        [
++            default_display(ToolCardKind::Terminal, settings),
++            default_display(ToolCardKind::Edit, settings),
++            default_display(ToolCardKind::Tool, settings),
++        ]
++    })
++}
++
++use ToolCardDisplay::{Collapsed, Maximized, Minimized};
++
++/// Nothing chosen: every kind keeps the look it had — upstream expands terminals and edits, and a
++/// tool's title is one line.
++#[gpui::test]
++fn without_a_choice_each_kind_keeps_its_old_look(cx: &mut TestAppContext) {
++    assert_eq!(with_settings(cx, |_| {}), [Maximized, Maximized, Collapsed]);
++}
++
++#[gpui::test]
++fn with_upstreams_expand_off_a_terminal_shows_its_command_and_an_edit_its_title(
++    cx: &mut TestAppContext,
++) {
++    let defaults = with_settings(cx, |settings| {
++        let agent = settings.agent.get_or_insert_default();
++        agent.expand_terminal_card = Some(false);
++        agent.expand_edit_card = Some(false);
++    });
++    assert_eq!(defaults, [Minimized, Collapsed, Collapsed]);
++}
++
++/// A kind's own choice wins over upstream's `expand_*_card`.
++#[gpui::test]
++fn a_kinds_own_choice_wins(cx: &mut TestAppContext) {
++    let defaults = with_settings(cx, |settings| {
++        let agent = settings.agent.get_or_insert_default();
++        agent.expand_terminal_card = Some(true);
++        agent.terminal_card_default = Some(Collapsed);
++        agent.edit_card_default = Some(Minimized);
++        agent.tool_card_default = Some(Maximized);
++    });
++    assert_eq!(defaults, [Collapsed, Minimized, Maximized]);
++}
++
++#[test]
++fn a_click_steps_through_the_three_states_and_round() {
++    assert_eq!(next_display(Collapsed, true), Minimized);
++    assert_eq!(next_display(Minimized, true), Maximized);
++    assert_eq!(next_display(Maximized, true), Collapsed);
++}
++
++#[test]
++fn a_card_with_nothing_to_show_steps_between_two() {
++    assert_eq!(next_display(Collapsed, false), Minimized);
++    assert_eq!(next_display(Minimized, false), Collapsed);
++}
++
++/// The menu keeps upstream's `expand_*_card` in step, so the Settings page agrees with it.
++#[test]
++fn the_menu_writes_the_kind_and_keeps_expand_in_step() {
++    let mut settings = SettingsContent::default();
++    set_default_display(&mut settings, ToolCardKind::Terminal, Collapsed);
++    set_default_display(&mut settings, ToolCardKind::Edit, Maximized);
++    set_default_display(&mut settings, ToolCardKind::Tool, Minimized);
++    let agent = settings.agent.expect("written");
++    assert_eq!(agent.terminal_card_default, Some(Collapsed));
++    assert_eq!(agent.expand_terminal_card, Some(false));
++    assert_eq!(agent.edit_card_default, Some(Maximized));
++    assert_eq!(agent.expand_edit_card, Some(true));
++    assert_eq!(agent.tool_card_default, Some(Minimized));
++}
+diff --git a/crates/settings_content/src/agent.rs b/crates/settings_content/src/agent.rs
+index 5ee2c1f..b092e8a 100644
+--- a/crates/settings_content/src/agent.rs
++++ b/crates/settings_content/src/agent.rs
+@@ -97,6 +97,31 @@ pub enum ThinkingBlockDisplay {
+     AlwaysCollapsed,
+ }
+ 
++/// The three states of a tool, terminal or edit card in the agent panel (Zeo next proposal
++/// §6.44, ask 68).
++#[derive(
++    Clone,
++    Copy,
++    Debug,
++    PartialEq,
++    Eq,
++    Serialize,
++    Deserialize,
++    JsonSchema,
++    MergeFrom,
++    strum::VariantArray,
++    strum::VariantNames,
++)]
++#[serde(rename_all = "snake_case")]
++pub enum ToolCardDisplay {
++    /// One line: the icon and the start of the command or title, cut with `…`.
++    Collapsed,
++    /// The whole command or title, wrapped; no output.
++    Minimized,
++    /// The command or title and the card's content: terminal output, diff, input and output.
++    Maximized,
++}
++
+ /// Where a pending form elicitation -- a question the agent asks -- is shown.
+ #[derive(
+     Clone,
+@@ -436,6 +461,22 @@ pub struct AgentSettingsContent {
+     ///
+     /// Default: true
+     pub expand_terminal_card: Option<bool>,
++    /// How a terminal card first appears: collapsed (one line of the command), minimized (the
++    /// whole command) or maximized (the command and its output). When set, it takes precedence
++    /// over `expand_terminal_card`. Zeo next proposal §6.44.
++    ///
++    /// Default: maximized while `expand_terminal_card` is on, minimized otherwise
++    pub terminal_card_default: Option<ToolCardDisplay>,
++    /// How an edit card first appears: collapsed, minimized (the whole title) or maximized (the
++    /// diff). When set, it takes precedence over `expand_edit_card`. Zeo next proposal §6.44.
++    ///
++    /// Default: maximized while `expand_edit_card` is on, collapsed otherwise
++    pub edit_card_default: Option<ToolCardDisplay>,
++    /// How any other tool call card (read, search, MCP) first appears: collapsed, minimized (the
++    /// whole title) or maximized (its input and output). Zeo next proposal §6.44.
++    ///
++    /// Default: collapsed
++    pub tool_card_default: Option<ToolCardDisplay>,
+     /// Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
+     /// The command is sent to the shell as if typed, so it is interpreted by your
+     /// configured shell (including on Windows and remote/WSL projects).
+diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_data.rs
+index 103877a..a0d7c5e 100644
+--- a/crates/settings_ui/src/page_data.rs
++++ b/crates/settings_ui/src/page_data.rs
+@@ -9567,6 +9567,54 @@ fn ai_page(cx: &App) -> SettingsPage {
+                 metadata: None,
+                 files: USER,
+             }),
++            SettingsPageItem::SettingItem(SettingItem {
++                title: "Terminal Card Default",
++                description: "How a terminal card first appears: collapsed (one line of the command), minimized (the whole command) or maximized (the command and its output). Takes precedence over Expand Terminal Card when set.",
++                field: Box::new(SettingField {
++                    organization_override: None,
++                    json_path: Some("agent.terminal_card_default"),
++                    pick: |settings_content| {
++                        settings_content.agent.as_ref()?.terminal_card_default.as_ref()
++                    },
++                    write: |settings_content, value, _| {
++                        settings_content.agent.get_or_insert_default().terminal_card_default = value;
++                    },
++                }),
++                metadata: None,
++                files: USER,
++            }),
++            SettingsPageItem::SettingItem(SettingItem {
++                title: "Edit Card Default",
++                description: "How an edit card first appears: collapsed (one line), minimized (the whole title) or maximized (the diff). Takes precedence over Expand Edit Card when set.",
++                field: Box::new(SettingField {
++                    organization_override: None,
++                    json_path: Some("agent.edit_card_default"),
++                    pick: |settings_content| {
++                        settings_content.agent.as_ref()?.edit_card_default.as_ref()
++                    },
++                    write: |settings_content, value, _| {
++                        settings_content.agent.get_or_insert_default().edit_card_default = value;
++                    },
++                }),
++                metadata: None,
++                files: USER,
++            }),
++            SettingsPageItem::SettingItem(SettingItem {
++                title: "Tool Card Default",
++                description: "How any other tool call card first appears: collapsed (one line), minimized (the whole title) or maximized (its input and output).",
++                field: Box::new(SettingField {
++                    organization_override: None,
++                    json_path: Some("agent.tool_card_default"),
++                    pick: |settings_content| {
++                        settings_content.agent.as_ref()?.tool_card_default.as_ref()
++                    },
++                    write: |settings_content, value, _| {
++                        settings_content.agent.get_or_insert_default().tool_card_default = value;
++                    },
++                }),
++                metadata: None,
++                files: USER,
++            }),
+             SettingsPageItem::SettingItem(SettingItem {
+                 title: "Terminal Thread Init Command",
+                 description: "Command to automatically run when Zed creates a Terminal Thread shell in the agent panel. Runs in your configured shell.",
+diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/settings_ui.rs
+index 9b2072c..01b3cf4 100644
+--- a/crates/settings_ui/src/settings_ui.rs
++++ b/crates/settings_ui/src/settings_ui.rs
+@@ -641,6 +641,7 @@ fn init_renderers(cx: &mut App) {
+         .add_basic_renderer::<settings::NotifyWhenAgentWaiting>(render_dropdown)
+         .add_basic_renderer::<settings::PlaySoundWhenAgentDone>(render_dropdown)
+         .add_basic_renderer::<settings::ThinkingBlockDisplay>(render_dropdown)
++        .add_basic_renderer::<settings::ToolCardDisplay>(render_dropdown)
+         .add_basic_renderer::<settings::ImageFileSizeUnit>(render_dropdown)
+         .add_basic_renderer::<settings::StatusStyle>(render_dropdown)
+         .add_basic_renderer::<settings::GitPanelClickBehavior>(render_dropdown)
