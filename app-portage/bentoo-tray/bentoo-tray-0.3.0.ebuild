@@ -11,7 +11,7 @@ HOMEPAGE="https://github.com/obentoo/bentoolkit"
 # version of its own (internal/tray/version/VERSION); BENTOOLKIT_PV is the
 # bentoolkit release that ships this tray version. It shares
 # app-portage/bentoolkit's distfile rather than fetching the same tag twice.
-BENTOOLKIT_PV="0.40.2"
+BENTOOLKIT_PV="0.44.0"
 SRC_URI="https://github.com/obentoo/bentoolkit/archive/refs/tags/v${BENTOOLKIT_PV}.tar.gz -> bentoolkit-${BENTOOLKIT_PV}.tar.gz"
 # The release's vendor tarball (the tag's `go mod vendor`) unpacks into the
 # same ${S}, so the build needs no network access.
@@ -21,7 +21,10 @@ S="${WORKDIR}/bentoolkit-${BENTOOLKIT_PV}"
 LICENSE="MIT"
 SLOT="0"
 KEYWORDS="~amd64"
-IUSE="systemd"
+# The languages the release translates, as L10N names; po/ spells them with
+# an underscore (pt-BR -> po/pt_BR.po).
+L10N_LOCALES=( es pt-BR ru zh-CN )
+IUSE="systemd ${L10N_LOCALES[*]/#/l10n_}"
 
 # Everything else it talks to is a D-Bus service of the desktop session (the
 # notification server, the StatusNotifierHost, the OpenURI portal, and
@@ -34,6 +37,13 @@ RDEPEND="x11-misc/xdg-utils"
 # this package decides the standard library it links: 1.27.3 carries
 # GO-2026-6859 (net/http), fixed in 1.27.4.
 BDEPEND=">=dev-lang/go-1.27.4"
+# msgfmt compiles the catalogs of the enabled languages.
+BDEPEND+="
+	l10n_es? ( sys-devel/gettext )
+	l10n_pt-BR? ( sys-devel/gettext )
+	l10n_ru? ( sys-devel/gettext )
+	l10n_zh-CN? ( sys-devel/gettext )
+"
 
 src_prepare() {
 	default
@@ -53,13 +63,29 @@ src_compile() {
 	local ldflags="-X ${version_pkg}.Version=${BENTOOLKIT_PV}"
 	ldflags+=" -X ${version_pkg}.Commit=release"
 	ldflags+=" -X ${version_pkg}.BuildDate=${build_date}"
+	ldflags+=" -X github.com/obentoo/bentoolkit/internal/common/i18n.LocaleDir=${EPREFIX}/usr/share/locale"
 
 	# Upstream builds the tray pure Go: its D-Bus client needs no C library.
 	CGO_ENABLED=0 ego build -ldflags "${ldflags}" -o bentoo-tray ./cmd/bentoo-tray
+
+	# The tray's catalog: bentoo's messages under the tray's own name, so this
+	# package and app-portage/bentoolkit never install the same file.
+	local l po
+	for l in "${L10N_LOCALES[@]}"; do
+		use "l10n_${l}" || continue
+		po=${l/-/_}
+		mkdir -p "locale/${po}/LC_MESSAGES" || die
+		msgfmt --check -o "locale/${po}/LC_MESSAGES/bentoo-tray.mo" "po/${po}.po" ||
+			die "msgfmt failed for po/${po}.po"
+	done
 }
 
 src_install() {
 	dobin bentoo-tray
+	if [[ -d locale ]]; then
+		insinto /usr/share
+		doins -r locale
+	fi
 	domenu misc/tray/bentoo-tray.desktop
 	local icon
 	for icon in bentoo-tray bentoo-tray-unread bentoo-tray-critical; do

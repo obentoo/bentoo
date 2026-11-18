@@ -18,11 +18,21 @@ SRC_URI="
 LICENSE="MIT"
 SLOT="0"
 KEYWORDS="~amd64"
-IUSE="+secure kde +browser +system-snapshot systemd"
+# The languages the release translates, as L10N names; po/ spells them with
+# an underscore (pt-BR -> po/pt_BR.po).
+L10N_LOCALES=( es pt-BR ru zh-CN )
+IUSE="+secure kde +browser +system-snapshot systemd ${L10N_LOCALES[*]/#/l10n_}"
 # go.mod declares go 1.27.0 with toolchain go1.27.4, but the Go that builds
 # this package decides the standard library it links: 1.27.3 carries
 # GO-2026-6859 (net/http), fixed in 1.27.4.
 BDEPEND=">=dev-lang/go-1.27.4"
+# msgfmt compiles the catalogs of the enabled languages.
+BDEPEND+="
+	l10n_es? ( sys-devel/gettext )
+	l10n_pt-BR? ( sys-devel/gettext )
+	l10n_ru? ( sys-devel/gettext )
+	l10n_zh-CN? ( sys-devel/gettext )
+"
 
 # browser? enables the chromedp backend, which drives an already-installed
 # Chrome/Chromium over the DevTools Protocol (it does not download a browser).
@@ -59,6 +69,7 @@ src_compile() {
 	local ldflags="-X ${version_pkg}.Version=${PV}"
 	ldflags+=" -X ${version_pkg}.Commit=release"
 	ldflags+=" -X ${version_pkg}.BuildDate=${build_date}"
+	ldflags+=" -X github.com/obentoo/bentoolkit/internal/common/i18n.LocaleDir=${EPREFIX}/usr/share/locale"
 
 	# The "script" version parser (headless-browser backend used by some
 	# autoupdate packages) lives behind a build tag; without one the binary
@@ -68,11 +79,25 @@ src_compile() {
 	use browser && gotags="-tags chromedp"
 
 	ego build ${gotags} -ldflags "${ldflags}" -o bentoo ./cmd/bentoo
+
+	local l po
+	for l in "${L10N_LOCALES[@]}"; do
+		use "l10n_${l}" || continue
+		po=${l/-/_}
+		mkdir -p "locale/${po}/LC_MESSAGES" || die
+		msgfmt --check -o "locale/${po}/LC_MESSAGES/bentoolkit.mo" "po/${po}.po" ||
+			die "msgfmt failed for po/${po}.po"
+	done
 }
 
 src_install() {
 	dobin bentoo
 	einstalldocs
+
+	if [[ -d locale ]]; then
+		insinto /usr/share
+		doins -r locale
+	fi
 
 	if use secure; then
 		insinto /etc/bash/bashrc.d
