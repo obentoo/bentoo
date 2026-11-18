@@ -2591,6 +2591,7 @@ url = "https://api.github.com/repos/chromium-linux-tarballs/chromium-tarballs/re
 parser = "json"
 path = "tag_name"
 headers = { "User-Agent" = "bentoo-autoupdate" }
+series = '^158\.'
 version = "158.0.8127.36"
 comments = """
 chromium — probes the TARBALL repo, not chromiumdash or the Chrome release
@@ -2738,6 +2739,32 @@ Version: line of third_party/typescript/README.chromium -- src_prepare dies on
 a mismatch -- and bump dev-lang/typescript{,-bin} to it first. Both packages
 must carry that exact version: the copied compiler reads the patched
 lib.*.d.ts the tarball ships beside it.
+
+SERIES GATE (since 2026-11-18). 158.0.8127.36 arrived as a PV-only copy of 157
+-- the cross-series swap this comment forbids -- and died in src_prepare for a
+user. `series = '^158\\.'` makes that mechanical: point releases inside 158 stay
+in the sweep, and once upstream's latest is 159 `--check` reports "manual
+promotion" and queues nothing. Moving the gate is part of the human bump.
+
+What the 157 -> 158 jump needed, every item invisible to this probe -- check
+each again on the next series:
+  - dev-build/gn: GN_MIN_VER follows gn_version in DEPS (158 needed 0.2603;
+    .gn used a setting 0.2578 does not know). See that record.
+  - Crubit: 158 set enable_cpp_api_from_rust = enable_rust &&
+    build_with_chromium, dropping the toolchain conditions, so gn gen asserted
+    on an empty rust_crubit_root. files/chromium-158-crubit-needs-root.patch
+    keeps it false without a Crubit root; every *-crubit patch relies on that.
+  - Rebased: blink-fonts-cxx-not-crubit (four new IFT calls on the cxx bridge)
+    and fix-rust-2-oxidize-harder (only the clippy-driver hunk is left).
+    chromium-patches toolchain/cr149-fix-rust.patch went upstream and is rm'd.
+  - keeplibs: khronos and libsecret were gone; oak/src/oak_session/tls was new.
+    `ninja -t inputs chrome chromedriver chrome_sandbox` after configure names
+    every input the unbundling deleted at once, instead of one per build.
+  - Still stale: BUNDLED_CLANG_VER / BUNDLED_RUST_VER (USE=bundled-toolchain).
+
+Verified 2026-11-18 unprivileged, 8 cores, USE=-bundled-toolchain, LLVM_SLOT=23:
+clean prepare + configure, gn gen "Made 36606 targets", no missing ninja input,
+30 s of compile (201/57397 steps, 0 FAILED). A full build was not run.
 """
 # END
 
@@ -9356,7 +9383,7 @@ url = "https://deps.gentoo.zip/dev-build/gn/"
 parser = "regex"
 pattern = 'gn-([0-9][0-9.]*)\.tar\.xz'
 select = "max"
-version = "0.2578"
+version = "0.2603"
 comments = """
 gn — deps.gentoo.zip lists tarballs in ascending order; select=max picks the
 highest (was SKIP: assumed git-only, but the mirror does host versioned tarballs).
@@ -9386,9 +9413,17 @@ WHAT IT MEANS: while that number is BELOW our PV, ::gentoo is still behind and
 the self-hosting stays. Once it reaches or passes our PV, the self-hosting can be
 retired — drop GN_COMMIT and the recipe, point SRC_URI back at deps.gentoo.zip,
 and this record goes back to being an ordinary bump signal with hold removed.
-LAST OBSERVED 2026-09-25: 0.2527 against our 0.2540 — vercmp = -1, still behind.
+LAST OBSERVED 2026-11-18: 0.2527 against our 0.2603 — vercmp = -1, still behind.
 (0.2540 is the gn pinned by chromium-154 DEPS; 0.2501 lacked 664f3e63,
 "Support public_inputs in group targets", which devtools-frontend needs.)
+
+0.2603 (2026-11-18) is gn 938087829fcb, the gn_version chromium-158 pins in
+DEPS. 158's .gn sets no_check_generated_targets, which gn learned in
+f82afe92417e (0.2594); 0.2578 dies in gn gen with "Assignment had no effect".
+The recipe in the ebuild reproduced the published gn-0.2578.tar.xz byte for
+byte, and the uploaded gn-0.2603.tar.xz was fetched back and matched the
+Manifest. On every chromium series jump, read gn_version in its DEPS and
+`git describe` it here before anything else.
 """
 # END
 
