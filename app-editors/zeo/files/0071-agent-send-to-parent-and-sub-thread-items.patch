@@ -96,6 +96,14 @@ registry, beside the adapter's feed.
 It lands here because 0071 is the last patch of the group that touches
 tasks_card.rs, the history and the panel. 46 tests.
 
+Portability (2026-11-18): the literal 1s and 0s in this patch's sql! queries
+are parenthesised, `archived = (1) AND`. sqlez_macros rebuilds the query from
+tokens, adding a space only after an identifier, and outside Linux checks it
+with SQLite at compile time: `archived = 1 AND` reached it as "1AND", an
+unrecognized token, and the Windows build failed. The SQL that runs is the
+formatted one, so behaviour is unchanged; Linux skips the check, which is why
+it never showed here.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -120,7 +128,7 @@ index 21945b6..3fe7e3b 100644
 +#[cfg(test)]
 +mod native_subagent_support;
 diff --git a/crates/agent_tasks_panel/src/history_db.rs b/crates/agent_tasks_panel/src/history_db.rs
-index 9dc81c8..eb29f5b 100644
+index 9dc81c8..8d39383 100644
 --- a/crates/agent_tasks_panel/src/history_db.rs
 +++ b/crates/agent_tasks_panel/src/history_db.rs
 @@ -39,12 +39,16 @@ use db::{
@@ -231,15 +239,15 @@ index 9dc81c8..eb29f5b 100644
 +                    let mut archived =
 +                        connection.select_row_bound::<(&str, &str), String>(sql!(
 +                            SELECT origin FROM agent_task_history
-+                            WHERE session_id = ?1 AND task_id = ?2 AND archived = 1 AND deleted = 0
++                            WHERE session_id = ?1 AND task_id = ?2 AND archived = (1) AND deleted = 0
 +                        ))?;
 +                    let mut delete = connection.exec_bound(sql!(
 +                        DELETE FROM agent_task_history
-+                        WHERE session_id = ?1 AND task_id = ?2 AND archived = 1 AND origin != ?3
++                        WHERE session_id = ?1 AND task_id = ?2 AND archived = (1) AND origin != ?3
 +                    ))?;
 +                    let mut tombstone = connection.exec_bound(sql!(
-+                        UPDATE agent_task_history SET deleted = 1
-+                        WHERE session_id = ?1 AND task_id = ?2 AND archived = 1 AND origin = ?3
++                        UPDATE agent_task_history SET deleted = (1)
++                        WHERE session_id = ?1 AND task_id = ?2 AND archived = (1) AND origin = ?3
 +                    ))?;
 +                    let sub_thread = TaskOrigin::SubThread.as_text();
 +                    let mut removed = Vec::new();
@@ -283,7 +291,7 @@ index 9dc81c8..eb29f5b 100644
 -                log_bytes
 +                log_bytes, origin
              FROM agent_task_history
-+            WHERE deleted = 0
++            WHERE deleted = (0)
              ORDER BY started_at DESC, session_id, task_id
          ))?()
          .context("loading the agent task history")?;
@@ -712,7 +720,7 @@ index 0000000..70f426a
 +}
 diff --git a/crates/agent_tasks_panel/src/history_db/sub_thread.rs b/crates/agent_tasks_panel/src/history_db/sub_thread.rs
 new file mode 100644
-index 0000000..251e1e3
+index 0000000..96720a0
 --- /dev/null
 +++ b/crates/agent_tasks_panel/src/history_db/sub_thread.rs
 @@ -0,0 +1,135 @@
@@ -837,7 +845,7 @@ index 0000000..251e1e3
 +    pub async fn deleted_sub_thread_keys(&self) -> Result<Vec<TaskKey>> {
 +        let keys = self.select_bound::<&str, (String, String)>(sql!(
 +            SELECT session_id, task_id FROM agent_task_history
-+            WHERE deleted = 1 AND origin = ?1
++            WHERE deleted = (1) AND origin = ?1
 +        ))?(TaskOrigin::SubThread.as_text())
 +        .context("loading the deleted sub-thread items")?;
 +        Ok(keys

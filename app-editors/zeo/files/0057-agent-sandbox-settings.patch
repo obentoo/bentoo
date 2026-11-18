@@ -149,6 +149,13 @@ launch::jailed_on_next_start reads what the restart would apply. Tests:
 pending_tests (pure) and agent_jail_status_jail_turned_on_shows_the_
 pending_closed_lock (GUI); Red seen with with_pending made a no-op.
 
+Portability (2026-11-17, ZEO-PLATFORMS-PROPOSAL W1): probe.rs keyed its
+cache on `std::os::unix::fs::MetadataExt` (dev, ino, m/ctime nanoseconds),
+which broke every Windows build of the crates that depend on agent_sandbox.
+It is `#[cfg(unix)]` now; off Unix the identity is length plus `modified()`,
+enough to notice a replaced file. ai-jail runs nowhere but Linux, so on
+Windows the sandbox reads as unavailable.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -6278,10 +6285,10 @@ index 0000000..624400c
 +}
 diff --git a/crates/agent_sandbox/src/probe.rs b/crates/agent_sandbox/src/probe.rs
 new file mode 100644
-index 0000000..3a78859
+index 0000000..4895ab4
 --- /dev/null
 +++ b/crates/agent_sandbox/src/probe.rs
-@@ -0,0 +1,387 @@
+@@ -0,0 +1,408 @@
 +//! Locating ai-jail, reading its version and whether it offers `--forward-port`.
 +//!
 +//! The answer is cached per binary identity, so an agent start costs one `stat` once warm.
@@ -6289,6 +6296,7 @@ index 0000000..3a78859
 +use std::collections::HashMap;
 +use std::fmt;
 +use std::io;
++#[cfg(unix)]
 +use std::os::unix::fs::MetadataExt as _;
 +use std::path::{Path, PathBuf};
 +use std::pin::pin;
@@ -6632,15 +6640,35 @@ index 0000000..3a78859
 +fn identify(path: &Path) -> Option<(PathBuf, BinaryIdentity)> {
 +    let canonical = std::fs::canonicalize(path).ok()?;
 +    let metadata = std::fs::metadata(&canonical).ok()?;
-+    let nanos = |seconds: i64, nanoseconds: i64| {
-+        i128::from(seconds) * 1_000_000_000 + i128::from(nanoseconds)
++    #[cfg(unix)]
++    let identity = {
++        let nanos = |seconds: i64, nanoseconds: i64| {
++            i128::from(seconds) * 1_000_000_000 + i128::from(nanoseconds)
++        };
++        BinaryIdentity {
++            dev: metadata.dev(),
++            ino: metadata.ino(),
++            len: metadata.len(),
++            mtime: nanos(metadata.mtime(), metadata.mtime_nsec()),
++            ctime: nanos(metadata.ctime(), metadata.ctime_nsec()),
++        }
 +    };
++    // Off Unix there is no inode or ctime to read, and ai-jail does not run there anyway: the
++    // length and modification time are enough to keep this cache from answering for a
++    // replaced file.
++    #[cfg(not(unix))]
 +    let identity = BinaryIdentity {
-+        dev: metadata.dev(),
-+        ino: metadata.ino(),
++        dev: 0,
++        ino: 0,
 +        len: metadata.len(),
-+        mtime: nanos(metadata.mtime(), metadata.mtime_nsec()),
-+        ctime: nanos(metadata.ctime(), metadata.ctime_nsec()),
++        mtime: metadata
++            .modified()
++            .ok()
++            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
++            .map_or(0, |since| {
++                i128::try_from(since.as_nanos()).unwrap_or(i128::MAX)
++            }),
++        ctime: 0,
 +    };
 +    Some((canonical, identity))
 +}

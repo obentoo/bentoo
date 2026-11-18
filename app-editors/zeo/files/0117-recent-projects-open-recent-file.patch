@@ -60,6 +60,14 @@ opening in the same window; the File menu's two entries; the empty
 state; and the history surviving a restart on the same data). Not
 covered: a remote project (recording is skipped there; no test), non-
 UTF-8 paths.
+
+Portability (2026-11-18): the seq expression is parenthesised,
+`(IFNULL(MAX(seq), 0) + 1) FROM`. sqlez_macros rebuilds the query from tokens,
+adding a space only after an identifier, and outside Linux checks it with
+SQLite at compile time: `+ 1 FROM` reached it as "1FROM", an unrecognized
+token, and the Windows build failed. The SQL that runs is the formatted one, so
+behaviour is unchanged; Linux skips the check.
+
 ---
 
 diff --git a/crates/recent_projects/src/recent_files.rs b/crates/recent_projects/src/recent_files.rs
@@ -448,7 +456,7 @@ index 0000000..807c309
 +mod recent_files_tests;
 diff --git a/crates/recent_projects/src/recent_files_db.rs b/crates/recent_projects/src/recent_files_db.rs
 new file mode 100644
-index 0000000..825ce7e
+index 0000000..ea6d709
 --- /dev/null
 +++ b/crates/recent_projects/src/recent_files_db.rs
 @@ -0,0 +1,62 @@
@@ -494,7 +502,7 @@ index 0000000..825ce7e
 +    query! {
 +        pub(crate) async fn record_file(abs_path: String) -> Result<()> {
 +            INSERT INTO recent_files(abs_path, seq)
-+            VALUES ((?), (SELECT IFNULL(MAX(seq), 0) + 1 FROM recent_files))
++            VALUES ((?), (SELECT (IFNULL(MAX(seq), 0) + 1) FROM recent_files))
 +            ON CONFLICT(abs_path) DO UPDATE SET seq = excluded.seq;
 +            DELETE FROM recent_files
 +            WHERE seq <= (SELECT MAX(seq) FROM recent_files) - 200;

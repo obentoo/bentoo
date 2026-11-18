@@ -77,6 +77,13 @@ no ending: a child whose first observed status is already terminal is history,
 not news, while a live Running -> Done still notifies. 10 tests
 (tray/subagent_tests.rs, restored_outcome_tests.rs, declared from tray.rs).
 
+Portability (2026-11-17, ZEO-PLATFORMS-PROPOSAL W1): the socket half of
+tray.rs -- `UnixDatagram`, `socket_path`, `SOCKET_NAME` -- is `#[cfg(unix)]`,
+and off Unix `send` returns Ok(()) without sending: zeo-systray is a
+StatusNotifierItem over D-Bus, so there is nothing to reach there. Before
+this, `mod tray` broke `agent_ui` on a Windows build. The datagram builders
+stay portable; the tray tests still use Unix sockets and run on Linux only.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -659,10 +666,10 @@ index 0000000..f863c60
 +}
 diff --git a/crates/agent_ui/src/tasks_card/tray.rs b/crates/agent_ui/src/tasks_card/tray.rs
 new file mode 100644
-index 0000000..ebf7884
+index 0000000..3d005ab
 --- /dev/null
 +++ b/crates/agent_ui/src/tasks_card/tray.rs
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,228 @@
 +//! The tray sender: when a task ends out of view, tell `zeo-systray` over its
 +//! datagram socket (story 013, patch `0038`).
 +//!
@@ -671,9 +678,10 @@ index 0000000..ebf7884
 +//! tray's: identifiers, a path, labels, an outcome and a duration. A task's
 +//! description, summary and command line are model-written and never leave Zeo.
 +
++#[cfg(unix)]
++use std::os::unix::net::UnixDatagram;
 +use std::{
 +    io,
-+    os::unix::net::UnixDatagram,
 +    path::{Path, PathBuf},
 +    sync::atomic::{AtomicBool, Ordering},
 +    time::{Duration, SystemTime},
@@ -714,6 +722,7 @@ index 0000000..ebf7884
 +const NO_PROJECT: &str = "Zeo";
 +
 +/// The daemon's socket under `$XDG_RUNTIME_DIR` — `zeo-systray`'s `SOCKET_NAME`.
++#[cfg(unix)]
 +const SOCKET_NAME: &str = "zeo-systray.sock";
 +
 +/// The longest thread title a datagram carries, in characters. ACP bounds no
@@ -835,6 +844,7 @@ index 0000000..ebf7884
 +/// No runtime dir means no daemon to reach: `Ok(())`, and nothing is sent. An
 +/// absent socket, a refused send or a full queue — `WouldBlock`, since the socket
 +/// is non-blocking — is an `Err` for the caller to drop.
++#[cfg(unix)]
 +pub(crate) fn send(datagram: &TaskOutcomeDatagram) -> io::Result<()> {
 +    let Some(path) = socket_path() else {
 +        return Ok(());
@@ -847,11 +857,19 @@ index 0000000..ebf7884
 +    Ok(())
 +}
 +
++/// Off Unix there is no `zeo-systray` to tell: it is a StatusNotifierItem over
++/// D-Bus, so Windows and macOS builds send nothing and report success.
++#[cfg(not(unix))]
++pub(crate) fn send(_datagram: &TaskOutcomeDatagram) -> io::Result<()> {
++    Ok(())
++}
++
 +/// `$XDG_RUNTIME_DIR/zeo-systray.sock`, or `None` without a usable runtime dir.
 +///
 +/// Never a fallback such as `/tmp`: it is world-writable, so anyone could bind
 +/// the socket name there first and read every outcome Zeo sends. A relative
 +/// value — an empty one included — is ignored, as the XDG spec asks.
++#[cfg(unix)]
 +fn socket_path() -> Option<PathBuf> {
 +    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
 +    dir.is_absolute().then(|| dir.join(SOCKET_NAME))

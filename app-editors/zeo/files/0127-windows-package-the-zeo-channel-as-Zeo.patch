@@ -1,0 +1,387 @@
+From 1e6e25892439d0129801ccf62362138444c98ec3 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 17 Nov 2026 14:15:51 -0300
+Subject: [PATCH] windows: package the zeo channel as Zeo
+
+Zed's Windows packaging knew four channels -- stable, preview, nightly,
+dev -- and the rebrand never reached it, so a Windows build of the series
+failed or came out as Zed: bundle-windows.ps1 copied zed.exe, which patch
+0020 renamed to zeo, and its installer switch exited on any channel it did
+not know; windows_resources gave the zeo channel the "Zed Dev" name and
+icon under "Zed Industries, Inc."; zed.iss registered zed:// and named Zed
+Industries as the publisher. This is step W2 of
+docs/ZEO-PLATFORMS-PROPOSAL.md in the hub (2026-11-17).
+
+For the zeo channel:
+
+- windows_resources: icon app-icon-zeo.ico, product name Zeo, company Zeo,
+  and a copyright line that still credits Zed Industries for the code.
+  Zeo is not affiliated with Zed Industries and does not ship as theirs.
+- bundle-windows.ps1 builds the editor and the CLI only, as Zeo.exe and
+  bin\zeo.exe (the names 0023's launcher looks for), plus bin\zeo for WSL.
+  It skips what Zeo does not ship: auto_update_helper (0021 turns update
+  polling off), the Windows remote server (0124 serves Linux hosts only),
+  and the Explorer context-menu package, which needs Zed's signing
+  identity. The installer gets its own AppId GUID, so Zeo installs beside
+  any Zed rather than over it; the mutex is Zeo-Editor-Instance-Mutex,
+  matching 0021's app_identifier(); the AppUserModelID is dev.zeo.Zeo, the
+  Wayland app_id.
+- zed.iss, under `#ifdef Zeo` (defined by the script): Zeo as publisher,
+  no updates URL, no Zed terms page (they cover Zed Industries' services),
+  zeo:// instead of zed://, no tools\ or appx\ files, the classic context
+  menu on every Windows version, and the Linux zeo-remote-server installed
+  beside the editor when the build provides one.
+- Zeo's version: the caller's RELEASE_VERSION (0.13.0_p20261114) is kept.
+  ParseZedWorkspace would overwrite it with the zed crate's (upstream's
+  1.30.0), which zed.rs embeds for the About window. Inno's
+  VersionInfoVersion takes numbers only, so it gets the version without
+  the _pYYYYMMDD suffix (AppVersion keeps the whole string). Both found
+  before the first Windows run, while writing W4 (2026-11-17).
+
+Every other channel builds exactly as before. Two upstream changes reach
+them too, both inert unless used: the AGS and ConPTY archives are taken
+from the working directory when already there, so a build can run offline
+with inputs pinned by hash; and zed.iss names the editor `{#AppExeName}.exe`
+where it said Zed.exe, which every Zed channel defines as Zed.
+
+The icon is not in this patch: GNU patch refuses binary hunks, so the
+Windows build copies zeo/brand/rendered/app-icon-zeo.ico into
+crates/zed/resources/windows/ first, as src_prepare does with the PNGs.
+zeo/brand/build-ico.sh builds it from the brand SVG.
+
+Not proven here: PowerShell and Inno Setup do not run on the Linux host
+that wrote this. windows_resources is formatted and builds only on
+Windows. The first proof is the Windows build guest (W3/W4).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/windows_resources/src/windows_resources.rs b/crates/windows_resources/src/windows_resources.rs
+index 3cc5e5e..472cb52 100644
+--- a/crates/windows_resources/src/windows_resources.rs
++++ b/crates/windows_resources/src/windows_resources.rs
+@@ -47,8 +47,23 @@ pub fn compile(manifest: bool) -> Result<(), Box<dyn std::error::Error>> {
+         "stable" => ("app-icon.ico", "Zed"),
+         "preview" => ("app-icon-preview.ico", "Zed Preview"),
+         "nightly" => ("app-icon-nightly.ico", "Zed Nightly"),
++        // The art is not in the patch series (GNU patch takes no binary hunk): the Windows
++        // build copies zeo/brand/rendered/app-icon-zeo.ico in first.
++        "zeo" => ("app-icon-zeo.ico", "Zeo"),
+         _ => ("app-icon-dev.ico", "Zed Dev"),
+     };
++    // Zeo is a modified Zed and not a Zed Industries product, so it does not ship under
++    // that company name; the copyright line still credits the code it is built from.
++    let (company_name, legal_copyright) = match channel {
++        "zeo" => (
++            "Zeo",
++            "Copyright 2022 - 2025 Zed Industries, Inc.; modifications by the Zeo contributors",
++        ),
++        _ => (
++            "Zed Industries, Inc.",
++            "Copyright 2022 - 2025 Zed Industries, Inc.",
++        ),
++    };
+     let icon = std::path::PathBuf::from(ICON_DIR).join(icon_filename);
+     let icon_escaped = icon.to_string_lossy().replace('\\', "\\\\");
+ 
+@@ -100,8 +115,8 @@ BEGIN
+             VALUE "FileVersion", "{pkg_version}\0"
+             VALUE "ProductName", "{product_name}\0"
+             VALUE "ProductVersion", "{product_version}\0"
+-            VALUE "CompanyName", "Zed Industries, Inc.\0"
+-            VALUE "LegalCopyright", "Copyright 2022 - 2025 Zed Industries, Inc.\0"
++            VALUE "CompanyName", "{company_name}\0"
++            VALUE "LegalCopyright", "{legal_copyright}\0"
+         END
+     END
+     BLOCK "VarFileInfo"
+diff --git a/crates/zed/resources/windows/zed.iss b/crates/zed/resources/windows/zed.iss
+index b0481da..a8c0704 100644
+--- a/crates/zed/resources/windows/zed.iss
++++ b/crates/zed/resources/windows/zed.iss
+@@ -2,10 +2,18 @@
+ AppId={#AppId}
+ AppName={#AppName}
+ AppVerName={#AppDisplayName}
++; Zeo (zed-patches) is defined by bundle-windows.ps1 for the zeo channel: a modified Zed that is
++; not a Zed Industries product, never updates itself, and has no Explorer package.
++#ifdef Zeo
++AppPublisher=Zeo
++AppPublisherURL=https://github.com/zeo-workspace/zeo
++AppSupportURL=https://github.com/zeo-workspace/zeo/issues
++#else
+ AppPublisher=Zed Industries
+ AppPublisherURL=https://www.zed.dev/
+ AppSupportURL=https://www.zed.dev/
+ AppUpdatesURL=https://www.zed.dev/
++#endif
+ DefaultGroupName={#AppName}
+ DisableProgramGroupPage=yes
+ DisableReadyPage=yes
+@@ -25,7 +33,12 @@ ChangesAssociations=true
+ MinVersion=10.0.16299
+ SourceDir={#SourceDir}
+ AppVersion={#Version}
++#ifdef Zeo
++; Numbers only here: bundle-windows.ps1 strips the _pYYYYMMDD snapshot from Zeo's version.
++VersionInfoVersion={#VersionInfo}
++#else
+ VersionInfoVersion={#Version}
++#endif
+ ShowLanguageDialog=auto
+ WizardStyle=modern
+ 
+@@ -42,8 +55,14 @@ ArchitecturesAllowed=x64compatible
+ ArchitecturesInstallIn64BitMode=x64compatible
+ 
+ [Languages]
++#ifdef Zeo
++; Zed's terms cover Zed Industries' services, which Zeo neither is nor offers.
++Name: "english"; MessagesFile: "compiler:Default.isl,{#ResourcesDir}\messages\en.isl"
++Name: "simplifiedChinese"; MessagesFile: "{#ResourcesDir}\messages\Default.zh-cn.isl,{#ResourcesDir}\messages\zh-cn.isl"
++#else
+ Name: "english"; MessagesFile: "compiler:Default.isl,{#ResourcesDir}\messages\en.isl"; LicenseFile: "script\terms\terms.rtf"
+ Name: "simplifiedChinese"; MessagesFile: "{#ResourcesDir}\messages\Default.zh-cn.isl,{#ResourcesDir}\messages\zh-cn.isl"; LicenseFile: "script\terms\terms.rtf"
++#endif
+ 
+ [UninstallDelete]
+ ; Delete logs
+@@ -65,10 +84,16 @@ Name: "addtopath"; Description: "{cm:AddToPath}"; GroupDescription: "{cm:Other}"
+ Name: "{app}"; AfterInstall: DisableAppDirInheritance
+ 
+ [Files]
+-Source: "{#ResourcesDir}\Zed.exe"; DestDir: "{code:GetInstallDir}"; Flags: ignoreversion
++Source: "{#ResourcesDir}\{#AppExeName}.exe"; DestDir: "{code:GetInstallDir}"; Flags: ignoreversion
+ Source: "{#ResourcesDir}\bin\*"; DestDir: "{code:GetInstallDir}\bin"; Flags: ignoreversion
++#ifndef Zeo
+ Source: "{#ResourcesDir}\tools\*"; DestDir: "{app}\tools"; Flags: ignoreversion
+ Source: "{#ResourcesDir}\appx\*"; DestDir: "{app}\appx";  BeforeInstall: RemoveAppxPackage; AfterInstall: AddAppxPackage; Flags: ignoreversion; Check: IsWindows11OrLater
++#endif
++; Patch 0124 looks for the Linux remote server beside the editor; the Windows build puts it there.
++#ifexist ResourcesDir + "\zeo-remote-server"
++Source: "{#ResourcesDir}\zeo-remote-server"; DestDir: "{code:GetInstallDir}"; Flags: ignoreversion
++#endif
+ #ifexist ResourcesDir + "\amd_ags_x64.dll"
+ Source: "{#ResourcesDir}\amd_ags_x64.dll"; DestDir: "{app}"; Flags: ignoreversion
+ #endif
+@@ -87,8 +112,10 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}.exe"; Tasks: de
+ [Run]
+ Filename: "{app}\{#AppExeName}.exe"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall; Check: WizardNotSilent
+ 
++#ifndef Zeo
+ [UninstallRun]
+ Filename: "powershell.exe"; Parameters: "Invoke-Command -ScriptBlock {{Remove-AppxPackage -Package ""{#AppxFullName}""}"; Check: IsWindows11OrLater; Flags: shellexec waituntilterminated runhidden
++#endif
+ 
+ [Registry]
+ Root: HKCU; Subkey: "Software\Classes\.ascx\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
+@@ -1256,10 +1283,18 @@ Root: HKCU; Subkey: "Software\Classes\Drive\shell\{#RegValueName}\command"; Valu
+ Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{code:AddToPath|{app}\bin}"; Tasks: addtopath; Check: NeedsAddToPath(ExpandConstant('{app}\bin'))
+ 
+ ; URI Scheme
++#ifdef Zeo
++; zeo:// (patch 0022), so Zeo and Zed can both be installed and each keeps its own scheme.
++Root: HKCU; Subkey: "Software\Classes\zeo"; ValueType: "string"; ValueData: "URL:zeo Protocol"; Flags: uninsdeletekey
++Root: HKCU; Subkey: "Software\Classes\zeo"; ValueType: "string"; ValueName: "URL Protocol"; ValueData: ""
++Root: HKCU; Subkey: "Software\Classes\zeo\DefaultIcon"; ValueType: "string"; ValueData: "{app}\{#AppExeName}.exe,1"
++Root: HKCU; Subkey: "Software\Classes\zeo\shell\open\command"; ValueType: "string"; ValueData: """{app}\{#AppExeName}.exe"" ""%1"""
++#else
+ Root: HKCU; Subkey: "Software\Classes\zed"; ValueType: "string"; ValueData: "URL:zed Protocol"; Flags: uninsdeletekey
+ Root: HKCU; Subkey: "Software\Classes\zed"; ValueType: "string"; ValueName: "URL Protocol"; ValueData: ""
+ Root: HKCU; Subkey: "Software\Classes\zed\DefaultIcon"; ValueType: "string"; ValueData: "{app}\Zed.exe,1"
+ Root: HKCU; Subkey: "Software\Classes\zed\shell\open\command"; ValueType: "string"; ValueData: """{app}\Zed.exe"" ""%1"""
++#endif
+ 
+ [Code]
+ function WizardNotSilent(): Boolean;
+@@ -1269,7 +1304,13 @@ end;
+ 
+ function IsWindows11OrLater(): Boolean;
+ begin
++#ifdef Zeo
++  // Every caller picks between Zed's Windows 11 Explorer package and the classic context
++  // menu entries. Zeo ships no package, so it takes the classic entries on every version.
++  Result := False;
++#else
+   Result := (GetWindowsVersion >= $0A0055F0);
++#endif
+ end;
+ 
+ // https://stackoverflow.com/a/23838239/261019
+diff --git a/script/bundle-windows.ps1 b/script/bundle-windows.ps1
+index a8755de..9891f91 100644
+--- a/script/bundle-windows.ps1
++++ b/script/bundle-windows.ps1
+@@ -62,6 +62,11 @@ $env:ZED_RELEASE_CHANNEL = $channel
+ $env:RELEASE_CHANNEL = $channel
+ Pop-Location
+ 
++# Zeo (zed-patches) ships an unsigned Zeo.exe, its CLI and the Linux remote server, and none
++# of Zed's own update or Explorer pieces: the zeo channel never polls for updates, and the
++# Windows 11 context-menu package would need Zed's signing identity.
++$isZeo = $channel -eq "zeo"
++
+ function CheckEnvironmentVariables {
+     if(-not $env:CI) {
+         return
+@@ -115,6 +120,13 @@ function GenerateLicenses {
+ 
+ function BuildZedAndItsFriends {
+     Write-Output "Building Zed and its friends, for channel: $channel"
++    if ($isZeo) {
++        # Patch 0020 names the editor binary zeo.
++        cargo --config .cargo/bundle-config.toml build --release --package zed --package cli --target $target
++        Copy-Item -Path ".\$CargoOutDir\zeo.exe" -Destination "$innoDir\Zeo.exe" -Force
++        Copy-Item -Path ".\$CargoOutDir\cli.exe" -Destination "$innoDir\cli.exe" -Force
++        return
++    }
+     # Build zed.exe, cli.exe and auto-update-helper.exe
+     cargo --config .cargo/bundle-config.toml build --release --package zed --package cli --package auto_update_helper --target $target
+     Copy-Item -Path ".\$CargoOutDir\zed.exe" -Destination "$innoDir\Zed.exe" -Force
+@@ -136,6 +148,11 @@ function BuildZedAndItsFriends {
+ }
+ 
+ function BuildRemoteServer {
++    if ($isZeo) {
++        # Zeo serves Linux hosts only (patch 0124), with the server the portable build makes.
++        Write-Output "Skipping remote_server: the zeo channel serves Linux hosts only"
++        return
++    }
+     Write-Output "Building remote_server for $target"
+     cargo --config .cargo/bundle-config.toml build --release --package remote_server --target $target
+ 
+@@ -157,6 +174,11 @@ function BuildRemoteServer {
+ }
+ 
+ function ZipZedAndItsFriendsDebug {
++    if ($isZeo) {
++        $items = @(".\$CargoOutDir\zeo.pdb", ".\$CargoOutDir\cli.pdb")
++        Compress-Archive -Path $items -DestinationPath ".\$CargoOutDir\zeo-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip" -Force
++        return
++    }
+     $items = @(
+         ".\$CargoOutDir\zed.pdb",
+         ".\$CargoOutDir\cli.pdb",
+@@ -197,6 +219,9 @@ function UploadToSentry {
+ }
+ 
+ function MakeAppx {
++    if ($isZeo) {
++        return
++    }
+     switch ($channel) {
+         "stable" {
+             $manifestFile = "$env:ZED_WORKSPACE\crates\explorer_command_injector\AppxManifest.xml"
+@@ -220,6 +245,10 @@ function SignZedAndItsFriends {
+         return
+     }
+ 
++    if ($isZeo) {
++        & "$innoDir\sign.ps1" "$innoDir\Zeo.exe,$innoDir\cli.exe"
++        return
++    }
+     $files = "$innoDir\Zed.exe,$innoDir\cli.exe,$innoDir\auto_update_helper.exe,$innoDir\zed_explorer_command_injector.dll,$innoDir\zed_explorer_command_injector.appx"
+     & "$innoDir\sign.ps1" $files
+ }
+@@ -228,6 +257,11 @@ function DownloadAMDGpuServices {
+     # If you update the AGS SDK version, please also update the version in `crates/gpui/src/platform/windows/directx_renderer.rs`
+     $url = "https://codeload.github.com/GPUOpen-LibrariesAndSDKs/AGS_SDK/zip/refs/tags/v6.3.0"
+     $zipPath = ".\AGS_SDK_v6.3.0.zip"
++    # An archive put here beforehand (pinned by hash, for an offline build) is used as it is.
++    if (Test-Path $zipPath) {
++        Expand-Archive -Path $zipPath -DestinationPath "." -Force
++        return
++    }
+     # Download the AGS SDK zip file
+     Invoke-WebRequest -Uri $url -OutFile $zipPath
+     # Extract the AGS SDK zip file
+@@ -238,16 +272,27 @@ function DownloadConpty {
+     # TODO: Switch back to the stable channel once Microsoft finally decides to publish v1.26
+     $url = "https://github.com/microsoft/terminal/releases/download/v1.25.1912.0/Microsoft.Windows.Console.ConPTY.1.25.260710002-preview.nupkg"
+     $zipPath = ".\Microsoft.Windows.Console.ConPTY.1.25.260710002-preview.nupkg"
+-    Invoke-WebRequest -Uri $url -OutFile $zipPath
++    # As for AGS: a package put here beforehand is used as it is.
++    if (-not (Test-Path $zipPath)) {
++        Invoke-WebRequest -Uri $url -OutFile $zipPath
++    }
+     Expand-Archive -Path $zipPath -DestinationPath ".\conpty" -Force
+ }
+ 
+ function CollectFiles {
+-    Move-Item -Path "$innoDir\zed_explorer_command_injector.appx" -Destination "$innoDir\appx\zed_explorer_command_injector.appx" -Force
+-    Move-Item -Path "$innoDir\zed_explorer_command_injector.dll" -Destination "$innoDir\appx\zed_explorer_command_injector.dll" -Force
+-    Move-Item -Path "$innoDir\cli.exe" -Destination "$innoDir\bin\zed.exe" -Force
+-    Move-Item -Path "$innoDir\zed.sh" -Destination "$innoDir\bin\zed" -Force
+-    Move-Item -Path "$innoDir\auto_update_helper.exe" -Destination "$innoDir\tools\auto_update_helper.exe" -Force
++    if ($isZeo) {
++        Move-Item -Path "$innoDir\cli.exe" -Destination "$innoDir\bin\zeo.exe" -Force
++        # The WSL launcher calls the CLI by name, and Zeo's CLI is bin\zeo.exe.
++        (Get-Content "$innoDir\zed.sh" -Raw).Replace('zed.exe', 'zeo.exe') |
++            Set-Content -Path "$innoDir\bin\zeo" -NoNewline
++        Remove-Item -Path "$innoDir\zed.sh" -Force
++    } else {
++        Move-Item -Path "$innoDir\zed_explorer_command_injector.appx" -Destination "$innoDir\appx\zed_explorer_command_injector.appx" -Force
++        Move-Item -Path "$innoDir\zed_explorer_command_injector.dll" -Destination "$innoDir\appx\zed_explorer_command_injector.dll" -Force
++        Move-Item -Path "$innoDir\cli.exe" -Destination "$innoDir\bin\zed.exe" -Force
++        Move-Item -Path "$innoDir\zed.sh" -Destination "$innoDir\bin\zed" -Force
++        Move-Item -Path "$innoDir\auto_update_helper.exe" -Destination "$innoDir\tools\auto_update_helper.exe" -Force
++    }
+     if($Architecture -eq "aarch64") {
+         New-Item -Type Directory -Path "$innoDir\arm64" -Force
+         Move-Item -Path ".\conpty\build\native\runtimes\arm64\OpenConsole.exe" -Destination "$innoDir\arm64\OpenConsole.exe" -Force
+@@ -308,6 +353,22 @@ function BuildInstaller {
+             $appShellNameShort = "Z&ed Editor Nightly"
+             $appAppxFullName = "ZedIndustries.Zed.Nightly_1.0.0.0_neutral__japxn1gcva8rg"
+         }
++        "zeo" {
++            # A GUID of Zeo's own, so it installs beside any Zed channel instead of over it.
++            $appId = "{{A7A452BE-ABA1-458F-B55D-3C023BE65191}"
++            $appIconName = "app-icon-zeo"
++            $appName = "Zeo"
++            $appDisplayName = "Zeo"
++            $appSetupName = "Zeo-$Architecture"
++            # app_identifier() is "Zeo-Editor" for the zeo channel (patch 0021).
++            $appMutex = "Zeo-Editor-Instance-Mutex"
++            $appExeName = "Zeo"
++            $regValueName = "Zeo"
++            # The Wayland app_id, so one identity names Zeo everywhere.
++            $appUserId = "dev.zeo.Zeo"
++            $appShellNameShort = "Z&eo"
++            $appAppxFullName = ""
++        }
+         "dev" {
+             $appId = "{{8357632E-24A4-4F32-BA97-E575B4D1FE5D}"
+             $appIconName = "app-icon-dev"
+@@ -351,6 +412,13 @@ function BuildInstaller {
+         "AppxFullName"   = $appAppxFullName
+     }
+ 
++    if ($isZeo) {
++        # zed.iss switches Zeo's publisher, URL scheme and file set on this.
++        $definitions["Zeo"] = "1"
++        # VersionInfoVersion takes numbers only, and Zeo's version ends in a _pYYYYMMDD snapshot.
++        $definitions["VersionInfo"] = ([regex]::Match($env:RELEASE_VERSION, '^\d+\.\d+\.\d+')).Value
++    }
++
+     $defs = @()
+     foreach ($key in $definitions.Keys) {
+         $defs += "/d$key=`"$($definitions[$key])`""
+@@ -379,7 +447,18 @@ function BuildInstaller {
+     }
+ }
+ 
++# Zeo's version is the package's own (0.13.0_p20261114), passed in as RELEASE_VERSION: zed.rs
++# embeds it for the About window and the installer shows it. ParseZedWorkspace would replace it
++# with the zed crate's version, which is upstream Zed's (1.30.0), so Zeo keeps the caller's.
++$zeoVersion = $env:RELEASE_VERSION
+ ParseZedWorkspace
++if ($isZeo) {
++    if ($zeoVersion -notmatch '^\d+\.\d+\.\d+') {
++        Write-Error "RELEASE_VERSION must carry Zeo's version (e.g. 0.13.0_p20261114), got '$zeoVersion'"
++        exit 1
++    }
++    $env:RELEASE_VERSION = $zeoVersion
++}
+ $innoDir = "$env:ZED_WORKSPACE\inno\$Architecture"
+ $debugArchive = "$CargoOutDir\zed-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip"
+ $debugStoreKey = "$env:ZED_RELEASE_CHANNEL/zed-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip"

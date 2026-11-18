@@ -1866,6 +1866,10 @@ src_prepare() {
 		# 0098 (Zeo next proposal §6.25): "Install CLI" only while zeo is not
 		# reachable; on Linux it links ~/.local/bin/zeo. On 0022 and 0025.
 		"${FILESDIR}/0098-zed-install-cli-only-while-zeo-is-not-reachable.patch"
+		# 0127 (Zeo platforms W2): Windows packaging for the zeo channel -- Zeo.exe,
+		# bin\zeo.exe, Zeo's installer identity and zeo://. Touches only Windows
+		# build files, so this build compiles nothing new.
+		"${FILESDIR}/0127-windows-package-the-zeo-channel-as-Zeo.patch"
 		# 0033 ships Claude Agent (Plus) and Claude Agent TUI as default agents:
 		# npx entries in the ACP registry list, enabled in default.json, always
 		# @latest from npm. Needs no adapter at build time, so it is not gated

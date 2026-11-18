@@ -87,6 +87,14 @@ the thread has none; same-titled children stay two entries. zeo-browser 0.1.x
 parses the server schema strictly and drops a snapshot carrying the field;
 0.2.0 accepts it. 7 tests (browser_wire/subagents_tests.rs,
 browser_channel_tests/browser_wire_subagents.rs).
+
+Portability (2026-11-17, ZEO-PLATFORMS-PROPOSAL W1): zeo-browser-host is
+built for Linux only -- it tells the browser apart by /proc/<ppid>/exe,
+ignores SIGPIPE through libc and relays to 0052's unix socket, which listens
+on Linux alone. Elsewhere its `main` prints
+`zeo-browser-host event=unsupported` to stderr and exits 1, so a workspace
+build or clippy run on Windows still compiles; libc moved to a Linux-only
+dependency. 0052's non-Linux `init` registers RevokeBrowserAccess as before.
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
@@ -10065,34 +10073,50 @@ index 0000000..92ccfa6
 +    );
 +}
 diff --git a/crates/devtools_bridge/src/devtools_bridge.rs b/crates/devtools_bridge/src/devtools_bridge.rs
-index a5d46cb..c4b83ab 100644
+index b7388e7..732be69 100644
 --- a/crates/devtools_bridge/src/devtools_bridge.rs
 +++ b/crates/devtools_bridge/src/devtools_bridge.rs
-@@ -5,11 +5,13 @@
+@@ -5,6 +5,7 @@
  //! removes the socket on quit. A bridge that cannot listen logs why and leaves the rest of the
  //! app alone.
  
 +pub mod channel;
- pub mod listener;
- pub mod protocol;
- mod setting;
+ // The socket checks its peer with `SO_PEERCRED` and opens it with `SOCK_CLOEXEC`, both
+ // Linux-only in `nix`: the listener and what feeds it are built on Linux alone.
+ #[cfg(target_os = "linux")]
+@@ -14,6 +15,7 @@ mod setting;
+ #[cfg(target_os = "linux")]
  pub mod wiring;
  
 +pub use agent_ui::browser_channel::RevokeBrowserAccess;
  pub use setting::DevtoolsBridgeSettings;
  
- use std::path::PathBuf;
-@@ -20,7 +22,7 @@ use settings::{Settings as _, SettingsStore};
- use workspace::AppState;
- 
+ #[cfg(target_os = "linux")]
+@@ -30,7 +32,7 @@ use workspace::AppState;
+ #[cfg(target_os = "linux")]
  use crate::listener::Listener;
+ #[cfg(target_os = "linux")]
 -use crate::wiring::Relay;
 +use crate::wiring::{Relay, SessionRelay, browser_session_relay};
  
  /// Starts the bridge in `<XDG_RUNTIME_DIR>/zeo`. Call once during app startup.
- pub fn init(app_state: Arc<AppState>, cx: &mut App) {
-@@ -35,9 +37,12 @@ pub fn init(app_state: Arc<AppState>, cx: &mut App) {
- /// [`init`] with the socket directory passed in.
+ #[cfg(target_os = "linux")]
+@@ -44,9 +46,11 @@ pub fn init(app_state: Arc<AppState>, cx: &mut App) {
+ }
+ 
+ /// Off Linux there is no listener to start (see `listener` above), so the bridge says so once
+-/// and stays off.
++/// and stays off. `RevokeBrowserAccess` is registered all the same, as it is with the bridge
++/// disabled on Linux.
+ #[cfg(not(target_os = "linux"))]
+-pub fn init(_app_state: Arc<AppState>, _cx: &mut App) {
++pub fn init(_app_state: Arc<AppState>, cx: &mut App) {
++    agent_ui::browser_channel::init(cx);
+     log::info!("devtools_bridge event=unsupported reason=\"the bridge listens on Linux only\"");
+ }
+ 
+@@ -54,9 +58,12 @@ pub fn init(_app_state: Arc<AppState>, _cx: &mut App) {
+ #[cfg(target_os = "linux")]
  pub fn init_in(dir: PathBuf, app_state: Arc<AppState>, cx: &mut App) {
      let enabled = DevtoolsBridgeSettings::get_global(cx).enabled;
 +    // Registers `RevokeBrowserAccess`, which works with the bridge off too.
@@ -10105,7 +10129,7 @@ index a5d46cb..c4b83ab 100644
          enabled,
          listener: None,
      };
-@@ -73,6 +78,9 @@ struct DevtoolsBridge {
+@@ -93,6 +100,9 @@ struct DevtoolsBridge {
      /// Hands each selection to the foreground; it outlives every listener started and stopped
      /// by the setting.
      relay: Relay,
@@ -10115,7 +10139,7 @@ index a5d46cb..c4b83ab 100644
      /// The last value of `devtools_bridge.enabled` acted upon.
      enabled: bool,
      listener: Option<Listener>,
-@@ -101,8 +109,11 @@ impl DevtoolsBridge {
+@@ -123,8 +133,11 @@ impl DevtoolsBridge {
          if self.listener.is_some() {
              return;
          }
@@ -10129,7 +10153,7 @@ index a5d46cb..c4b83ab 100644
      }
  
      fn stop(&mut self) {
-@@ -119,6 +130,10 @@ impl DevtoolsBridge {
+@@ -141,6 +154,10 @@ impl DevtoolsBridge {
      }
  }
  
@@ -10140,7 +10164,7 @@ index a5d46cb..c4b83ab 100644
  #[cfg(test)]
  mod contract_agreement_tests;
  #[cfg(test)]
-@@ -126,6 +141,8 @@ mod listener_tests;
+@@ -148,6 +165,8 @@ mod listener_tests;
  #[cfg(test)]
  mod protocol_tests;
  #[cfg(test)]
@@ -12310,10 +12334,10 @@ index bdbcf65..f5b61ab 100644
                  "editor",
 diff --git a/crates/zeo_browser_host/Cargo.toml b/crates/zeo_browser_host/Cargo.toml
 new file mode 100644
-index 0000000..d57496c
+index 0000000..5951774
 --- /dev/null
 +++ b/crates/zeo_browser_host/Cargo.toml
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,28 @@
 +[package]
 +name = "zeo_browser_host"
 +version = "0.1.0"
@@ -12332,10 +12356,13 @@ index 0000000..d57496c
 +
 +[dependencies]
 +anyhow.workspace = true
-+libc.workspace = true
 +log.workspace = true
 +serde = { workspace = true, features = ["derive"] }
 +serde_json.workspace = true
++
++# SIGPIPE, ignored by the Linux host (src/main.rs).
++[target.'cfg(target_os = "linux")'.dependencies]
++libc.workspace = true
 +
 +[dev-dependencies]
 +tempfile.workspace = true
@@ -12856,10 +12883,10 @@ index 0000000..e2e681d
 +}
 diff --git a/crates/zeo_browser_host/src/main.rs b/crates/zeo_browser_host/src/main.rs
 new file mode 100644
-index 0000000..6a64ba7
+index 0000000..45b94c5
 --- /dev/null
 +++ b/crates/zeo_browser_host/src/main.rs
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,150 @@
 +//! `zeo-browser-host`: the native-messaging host the Zeo browser extension talks to. It relays
 +//! native-messaging frames on stdio to Zeo's devtools bridge socket and back (design.md §B4).
 +//!
@@ -12868,27 +12895,36 @@ index 0000000..6a64ba7
 +//! reason=…` lines with no message content (R13.3, R13.4).
 +#![deny(clippy::print_stdout)]
 +
++#[cfg(target_os = "linux")]
 +mod args;
++#[cfg(target_os = "linux")]
 +mod frame;
++#[cfg(target_os = "linux")]
 +mod relay;
 +
-+#[cfg(test)]
++#[cfg(all(test, target_os = "linux"))]
 +mod args_tests;
-+#[cfg(test)]
++#[cfg(all(test, target_os = "linux"))]
 +mod frame_tests;
-+#[cfg(test)]
++#[cfg(all(test, target_os = "linux"))]
 +mod relay_tests;
 +
++#[cfg(target_os = "linux")]
 +use std::env;
++#[cfg(target_os = "linux")]
 +use std::io::{self, Write as _};
++#[cfg(target_os = "linux")]
 +use std::process;
 +
++#[cfg(target_os = "linux")]
 +use crate::args::ClientIdentity;
 +
 +/// Raises or lowers the stderr log level without a rebuild: `error`, `warn`, `info` (default),
 +/// `debug`, `trace` or `off`.
++#[cfg(target_os = "linux")]
 +const LOG_LEVEL_VAR: &str = "ZEO_BROWSER_HOST_LOG";
 +
++#[cfg(target_os = "linux")]
 +fn main() {
 +    install_panic_hook();
 +    ignore_sigpipe();
@@ -12927,6 +12963,7 @@ index 0000000..6a64ba7
 +
 +/// Panics go to stderr in the log format, naming only where they happened: a panic message
 +/// could quote data, and stdout must never see a byte that is not a frame.
++#[cfg(target_os = "linux")]
 +fn install_panic_hook() {
 +    std::panic::set_hook(Box::new(|info| {
 +        let location = info
@@ -12943,6 +12980,7 @@ index 0000000..6a64ba7
 +
 +/// With SIGPIPE ignored, writing to a stdout the browser has closed is an `EPIPE` error the
 +/// relay handles (one log line, exit 0) instead of a silent kill.
++#[cfg(target_os = "linux")]
 +fn ignore_sigpipe() {
 +    // SAFETY: `signal` with `SIG_IGN` only changes this process's disposition for SIGPIPE; it
 +    // runs first thing in `main`, before any thread is spawned, and installs no handler code.
@@ -12956,8 +12994,10 @@ index 0000000..6a64ba7
 +    }
 +}
 +
++#[cfg(target_os = "linux")]
 +struct StderrLogger;
 +
++#[cfg(target_os = "linux")]
 +impl log::Log for StderrLogger {
 +    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
 +        metadata.level() <= log::max_level()
@@ -12974,8 +13014,10 @@ index 0000000..6a64ba7
 +    }
 +}
 +
++#[cfg(target_os = "linux")]
 +static LOGGER: StderrLogger = StderrLogger;
 +
++#[cfg(target_os = "linux")]
 +fn init_logging() {
 +    let level = env::var(LOG_LEVEL_VAR)
 +        .ok()
@@ -12984,6 +13026,16 @@ index 0000000..6a64ba7
 +    if log::set_logger(&LOGGER).is_ok() {
 +        log::set_max_level(level);
 +    }
++}
++
++/// The bridge this host relays to listens on Linux only (`devtools_bridge`), and the browser is
++/// told apart by `/proc/<ppid>/exe`: elsewhere the host refuses to start rather than half-work.
++#[cfg(not(target_os = "linux"))]
++fn main() {
++    eprintln!(
++        "zeo-browser-host event=unsupported reason=\"the devtools bridge runs on Linux only\""
++    );
++    std::process::exit(1);
 +}
 diff --git a/crates/zeo_browser_host/src/relay.rs b/crates/zeo_browser_host/src/relay.rs
 new file mode 100644

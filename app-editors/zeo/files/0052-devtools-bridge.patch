@@ -81,6 +81,14 @@ agent_ui devtools 22 (window resolution incl. Wayland recency and
 symlinked worktrees, insertion order, images, new thread, load errors,
 terminal-first panels, failures after the answer). The browser end has
 its own unit, integration and Playwright suites in zeo-devtools.
+
+Portability (2026-11-17, ZEO-PLATFORMS-PROPOSAL W1): `listener`, `wiring`
+and the `DevtoolsBridge` global are built on Linux only, and `nix` moved to
+[target.'cfg(target_os = "linux")'.dependencies]. The listener reads its
+peer with SO_PEERCRED and opens with SOCK_NONBLOCK|SOCK_CLOEXEC, which `nix`
+offers on Linux alone, so even macOS did not compile. Elsewhere `init` logs
+`devtools_bridge event=unsupported` once and starts nothing; `channel`,
+`protocol` and the setting stay portable, so the settings key still parses.
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
@@ -3559,10 +3567,10 @@ index 448f2e5..e014449 100644
          }
 diff --git a/crates/devtools_bridge/Cargo.toml b/crates/devtools_bridge/Cargo.toml
 new file mode 100644
-index 0000000..df7b34a
+index 0000000..78f9e0b
 --- /dev/null
 +++ b/crates/devtools_bridge/Cargo.toml
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,47 @@
 +[package]
 +name = "devtools_bridge"
 +version = "0.1.0"
@@ -3586,12 +3594,15 @@ index 0000000..df7b34a
 +gpui.workspace = true
 +indexmap.workspace = true
 +log.workspace = true
-+nix = { workspace = true, features = ["socket", "user"] }
 +serde = { workspace = true, features = ["derive"] }
 +serde_json.workspace = true
 +settings.workspace = true
 +smol.workspace = true
 +workspace.workspace = true
++
++# Only the Linux listener uses it (see `listener` in src/devtools_bridge.rs).
++[target.'cfg(target_os = "linux")'.dependencies]
++nix = { workspace = true, features = ["socket", "user"] }
 +
 +[dev-dependencies]
 +acp_thread = { workspace = true, features = ["test-support"] }
@@ -3778,10 +3789,10 @@ index 0000000..d742c50
 +}
 diff --git a/crates/devtools_bridge/src/devtools_bridge.rs b/crates/devtools_bridge/src/devtools_bridge.rs
 new file mode 100644
-index 0000000..a5d46cb
+index 0000000..b7388e7
 --- /dev/null
 +++ b/crates/devtools_bridge/src/devtools_bridge.rs
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,153 @@
 +//! The devtools bridge: a unix socket at `$XDG_RUNTIME_DIR/zeo/devtools.sock` that receives
 +//! element selections from a dev-server page and hands them to the agent panel.
 +//!
@@ -3789,24 +3800,35 @@ index 0000000..a5d46cb
 +//! removes the socket on quit. A bridge that cannot listen logs why and leaves the rest of the
 +//! app alone.
 +
++// The socket checks its peer with `SO_PEERCRED` and opens it with `SOCK_CLOEXEC`, both
++// Linux-only in `nix`: the listener and what feeds it are built on Linux alone.
++#[cfg(target_os = "linux")]
 +pub mod listener;
 +pub mod protocol;
 +mod setting;
++#[cfg(target_os = "linux")]
 +pub mod wiring;
 +
 +pub use setting::DevtoolsBridgeSettings;
 +
++#[cfg(target_os = "linux")]
 +use std::path::PathBuf;
 +use std::sync::Arc;
 +
-+use gpui::{App, BorrowAppContext as _, Global};
++use gpui::App;
++#[cfg(target_os = "linux")]
++use gpui::{BorrowAppContext as _, Global};
++#[cfg(target_os = "linux")]
 +use settings::{Settings as _, SettingsStore};
 +use workspace::AppState;
 +
++#[cfg(target_os = "linux")]
 +use crate::listener::Listener;
++#[cfg(target_os = "linux")]
 +use crate::wiring::Relay;
 +
 +/// Starts the bridge in `<XDG_RUNTIME_DIR>/zeo`. Call once during app startup.
++#[cfg(target_os = "linux")]
 +pub fn init(app_state: Arc<AppState>, cx: &mut App) {
 +    // An unset, empty or relative runtime dir is refused, and `socket_dir` has already logged
 +    // why: logging it here too would make it two lines for one refusal.
@@ -3816,7 +3838,15 @@ index 0000000..a5d46cb
 +    init_in(dir, app_state, cx);
 +}
 +
++/// Off Linux there is no listener to start (see `listener` above), so the bridge says so once
++/// and stays off.
++#[cfg(not(target_os = "linux"))]
++pub fn init(_app_state: Arc<AppState>, _cx: &mut App) {
++    log::info!("devtools_bridge event=unsupported reason=\"the bridge listens on Linux only\"");
++}
++
 +/// [`init`] with the socket directory passed in.
++#[cfg(target_os = "linux")]
 +pub fn init_in(dir: PathBuf, app_state: Arc<AppState>, cx: &mut App) {
 +    let enabled = DevtoolsBridgeSettings::get_global(cx).enabled;
 +    let mut bridge = DevtoolsBridge {
@@ -3852,6 +3882,7 @@ index 0000000..a5d46cb
 +
 +/// The bridge's state for the app's whole life. Holding the [`Listener`] keeps the directory's
 +/// lock; dropping it stops the listener.
++#[cfg(target_os = "linux")]
 +struct DevtoolsBridge {
 +    dir: PathBuf,
 +    /// Hands each selection to the foreground; it outlives every listener started and stopped
@@ -3862,8 +3893,10 @@ index 0000000..a5d46cb
 +    listener: Option<Listener>,
 +}
 +
++#[cfg(target_os = "linux")]
 +impl Global for DevtoolsBridge {}
 +
++#[cfg(target_os = "linux")]
 +impl DevtoolsBridge {
 +    /// Acts on a change of the setting only. Any other settings change, or saving it as on
 +    /// again, leaves a live listener alone, and leaves a refused one refused until the next
