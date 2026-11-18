@@ -1,0 +1,154 @@
+Title: net-libs/nodejs ahora usa slots
+Author: Lucas Couto <lucascs@protonmail.com>
+Posted: 2026-08-02
+Revision: 1
+News-Item-Format: 2.0
+Display-If-Installed: net-libs/nodejs
+
+net-libs/nodejs ahora se instala en un slot versionado, un slot por cada
+versión principal de Node.js. Node 24 y Node 26 están disponibles hoy.
+El antiguo paquete sin slot, net-libs/nodejs:0, está enmascarado en este
+overlay y ya no se puede instalar.
+
+La actualización no se hará sola. Cada slot lleva un bloqueo fuerte
+contra el paquete sin slot, de modo que una actualización normal de
+world se detiene y le pide que actúe, en lugar de reemplazarlo en
+silencio.
+
+
+Qué tiene que hacer
+===================
+
+1) Sincronice, para que la máscara y los nuevos slots lleguen a su
+   árbol:
+
+       emerge --sync
+
+2) Mire lo que portage pretende hacer. El conflicto se informa aquí,
+   durante la resolución de dependencias, antes de escribir nada en el
+   disco:
+
+       emerge --pretend --verbose net-libs/nodejs
+
+   Aparece una línea que bloquea net-libs/nodejs:0, que se resuelve
+   desinstalando el paquete sin slot que tiene instalado actualmente.
+
+3) Migre con UNA ÚNICA invocación de emerge:
+
+       emerge --oneshot net-libs/nodejs
+
+   Un comando, no dos. Portage desinstala net-libs/nodejs:0 e instala el
+   nuevo slot en la misma ejecución, y entre esos dos puntos el sistema
+   no tiene /usr/bin/node en absoluto - el nuevo slot solo lo restaura
+   en pkg_postinst, cuando termina de instalarse. Dividir el paso, por
+   ejemplo `emerge --unmerge net-libs/nodejs` seguido de otro emerge
+   aparte, deja la máquina sin node durante toda la recompilación. No es
+   un intervalo corto, y todo lo que invoque node desde un shell
+   mientras tanto fallará.
+
+   (--oneshot se refiere al archivo world, no al número de comandos:
+   significa que el paquete no se añade a @world, y la entrada que ya
+   tiene queda intacta. Lo de la "invocación única" de arriba trata de
+   ejecutar un solo emerge. Son cosas independientes.)
+
+4) Compruebe el resultado:
+
+       eselect nodejs list
+
+   El slot activo aparece marcado en la lista. `eselect nodejs show`
+   muestra solo su nombre, y `eselect nodejs set node24` cambia a otro
+   slot instalado.
+
+
+Qué ha cambiado
+===============
+
+Todo lo específico de cada versión está ahora bajo un prefijo de slot,
+/usr/lib64/node-<major>/ (o el libdir que use su perfil), en lugar de
+estar repartido entre /usr/bin, /usr/include, /usr/lib64 y /usr/share.
+
+/usr/bin/node, /usr/bin/npm y /usr/bin/npx ya no pertenecen a
+net-libs/nodejs. Son enlaces simbólicos de app-eselect/eselect-nodejs a
+los que `eselect nodejs set` cambia el destino. Además, cada slot
+instala sus propios puntos de entrada versionados - node26, npm26, npx26
+- que siempre ejecutan ese slot, sea cual sea el activo.
+
+Los paquetes npm instalados globalmente ya no se comparten entre slots.
+`npm root -g` ahora se resuelve dentro del slot activo, en
+/usr/lib64/node-<major>/lib/node_modules, así que un paquete instalado
+globalmente con un slot activo no se ve desde otro. Instálelo una vez en
+cada slot que realmente use.
+
+Un slot compilado con USE="-npm" no incluye ni npm ni npx. eselect omite
+esos enlaces en lugar de dejarlos apuntando a la nada.
+
+
+Su configuración de npm no se pierde
+====================================
+
+/etc/npm y /etc/env.d/50npm han pasado de net-libs/nodejs a
+app-eselect/eselect-nodejs. NPM_CONFIG_GLOBALCONFIG sigue apuntando al
+mismo y único /etc/npm/npmrc, compartido por todos los slots, con el
+mismo contenido que antes. No hay que copiar ni volver a escribir nada.
+
+Ese traslado también explica por qué el propio
+app-eselect/eselect-nodejs bloquea net-libs/nodejs:0: el paquete sin
+slot aún lista /etc/env.d/50npm en su CONTENTS, y con
+FEATURES="protect-owned" se abortaría un merge que tocara un archivo de
+otro paquete.
+
+Las páginas de manual de npm sí se han movido: ahora están dentro del
+prefijo del slot y se encuentran mediante MANPATH en
+/etc/env.d/50nodejs. Por eso `man npm-install` documenta el slot que
+esté activo. Esa variable solo llega a un shell que haya leído el
+entorno regenerado, así que después del primer cambio abra un shell
+nuevo o ejecute:
+
+       source /etc/profile
+
+
+Si necesita Node 22
+===================
+
+Este overlay solo ofrece Node 24 y Node 26. Con net-libs/nodejs:0
+enmascarado no hay aquí ninguna fuente de Node 22, aunque upstream
+mantiene esa rama en Maintenance hasta el 2027-04-30. Es una carencia
+conocida desde el primer día, no un descuido, y se resolverá cuando se
+añada un slot 22.x.
+
+Desenmascarar net-libs/nodejs:0 no lo soluciona: ese es el paquete sin
+slot, y bloquea tanto los slots como eselect-nodejs, así que no puede
+convivir con nada de lo descrito arriba. Hasta que exista un slot 22.x,
+pase la carga de trabajo a Node 24 - el slot soportado más cercano que
+se ofrece aquí - u obtenga Node 22 fuera de portage y manténgalo fuera
+de /usr.
+
+
+Por qué lo mantiene este overlay
+================================
+
+Usar slots en Node.js se propuso a Gentoo en el bug #580698, que se
+cerró como RESOLVED WONTFIX el 2020-11-09 por ser "highly non-trivial to
+slot NodeJS"; allí el paquete está como maintainer-needed. Por tanto,
+bentoo pasa a ser el único proveedor de net-libs/nodejs para quien use
+este overlay, y asume el seguimiento de seguridad de cada slot que
+aloja.
+
+    https://bugs.gentoo.org/580698
+
+
+Referencia de eselect nodejs
+============================
+
+    list      muestra todos los slots instalados y marca el activo
+    show      imprime el nombre del slot activo, o nada si no hay
+              ninguno activo
+    set       activa un slot, por nombre (node26) o por número de la
+              lista
+    update    activa el slot instalado más alto
+    cleanup   elimina los enlaces rotos que deja un slot desinstalado y
+              vuelve a apuntar a lo que siga instalado
+
+Puede cambiar de slot en cualquier momento. Los propios ebuilds llaman a
+estas acciones en el merge y el unmerge, así que una instalación normal
+nunca exige ejecutarlas a mano.

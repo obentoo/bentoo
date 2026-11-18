@@ -1,0 +1,131 @@
+Title: net-libs/nodejs 现已按 slot 安装
+Author: Lucas Couto <lucascs@protonmail.com>
+Posted: 2026-08-02
+Revision: 1
+News-Item-Format: 2.0
+Display-If-Installed: net-libs/nodejs
+
+net-libs/nodejs 现在安装到带版本号的 slot 中，每个 Node.js 主版本对应一
+个 slot。目前提供 Node 24 和 Node 26。旧的无 slot 软件包
+net-libs/nodejs:0 已在此 overlay 中被屏蔽，无法再安装。
+
+升级不会自动进行。每个 slot 都带有针对无 slot 软件包的强阻塞
+（blocker），因此普通的 world 更新会停下来要求您处理，而不是悄悄替换它。
+
+
+您需要做什么
+============
+
+1) 同步，使屏蔽规则和新的 slot 进入您的软件树：
+
+       emerge --sync
+
+2) 查看 portage 打算做什么。冲突会在这一步的依赖解析期间报告，此时尚未向
+   磁盘写入任何内容：
+
+       emerge --pretend --verbose net-libs/nodejs
+
+   会出现一行阻塞 net-libs/nodejs:0 的提示，解决方法是卸载您当前已安装的
+   无 slot 软件包。
+
+3) 只用一次 emerge 调用完成迁移（不要分两次）：
+
+       emerge --oneshot net-libs/nodejs
+
+   一条命令，不是两条。Portage 在同一次运行中卸载 net-libs/nodejs:0 并安
+   装新的 slot，而在这两步之间系统中完全没有 /usr/bin/node：新 slot 要到
+   安装完成后的 pkg_postinst 才会恢复它。如果把这一步拆开，例如先执行
+   `emerge --unmerge net-libs/nodejs` 再单独执行一次 emerge，机器在整个
+   重新编译期间都会没有 node。这段时间并不短，其间任何通过 shell 调用
+   node 的程序都会失败。
+
+   （--oneshot 针对的是 world 文件，而不是命令数量：它表示不把该软件包加
+   入 @world，保留您已有的条目不变。上面所说的“单次调用”是指只运行一次
+   emerge。两者毫无关系。）
+
+4) 检查结果：
+
+       eselect nodejs list
+
+   列表中会标出当前活动的 slot。`eselect nodejs show` 只打印它的名称，
+   `eselect nodejs set node24` 则切换到另一个已安装的 slot。
+
+
+有哪些变化
+==========
+
+所有与版本相关的内容现在都位于 slot 前缀 /usr/lib64/node-<major>/（或您
+的 profile 所用的 libdir）之下，而不再分散在 /usr/bin、/usr/include、
+/usr/lib64 和 /usr/share 中。
+
+/usr/bin/node、/usr/bin/npm 和 /usr/bin/npx 不再属于 net-libs/nodejs。它
+们是属于 app-eselect/eselect-nodejs 的符号链接，由 `eselect nodejs set`
+重新指向。每个 slot 还会安装自己的带版本号的入口：node26、npm26、npx26，
+无论当前活动的是哪个 slot，它们始终运行各自的 slot。
+
+全局安装的 npm 软件包不再在各 slot 之间共享。`npm root -g` 现在解析到活
+动 slot 内部的 /usr/lib64/node-<major>/lib/node_modules，因此在某个 slot
+活动时全局安装的软件包，在另一个 slot 中不可见。请在您实际使用的每个
+slot 中各安装一次。
+
+以 USE="-npm" 构建的 slot 不包含 npm 和 npx。eselect 会跳过这些链接，而
+不是让它们指向不存在的目标。
+
+
+您的 npm 配置不会丢失
+=====================
+
+/etc/npm 和 /etc/env.d/50npm 已从 net-libs/nodejs 移到
+app-eselect/eselect-nodejs。NPM_CONFIG_GLOBALCONFIG 仍指向同一个
+/etc/npm/npmrc，由所有 slot 共享，内容与以前相同。无需复制或重新填写任何
+内容。
+
+这次迁移也是 app-eselect/eselect-nodejs 本身阻塞 net-libs/nodejs:0 的原
+因：无 slot 软件包的 CONTENTS 中仍列有 /etc/env.d/50npm，而在
+FEATURES="protect-owned" 下，触及其他软件包所拥有文件的 merge 会被中止。
+
+npm 的手册页确实移动了：它们现在位于 slot 前缀内，通过
+/etc/env.d/50nodejs 中的 MANPATH 找到。因此 `man npm-install` 显示的是当
+前活动 slot 的文档。该变量只对已读取重新生成的环境的 shell 生效，所以第
+一次切换后，请打开一个新 shell 或运行：
+
+       source /etc/profile
+
+
+如果您需要 Node 22
+==================
+
+此 overlay 只提供 Node 24 和 Node 26。由于 net-libs/nodejs:0 被屏蔽，这
+里没有 Node 22 的来源，尽管上游会将该分支保持在 Maintenance 状态直到
+2027-04-30。这是从第一天起就已知的缺口，并非疏忽，待添加 22.x slot 后即
+会补上。
+
+取消屏蔽 net-libs/nodejs:0 并不能绕过这一点：它正是那个无 slot 软件包，
+会同时阻塞各个 slot 和 eselect-nodejs，因此无法与上述任何内容共存。在
+22.x slot 出现之前，请将工作负载迁移到 Node 24（这里提供的最接近的受支持
+slot），或者从 portage 之外获取 Node 22，并让它远离 /usr。
+
+
+为什么由此 overlay 提供
+=======================
+
+为 Node.js 引入 slot 曾在 Gentoo 的 bug #580698 中提出，并于 2020-11-09
+以 RESOLVED WONTFIX 关闭，理由是 "highly non-trivial to slot NodeJS"；该
+软件包在那里处于 maintainer-needed 状态。因此，对使用此 overlay 的所有人
+来说，bentoo 成为 net-libs/nodejs 的唯一提供者，并负责其托管的每个 slot
+的安全跟踪。
+
+    https://bugs.gentoo.org/580698
+
+
+eselect nodejs 参考
+===================
+
+    list      列出所有已安装的 slot，并标出活动的那个
+    show      打印活动 slot 的名称；没有活动 slot 时不输出
+    set       按名称（node26）或列表编号激活一个 slot
+    update    激活已安装的最高版本 slot
+    cleanup   删除已卸载 slot 遗留的失效链接，然后重新指向仍已安装的内容
+
+您可以随时切换 slot。ebuild 在 merge 和 unmerge 时会自行调用这些操作，因
+此正常安装从不需要手动运行它们。
