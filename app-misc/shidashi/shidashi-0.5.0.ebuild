@@ -18,7 +18,10 @@ SLOT="0"
 # and its arch axis is x86-64 only (v3, znver5, arrowlake), so an arm64 host
 # cannot run a build -- upstream does not support it.
 KEYWORDS="~amd64"
-IUSE="vm"
+# The languages the release translates, as L10N names; po/ spells them with
+# an underscore (pt_BR, zh_CN), as gettext does.
+L10N_LOCALES=( es pt-BR ru zh-CN )
+IUSE="vm ${L10N_LOCALES[*]/#/l10n_}"
 
 # Always: systemd-nspawn runs every build stage (and systemd-ssh-proxy reaches
 # the VM), gpg verifies the stage3 and the ::gentoo snapshot, git fetches the
@@ -56,11 +59,38 @@ RDEPEND="
 	)
 "
 
+# msgfmt compiles the catalogs of the enabled languages. Nothing at run
+# time: Python's gettext reads the .mo files itself.
+BDEPEND="
+	l10n_es? ( sys-devel/gettext )
+	l10n_pt-BR? ( sys-devel/gettext )
+	l10n_ru? ( sys-devel/gettext )
+	l10n_zh-CN? ( sys-devel/gettext )
+"
+
 EPYTEST_PLUGINS=()
 distutils_enable_tests pytest
 
+python_compile_all() {
+	# Only the languages in L10N: shidashi looks them up under
+	# ${EPREFIX}/usr/share/locale (sys.base_prefix) and falls back to English.
+	local l po
+	for l in "${L10N_LOCALES[@]}"; do
+		use "l10n_${l}" || continue
+		po=${l/-/_}
+		mkdir -p "locale/${po}/LC_MESSAGES" || die
+		msgfmt --check -o "locale/${po}/LC_MESSAGES/${PN}.mo" "po/${po}.po" ||
+			die "msgfmt failed for po/${po}.po"
+	done
+}
+
 python_install_all() {
 	distutils-r1_python_install_all
+
+	if [[ -d locale ]]; then
+		insinto /usr/share
+		doins -r locale
+	fi
 
 	# The recipes (variants/) and the pinned inputs (seeds/) are data, not
 	# code: the wheel carries only the package. An installed Shidashi finds them
