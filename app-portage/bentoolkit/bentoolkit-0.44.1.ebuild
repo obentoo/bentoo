@@ -62,6 +62,14 @@ RDEPEND+="
 	)
 	systemd? ( sys-apps/systemd )
 "
+# The safety guards (USE=secure, USE=kde) translate their messages through
+# the gettext command.
+RDEPEND+="
+	l10n_es? ( sys-devel/gettext )
+	l10n_pt-BR? ( sys-devel/gettext )
+	l10n_ru? ( sys-devel/gettext )
+	l10n_zh-CN? ( sys-devel/gettext )
+"
 
 src_compile() {
 	local version_pkg="github.com/obentoo/bentoolkit/internal/common/version"
@@ -88,6 +96,19 @@ src_compile() {
 		msgfmt --check -o "locale/${po}/LC_MESSAGES/bentoolkit.mo" "po/${po}.po" ||
 			die "msgfmt failed for po/${po}.po"
 	done
+
+	if use kde; then
+		# The Dolphin service menu, with every release translation merged in
+		# when msgfmt is here (an l10n flag is set), English otherwise.
+		local desktop=misc/safety/bentoo-secure-delete.desktop.in
+		if [[ -d locale ]]; then
+			msgfmt --desktop --template="${desktop}" -d po \
+				-o bentoo-secure-delete.desktop || die "msgfmt --desktop failed"
+		else
+			cp "${desktop}" bentoo-secure-delete.desktop || die
+		fi
+		sed -i "s|@LIBEXECDIR@|${EPREFIX}/usr/libexec/bentoo|g" bentoo-secure-delete.desktop || die
+	fi
 }
 
 src_install() {
@@ -99,18 +120,20 @@ src_install() {
 		doins -r locale
 	fi
 
+	# The safety guards ship in the release tarball (misc/safety/), see
+	# upstream's docs/safety.md.
 	if use secure; then
 		insinto /etc/bash/bashrc.d
-		doins "${FILESDIR}"/30-bentoo-safety.bash
+		doins misc/safety/30-bentoo-safety.bash
 	fi
 
 	if use kde; then
-		# Secure deletion helper with status code output (called by the Dolphin Service Menu)
+		# Secure deletion helper (called by the Dolphin Service Menu)
 		exeinto /usr/libexec/bentoo
-		doexe "${FILESDIR}"/bentoo-secure-delete
+		doexe misc/safety/bentoo-secure-delete
 		# Dolphin/KIO Service Menu entry (Plasma 6)
 		insinto /usr/share/kio/servicemenus
-		doins "${FILESDIR}"/bentoo-secure-delete.desktop
+		doins bentoo-secure-delete.desktop
 	fi
 }
 
@@ -154,7 +177,7 @@ pkg_postinst() {
 
 	if use kde; then
 		elog ""
-		elog "A Dolphin service menu 'Excluir permanentemente (código Bentoo)'"
+		elog "A Dolphin service menu 'Delete permanently (Bentoo code)'"
 		elog "was installed. It asks for a one-time code via kdialog before an"
 		elog "irreversible delete. Note: KDE/Dolphin use KIO and never call rm,"
 		elog "so this only covers the explicit menu action -- the native Delete"
