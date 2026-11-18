@@ -17,9 +17,9 @@ CRATES="
 	adler2@2.0.1
 	adler32@1.2.0
 	aes@0.8.4
-	agent-client-protocol-derive@5.2.0
-	agent-client-protocol-schema@1.17.0
-	agent-client-protocol@5.2.0
+	agent-client-protocol-derive@5.3.0
+	agent-client-protocol-schema@1.18.0
+	agent-client-protocol@5.3.0
 	ahash@0.8.12
 	aho-corasick@1.1.3
 	aliasable@0.1.3
@@ -1460,7 +1460,7 @@ declare -A GIT_CRATES=(
 	[async-pipe]='https://github.com/zed-industries/async-pipe-rs;82d00a04211cf4e1236029aa03e6b6ce2a74c553;async-pipe-rs-%commit%'
 	[async-process]='https://github.com/zed-industries/async-process;0b6d6713570af61806e1e5cb40e0f757cb93fd9d;async-process-%commit%'
 	[async-tar]='https://github.com/zed-industries/async-tar;bd3ad6f89df9a9da7a8535958756d6bf465936a0;async-tar-%commit%'
-	[async-task]='https://github.com/zed-industries/async-task;015845a19fc31752c02367567d3b8900a406f9da;async-task-%commit%'
+	[async-task]='https://github.com/smol-rs/async-task;41fd3359c75e221bd8b187a8ee361aa309c1714c;async-task-%commit%'
 	[calloop]='https://github.com/zed-industries/calloop;3759371fee14c40066d64777e2a36b6ffcc22590;calloop-%commit%'
 	[cpal]='https://github.com/RustAudio/cpal;e1612d5d98152f8dc2a62e1b51ef7cbf4f7f26b7;cpal-%commit%'
 	[crash-context]='https://github.com/rust-minidump/minidump-writer;911b04e09b79b736cc15cbe712e83e2d3f348bb9;minidump-writer-%commit%/crates/crash-context'
@@ -1551,7 +1551,7 @@ declare -A GIT_CRATES=(
 # rewrites the date and EGIT_COMMIT; a second version variable it could not
 # keep current would leave a new tarball under an old, already-manifested name).
 
-EGIT_COMMIT="f0fa51bb510fc91f6da7ec55f3e0f317f1f975ec"
+EGIT_COMMIT="96362135eb98a011ac17b56a5c90cf77f9f597f1"
 # LLVM 23 only, so it is the default slot: llvm-r2 would always prefer slot 22
 # (its newest stable) whenever 22 is listed. RUST_NEEDS_LLVM ties the Rust slot
 # to it. RUST_MIN_VER is the newest stable Rust, 1.100.0, past upstream's
@@ -2263,6 +2263,8 @@ src_prepare() {
 			"${FILESDIR}/0123-sidebar-thread-lists-per-project.patch"
 			# 0125 (Zeo 0.13.0, §6.44): tool, terminal and edit cards in three states. On 0090.
 			"${FILESDIR}/0125-agent-ui-tool-cards-in-three-states.patch"
+			# 0126 (Zeo 0.14.0, §6.43): keep an agent's questions out of cards. On 0036/0125.
+			"${FILESDIR}/0126-agent-servers-let-the-user-keep-an-agent-s-questions-out-of-cards.patch"
 		)
 	fi
 
@@ -2397,8 +2399,11 @@ src_prepare() {
 	ASYNC_PROCESS_GIT+=", rev = \"${ASYNC_PROCESS_COMMIT}\""
 	local ASYNC_PROCESS_PATH="async-process = \\{ path = \"${WORKDIR}/async-process-${ASYNC_PROCESS_COMMIT}\""
 
-	local ASYNC_TASK_COMMIT="015845a19fc31752c02367567d3b8900a406f9da"
-	local ASYNC_TASK_GIT="async-task = { git = \"https://github.com/zed-industries/async-task.git\""
+	# Upstream moved async-task from its zed-industries fork to smol-rs at
+	# 41fd3359 (Zed 96362135, "Keep the waker identity fix until it is released",
+	# smol-rs/async-task#108), and spells the URL without ".git".
+	local ASYNC_TASK_COMMIT="41fd3359c75e221bd8b187a8ee361aa309c1714c"
+	local ASYNC_TASK_GIT="async-task = { git = \"https://github.com/smol-rs/async-task\""
 	ASYNC_TASK_GIT+=", rev = \"${ASYNC_TASK_COMMIT}\""
 	local ASYNC_TASK_PATH="async-task = \\{ path = \"${WORKDIR}/async-task-${ASYNC_TASK_COMMIT}\""
 

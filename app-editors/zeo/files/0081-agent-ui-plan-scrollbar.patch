@@ -32,13 +32,20 @@ cargo clippy --tests and cargo fmt --check clean on agent_ui; cargo test
 -p agent_ui --lib 1521 passed, the 3 that fail share the process-wide
 logger and pass alone. The scrollbar itself is for an Xvfb capture: GPUI
 tests do not see auto-hide.
+
+Carried to Zed 96362135 (zeo-0.14.0_p20261118): ACP schema 1.18 folded the
+plan file into the markdown plan -- `PlanContent::File` is gone and
+`PlanContent::Markdown` is a struct variant with an optional `path` -- and
+upstream's `render_plan_body` now returns `AnyElement` rather than
+`Option<AnyElement>`. The `plan_items` argument is kept; the body follows
+upstream's shape.
 ---
 
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 0fdbe1b..27e4cd2 100644
+index 79e66a4..d85932d 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
-@@ -10459,7 +10459,7 @@ pub(crate) mod tests {
+@@ -10560,7 +10560,7 @@ pub(crate) mod tests {
          cx.run_until_parked();
          assert!(cx.debug_bounds("plan_summary").is_none());
          thread_view.update_in(cx, |view, window, cx| {
@@ -48,7 +55,7 @@ index 0fdbe1b..27e4cd2 100644
      }
  
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 7eefeea..f65e754 100644
+index 75e2767..85c2c6b 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -49,8 +49,8 @@ use notifications::status_toast::StatusToast;
@@ -62,7 +69,7 @@ index 7eefeea..f65e754 100644
  };
  use url::Url;
  use util::markdown::source_position_from_fragment;
-@@ -780,6 +780,9 @@ pub struct ThreadView {
+@@ -781,6 +781,9 @@ pub struct ThreadView {
      /// its allow buttons stay disabled. See [`Self::sandbox_confusable_findings`].
      acknowledged_confusable_warnings: HashSet<acp_v2::ToolCallId>,
      pub subagent_scroll_handles: RefCell<HashMap<acp_v2::SessionId, ScrollHandle>>,
@@ -72,7 +79,7 @@ index 7eefeea..f65e754 100644
      pub edits_expanded: bool,
      pub plan_expanded: bool,
      pub queue_expanded: bool,
-@@ -1328,6 +1331,7 @@ impl ThreadView {
+@@ -1334,6 +1337,7 @@ impl ThreadView {
              collapsed_sandbox_network_details: HashSet::default(),
              acknowledged_confusable_warnings: HashSet::default(),
              subagent_scroll_handles: RefCell::new(HashMap::default()),
@@ -80,7 +87,7 @@ index 7eefeea..f65e754 100644
              edits_expanded: false,
              plan_expanded: false,
              queue_expanded: true,
-@@ -4361,8 +4365,12 @@ impl ThreadView {
+@@ -4373,8 +4377,12 @@ impl ThreadView {
          editor_bg_color.blend(active_color.opacity(0.3))
      }
  
@@ -93,43 +100,47 @@ index 7eefeea..f65e754 100644
          window: &mut Window,
          cx: &Context<Self>,
      ) -> Option<AnyElement> {
-@@ -4440,10 +4448,12 @@ impl ThreadView {
+@@ -4452,10 +4460,12 @@ impl ThreadView {
                          |this| this.child(Divider::horizontal().color(DividerColor::Border)),
                      )
                      .when_some(plan, |this, plan| {
 -                        this.child(self.render_plan_summary(plan, window, cx))
 -                            .when(plan_expanded, |parent| {
--                                parent.children(self.render_plan_body(plan, window, cx))
+-                                parent.child(self.render_plan_body(plan, window, cx))
 -                            })
 +                        this.child(self.render_plan_summary(plan, window, cx)).when(
 +                            plan_expanded,
 +                            |parent| {
-+                                parent.children(self.render_plan_body(plan, plan_items, window, cx))
++                                parent.child(self.render_plan_body(plan, plan_items, window, cx))
 +                            },
 +                        )
                      })
                      .when(has_plan && !changed_buffers.is_empty(), |this| {
                          this.child(Divider::horizontal().color(DividerColor::Border))
-@@ -5405,14 +5415,15 @@ impl ThreadView {
-     fn render_plan_body(
-         &self,
-         plan: &Plan,
+@@ -5430,11 +5440,18 @@ impl ThreadView {
+         }
+     }
+ 
+-    fn render_plan_body(&self, plan: &Plan, window: &mut Window, cx: &Context<Self>) -> AnyElement {
++    fn render_plan_body(
++        &self,
++        plan: &Plan,
 +        plan_items: Option<AnyElement>,
-         window: &mut Window,
-         cx: &Context<Self>,
-     ) -> Option<AnyElement> {
++        window: &mut Window,
++        cx: &Context<Self>,
++    ) -> AnyElement {
          match &plan.content {
--            PlanContent::Items(entries) => Some(
-+            PlanContent::Items(entries) => Some(plan_items.unwrap_or_else(|| {
-                 self.render_plan_entries(entries, window, cx)
--                    .into_any_element(),
--            ),
+-            PlanContent::Items(entries) => self
+-                .render_plan_entries(entries, window, cx)
+-                .into_any_element(),
++            PlanContent::Items(entries) => plan_items.unwrap_or_else(|| {
++                self.render_plan_entries(entries, window, cx)
 +                    .into_any_element()
-+            })),
-             PlanContent::Markdown(markdown) => Some(
-                 v_flex()
-                     .id("plan_markdown")
-@@ -5432,12 +5443,44 @@ impl ThreadView {
++            }),
+             PlanContent::Markdown { markdown, .. } => v_flex()
+                 .id("plan_markdown")
+                 .max_h_64()
+@@ -5451,12 +5468,44 @@ impl ThreadView {
          }
      }
  
@@ -175,7 +186,7 @@ index 7eefeea..f65e754 100644
          v_flex()
              .id("plan_items_list")
              .max_h_40()
-@@ -5503,7 +5546,6 @@ impl ThreadView {
+@@ -5522,7 +5571,6 @@ impl ThreadView {
                      )
                  })),
              )
@@ -183,7 +194,7 @@ index 7eefeea..f65e754 100644
      }
  
      fn render_context_compaction(
-@@ -15529,7 +15571,10 @@ impl Render for ThreadView {
+@@ -15548,7 +15596,10 @@ impl Render for ThreadView {
              )
              .child(conversation)
              .children(self.render_multi_root_callout(cx))

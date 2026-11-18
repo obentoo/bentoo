@@ -1,0 +1,476 @@
+From 7c8c69064fd71e5ae0872f7805ee537992cf45ef Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Tue, 17 Nov 2026 08:52:28 -0300
+Subject: [PATCH] agent_servers: let the user keep an agent's questions out of
+ cards
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Claude Agent (Plus) appends a rule to its system prompt, from 0.39.0, that
+steers the model into asking the questions it needs answered through
+AskUserQuestion, which Zeo renders as a question card, instead of leaving
+them in the reply (Zeo next proposal §6.43, ask 67). The adapter turns the
+rule on whenever the client advertises form elicitation, which Zeo does,
+so Zeo has nothing to send for the default.
+
+This adds the way out: `agent.ask_questions_in_cards`, true by default, on
+the Settings page under Agent Configuration. Set to false, every session
+request -- `session/new`, `session/load`, `session/resume`, over v1 and v2
+-- carries `_meta: { "askQuestionsInCards": false }`, and the adapter
+leaves its prompt as the preset. Only the opt-out is sent: at the default
+every agent receives the request it received before, so no other agent
+sees a key it does not know.
+
+The value is read when the request is built, not when the connection is
+made, so a thread reopened after the change follows it. One limit sits in
+Claude Code, not here: it records the system prompt once per conversation,
+so a resumed conversation keeps the prompt it started with until the next
+compaction.
+
+`session_meta.rs` reads the merged settings through `try_global`, because
+agent_servers does not depend on agent_settings and a test app may run
+without a settings store. Tests: the key and its absence
+(`session_meta`), the v2 wire for new and resume
+(`v2_session_requests_carry_the_question_card_opt_out`), and the v1 wire
+for new, load and resume (`question_cards_meta_tests`), whose harness, from
+0036, now records the three session requests. Red seen: with the v1 load
+wiring removed, the v1 test fails.
+---
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index 23c9420..336a375 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -1408,6 +1408,11 @@
+     //
+     // Default: true
+     "expand_terminal_card": true,
++    // Whether to ask an external agent that supports it (Claude Agent (Plus)) to put the
++    // questions it needs answered through question cards rather than in its replies.
++    //
++    // Default: true
++    "ask_questions_in_cards": true,
+     // Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
+     // The command is sent to the shell as if typed, so it is interpreted by your
+     // configured shell (including on Windows and remote/WSL projects).
+diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
+index 8322508..38c2270 100644
+--- a/crates/agent_servers/src/acp.rs
++++ b/crates/agent_servers/src/acp.rs
+@@ -1,5 +1,6 @@
+ mod debug_log;
+ mod runtime;
++mod session_meta;
+ mod session_updates;
+ mod terminal_updates;
+ mod transport;
+diff --git a/crates/agent_servers/src/acp/session_meta.rs b/crates/agent_servers/src/acp/session_meta.rs
+new file mode 100644
+index 0000000..4920c64
+--- /dev/null
++++ b/crates/agent_servers/src/acp/session_meta.rs
+@@ -0,0 +1,75 @@
++use gpui::App;
++use serde_json::{Map, Value};
++use settings::SettingsStore;
++
++/// Read by Claude Agent (Plus) (`src/question-routing.ts`), whose own default is to ask its open
++/// questions through `AskUserQuestion`'s card. Zeo next proposal §6.43.
++const ASK_QUESTIONS_IN_CARDS_META_KEY: &str = "askQuestionsInCards";
++
++/// The `_meta` sent with `session/new`, `session/load` and `session/resume`, so a reopened
++/// thread follows the setting as it is now. Only the opt-out is sent: while the setting is at
++/// its default every agent receives the same request as before.
++pub(crate) fn session_request_meta(cx: &App) -> Option<Map<String, Value>> {
++    // A test app may run without a settings store; the default applies there.
++    let ask_questions_in_cards = cx
++        .try_global::<SettingsStore>()
++        .and_then(|store| {
++            store
++                .merged_settings()
++                .agent
++                .as_ref()?
++                .ask_questions_in_cards
++        })
++        .unwrap_or(true);
++    session_request_meta_for(ask_questions_in_cards)
++}
++
++fn session_request_meta_for(ask_questions_in_cards: bool) -> Option<Map<String, Value>> {
++    (!ask_questions_in_cards).then(|| {
++        Map::from_iter([(
++            ASK_QUESTIONS_IN_CARDS_META_KEY.to_string(),
++            Value::Bool(false),
++        )])
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use gpui::{TestAppContext, UpdateGlobal as _};
++
++    #[test]
++    fn the_default_sends_nothing() {
++        assert_eq!(session_request_meta_for(true), None);
++    }
++
++    #[test]
++    fn the_opt_out_is_an_explicit_false() {
++        let meta = session_request_meta_for(false).expect("the opt-out is sent");
++        assert_eq!(meta.get("askQuestionsInCards"), Some(&Value::Bool(false)));
++        assert_eq!(meta.len(), 1);
++    }
++
++    #[gpui::test]
++    fn reads_the_merged_setting(cx: &mut TestAppContext) {
++        cx.update(|cx| {
++            assert_eq!(session_request_meta(cx), None, "no settings store");
++            let store = SettingsStore::test(cx);
++            cx.set_global(store);
++            assert_eq!(session_request_meta(cx), None, "default.json says true");
++            SettingsStore::update_global(cx, |store, cx| {
++                store.update_user_settings(cx, |settings| {
++                    settings
++                        .agent
++                        .get_or_insert_default()
++                        .ask_questions_in_cards = Some(false);
++                });
++            });
++            assert_eq!(
++                session_request_meta(cx),
++                session_request_meta_for(false),
++                "the user turned it off"
++            );
++        });
++    }
++}
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index f0ad645..3db73b9 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -2121,6 +2121,9 @@ mod recorder_mode_tests;
+ #[cfg(test)]
+ mod round_trip_tests;
+ 
++#[cfg(test)]
++mod question_cards_meta_tests;
++
+ #[cfg(test)]
+ mod fork_session_tests;
+ 
+@@ -2284,11 +2287,14 @@ impl AgentConnection for AcpConnection {
+         };
+         let mcp_servers = mcp_servers_for_project(&project, cx);
+         let sends_initial_config_options = self.agent_supports_initial_config_options(cx);
++        let session_meta = super::session_meta::session_request_meta(cx);
+ 
+         cx.spawn(async move |cx| {
+             let (response_sender, response_received) = futures::channel::oneshot::channel();
+             let (registered, registration_finished) = futures::channel::oneshot::channel();
+-            let mut request = directories.into_new_session_request(mcp_servers);
++            let mut request = directories
++                .into_new_session_request(mcp_servers)
++                .meta(session_meta);
+             if sends_initial_config_options {
+                 // The default-application pass below still runs, so defaults the agent ignored
+                 // here (for example, ones that depend on another option) get another chance.
+@@ -2553,6 +2559,7 @@ impl AgentConnection for AcpConnection {
+         }
+ 
+         let mcp_servers = mcp_servers_for_project(&project, cx);
++        let session_meta = super::session_meta::session_request_meta(cx);
+         self.open_or_create_session(
+             session_id,
+             project,
+@@ -2563,7 +2570,9 @@ impl AgentConnection for AcpConnection {
+                 Box::pin(async move {
+                     let response = ordered_response(
+                         &connection,
+-                        directories.into_load_session_request(session_id.clone(), mcp_servers),
++                        directories
++                            .into_load_session_request(session_id.clone(), mcp_servers)
++                            .meta(session_meta),
+                         applied,
+                     )
+                     .await?;
+@@ -2597,6 +2606,7 @@ impl AgentConnection for AcpConnection {
+         }
+ 
+         let mcp_servers = mcp_servers_for_project(&project, cx);
++        let session_meta = super::session_meta::session_request_meta(cx);
+         self.open_or_create_session(
+             session_id,
+             project,
+@@ -2607,7 +2617,9 @@ impl AgentConnection for AcpConnection {
+                 Box::pin(async move {
+                     let response = ordered_response(
+                         &connection,
+-                        directories.into_resume_session_request(session_id.clone(), mcp_servers),
++                        directories
++                            .into_resume_session_request(session_id.clone(), mcp_servers)
++                            .meta(session_meta),
+                         applied,
+                     )
+                     .await?;
+diff --git a/crates/agent_servers/src/acp/v1/question_cards_meta_tests.rs b/crates/agent_servers/src/acp/v1/question_cards_meta_tests.rs
+new file mode 100644
+index 0000000..f6ee166
+--- /dev/null
++++ b/crates/agent_servers/src/acp/v1/question_cards_meta_tests.rs
+@@ -0,0 +1,58 @@
++//! `agent.ask_questions_in_cards` on the v1 wire, the protocol Claude Agent (Plus) speaks
++//! (Zeo next proposal §6.43): off, every way into a thread sends `askQuestionsInCards: false`
++//! in the request's `_meta`; at its default, the requests carry no `_meta` at all.
++
++use super::thread_config_test_support::*;
++use gpui::UpdateGlobal as _;
++
++fn set_ask_questions_in_cards(value: bool, cx: &mut gpui::TestAppContext) {
++    cx.update(|cx| {
++        settings::SettingsStore::update_global(cx, |store, cx| {
++            store.update_user_settings(cx, |settings| {
++                settings
++                    .agent
++                    .get_or_insert_default()
++                    .ask_questions_in_cards = Some(value);
++            });
++        });
++    });
++}
++
++#[gpui::test]
++async fn question_cards_meta_follows_the_setting_on_new_load_and_resume(
++    cx: &mut gpui::TestAppContext,
++) {
++    let project = init(cx).await;
++    let agent = ConfigAgent::connect(
++        AgentScript {
++            agent_id: "Claude Agent (Plus)",
++            new_session_id: "fresh",
++            ..Default::default()
++        },
++        project,
++        cx,
++    )
++    .await;
++
++    agent.load("before", cx).await;
++    assert_eq!(
++        agent.session_request_metas("session/load"),
++        vec![serde_json::Value::Null],
++        "the default sends no _meta"
++    );
++
++    set_ask_questions_in_cards(false, cx);
++    let opt_out = serde_json::json!({ "askQuestionsInCards": false });
++    agent.new_session(cx).await;
++    agent.load("after", cx).await;
++    agent.resume("resumed", cx).await;
++    assert_eq!(
++        agent.session_request_metas("session/new"),
++        vec![opt_out.clone()]
++    );
++    assert_eq!(
++        agent.session_request_metas("session/load"),
++        vec![serde_json::Value::Null, opt_out.clone()]
++    );
++    assert_eq!(agent.session_request_metas("session/resume"), vec![opt_out]);
++}
+diff --git a/crates/agent_servers/src/acp/v1/thread_config_test_support.rs b/crates/agent_servers/src/acp/v1/thread_config_test_support.rs
+index e957c6c..751fcb5 100644
+--- a/crates/agent_servers/src/acp/v1/thread_config_test_support.rs
++++ b/crates/agent_servers/src/acp/v1/thread_config_test_support.rs
+@@ -100,7 +100,12 @@ impl ConfigAgent {
+                     let options = options.clone();
+                     let modes = modes.clone();
+                     let script = script.clone();
+-                    async move |_req: acp::NewSessionRequest, responder, _cx| {
++                    let requests = requests.clone();
++                    async move |req: acp::NewSessionRequest, responder, _cx| {
++                        requests.lock().expect("requests").push((
++                            "session/new".to_string(),
++                            serde_json::to_value(&req).expect("session request params"),
++                        ));
+                         let current_options = options.lock().expect("agent options").clone();
+                         let current_modes = modes.lock().expect("agent modes").clone();
+                         responder.respond(
+@@ -118,7 +123,12 @@ impl ConfigAgent {
+                 {
+                     let options = options.clone();
+                     let modes = modes.clone();
+-                    async move |_req: acp::LoadSessionRequest, responder, _cx| {
++                    let requests = requests.clone();
++                    async move |req: acp::LoadSessionRequest, responder, _cx| {
++                        requests.lock().expect("requests").push((
++                            "session/load".to_string(),
++                            serde_json::to_value(&req).expect("session request params"),
++                        ));
+                         let current_options = options.lock().expect("agent options").clone();
+                         let current_modes = modes.lock().expect("agent modes").clone();
+                         responder.respond(
+@@ -134,7 +144,12 @@ impl ConfigAgent {
+                 {
+                     let options = options.clone();
+                     let modes = modes.clone();
+-                    async move |_req: acp::ResumeSessionRequest, responder, _cx| {
++                    let requests = requests.clone();
++                    async move |req: acp::ResumeSessionRequest, responder, _cx| {
++                        requests.lock().expect("requests").push((
++                            "session/resume".to_string(),
++                            serde_json::to_value(&req).expect("session request params"),
++                        ));
+                         let current_options = options.lock().expect("agent options").clone();
+                         let current_modes = modes.lock().expect("agent modes").clone();
+                         responder.respond(
+@@ -514,6 +529,18 @@ impl ConfigAgent {
+         sent
+     }
+ 
++    /// The `_meta` of every request of `method` (`session/new`, `/load`, `/resume`), in order;
++    /// `Value::Null` where the request carried none.
++    pub(super) fn session_request_metas(&self, method: &str) -> Vec<serde_json::Value> {
++        self.requests
++            .lock()
++            .expect("requests")
++            .iter()
++            .filter(|(sent, _)| sent == method)
++            .map(|(_, params)| params["_meta"].clone())
++            .collect()
++    }
++
+     /// Mode ids of every `session/set_mode`, in order.
+     pub(super) fn mode_requests(&self) -> Vec<String> {
+         self.requests
+diff --git a/crates/agent_servers/src/acp/v2.rs b/crates/agent_servers/src/acp/v2.rs
+index f82bf63..03fa6d3 100644
+--- a/crates/agent_servers/src/acp/v2.rs
++++ b/crates/agent_servers/src/acp/v2.rs
+@@ -1056,7 +1056,8 @@ impl AcpV2Connection {
+         }
+         let mut request = acp::ResumeSessionRequest::new(session_id.clone(), context.cwd.clone())
+             .additional_directories(context.additional_directories.clone())
+-            .mcp_servers(context.mcp_servers.clone());
++            .mcp_servers(context.mcp_servers.clone())
++            .meta(super::session_meta::session_request_meta(cx));
+         if replay_history {
+             request = request.replay_from(acp::ReplayFrom::Start(acp::ReplayFromStart::new()));
+         }
+@@ -1338,7 +1339,8 @@ impl AgentConnection for AcpV2Connection {
+         };
+         let mut request = acp::NewSessionRequest::new(context.cwd.clone())
+             .additional_directories(context.additional_directories.clone())
+-            .mcp_servers(context.mcp_servers.clone());
++            .mcp_servers(context.mcp_servers.clone())
++            .meta(super::session_meta::session_request_meta(cx));
+         if self.supports_initial_config_options(cx) {
+             // `apply_new_session_defaults` still runs after creation, so defaults the agent
+             // ignored here (for example, ones that depend on another option) get another chance.
+@@ -5751,6 +5753,55 @@ done
+         );
+     }
+ 
++    #[gpui::test]
++    async fn v2_session_requests_carry_the_question_card_opt_out(cx: &mut TestAppContext) {
++        use gpui::UpdateGlobal as _;
++
++        let harness = SessionHarness::new(session_capabilities(), Vec::new(), Vec::new(), cx).await;
++        // Each request is answered before the next: the fake agent handles one at a time.
++        let mut creation = harness.create(cx);
++        let (request, _) = harness.new_request(&mut creation, cx).await;
++        assert_eq!(
++            request.meta, None,
++            "the default leaves the request as it was"
++        );
++        harness
++            .new_responses
++            .try_send(Ok(initial_response()))
++            .expect("initial response");
++        bounded(creation, cx).await.expect("create thread");
++
++        cx.update(|cx| {
++            settings::SettingsStore::update_global(cx, |store, cx| {
++                store.update_user_settings(cx, |settings| {
++                    settings
++                        .agent
++                        .get_or_insert_default()
++                        .ask_questions_in_cards = Some(false);
++                });
++            });
++        });
++        let opt_out = Some(serde_json::Map::from_iter([(
++            "askQuestionsInCards".to_string(),
++            json!(false),
++        )]));
++        let reopening = harness.reopen(false, cx);
++        let (request, responder) = bounded(harness.resume_requests.recv(), cx)
++            .await
++            .expect("resume request");
++        assert_eq!(
++            request.meta, opt_out,
++            "a reopened thread follows the setting too"
++        );
++        responder
++            .respond(acp::ResumeSessionResponse::new())
++            .expect("resumed");
++        bounded(reopening, cx).await.expect("resumed thread");
++        let mut creation = harness.create(cx);
++        let (request, _) = harness.new_request(&mut creation, cx).await;
++        assert_eq!(request.meta, opt_out, "session/new");
++    }
++
+     #[gpui::test]
+     async fn v2_session_sdk_abandoned_creation_closes_late_response_and_eof_rejects(
+         cx: &mut TestAppContext,
+diff --git a/crates/settings_content/src/agent.rs b/crates/settings_content/src/agent.rs
+index c62dc0d..d5e5fd4 100644
+--- a/crates/settings_content/src/agent.rs
++++ b/crates/settings_content/src/agent.rs
+@@ -477,6 +477,12 @@ pub struct AgentSettingsContent {
+     ///
+     /// Default: collapsed
+     pub tool_card_default: Option<ToolCardDisplay>,
++    /// Whether to ask an external agent that supports it to put the questions it needs answered
++    /// to you through question cards rather than in its replies. Today only Claude Agent (Plus)
++    /// reads it, sent as `askQuestionsInCards` in the session's `_meta`. Zeo next proposal §6.43.
++    ///
++    /// Default: true
++    pub ask_questions_in_cards: Option<bool>,
+     /// Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
+     /// The command is sent to the shell as if typed, so it is interpreted by your
+     /// configured shell (including on Windows and remote/WSL projects).
+diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_data.rs
+index 941f525..fe5d830 100644
+--- a/crates/settings_ui/src/page_data.rs
++++ b/crates/settings_ui/src/page_data.rs
+@@ -9580,6 +9580,29 @@ fn ai_page(cx: &App) -> SettingsPage {
+                 metadata: None,
+                 files: USER,
+             }),
++            SettingsPageItem::SettingItem(SettingItem {
++                title: "Ask Questions In Cards",
++                description: "Whether an external agent that supports it (Claude Agent (Plus)) puts the questions it needs answered in question cards rather than in its replies. Applies to threads started or reopened afterwards.",
++                field: Box::new(SettingField {
++                    organization_override: None,
++                    json_path: Some("agent.ask_questions_in_cards"),
++                    pick: |settings_content| {
++                        settings_content
++                            .agent
++                            .as_ref()?
++                            .ask_questions_in_cards
++                            .as_ref()
++                    },
++                    write: |settings_content, value, _| {
++                        settings_content
++                            .agent
++                            .get_or_insert_default()
++                            .ask_questions_in_cards = value;
++                    },
++                }),
++                metadata: None,
++                files: USER,
++            }),
+             SettingsPageItem::SettingItem(SettingItem {
+                 title: "Terminal Thread Init Command",
+                 description: "Command to automatically run when Zed creates a Terminal Thread shell in the agent panel. Runs in your configured shell.",
