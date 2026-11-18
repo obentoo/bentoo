@@ -1,0 +1,636 @@
+From: Lucas C.S. <lucascs@protonmail.com>
+Subject: [PATCH] blink/platform/fonts: reach the Rust font code through cxx, not Crubit
+
+Crubit's C++ support library is not in the Chromium tree:
+`//build_overrides/crubit.gni` hardcodes `crubit_src_dir` to
+`//third_party/rust-toolchain/lib/third_party/crubit`, which exists only
+inside Google's bundled Rust toolchain and which the release tarball does
+not ship.  With a system Rust sysroot `enable_cpp_api_from_rust` is false,
+`cpp_api_from_rust` never defines its `*_bindings` targets, and `gn gen`
+dies on `//third_party/blink/renderer/platform`, which depends on two of
+them and on `//build/rust/crubit` unconditionally:
+
+  ERROR at //build/rust/crubit/BUILD.gn:11:5: Unable to load
+  ".../third_party/rust-toolchain/lib/third_party/crubit/support/BUILD.gn".
+      "$crubit_src_dir/support:support_cpp",
+
+Neither consumer has a C++ fallback to gate on, so both go back to `cxx`
+(`cxx_bindings` is still a supported `rust_static_library` attribute;
+rustfft_ffi in the same file uses it):
+
+ - OpenType format check (fonts/opentype): revert of upstream 493e6c3911e3
+   ("Migrate OpenType format check bindings to Crubit", M153), restoring
+   the M152 path wholesale -- the `cxx` bridge in format_check.rs,
+   `rust::Box<FontFormatInfo>` in the header, and the
+   `rust_static_library("font_format_check")` target in platform/BUILD.gn.
+   The Rust logic itself is unchanged; the commit only flipped `fn` ->
+   `pub fn` and `Box<T>` -> `T`.
+
+ - Incremental Font Transfer (fonts/ift), new in M155 and Crubit-only from
+   the start, so there is nothing to revert to.  ift_patcher.rs keeps
+   upstream's code untouched and gains a `cxx` bridge at the end that
+   exports the same operations; ift_patcher.{h,cc} hold `rust::Box`es
+   instead of Crubit value types.  The blink-facing API of IftSubsetDefinition
+   and IftPatcher does not change (copying a subset now clones it on the
+   Rust side), so ift_patcher_test.cc needs no change.  The feature is
+   `status: "test"` in runtime_enabled_features.json5 and nothing outside
+   fonts/ift calls it yet; porting rather than stubbing keeps
+   --enable-blink-features=IncrementalFontTransfer working.
+
+fonts/BUILD.gn keeps only the IFT target; the format-check one moves to
+platform/BUILD.gn as in M152.  Its three `//third_party/rust/...` deps
+move with every roll of those crates (M157: font_types v0_12, read_fonts
+v0_45, skrifa v0_48).  On a series bump, re-read fonts/BUILD.gn and resync.
+
+M157 moved the font headers and sources out of the platform component into
+two source_sets, `font_rust_headers` (consumed by //third_party/blink/
+renderer/core) and `font_rust_support`, and gave blink_platform_unittests
+its own direct dependency on the two bindings and on //build/rust/crubit.
+The Crubit dependencies now sit in `font_rust_headers`' public_deps, which
+take the two cxx targets instead, and in the unittests' deps, which drop
+them (they already reach both through :font_rust_headers).
+
+M158 grew the IFT API by four calls -- IftSubsetDefinition::Clear() and
+IftPatcher::{RenderedFontRequiresPatches,HasUnrenderedChanges,
+MarkFontDataRendered}() -- backed by new `pub fn`s in ift_patcher.rs
+(`clear`, `rendered_font_requires_patches`, `has_unrendered_changes`,
+`mark_rendered`).  The cxx bridge exports all four, and their C++ bodies go
+through the `rust::Box` like the rest; that is the whole rebase from the
+M157 patch, whose ift_patcher.cc hunks no longer anchored around them.
+
+Applied only with USE=-bundled-toolchain; with the bundled toolchain the
+upstream Crubit path works as-is.  Drop this patch once upstream gates the
+Crubit dependency on `enable_cpp_api_from_rust` or ships Crubit's support
+library outside the toolchain.
+
+diff -ruN a/third_party/blink/renderer/platform/BUILD.gn b/third_party/blink/renderer/platform/BUILD.gn
+--- a/third_party/blink/renderer/platform/BUILD.gn	2026-11-18 13:46:48.704756091 -0300
++++ b/third_party/blink/renderer/platform/BUILD.gn	2026-11-18 13:46:48.726755877 -0300
+@@ -219,11 +219,10 @@
+     "//third_party/blink/renderer:non_test_config",
+   ]
+   public_deps = [
++    ":font_format_check",
+     ":platform_export",
+-    "fonts:font_format_bindings",
+-    "fonts:ift_patcher_bindings",
++    "fonts:ift_patcher_rs",
+     "//base",
+-    "//build/rust/crubit",
+     "//skia",
+     "//third_party/blink/renderer/platform/wtf",
+   ]
+@@ -258,6 +257,18 @@
+   ]
+ }
+ 
++rust_static_library("font_format_check") {
++  allow_unsafe = true  # Needed for FFI that underpins the `cxx` crate.
++  crate_root = "fonts/opentype/format_check.rs"
++  sources = [ crate_root ]
++  cxx_bindings = [ crate_root ]
++  deps = [
++    "//third_party/rust/font_types/v0_12:lib",
++    "//third_party/rust/read_fonts/v0_45:lib",
++    "//third_party/rust/skrifa/v0_48:lib",
++  ]
++}
++
+ rust_static_library("rustfft_ffi") {
+   allow_unsafe = true  # Needed for FFI that underpins the `cxx` crate.
+   crate_root = "audio/rustfft_ffi.rs"
+@@ -2593,9 +2604,6 @@
+     ":bridge_ice_controller_tests",
+     ":font_rust_headers",
+     ":rustfft_ffi_unittests",
+-    "fonts:font_format_bindings",
+-    "fonts:ift_patcher_bindings",
+-    "//build/rust/crubit",
+   ]
+ 
+   data_deps = [ ":blink_platform_unittests_data" ]
+diff -ruN a/third_party/blink/renderer/platform/fonts/BUILD.gn b/third_party/blink/renderer/platform/fonts/BUILD.gn
+--- a/third_party/blink/renderer/platform/fonts/BUILD.gn	2026-11-18 13:46:48.708043080 -0300
++++ b/third_party/blink/renderer/platform/fonts/BUILD.gn	2026-11-18 13:46:48.727416961 -0300
+@@ -4,27 +4,11 @@
+ 
+ import("//build/rust/rust_static_library.gni")
+ 
+-rust_static_library("font_format") {
+-  crate_root = "opentype/format_check.rs"
+-  sources = [ crate_root ]
+-  cpp_api_from_rust = {
+-    target_name = "font_format_bindings"
+-    cpp_namespace = "font_format"
+-  }
+-  deps = [
+-    "//third_party/rust/font_types/v0_12:lib",
+-    "//third_party/rust/read_fonts/v0_45:lib",
+-    "//third_party/rust/skrifa/v0_48:lib",
+-  ]
+-}
+-
+ rust_static_library("ift_patcher_rs") {
++  allow_unsafe = true  # Needed for FFI that underpins the `cxx` crate.
+   crate_root = "ift/ift_patcher.rs"
+   sources = [ crate_root ]
+-  cpp_api_from_rust = {
+-    target_name = "ift_patcher_bindings"
+-    cpp_namespace = "ift_patcher_rs"
+-  }
++  cxx_bindings = [ crate_root ]
+   deps = [
+     "//third_party/rust/incremental_font_transfer/v0_9:lib",
+     "//third_party/rust/log/v0_4:lib",
+diff -ruN a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.cc b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.cc
+--- a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.cc	2026-11-18 13:46:48.710766682 -0300
++++ b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.cc	2026-11-18 13:47:06.467282324 -0300
+@@ -5,8 +5,11 @@
+ #include "third_party/blink/renderer/platform/fonts/ift/ift_patcher.h"
+ 
+ #include <string>
++#include <string_view>
+ #include <utility>
+ 
++#include "base/compiler_specific.h"
++#include "base/containers/span_rust.h"
+ #include "base/memory/ptr_util.h"
+ #include "base/notreached.h"
+ #include "base/numerics/safe_conversions.h"
+@@ -14,7 +17,8 @@
+ 
+ namespace blink {
+ 
+-IftSubsetDefinition::IftSubsetDefinition() = default;
++IftSubsetDefinition::IftSubsetDefinition()
++    : subset_(ift_patcher_rs::new_subset_definition()) {}
+ 
+ IftSubsetDefinition::~IftSubsetDefinition() = default;
+ 
+@@ -23,38 +27,40 @@
+ IftSubsetDefinition& IftSubsetDefinition::operator=(IftSubsetDefinition&&) =
+     default;
+ 
+-IftSubsetDefinition::IftSubsetDefinition(const IftSubsetDefinition&) = default;
++IftSubsetDefinition::IftSubsetDefinition(const IftSubsetDefinition& other)
++    : subset_(ift_patcher_rs::clone_subset_definition(*other.subset_)) {}
+ 
+ IftSubsetDefinition& IftSubsetDefinition::operator=(
+-    const IftSubsetDefinition&) = default;
+-
+-IftSubsetDefinition::IftSubsetDefinition(
+-    ift_patcher_rs::IftSubsetDefinition subset)
+-    : subset_(std::move(subset)) {}
++    const IftSubsetDefinition& other) {
++  if (this != &other) {
++    subset_ = ift_patcher_rs::clone_subset_definition(*other.subset_);
++  }
++  return *this;
++}
+ 
+ bool IftSubsetDefinition::AddCodepoint(uint32_t codepoint) {
+-  return subset_.add_codepoint(codepoint);
++  return subset_->add_codepoint(codepoint);
+ }
+ 
+ bool IftSubsetDefinition::AddFeatureTag(uint32_t tag) {
+-  return subset_.add_feature_tag(tag);
++  return subset_->add_feature_tag(tag);
+ }
+ 
+ bool IftSubsetDefinition::AddDesignSpace(uint32_t tag,
+                                          double min_value,
+                                          double max_value) {
+-  return subset_.add_design_space(tag, min_value, max_value);
++  return subset_->add_design_space(tag, min_value, max_value);
+ }
+ 
+ void IftSubsetDefinition::Union(const IftSubsetDefinition& other) {
+-  subset_.union_(other.subset_);
++  subset_->union_(*other.subset_);
+ }
+ 
+ void IftSubsetDefinition::Clear() {
+-  subset_.clear();
++  subset_->clear();
+ }
+ 
+-IftPatcher::IftPatcher(ift_patcher_rs::IftPatcher patcher)
++IftPatcher::IftPatcher(rust::Box<ift_patcher_rs::IftPatcher> patcher)
+     : patcher_(std::move(patcher)) {}
+ 
+ IftPatcher::~IftPatcher() = default;
+@@ -68,38 +74,40 @@
+   if (!RuntimeEnabledFeatures::IncrementalFontTransferEnabled()) {
+     return nullptr;
+   }
+-  if (!ift_patcher_rs::IftPatcher::is_ift(font_data)) {
++  rust::Slice<const uint8_t> rs_font_data = base::SpanToRustSlice(font_data);
++  if (!ift_patcher_rs::is_ift_font(rs_font_data)) {
+     return nullptr;
+   }
+   return base::WrapUnique(
+-      new IftPatcher(ift_patcher_rs::IftPatcher(font_data)));
++      new IftPatcher(ift_patcher_rs::new_patcher(rs_font_data)));
+ }
+ 
+ base::span<const uint8_t> IftPatcher::GetFontData() const {
+-  rs_std::SliceRef<const ::std::uint8_t> font_data = patcher_.font_data();
+-  return base::span(font_data.to_span());
++  rust::Slice<const uint8_t> font_data = patcher_->font_data();
++  // SAFETY: `font_data` borrows the Rust-owned Vec<u8> inside `patcher_`, and
++  // `data()`/`size()` describe exactly that allocation.
++  return UNSAFE_BUFFERS(base::span(font_data.data(), font_data.size()));
+ }
+ 
+ bool IftPatcher::RenderedFontRequiresPatches(
+     const IftSubsetDefinition& subset) const {
+-  return patcher_.rendered_font_requires_patches(subset.subset_);
++  return patcher_->rendered_font_requires_patches(*subset.subset_);
+ }
+ 
+ bool IftPatcher::HasUnrenderedChanges() const {
+-  return patcher_.has_unrendered_changes();
++  return patcher_->has_unrendered_changes();
+ }
+ 
+ void IftPatcher::MarkFontDataRendered() {
+-  patcher_.mark_rendered();
++  patcher_->mark_rendered();
+ }
+ 
+ Vector<String> IftPatcher::RequestPatches(const IftSubsetDefinition& subset) {
+-  rs_std::Vec<::rs::alloc::string::String> urls =
+-      patcher_.request_patches(subset.subset_);
++  rust::Vec<rust::String> urls = patcher_->request_patches(*subset.subset_);
+   Vector<String> ret;
+   ret.ReserveInitialCapacity(base::checked_cast<wtf_size_t>(urls.size()));
+-  for (const ::rs::alloc::string::String& url : urls) {
+-    ret.push_back(String::FromUtf8(url.as_str()));
++  for (const rust::String& url : urls) {
++    ret.push_back(String::FromUtf8(std::string_view(url.data(), url.size())));
+   }
+   return ret;
+ }
+@@ -107,29 +115,31 @@
+ void IftPatcher::AddPatchData(const String& url,
+                               base::span<const uint8_t> data) {
+   std::string utf8_url = url.Utf8();
+-  patcher_.add_patch_data(rs_std::StrRef::FromUtf8Unchecked(utf8_url), data);
++  patcher_->add_patch_data(rust::Str(utf8_url.data(), utf8_url.size()),
++                           base::SpanToRustSlice(data));
+ }
+ 
+ IftPatcher::ApplyStatus IftPatcher::ApplyPatches(
+     const IftSubsetDefinition& subset) {
+-  ift_patcher_rs::IftApplyStatus status =
+-      patcher_.apply_patches(subset.subset_);
+-  switch (status.tag) {
+-    case ift_patcher_rs::IftApplyStatus::Tag::Success:
++  ift_patcher_rs::ApplyStatus status =
++      patcher_->apply_patches_ffi(*subset.subset_);
++  switch (status) {
++    case ift_patcher_rs::ApplyStatus::Success:
+       return ApplyStatus::kSuccess;
+-    case ift_patcher_rs::IftApplyStatus::Tag::InvalidFont:
++    case ift_patcher_rs::ApplyStatus::InvalidFont:
+       return ApplyStatus::kInvalidFont;
+-    case ift_patcher_rs::IftApplyStatus::Tag::PatchGroupError:
++    case ift_patcher_rs::ApplyStatus::PatchGroupError:
+       return ApplyStatus::kPatchGroupError;
+-    case ift_patcher_rs::IftApplyStatus::Tag::PatchError:
++    case ift_patcher_rs::ApplyStatus::PatchError:
+       return ApplyStatus::kPatchError;
+-    case ift_patcher_rs::IftApplyStatus::Tag::MissingPatches:
++    case ift_patcher_rs::ApplyStatus::MissingPatches:
+       return ApplyStatus::kMissingPatches;
+   }
++  NOTREACHED();
+ }
+ 
+ bool IftPatcher::HasPendingPatchRequests() const {
+-  return patcher_.has_pending_patch_requests();
++  return patcher_->has_pending_patch_requests();
+ }
+ 
+ }  // namespace blink
+diff -ruN a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.h b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.h
+--- a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.h	2026-11-18 13:46:48.712756013 -0300
++++ b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.h	2026-11-18 13:46:48.727665917 -0300
+@@ -9,7 +9,7 @@
+ 
+ #include "base/compiler_specific.h"
+ #include "base/containers/span.h"
+-#include "third_party/blink/renderer/platform/fonts/ift_patcher_rs.h"
++#include "third_party/blink/renderer/platform/fonts/ift/ift_patcher.rs.h"
+ #include "third_party/blink/renderer/platform/platform_export.h"
+ #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+@@ -55,12 +55,9 @@
+  private:
+   friend class IftPatcher;
+ 
+-  explicit IftSubsetDefinition(ift_patcher_rs::IftSubsetDefinition subset);
+-
+-  // TODO(https://crbug.com/545486505): Export the autogenerated
+-  // IftSubsetDefinition instead of wrapping in a C++ class. Blocked on
+-  // PLATFORM_EXPORT support for crubit generated types.
+-  ift_patcher_rs::IftSubsetDefinition subset_;
++  // bentoo: held through the `cxx` bridge in ift_patcher.rs rather than as a
++  // Crubit value type.
++  rust::Box<ift_patcher_rs::IftSubsetDefinition> subset_;
+ };
+ 
+ // Font patching for Incremental Font Transfer (IFT), conforming to the W3C IFT
+@@ -140,9 +137,9 @@
+   bool HasPendingPatchRequests() const;
+ 
+  private:
+-  explicit IftPatcher(ift_patcher_rs::IftPatcher patcher);
++  explicit IftPatcher(rust::Box<ift_patcher_rs::IftPatcher> patcher);
+ 
+-  ift_patcher_rs::IftPatcher patcher_;
++  rust::Box<ift_patcher_rs::IftPatcher> patcher_;
+ };
+ 
+ }  // namespace blink
+diff -ruN a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.rs b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.rs
+--- a/third_party/blink/renderer/platform/fonts/ift/ift_patcher.rs	2026-11-18 13:46:48.716458744 -0300
++++ b/third_party/blink/renderer/platform/fonts/ift/ift_patcher.rs	2026-11-18 13:48:34.506380680 -0300
+@@ -2,7 +2,8 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-// Exported as "third_party/blink/renderer/platform/fonts/ift_patcher_rs.h"
++// Exported as "third_party/blink/renderer/platform/fonts/ift/ift_patcher.rs.h"
++// through the `cxx` bridge at the end of this file.
+ 
+ use incremental_font_transfer::font_patch::PatchingError;
+ use incremental_font_transfer::patch_group::{PatchGroup, UrlStatus};
+@@ -193,3 +194,76 @@
+         self.requested.iter().any(|url| !self.patch_data.contains_key(url))
+     }
+ }
++
++// bentoo: `cxx` bridge standing in for the Crubit `cpp_api_from_rust` binding,
++// which needs Chromium's bundled Rust toolchain. Only the binding layer is
++// new; everything above is upstream's code. `union` is a C++ keyword, so it
++// is exported as `union_`, the name Crubit gave it.
++#[cxx::bridge(namespace = "ift_patcher_rs")]
++mod ffi {
++    enum ApplyStatus {
++        Success,
++        InvalidFont,
++        PatchGroupError,
++        PatchError,
++        MissingPatches,
++    }
++
++    extern "Rust" {
++        type IftSubsetDefinition;
++        type IftPatcher;
++
++        fn new_subset_definition() -> Box<IftSubsetDefinition>;
++        fn clone_subset_definition(subset: &IftSubsetDefinition) -> Box<IftSubsetDefinition>;
++        fn add_codepoint(self: &mut IftSubsetDefinition, codepoint: u32) -> bool;
++        fn add_feature_tag(self: &mut IftSubsetDefinition, tag: u32) -> bool;
++        fn add_design_space(
++            self: &mut IftSubsetDefinition,
++            tag: u32,
++            min_val: f64,
++            max_val: f64,
++        ) -> bool;
++        #[cxx_name = "union_"]
++        fn union(self: &mut IftSubsetDefinition, other: &IftSubsetDefinition);
++        fn clear(self: &mut IftSubsetDefinition);
++
++        fn is_ift_font(font_data: &[u8]) -> bool;
++        fn new_patcher(font_data: &[u8]) -> Box<IftPatcher>;
++        fn font_data(self: &IftPatcher) -> &[u8];
++        fn rendered_font_requires_patches(self: &IftPatcher, subset: &IftSubsetDefinition) -> bool;
++        fn has_unrendered_changes(self: &IftPatcher) -> bool;
++        fn mark_rendered(self: &mut IftPatcher);
++        fn request_patches(self: &mut IftPatcher, subset: &IftSubsetDefinition) -> Vec<String>;
++        fn add_patch_data(self: &mut IftPatcher, patch: &str, data: &[u8]);
++        fn apply_patches_ffi(self: &mut IftPatcher, subset: &IftSubsetDefinition) -> ApplyStatus;
++        fn has_pending_patch_requests(self: &IftPatcher) -> bool;
++    }
++}
++
++fn new_subset_definition() -> Box<IftSubsetDefinition> {
++    Box::default()
++}
++
++fn clone_subset_definition(subset: &IftSubsetDefinition) -> Box<IftSubsetDefinition> {
++    Box::new(subset.clone())
++}
++
++fn is_ift_font(font_data: &[u8]) -> bool {
++    IftPatcher::is_ift(font_data)
++}
++
++fn new_patcher(font_data: &[u8]) -> Box<IftPatcher> {
++    Box::new(IftPatcher::from(font_data))
++}
++
++impl IftPatcher {
++    fn apply_patches_ffi(&mut self, subset: &IftSubsetDefinition) -> ffi::ApplyStatus {
++        match self.apply_patches(subset) {
++            IftApplyStatus::Success => ffi::ApplyStatus::Success,
++            IftApplyStatus::InvalidFont => ffi::ApplyStatus::InvalidFont,
++            IftApplyStatus::PatchGroupError => ffi::ApplyStatus::PatchGroupError,
++            IftApplyStatus::PatchError => ffi::ApplyStatus::PatchError,
++            IftApplyStatus::MissingPatches => ffi::ApplyStatus::MissingPatches,
++        }
++    }
++}
+diff -ruN a/third_party/blink/renderer/platform/fonts/opentype/font_format_check.cc b/third_party/blink/renderer/platform/fonts/opentype/font_format_check.cc
+--- a/third_party/blink/renderer/platform/fonts/opentype/font_format_check.cc	2026-11-18 13:46:48.718611098 -0300
++++ b/third_party/blink/renderer/platform/fonts/opentype/font_format_check.cc	2026-11-18 13:46:48.727837377 -0300
+@@ -7,6 +7,7 @@
+ #include "base/containers/span.h"
+ #include "base/containers/span_rust.h"
+ #include "base/numerics/byte_conversions.h"
++#include "third_party/blink/renderer/platform/fonts/opentype/format_check.rs.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/wtf/vector.h"
+ #include "third_party/skia/include/core/SkTypeface.h"
+@@ -14,37 +15,35 @@
+ namespace blink {
+ 
+ FontFormatCheck::FontFormatCheck(sk_sp<SkData> sk_data)
+-    : format_info_(font_format::get_font_format_info(
++    : format_info_(font_format_check::get_font_format_info(
+           base::SpanToRustSlice(sk_data->byteSpan()))) {}
+ 
+-FontFormatCheck::~FontFormatCheck() = default;
+-
+ bool FontFormatCheck::IsVariableFont() const {
+-  return font_format::is_variable(format_info_);
++  return font_format_check::is_variable(*format_info_);
+ }
+ 
+ bool FontFormatCheck::IsCbdtCblcColorFont() const {
+-  return font_format::is_cbdt_cblc(format_info_);
++  return font_format_check::is_cbdt_cblc(*format_info_);
+ }
+ 
+ bool FontFormatCheck::IsEbdtEblcMonochromeFont() const {
+-  return font_format::is_ebdt_eblc(format_info_);
++  return font_format_check::is_ebdt_eblc(*format_info_);
+ }
+ 
+ bool FontFormatCheck::IsColrCpalColorFontV0() const {
+-  return font_format::is_colrv0(format_info_);
++  return font_format_check::is_colrv0(*format_info_);
+ }
+ 
+ bool FontFormatCheck::IsColrCpalColorFontV1() const {
+-  return font_format::is_colrv1(format_info_);
++  return font_format_check::is_colrv1(*format_info_);
+ }
+ 
+ bool FontFormatCheck::IsSbixColorFont() const {
+-  return font_format::is_sbix(format_info_);
++  return font_format_check::is_sbix(*format_info_);
+ }
+ 
+ bool FontFormatCheck::IsCff2OutlineFont() const {
+-  return font_format::is_cff2(format_info_);
++  return font_format_check::is_cff2(*format_info_);
+ }
+ 
+ bool FontFormatCheck::IsVariableColrV0Font() const {
+@@ -58,7 +57,7 @@
+ 
+ bool FontFormatCheck::IsAvar2Font() const {
+   return RuntimeEnabledFeatures::FontFormatAvar2Enabled() &&
+-         font_format::is_avar2(format_info_);
++         font_format_check::is_avar2(*format_info_);
+ }
+ 
+ FontFormatCheck::VariableFontSubType FontFormatCheck::ProbeVariableFont(
+diff -ruN a/third_party/blink/renderer/platform/fonts/opentype/font_format_check.h b/third_party/blink/renderer/platform/fonts/opentype/font_format_check.h
+--- a/third_party/blink/renderer/platform/fonts/opentype/font_format_check.h	2026-11-18 13:46:48.720533442 -0300
++++ b/third_party/blink/renderer/platform/fonts/opentype/font_format_check.h	2026-11-18 13:46:48.727869597 -0300
+@@ -5,7 +5,7 @@
+ #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_OPENTYPE_FONT_FORMAT_CHECK_H_
+ #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_OPENTYPE_FONT_FORMAT_CHECK_H_
+ 
+-#include "third_party/blink/renderer/platform/fonts/font_format.h"
++#include "third_party/blink/renderer/platform/fonts/opentype/format_check.rs.h"
+ #include "third_party/blink/renderer/platform/platform_export.h"
+ #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+ #include "third_party/skia/include/core/SkData.h"
+@@ -19,7 +19,7 @@
+ 
+  public:
+   explicit FontFormatCheck(sk_sp<SkData>);
+-  virtual ~FontFormatCheck();
++  virtual ~FontFormatCheck() = default;
+   virtual bool IsVariableFont() const;
+   virtual bool IsCbdtCblcColorFont() const;
+   virtual bool IsEbdtEblcMonochromeFont() const;
+@@ -46,7 +46,7 @@
+   enum class COLRVersion { kCOLRV0, kCOLRV1, kNoCOLR };
+ 
+  private:
+-  font_format::FontFormatInfo format_info_;
++  rust::Box<font_format_check::FontFormatInfo> format_info_;
+ };
+ 
+ }  // namespace blink
+diff -ruN a/third_party/blink/renderer/platform/fonts/opentype/format_check.rs b/third_party/blink/renderer/platform/fonts/opentype/format_check.rs
+--- a/third_party/blink/renderer/platform/fonts/opentype/format_check.rs	2026-11-18 13:46:48.723506090 -0300
++++ b/third_party/blink/renderer/platform/fonts/opentype/format_check.rs	2026-11-18 13:46:48.727909181 -0300
+@@ -23,7 +23,7 @@
+     format_flags: Option<FontFormatFlags>,
+ }
+ 
+-pub fn get_font_format_info(font_bytes: &[u8]) -> FontFormatInfo {
++pub fn get_font_format_info(font_bytes: &[u8]) -> Box<FontFormatInfo> {
+     let file_ref = make_font_ref_internal(font_bytes, 0);
+ 
+     match file_ref {
+@@ -32,11 +32,11 @@
+                 font.table_directory().table_records().iter().map(|e| e.tag()).collect();
+             let color_version = get_colr_version(&font);
+             let avar_version = get_avar_version(&font);
+-            FontFormatInfo {
++            Box::new(FontFormatInfo {
+                 format_flags: Some(FontFormatFlags { table_tags, color_version, avar_version }),
+-            }
++            })
+         }
+-        _ => FontFormatInfo::default(),
++        _ => Box::new(FontFormatInfo::default()),
+     }
+ }
+ 
+@@ -44,10 +44,10 @@
+     Some(font_ref.colr().ok()?.version())
+ }
+ 
+-pub fn is_colrv1(format_info: &FontFormatInfo) -> bool {
++fn is_colrv1(format_info: &FontFormatInfo) -> bool {
+     matches!(&format_info.format_flags, Some(FontFormatFlags { color_version: Some(1), .. }),)
+ }
+-pub fn is_colrv0(format_info: &FontFormatInfo) -> bool {
++fn is_colrv0(format_info: &FontFormatInfo) -> bool {
+     matches!(&format_info.format_flags, Some(FontFormatFlags { color_version: Some(0), .. }),)
+ }
+ 
+@@ -58,7 +58,7 @@
+ 
+ // https://crbug.com/513446410: For safety we want to pass unknown avar2
+ // versions through fontations, too.
+-pub fn is_avar2(format_info: &FontFormatInfo) -> bool {
++fn is_avar2(format_info: &FontFormatInfo) -> bool {
+     matches!(
+         &format_info.format_flags,
+         Some(FontFormatFlags {
+@@ -77,22 +77,39 @@
+     }
+ }
+ 
+-pub fn is_variable(format_info: &FontFormatInfo) -> bool {
++fn is_variable(format_info: &FontFormatInfo) -> bool {
+     has_tags(format_info, &[Tag::new(b"fvar")])
+ }
+ 
+-pub fn is_sbix(format_info: &FontFormatInfo) -> bool {
++fn is_sbix(format_info: &FontFormatInfo) -> bool {
+     has_tags(format_info, &[Tag::new(b"sbix")])
+ }
+ 
+-pub fn is_cbdt_cblc(format_info: &FontFormatInfo) -> bool {
++fn is_cbdt_cblc(format_info: &FontFormatInfo) -> bool {
+     has_tags(format_info, &[Tag::new(b"CBDT"), Tag::new(b"CBLC")])
+ }
+ 
+-pub fn is_ebdt_eblc(format_info: &FontFormatInfo) -> bool {
++fn is_ebdt_eblc(format_info: &FontFormatInfo) -> bool {
+     has_tags(format_info, &[Tag::new(b"EBDT"), Tag::new(b"EBLC")])
+ }
+ 
+-pub fn is_cff2(format_info: &FontFormatInfo) -> bool {
++fn is_cff2(format_info: &FontFormatInfo) -> bool {
+     has_tags(format_info, &[Tag::new(b"CFF2")])
+ }
++
++#[cxx::bridge(namespace = "font_format_check")]
++pub mod ffi {
++    extern "Rust" {
++        type FontFormatInfo;
++
++        fn get_font_format_info(font_bytes: &[u8]) -> Box<FontFormatInfo>;
++        fn is_colrv1(format_info: &FontFormatInfo) -> bool;
++        fn is_colrv0(format_info: &FontFormatInfo) -> bool;
++        fn is_cbdt_cblc(format_info: &FontFormatInfo) -> bool;
++        fn is_ebdt_eblc(format_info: &FontFormatInfo) -> bool;
++        fn is_variable(format_info: &FontFormatInfo) -> bool;
++        fn is_sbix(format_info: &FontFormatInfo) -> bool;
++        fn is_cff2(format_info: &FontFormatInfo) -> bool;
++        fn is_avar2(format_info: &FontFormatInfo) -> bool;
++    }
++}

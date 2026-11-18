@@ -23,7 +23,7 @@ EAPI=8
 # using an external CI system that we have some control over, in case
 # issues pop up again with official tarball generation.
 
-GN_MIN_VER=0.2578
+GN_MIN_VER=0.2603
 # chromium-tools/get-chromium-toolchain-strings.py (or just use Chromicler)
 # Node for M145+ should be 24.12.0 but that's not packaged in Gentoo yet. See #969145
 TEST_FONT="9c07d19d9c5ee1ff94f717e6fb17e0c8c354e6f9"
@@ -670,6 +670,13 @@ src_prepare() {
 			# the one that does not. Only reachable here: with USE=bundled-
 			# toolchain the flag is true and the patch is a no-op.
 			"${FILESDIR}/chromium-155-cbor-crubit-optional.patch"
+			# bentoo: M158 made enable_cpp_api_from_rust true for a system Rust
+			# sysroot as well (it used to need use_chromium_rust_toolchain and
+			# !rust_prebuilt_stdlib), so gn gen asserts on the missing
+			# rust_crubit_root in //build/rust/std. Requiring the root puts the
+			# flag back to false here -- which every *-crubit patch in this list
+			# relies on -- and is a no-op with USE=bundled-toolchain.
+			"${FILESDIR}/chromium-158-crubit-needs-root.patch"
 			# bentoo: M157 deleted the cxx fallback of components/qr_code_generator
 			# (the TODO there assumed enable_cpp_api_from_rust would stay true), so
 			# it depends on //build/rust/crubit unconditionally -- the same gn
@@ -683,8 +690,11 @@ src_prepare() {
 			# 493e6c3911e3) is reverted to its M152 cxx bridge; Incremental Font
 			# Transfer (new in M155, Crubit from the start) gets a cxx bridge of
 			# its own. Same reachability as cbor: no-op with
-			# USE=bundled-toolchain.
-			"${FILESDIR}/chromium-157-blink-fonts-cxx-not-crubit.patch"
+			# USE=bundled-toolchain. The -158 rebase adds the four IFT calls
+			# M158 introduced (Clear, RenderedFontRequiresPatches,
+			# HasUnrenderedChanges, MarkFontDataRendered) to that bridge; the
+			# -157 patch fails two ift_patcher.cc hunks on 158 (issue #81).
+			"${FILESDIR}/chromium-158-blink-fonts-cxx-not-crubit.patch"
 			# bentoo: M154 added two more unconditional Crubit consumers, and
 			# gn gen dies on their missing *_bindings targets. web_package
 			# (upstream e85da0b2f2dc + b2c9d9c61c9f) moved Signed Web Bundle
@@ -718,10 +728,14 @@ src_prepare() {
 			# rs_bindings_from_cc.gni's public_headers from sources to inputs.
 			# 157 deleted both of those files: Crubit's tool paths now come from
 			# gni_impl/crubit_shared_args.gni, so the rebase points that one
-			# `_toolchain_bin_path` at ${rust_sysroot} instead. Reachable only on
-			# this branch: the patchset's toolchain/ directory is applied by the
-			# loop below, which is inside this same USE=-bundled-toolchain else.
-			"${FILESDIR}/chromium-157-fix-rust-2-oxidize-harder.patch"
+			# `_toolchain_bin_path` at ${rust_sysroot} instead. 158 fixed all but
+			# one hunk upstream (rustc_exe_path in build/config/rust.gni, and the
+			# new rust_crubit_root arg in crubit_shared_args.gni), so the -158
+			# rebase keeps only rust_target.gni's clippy-driver path. Reachable
+			# only on this branch: the patchset's toolchain/ directory is applied
+			# by the loop below, which is inside this same USE=-bundled-toolchain
+			# else.
+			"${FILESDIR}/chromium-158-fix-rust-2-oxidize-harder.patch"
 			# bentoo: rebase of chromium-patches' toolchain/
 			# cr149-bindgen-libclang-paths.patch, which adds the
 			# bindgen_{libclang_path,clang_resource_dir,extra_clang_args} args
@@ -746,6 +760,12 @@ src_prepare() {
 			die "chromium-patches no longer ships cr152-compiler.patch; drop this rm and its rebase"
 		rm "${WORKDIR}/chromium-patches-${PATCH_V}/toolchain/cr149-bindgen-libclang-paths.patch" ||
 			die "chromium-patches no longer ships cr149-bindgen-libclang-paths.patch; drop this rm and its rebase"
+		# Not substituted, just obsolete: M158 routes cargo_crate.gni's and
+		# std/BUILD.gn's rustc input through rustc_exe_path
+		# ("$rust_sysroot/bin/rustc"), so both of its hunks are already
+		# upstream and the patch no longer applies.
+		rm "${WORKDIR}/chromium-patches-${PATCH_V}/toolchain/cr149-fix-rust.patch" ||
+			die "chromium-patches no longer ships cr149-fix-rust.patch; drop this rm"
 
 		# Automate conditional application of chromium-patches
 		# The directory structure is expected to be something like:
@@ -1059,7 +1079,6 @@ src_prepare() {
 		third_party/ipcz
 		third_party/jinja2
 		third_party/jsoncpp
-		third_party/khronos
 		third_party/lens_server_proto
 		third_party/leveldatabase
 		third_party/libaddressinput
@@ -1074,7 +1093,6 @@ src_prepare() {
 		third_party/libpfm4
 		third_party/libphonenumber
 		third_party/libpng
-		third_party/libsecret
 		third_party/libsrtp
 		third_party/libsync
 		third_party/libtess2/libtess2
@@ -1109,6 +1127,7 @@ src_prepare() {
 		third_party/node
 		third_party/oak/chromium/proto
 		third_party/oak/chromium/proto/attestation
+		third_party/oak/src/oak_session/tls
 		third_party/omnibox_proto
 		third_party/one_euro_filter
 		third_party/openscreen

@@ -1,0 +1,40 @@
+From: Lucas C.S. <lucascs@protonmail.com>
+Subject: [PATCH] build/rust: keep Crubit off when there is no rust_crubit_root
+
+M158 reduced `enable_cpp_api_from_rust` to `enable_rust &&
+build_with_chromium`.  M157 also required `use_chromium_rust_toolchain` and
+`!rust_prebuilt_stdlib`, so with a system Rust sysroot (rust_sysroot_absolute)
+the flag was false, and every Crubit consumer fell back to its cxx path or was
+skipped.  Now the flag is true for the system toolchain too, and the first
+consumer, //build/rust/std's prebuilt_{core,alloc,std}_bindings, dies in
+gn gen:
+
+  ERROR at //build/rust/gni_impl/cpp_api_from_rust.gni:64:3: Assertion failed.
+    assert(rust_crubit_root != "", rust_crubit_root_missing_message)
+
+`rust_crubit_root` (new in M158) is "" unless use_chromium_rust_toolchain is
+set or the caller names a Crubit build, and a distribution Rust ships no
+cc_bindings_from_rs.  Requiring a root restores the M157 behaviour for that
+case and changes nothing for the bundled toolchain, where rust.gni defaults the
+root to //third_party/rust-toolchain.  The *-crubit patches in this package
+rely on the flag being false.
+
+Applied only with USE=-bundled-toolchain.  Drop it once Crubit can be built for
+the system Rust toolchain (it needs a rustc-dev from the same rustc build).
+
+diff -ruN a/build/config/rust.gni b/build/config/rust.gni
+--- a/build/config/rust.gni	2026-11-18 15:33:16.564091613 -0300
++++ b/build/config/rust.gni	2026-11-18 15:33:16.579542571 -0300
+@@ -454,7 +454,11 @@
+ #
+ # See the `assert` comments in `cpp_api_from_rust.gni` for explanation of
+ # the conditions used here.
+-enable_cpp_api_from_rust = enable_rust && build_with_chromium
++# bentoo: also require a Crubit root.  M158 dropped the toolchain conditions
++# M157 had here, so a custom `rust_sysroot_absolute` without Crubit asserts in
++# cpp_api_from_rust.gni instead of falling back to the cxx paths.
++enable_cpp_api_from_rust =
++    enable_rust && build_with_chromium && rust_crubit_root != ""
+ 
+ declare_args() {
+   # Whether it is okay to use `rust_api_from_cpp.gni`.  The default is `false`,
