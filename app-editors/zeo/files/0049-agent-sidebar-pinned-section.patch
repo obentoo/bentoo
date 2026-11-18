@@ -68,6 +68,10 @@ window does not clear that window's agent panel.
 
 Tests added 2026-10-10 (story 032 v4): a pinned row's Markdown entry across two windows.
 
+Warnings (2026-11-18): set_pinned_collapsed is #[cfg(test)], since only the
+tests call it; the UI goes through set_pinned_section_collapsed. The Windows
+build reported it as never used.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -315,7 +319,7 @@ index 0000000..a26d829
 +    }
 +}
 diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
-index da0dc35..0f4352e 100644
+index da0dc35..25d6365 100644
 --- a/crates/sidebar/src/sidebar.rs
 +++ b/crates/sidebar/src/sidebar.rs
 @@ -1,3 +1,4 @@
@@ -779,7 +783,7 @@ index da0dc35..0f4352e 100644
          };
  
          if is_group_header_after_first {
-@@ -3234,6 +3397,77 @@ impl Sidebar {
+@@ -3234,6 +3397,79 @@ impl Sidebar {
              .into_any_element()
      }
  
@@ -841,6 +845,8 @@ index da0dc35..0f4352e 100644
 +
 +    /// Collapses or expands the Pinned section. The state is session-only: unlike a project
 +    /// group's, it is never serialized, so a new window starts with Pinned expanded.
++    // The tests' handle on the section; the UI toggles it through set_pinned_section_collapsed.
++    #[cfg(test)]
 +    fn set_pinned_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
 +        if self.pinned_collapsed != collapsed {
 +            self.pinned_collapsed = collapsed;
@@ -857,7 +863,7 @@ index da0dc35..0f4352e 100644
      fn render_sticky_header(
          &self,
          window: &mut Window,
-@@ -3255,37 +3489,38 @@ impl Sidebar {
+@@ -3255,37 +3491,38 @@ impl Sidebar {
              return None;
          }
  
@@ -924,7 +930,7 @@ index da0dc35..0f4352e 100644
  
          let top_offset = self
              .contents
-@@ -3690,6 +3925,9 @@ impl Sidebar {
+@@ -3690,6 +3927,9 @@ impl Sidebar {
                  let workspace = terminal.workspace.clone();
                  self.activate_terminal_entry(metadata, workspace, false, window, cx);
              }
@@ -934,7 +940,7 @@ index da0dc35..0f4352e 100644
          }
      }
  
-@@ -4340,16 +4578,20 @@ impl Sidebar {
+@@ -4340,16 +4580,20 @@ impl Sidebar {
          let Some(ix) = self.selection else { return };
  
          match self.contents.entries.get(ix) {
@@ -964,7 +970,7 @@ index da0dc35..0f4352e 100644
              }
              _ => {}
          }
-@@ -4373,16 +4615,26 @@ impl Sidebar {
+@@ -4373,16 +4617,26 @@ impl Sidebar {
              }
              Some(ListEntry::Thread(_) | ListEntry::Terminal(_)) => {
                  for i in (0..ix).rev() {
@@ -998,7 +1004,7 @@ index da0dc35..0f4352e 100644
              None => {}
          }
      }
-@@ -4395,29 +4647,38 @@ impl Sidebar {
+@@ -4395,29 +4649,38 @@ impl Sidebar {
      ) {
          let Some(ix) = self.selection else { return };
  
@@ -1049,7 +1055,7 @@ index da0dc35..0f4352e 100644
              }
          }
      }
-@@ -4473,7 +4734,14 @@ impl Sidebar {
+@@ -4473,7 +4736,14 @@ impl Sidebar {
      /// activatable entry, the nearest one in the whole list.
      fn neighboring_activatable_entry(&self, current_position: usize) -> Option<ActivatableEntry> {
          let entries = &self.contents.entries;
@@ -1065,7 +1071,7 @@ index da0dc35..0f4352e 100644
  
          let section_start = entries
              .get(..current_position)?
-@@ -5785,6 +6053,27 @@ impl Sidebar {
+@@ -5785,6 +6055,27 @@ impl Sidebar {
          }
      }
  
@@ -1093,7 +1099,7 @@ index da0dc35..0f4352e 100644
      fn rename_selected_thread(
          &mut self,
          _: &RenameSelectedThread,
-@@ -5838,7 +6127,7 @@ impl Sidebar {
+@@ -5838,7 +6129,7 @@ impl Sidebar {
                  }
                  ListEntry::Thread(thread) => Sidebar::thread_display_time(&thread.metadata),
                  ListEntry::Terminal(terminal) => terminal.metadata.created_at,
@@ -1102,7 +1108,7 @@ index da0dc35..0f4352e 100644
              }
          }
  
-@@ -5896,18 +6185,31 @@ impl Sidebar {
+@@ -5896,18 +6187,31 @@ impl Sidebar {
                      current_header_key = Some(key.clone());
                      None
                  }
@@ -1141,7 +1147,7 @@ index da0dc35..0f4352e 100644
                              })
                          }
                      }?;
-@@ -5922,7 +6224,10 @@ impl Sidebar {
+@@ -5922,7 +6226,10 @@ impl Sidebar {
                          status: thread.status,
                          metadata: thread.metadata.clone(),
                          workspace,
@@ -1153,7 +1159,7 @@ index da0dc35..0f4352e 100644
                          worktrees: thread
                              .worktrees
                              .iter()
-@@ -6270,6 +6575,13 @@ impl Sidebar {
+@@ -6270,6 +6577,13 @@ impl Sidebar {
          let session_id_for_delete = thread.metadata.session_id.clone();
          let focus_handle = self.focus_handle.clone();
          let rename_title_editor = is_renaming.then(|| self.render_rename_title_editor(cx));
@@ -1167,7 +1173,7 @@ index da0dc35..0f4352e 100644
  
          let id = SharedString::from(format!("thread-entry-{}", ix));
  
-@@ -6286,10 +6598,14 @@ impl Sidebar {
+@@ -6286,10 +6600,14 @@ impl Sidebar {
  
          let is_remote = thread.workspace.is_remote(cx);
  
@@ -1186,7 +1192,7 @@ index da0dc35..0f4352e 100644
  
          let (icon, icon_svg) = if is_draft {
              (IconName::Circle, None)
-@@ -6314,6 +6630,9 @@ impl Sidebar {
+@@ -6314,6 +6632,9 @@ impl Sidebar {
                  this.custom_icon_from_external_svg(svg)
              })
              .worktrees(worktrees)
@@ -1196,7 +1202,7 @@ index da0dc35..0f4352e 100644
              .timestamp(timestamp)
              .highlight_positions(thread.highlight_positions.to_vec())
              .title_generating(title_generating)
-@@ -6367,6 +6686,32 @@ impl Sidebar {
+@@ -6367,6 +6688,32 @@ impl Sidebar {
                          })
                      });
  
@@ -1229,7 +1235,7 @@ index da0dc35..0f4352e 100644
                  let contextual_action: Option<AnyElement> = if can_request_stop {
                      Some(
                          IconButton::new("stop-thread", IconName::Stop)
-@@ -6440,6 +6785,7 @@ impl Sidebar {
+@@ -6440,6 +6787,7 @@ impl Sidebar {
                      h_flex()
                          .gap_0p5()
                          .child(rename_button)
@@ -1237,7 +1243,7 @@ index da0dc35..0f4352e 100644
                          .when_some(contextual_action, |this, action| this.child(action)),
                  )
              })
-@@ -6483,6 +6829,13 @@ impl Sidebar {
+@@ -6483,6 +6831,13 @@ impl Sidebar {
              ThreadEntryWorkspace::Open(workspace) => Some(workspace.clone()),
              ThreadEntryWorkspace::Closed { .. } => None,
          };
@@ -1251,7 +1257,7 @@ index da0dc35..0f4352e 100644
  
          let is_zed_thread = thread.metadata.agent_id.as_ref() == ZED_AGENT_ID.as_ref();
          let can_open_as_markdown = thread.is_live || is_zed_thread;
-@@ -6499,9 +6852,19 @@ impl Sidebar {
+@@ -6499,9 +6854,19 @@ impl Sidebar {
                      let sidebar = sidebar.clone();
                      let active_workspace = active_workspace.clone();
                      let thread_workspace = thread_workspace.clone();
@@ -1271,7 +1277,7 @@ index da0dc35..0f4352e 100644
                      ContextMenu::build(_window, cx, move |mut menu, _window, _cx| {
                          menu = menu.entry("Rename Title", None, {
                              let sidebar = sidebar.clone();
-@@ -6547,16 +6910,16 @@ impl Sidebar {
+@@ -6547,16 +6912,16 @@ impl Sidebar {
                              menu = menu.entry("Open Thread as Markdown", None, {
                                  let session_id = session_id.clone();
                                  let markdown_title = markdown_title.clone();
@@ -1292,7 +1298,7 @@ index da0dc35..0f4352e 100644
                                                  window,
                                                  cx,
                                              )
-@@ -6581,6 +6944,19 @@ impl Sidebar {
+@@ -6581,6 +6946,19 @@ impl Sidebar {
                              });
                          }
  
@@ -1312,7 +1318,7 @@ index da0dc35..0f4352e 100644
                          menu.separator().entry("Archive Thread", None, {
                              let session_id = session_id.clone();
                              move |window, cx| {
-@@ -6785,7 +7161,7 @@ impl Sidebar {
+@@ -6785,7 +7163,7 @@ impl Sidebar {
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -1321,7 +1327,7 @@ index da0dc35..0f4352e 100644
              self.set_group_expanded(&key, true, cx);
              self.selection = None;
              if let Some(workspace) = self.workspace_for_group(&key, cx) {
-@@ -6811,7 +7187,7 @@ impl Sidebar {
+@@ -6811,7 +7189,7 @@ impl Sidebar {
      ) {
          cx.stop_propagation();
  
@@ -1330,7 +1336,7 @@ index da0dc35..0f4352e 100644
              self.set_group_expanded(&key, true, cx);
              self.selection = None;
              if let Some(workspace) = self.workspace_for_group(&key, cx) {
-@@ -7109,22 +7485,56 @@ impl Sidebar {
+@@ -7109,22 +7487,56 @@ impl Sidebar {
          });
      }
  
@@ -1396,7 +1402,7 @@ index da0dc35..0f4352e 100644
      /// Return the active workspace when it belongs to the group
      /// Otherwise, return the workspace for project path.
      fn workspace_for_group(&self, key: &ProjectGroupKey, cx: &App) -> Option<Entity<Workspace>> {
-@@ -7169,17 +7579,14 @@ impl Sidebar {
+@@ -7169,17 +7581,14 @@ impl Sidebar {
          Some(multi_workspace.project_group_key_for_workspace(multi_workspace.workspace(), cx))
      }
  
@@ -1421,7 +1427,7 @@ index da0dc35..0f4352e 100644
      }
  
      fn cycle_project_impl(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-@@ -7187,12 +7594,26 @@ impl Sidebar {
+@@ -7187,12 +7596,26 @@ impl Sidebar {
              return;
          };
  
@@ -1450,7 +1456,7 @@ index da0dc35..0f4352e 100644
  
          let next_pos = match current_pos {
              Some(pos) => {
-@@ -7205,7 +7626,7 @@ impl Sidebar {
+@@ -7205,7 +7628,7 @@ impl Sidebar {
              None => 0,
          };
  
@@ -1459,7 +1465,7 @@ index da0dc35..0f4352e 100644
          let Some(ListEntry::ProjectHeader { key, .. }) = self.contents.entries.get(header_entry_ix)
          else {
              return;
-@@ -7305,7 +7726,7 @@ impl Sidebar {
+@@ -7305,7 +7728,7 @@ impl Sidebar {
                  let workspace = terminal.workspace.clone();
                  self.activate_terminal_entry(metadata, workspace, true, window, cx);
              }
@@ -1468,7 +1474,7 @@ index da0dc35..0f4352e 100644
          }
      }
  
-@@ -7993,6 +8414,7 @@ impl Render for Sidebar {
+@@ -7993,6 +8416,7 @@ impl Render for Sidebar {
              .on_action(cx.listener(Self::unfold_all))
              .on_action(cx.listener(Self::cancel))
              .on_action(cx.listener(Self::archive_selected_thread))

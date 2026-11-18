@@ -54,6 +54,11 @@ dropped from a submenu without its neighbours). title_bar
 test_entries_refresh_when_cli_presence_changes. Seen failing with
 drop_install_cli a no-op, the title bar's observer not rebuilding, and
 find_cli neither adding ~/.local/bin nor skipping relative entries.
+
+Windows build (2026-11-18): bundled_cli is allowed dead off Linux (only the
+Linux install path links the CLI), and app_menus' `mut menus` is allowed
+unused on Windows, where the Install CLI entry that pushes to it is not built.
+
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
@@ -106,10 +111,10 @@ index aa31950..445d32e 100644
 +tempfile.workspace = true
 diff --git a/crates/install_cli/src/cli_presence.rs b/crates/install_cli/src/cli_presence.rs
 new file mode 100644
-index 0000000..0591f1f
+index 0000000..949655c
 --- /dev/null
 +++ b/crates/install_cli/src/cli_presence.rs
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,162 @@
 +//! Whether the `zeo` command is already reachable, so the menu offers "Install CLI" only
 +//! while it is not (Zeo next proposal §6.25).
 +//!
@@ -220,6 +225,8 @@ index 0000000..0591f1f
 +/// The `zeo` command shipped beside this editor, in the release layout: the editor at
 +/// `<prefix>/libexec/zeo-editor`, the command at `<prefix>/bin/zeo`. Both packages and the
 +/// release tarball use it.
++// Only the Linux install path links the bundled CLI (link_cli); the tests use it everywhere.
++#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 +pub fn bundled_cli(editor: &Path) -> Option<PathBuf> {
 +    let candidate = editor.parent()?.parent()?.join("bin").join(CLI_NAME);
 +    is_executable(&candidate).then_some(candidate)
@@ -649,19 +656,21 @@ index b641232..2b20966 100644
          cx.set_menus(menus);
  
 diff --git a/crates/zed/src/zed/app_menus.rs b/crates/zed/src/zed/app_menus.rs
-index 4746b0f..71eca2c 100644
+index 4746b0f..39107f9 100644
 --- a/crates/zed/src/zed/app_menus.rs
 +++ b/crates/zed/src/zed/app_menus.rs
-@@ -69,7 +69,7 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
+@@ -69,7 +69,9 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
          view_items.push(MenuItem::separator());
      }
  
 -    vec![
++    // Mutated only by the non-Windows "Install CLI" entry below.
++    #[cfg_attr(target_os = "windows", allow(unused_mut))]
 +    let mut menus = vec![
          Menu {
              name: app_name.into(),
              disabled: false,
-@@ -340,5 +340,32 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
+@@ -340,5 +342,32 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                  ),
              ],
          },

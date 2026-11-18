@@ -95,6 +95,10 @@ on Linux alone. Elsewhere its `main` prints
 `zeo-browser-host event=unsupported` to stderr and exits 1, so a workspace
 build or clippy run on Windows still compiles; libc moved to a Linux-only
 dependency. 0052's non-Linux `init` registers RevokeBrowserAccess as before.
+
+Windows build (2026-11-18): announced_version is allowed dead off Linux,
+where the listener that calls it is not built; the tests keep using it.
+
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
@@ -11082,7 +11086,7 @@ index 018afc3..d0ce3ee 100644
  mod tests {
      use std::io::{BufRead as _, BufReader, Write as _};
 diff --git a/crates/devtools_bridge/src/protocol.rs b/crates/devtools_bridge/src/protocol.rs
-index 32879b8..e5ac5b1 100644
+index 32879b8..eda513b 100644
 --- a/crates/devtools_bridge/src/protocol.rs
 +++ b/crates/devtools_bridge/src/protocol.rs
 @@ -9,8 +9,13 @@ use std::io;
@@ -11146,7 +11150,7 @@ index 32879b8..e5ac5b1 100644
  #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
  #[serde(deny_unknown_fields)]
  pub struct Screenshot {
-@@ -325,25 +301,43 @@ pub fn parse(line: &[u8]) -> Result<DevtoolsSelection, DevtoolsError> {
+@@ -325,25 +301,45 @@ pub fn parse(line: &[u8]) -> Result<DevtoolsSelection, DevtoolsError> {
      }
      let probe: VersionProbe =
          serde_json::from_slice(line).map_err(|_| DevtoolsError::BadRequest)?;
@@ -11165,6 +11169,8 @@ index 32879b8..e5ac5b1 100644
 +/// The `v` a line announces, read without building the message; `None` for a line that is not
 +/// a JSON object. The listener dispatches a connection on it before either version's parser
 +/// runs.
++// Called by the listener alone, which is Linux-only (0052); the tests use it everywhere.
++#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 +pub(crate) fn announced_version(line: &[u8]) -> Option<WireVersion> {
 +    if line.trim_ascii_start().first() != Some(&b'{') {
 +        return None;
@@ -11196,7 +11202,7 @@ index 32879b8..e5ac5b1 100644
      Other,
  }
  
-@@ -355,16 +349,6 @@ impl<'de> Deserialize<'de> for WireVersion {
+@@ -355,16 +351,6 @@ impl<'de> Deserialize<'de> for WireVersion {
  
  struct WireVersionVisitor;
  
@@ -11213,7 +11219,7 @@ index 32879b8..e5ac5b1 100644
  impl<'de> serde::de::Visitor<'de> for WireVersionVisitor {
      type Value = WireVersion;
  
-@@ -377,11 +361,11 @@ impl<'de> serde::de::Visitor<'de> for WireVersionVisitor {
+@@ -377,11 +363,11 @@ impl<'de> serde::de::Visitor<'de> for WireVersionVisitor {
      }
  
      fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<WireVersion, E> {
@@ -11227,7 +11233,7 @@ index 32879b8..e5ac5b1 100644
      }
  
      fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<WireVersion, E> {
-@@ -466,8 +450,12 @@ fn check_item(item: &SelectionItem) -> Result<(), DevtoolsError> {
+@@ -466,8 +452,12 @@ fn check_item(item: &SelectionItem) -> Result<(), DevtoolsError> {
              .as_deref()
              .is_none_or(|component| within_chars(component, MAX_COMPONENT_CHARS)),
      )?;
@@ -11241,7 +11247,7 @@ index 32879b8..e5ac5b1 100644
      require(!dom.tag.is_empty() && within_chars(&dom.tag, MAX_TAG_CHARS))?;
      require(
          dom.id
-@@ -509,7 +497,7 @@ fn check_screenshot(screenshot: &Screenshot) -> Result<(), DevtoolsError> {
+@@ -509,7 +499,7 @@ fn check_screenshot(screenshot: &Screenshot) -> Result<(), DevtoolsError> {
  }
  
  /// Reads the IHDR width and height (bytes 16–23) of a PNG, or `None` when `bytes` is not one.
@@ -11250,7 +11256,7 @@ index 32879b8..e5ac5b1 100644
      let (magic, rest) = bytes.split_first_chunk::<8>()?;
      let (_chunk_length, rest) = rest.split_first_chunk::<4>()?;
      let (chunk_type, rest) = rest.split_first_chunk::<4>()?;
-@@ -549,7 +537,7 @@ fn require(condition: bool) -> Result<(), DevtoolsError> {
+@@ -549,7 +539,7 @@ fn require(condition: bool) -> Result<(), DevtoolsError> {
  }
  
  /// The client counts code points, not bytes, and both validators must agree on the fixtures.
@@ -11259,7 +11265,7 @@ index 32879b8..e5ac5b1 100644
      value.len() <= max || value.chars().nth(max).is_none()
  }
  
-@@ -594,7 +582,7 @@ impl io::Write for ByteCounter {
+@@ -594,7 +584,7 @@ impl io::Write for ByteCounter {
  
  /// A nullable field the contract still requires to be present: serde would otherwise read a
  /// missing key as `None`, where the zod schema refuses it.
@@ -11268,7 +11274,7 @@ index 32879b8..e5ac5b1 100644
  where
      D: Deserializer<'de>,
      T: Deserialize<'de>,
-@@ -602,56 +590,6 @@ where
+@@ -602,56 +592,6 @@ where
      Option::<T>::deserialize(deserializer)
  }
  

@@ -53,14 +53,44 @@ Not proven here: PowerShell and Inno Setup do not run on the Linux host
 that wrote this. windows_resources is formatted and builds only on
 Windows. The first proof is the Windows build guest (W3/W4).
 
+Zeo's version in Zeo.exe's properties (2026-11-18): windows_resources
+states RELEASE_VERSION for the zeo channel instead of the zed crate's
+1.30.0, which the first Windows build showed; FILEVERSION takes its numeric
+part (0,14,0,0).
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/crates/windows_resources/src/windows_resources.rs b/crates/windows_resources/src/windows_resources.rs
-index 3cc5e5e..472cb52 100644
+index 3cc5e5e..e625112 100644
 --- a/crates/windows_resources/src/windows_resources.rs
 +++ b/crates/windows_resources/src/windows_resources.rs
-@@ -47,8 +47,23 @@ pub fn compile(manifest: bool) -> Result<(), Box<dyn std::error::Error>> {
+@@ -19,9 +19,23 @@ fn git_sha() -> Option<String> {
+         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+ }
+ 
++/// The version the resources state. The zeo channel's is Zeo's own, `RELEASE_VERSION`
++/// (`0.14.0_p20261118`, which bundle-windows.ps1 keeps); the zed crate's version is upstream
++/// Zed's, which the first Windows build showed in Zeo.exe's properties as 1.30.0 (2026-11-18).
++fn resources_version() -> String {
++    let crate_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
++    if std::env::var("RELEASE_CHANNEL").as_deref() != Ok("zeo") {
++        return crate_version;
++    }
++    std::env::var("RELEASE_VERSION")
++        .ok()
++        .filter(|version| !version.is_empty())
++        .unwrap_or(crate_version)
++}
++
+ fn product_version() -> String {
+     let commit_sha = git_sha();
+-    let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
++    let pkg_version = resources_version();
+     let channel = std::env::var("RELEASE_CHANNEL").unwrap_or_else(|_| "dev".into());
+     let build_id = std::env::var("GITHUB_RUN_NUMBER").ok();
+ 
+@@ -47,8 +61,23 @@ pub fn compile(manifest: bool) -> Result<(), Box<dyn std::error::Error>> {
          "stable" => ("app-icon.ico", "Zed"),
          "preview" => ("app-icon-preview.ico", "Zed Preview"),
          "nightly" => ("app-icon-nightly.ico", "Zed Nightly"),
@@ -84,7 +114,29 @@ index 3cc5e5e..472cb52 100644
      let icon = std::path::PathBuf::from(ICON_DIR).join(icon_filename);
      let icon_escaped = icon.to_string_lossy().replace('\\', "\\\\");
  
-@@ -100,8 +115,8 @@ BEGIN
+@@ -59,11 +88,19 @@ pub fn compile(manifest: bool) -> Result<(), Box<dyn std::error::Error>> {
+         String::new()
+     };
+ 
+-    let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
++    println!("cargo:rerun-if-env-changed=RELEASE_VERSION");
++    let pkg_version = resources_version();
+     let product_version = product_version();
++    // FILEVERSION takes four numbers: Zeo's `_pYYYYMMDD` suffix is dropped from its last part.
+     let mut version_parts = pkg_version
+         .split('.')
+-        .map(|part| part.parse::<u16>().unwrap_or(0))
++        .map(|part| {
++            let digits = part
++                .split(|c: char| !c.is_ascii_digit())
++                .next()
++                .unwrap_or("");
++            digits.parse::<u16>().unwrap_or(0)
++        })
+         .chain(std::iter::repeat(0));
+     let file_version = format!(
+         "{},{},{},{}",
+@@ -100,8 +137,8 @@ BEGIN
              VALUE "FileVersion", "{pkg_version}\0"
              VALUE "ProductName", "{product_name}\0"
              VALUE "ProductVersion", "{product_version}\0"
