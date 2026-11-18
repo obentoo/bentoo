@@ -3,10 +3,9 @@
 
 EAPI=8
 
-# Based on ::gentoo's 1.18.4-r1 ebuild, bumped to 1.18.6; python3_15 added.
-# BENTOO-DIVERGENCE: KEYWORDS - ~amd64 only: a bump past ::gentoo is no longer a mirror,
-# so it follows the overlay baseline (amd64, x86-64-v3).
-# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT.
+# Mirrored from ::gentoo only to add python3_15: no code change is needed
+# for it. Drop this copy once ::gentoo lists python3_15.
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
 PYTHON_COMPAT=( python3_{11..15} )
 inherit flag-o-matic meson-multilib python-any-r1
 
@@ -15,7 +14,7 @@ if [[ ${PV} == *9999* ]]; then
 	EGIT_REPO_URI="https://gitlab.freedesktop.org/cairo/cairo.git"
 else
 	SRC_URI="https://gitlab.freedesktop.org/cairo/cairo/-/archive/${PV}/cairo-${PV}.tar.bz2"
-	KEYWORDS="~amd64"
+	KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~m68k ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86 ~arm64-macos ~x64-macos ~x64-solaris"
 fi
 
 DESCRIPTION="A vector graphics library with cross-device output support"

@@ -3,9 +3,11 @@
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
-# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# Based on ::gentoo's 0.14.0 ebuild, bumped ahead of ::gentoo to 0.15.0; python3_15
+# added. No other change. Drop this copy once ::gentoo ships >=0.15.0 with python3_15.
+# BENTOO-DIVERGENCE: KEYWORDS - ~amd64 only: a bump past ::gentoo is no longer a mirror,
+# so it follows the overlay baseline (amd64, x86-64-v3).
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT.
 PYTHON_COMPAT=( python3_{12..15} )
 inherit python-any-r1 cmake
 
@@ -15,7 +17,7 @@ SRC_URI="https://github.com/PJK/${PN}/archive/v${PV}.tar.gz -> ${P}.tar.gz"
 
 LICENSE="MIT"
 SLOT="0/$(ver_cut 1-2)"
-KEYWORDS="~alpha amd64 arm arm64 ~hppa ~loong ~m68k ~mips ppc ppc64 ~riscv ~s390 ~sparc x86"
+KEYWORDS="~amd64"
 IUSE="doc test"
 RESTRICT="!test? ( test )"
 

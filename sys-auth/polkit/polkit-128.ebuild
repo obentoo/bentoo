@@ -3,19 +3,14 @@
 
 EAPI=8
 
-# Based on ::gentoo's 126-r3 ebuild, bumped to 128; python3_15 added.
-# The elogind and dbusmock patches are part of 127/128 and were dropped.
-# BENTOO-DIVERGENCE: KEYWORDS - ~amd64 only: a bump past ::gentoo is no longer a mirror,
-# so it follows the overlay baseline (amd64, x86-64-v3).
-# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT.
-# BENTOO-DIVERGENCE: DEPEND - glib raised to 2.44 (polkit 128 meson.build).
-# BENTOO-DIVERGENCE: PATCHES - both 126 patches are upstream in 128.
-# BENTOO-DIVERGENCE: DOCS - HACKING.md moved to docs/ upstream in 128.
-PYTHON_COMPAT=( python3_{11..15} )
-inherit meson pam pax-utils python-any-r1 systemd tmpfiles xdg-utils
+# Mirrored from ::gentoo only to add python3_15: no code change is needed
+# for it. Drop this copy once ::gentoo lists python3_15.
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+PYTHON_COMPAT=( python3_{12..15} )
+inherit meson pam python-any-r1 systemd tmpfiles xdg-utils
 
 DESCRIPTION="Policy framework for controlling privileges for system-wide services"
-HOMEPAGE="https://www.freedesktop.org/wiki/Software/polkit https://github.com/polkit-org/polkit"
+HOMEPAGE="https://github.com/polkit-org/polkit"
 if [[ ${PV} == 9999 ]] ; then
 	EGIT_REPO_URI="https://github.com/polkit-org/polkit"
 	inherit git-r3
@@ -34,7 +29,7 @@ fi
 LICENSE="LGPL-2"
 SLOT="0"
 if [[ ${PV} != 9999 ]] ; then
-	KEYWORDS="~amd64"
+	KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86"
 fi
 IUSE="elogind examples gtk +introspection kde pam nls selinux systemd test"
 RESTRICT="!test? ( test )"
@@ -44,6 +39,8 @@ BDEPEND="
 	acct-user/polkitd
 	app-text/docbook-xml-dtd:4.1.2
 	app-text/docbook-xsl-stylesheets
+	>=dev-build/meson-1.4.0
+	dev-lang/perl
 	>=dev-libs/glib-2.44
 	dev-libs/libxslt
 	dev-util/glib-utils
@@ -58,7 +55,7 @@ BDEPEND="
 	)
 "
 DEPEND="
-	>=dev-libs/glib-2.44:2
+	>=dev-libs/glib-2.32:2
 	dev-libs/expat
 	dev-lang/duktape:=
 	elogind? ( sys-auth/elogind )
@@ -82,12 +79,30 @@ PDEPEND="
 	kde? ( kde-plasma/polkit-kde-agent )
 "
 
-DOCS=( docs/TODO docs/HACKING.md NEWS.md README.md )
+DOCS=(
+	AUTHORS
+	NEWS.md
+	README.md
+	docs/ARCHITECTURE.md
+	docs/BUILDING.md
+	docs/HACKING.md
+	docs/polkit-1-diagrams.svg
+	docs/polkit-architecture.png
+	docs/polkit-authentication-agent-example.png
+	docs/polkit-authentication-agent-example-wheel.png
+	docs/PORTING-GUIDE
+	docs/TESTING.md
+	docs/TODO
+)
 
 QA_MULTILIB_PATHS="
 	usr/lib/polkit-1/polkit-agent-helper-1
 	usr/lib/polkit-1/polkitd
 "
+
+PATCHES=(
+	"${FILESDIR}"/${P}-restore-realpath-fallback.patch
+)
 
 python_check_deps() {
 	python_has_version "dev-python/dbus-python[${PYTHON_USEDEP}]" &&
@@ -132,13 +147,6 @@ src_configure() {
 	meson_src_configure
 }
 
-src_compile() {
-	meson_src_compile
-
-	# Required for polkitd on hardened/PaX due to spidermonkey's JIT
-	pax-mark mr src/polkitbackend/.libs/polkitd test/polkitbackend/.libs/polkitbackendjsauthoritytest
-}
-
 src_install() {
 	meson_src_install
 
@@ -159,8 +167,15 @@ src_install() {
 pkg_postinst() {
 	tmpfiles_process polkit-tmpfiles.conf
 
-	if [[ ${EUID} == 0 ]]; then
-		chmod 0700 "${EROOT}"/{etc,usr/share}/polkit-1/rules.d
-		chown polkitd "${EROOT}"/{etc,usr/share}/polkit-1/rules.d
+	if [[ ${EUID} == 0 ]] && [[ -n ${REPLACING_VERSIONS} ]]; then
+		local old
+
+		for old in ${REPLACING_VERSIONS}; do
+			if ver_test ${old} -lt '120-r1'; then
+				chmod 0700 "${EROOT}"/{etc,usr/share}/polkit-1/rules.d
+				chown polkitd "${EROOT}"/{etc,usr/share}/polkit-1/rules.d
+				break
+			fi
+		done
 	fi
 }

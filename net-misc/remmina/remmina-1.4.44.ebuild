@@ -3,11 +3,11 @@
 
 EAPI=8
 
-# Mirrored from ::gentoo to add python3_15, which needs no code change.
-# 1.4.44 is also ahead of ::gentoo (newest there: 1.4.43) and adds the
-# kde_output_order_v1 Wayland protocol, which needs the patch, the
-# wayland? dependencies and the cmake switch below. Drop this copy once
-# ::gentoo lists python3_15 and carries 1.4.44 or newer.
+# Mirrored from ::gentoo's 1.4.44 to add python3_15, which needs no code
+# change, and to build the kde_output_order_v1 Wayland protocol, which
+# ::gentoo switches off until upstream MR 2822 lands: here it needs the
+# patch, the wayland? dependencies and the cmake switch below. Drop this
+# copy once ::gentoo lists python3_15 and enables that protocol.
 # BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: DEPEND - python3_15 in PYTHON_COMPAT; wayland? ( dev-libs/wayland ) for 1.4.44.
@@ -26,7 +26,7 @@ S="${WORKDIR}/${MY_P}"
 
 LICENSE="GPL-2+-with-openssl-exception"
 SLOT="0"
-KEYWORDS="amd64 ~arm64 ~riscv x86"
+KEYWORDS="~amd64 ~arm64 ~riscv ~x86"
 IUSE="+appindicator crypt cups examples keyring gvnc kwallet nls python spice ssh rdp vnc wayland webkit zeroconf X"
 
 REQUIRED_USE="python? ( ${PYTHON_REQUIRED_USE} ) || ( X wayland )"

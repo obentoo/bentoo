@@ -4,9 +4,11 @@
 EAPI=8
 
 CMAKE_IN_SOURCE_BUILD=1
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
-# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# Based on ::gentoo's 1.85.1 ebuild, bumped ahead of ::gentoo to 1.85.2; python3_15
+# added. No other change. Drop this copy once ::gentoo ships >=1.85.2 with python3_15.
+# BENTOO-DIVERGENCE: KEYWORDS - ~amd64 only: a bump past ::gentoo is no longer a mirror,
+# so it follows the overlay baseline (amd64, x86-64-v3).
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT.
 PYTHON_COMPAT=( python3_{11..15} )
 inherit cmake flag-o-matic python-any-r1 toolchain-funcs
 
@@ -47,7 +49,7 @@ LICENSE="Apache-2.0"
 # format is 0/${CORE_SOVERSION//./}.${CPP_SOVERSION//./} , check top level CMakeLists.txt
 SLOT="0/58.$(ver_rs 1-2 '' "$(ver_cut 1-2)")"
 
-KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~loong ~ppc64 ~riscv ~x86"
+KEYWORDS="~amd64"
 IUSE="doc examples test systemd"
 RESTRICT="!test? ( test )"
 

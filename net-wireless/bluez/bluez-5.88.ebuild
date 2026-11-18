@@ -2,14 +2,13 @@
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
+
 # Mirrored from ::gentoo only to add python3_15: no code change is needed
 # for it. Drop this copy once ::gentoo lists python3_15.
-# Ahead of ::gentoo (5.87): 5.88 removed attrib/gatttool upstream, so the
-# extra-tools install no longer installs it (bentoo issue #62).
-# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
+# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
 PYTHON_COMPAT=( python3_{12..15} )
 
 inherit autotools flag-o-matic linux-info optfeature python-single-r1 systemd udev multilib-minimal
@@ -20,7 +19,7 @@ SRC_URI="https://www.kernel.org/pub/linux/bluetooth/${P}.tar.xz"
 
 LICENSE="GPL-2+ LGPL-2.1+"
 SLOT="0/3"
-KEYWORDS="amd64 arm arm64 ~hppa ~loong ~mips ppc ppc64 ~riscv x86"
+KEYWORDS="~amd64 ~arm ~arm64 ~hppa ~loong ~mips ~ppc ~ppc64 ~riscv ~x86"
 IUSE="btpclient cups doc debug deprecated extra-tools experimental man +mesh midi +obex +readline selinux systemd test test-programs +udev"
 
 # Since this release all remaining extra-tools need readline support, but this could
@@ -29,7 +28,7 @@ IUSE="btpclient cups doc debug deprecated extra-tools experimental man +mesh mid
 # btpclient needs mesh, bug #790587
 REQUIRED_USE="
 	btpclient? ( mesh )
-	extra-tools? ( deprecated readline )
+	extra-tools? ( readline )
 	test? ( ${PYTHON_REQUIRED_USE} )
 	test-programs? ( ${PYTHON_REQUIRED_USE} )
 "
@@ -196,8 +195,6 @@ multilib_src_install() {
 			# http://permalink.gmane.org/gmane.linux.bluez.kernel/53115
 			# http://comments.gmane.org/gmane.linux.bluez.kernel/54564
 			dobin tools/btmgmt
-			# No gatttool: 5.88 deleted attrib/ upstream; bluetoothctl's
-			# "gatt" menu replaces it.
 			# https://bugzilla.redhat.com/show_bug.cgi?id=1699680
 			dobin tools/avinfo
 		fi

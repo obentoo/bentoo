@@ -3,13 +3,15 @@
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
-# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
-# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# Based on ::gentoo's 3.5.0 ebuild, bumped ahead of ::gentoo to 3.6.0; python3_15
+# added. No other change. Drop this copy once ::gentoo ships >=3.6.0 with python3_15.
+# BENTOO-DIVERGENCE: KEYWORDS - ~amd64 only: a bump past ::gentoo is no longer a mirror,
+# so it follows the overlay baseline (amd64, x86-64-v3).
+# BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT.
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT.
 PYTHON_COMPAT=( python3_{12..15} )
 inherit autotools python-single-r1 xdg-utils
 
@@ -24,7 +26,7 @@ if [[ ${PV} == *9999 ]] ; then
 	"
 else
 	SRC_URI="https://github.com/storaged-project/${PN}/releases/download/${PV}/${P}.tar.gz"
-	KEYWORDS="~alpha amd64 arm arm64 ~loong ~mips ppc ppc64 ~riscv ~sparc x86"
+	KEYWORDS="~amd64"
 fi
 
 LICENSE="LGPL-2+"
