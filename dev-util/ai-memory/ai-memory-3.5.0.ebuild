@@ -60,7 +60,14 @@ EAPI=8
 # `quinn-udp = "^0.5"` (locked to 0.5.16)". Topped up inline the same way;
 # the stale 0.5.14 in the tarball is harmless. Checked against the lock's
 # registry entries: 527 = 527, nothing missing.
+#
+# 3.5.0 moved libz-sys 1.1.31 -> 1.1.33 (via libgit2-sys 0.18.4, git2 0.21,
+# ai-memory-consolidate), and the build died with "failed to select a version
+# for the requirement `libz-sys = "^1.1.0"` (locked to 1.1.33)". Topped up
+# inline over the 3.4.5 tarball; checked against the lock's registry entries:
+# 527 = 527, nothing else missing.
 CRATES="
+	libz-sys@1.1.33
 	quinn-udp@0.5.16
 	win-custody@0.1.2
 "
