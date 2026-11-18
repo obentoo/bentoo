@@ -1,0 +1,149 @@
+Title: net-libs/nodejs agora usa slots
+Author: Lucas Couto <lucascs@protonmail.com>
+Posted: 2026-08-02
+Revision: 1
+News-Item-Format: 2.0
+Display-If-Installed: net-libs/nodejs
+
+O net-libs/nodejs agora é instalado em um slot versionado, um slot por
+versão principal do Node.js. O Node 24 e o Node 26 estão disponíveis
+hoje. O antigo pacote sem slot, net-libs/nodejs:0, está mascarado neste
+overlay e não pode mais ser instalado.
+
+A atualização não acontece sozinha. Cada slot traz um blocker forte
+contra o pacote sem slot, de modo que uma atualização comum do world
+para e pede que você aja, em vez de substituí-lo silenciosamente.
+
+
+O que você precisa fazer
+========================
+
+1) Sincronize, para que a máscara e os novos slots cheguem à sua árvore:
+
+       emerge --sync
+
+2) Veja o que o portage pretende fazer. O conflito é relatado aqui,
+   durante a resolução de dependências, antes que qualquer coisa seja
+   gravada em disco:
+
+       emerge --pretend --verbose net-libs/nodejs
+
+   Aparece uma linha bloqueando net-libs/nodejs:0, resolvida pela
+   desinstalação do pacote sem slot que você tem instalado atualmente.
+
+3) Migre com UMA ÚNICA invocação do emerge:
+
+       emerge --oneshot net-libs/nodejs
+
+   Um comando, não dois. O portage desinstala net-libs/nodejs:0 e
+   instala o novo slot na mesma execução, e entre esses dois pontos o
+   sistema fica sem /usr/bin/node - o novo slot só o restaura em
+   pkg_postinst, depois de terminar a instalação. Dividir o passo, por
+   exemplo `emerge --unmerge net-libs/nodejs` seguido de um emerge
+   separado, deixa a máquina sem node durante toda a recompilação. Não é
+   uma janela curta, e qualquer coisa que chame o node pelo shell nesse
+   meio-tempo vai falhar.
+
+   (--oneshot diz respeito ao arquivo world, não ao número de comandos:
+   significa que o pacote não é adicionado ao @world, deixando intacta a
+   entrada que você já tem. O ponto da "invocação única" acima trata de
+   rodar um só emerge. As duas coisas não têm relação.)
+
+4) Confira o resultado:
+
+       eselect nodejs list
+
+   O slot ativo vem marcado na lista. `eselect nodejs show` imprime só o
+   nome dele, e `eselect nodejs set node24` troca para outro slot
+   instalado.
+
+
+O que mudou
+===========
+
+Tudo o que é específico de uma versão agora fica sob um prefixo de slot,
+/usr/lib64/node-<major>/ (ou o libdir que o seu profile usar), em vez de
+espalhado por /usr/bin, /usr/include, /usr/lib64 e /usr/share.
+
+/usr/bin/node, /usr/bin/npm e /usr/bin/npx não pertencem mais a
+net-libs/nodejs. São links simbólicos de app-eselect/eselect-nodejs,
+reapontados por `eselect nodejs set`. Cada slot instala ainda seus
+próprios pontos de entrada versionados - node26, npm26, npx26 - que
+sempre executam aquele slot, seja qual for o ativo.
+
+Pacotes npm instalados globalmente não são mais compartilhados entre
+slots. `npm root -g` agora aponta para dentro do slot ativo, em
+/usr/lib64/node-<major>/lib/node_modules, então um pacote instalado
+globalmente com um slot ativo não é visível a partir de outro. Instale-o
+uma vez em cada slot que você de fato usa.
+
+Um slot compilado com USE="-npm" não traz npm nem npx. O eselect pula
+esses links em vez de deixá-los apontando para o nada.
+
+
+Sua configuração do npm não se perde
+====================================
+
+/etc/npm e /etc/env.d/50npm passaram de net-libs/nodejs para
+app-eselect/eselect-nodejs. NPM_CONFIG_GLOBALCONFIG continua apontando
+para o mesmo e único /etc/npm/npmrc, compartilhado por todos os slots,
+com o mesmo conteúdo de antes. Nada precisa ser copiado nem digitado de
+novo.
+
+Essa mudança também é o motivo de o próprio app-eselect/eselect-nodejs
+bloquear net-libs/nodejs:0: o pacote sem slot ainda lista
+/etc/env.d/50npm no seu CONTENTS, e com FEATURES="protect-owned" um
+merge que tocasse um arquivo de outro pacote seria abortado.
+
+As manpages do npm mudaram de lugar: agora ficam dentro do prefixo do
+slot e são encontradas pelo MANPATH em /etc/env.d/50nodejs. Por isso
+`man npm-install` documenta o slot que está ativo no momento. Essa
+variável só chega a um shell que leu o ambiente regenerado; então,
+depois da primeira troca, abra um novo shell ou execute:
+
+       source /etc/profile
+
+
+Se você precisa do Node 22
+==========================
+
+Este overlay oferece apenas o Node 24 e o Node 26. Com net-libs/nodejs:0
+mascarado, não há fonte do Node 22 aqui, embora o upstream mantenha esse
+branch em Maintenance até 2027-04-30. É uma lacuna conhecida desde o
+primeiro dia, não um descuido, e ela será fechada quando um slot 22.x
+for adicionado.
+
+Desmascarar net-libs/nodejs:0 não resolve: esse é o pacote sem slot, e
+ele bloqueia tanto os slots quanto o eselect-nodejs, então não pode
+coexistir com nada do que foi descrito acima. Até existir um slot 22.x,
+migre a carga de trabalho para o Node 24 - o slot suportado mais próximo
+oferecido aqui - ou obtenha o Node 22 fora do portage e mantenha-o fora
+de /usr.
+
+
+Por que este overlay o mantém
+=============================
+
+Usar slots no Node.js foi proposto ao Gentoo no bug #580698, fechado
+como RESOLVED WONTFIX em 2020-11-09, por ser "highly non-trivial to slot
+NodeJS"; lá o pacote está como maintainer-needed. Assim, o bentoo passa
+a ser o único fornecedor de net-libs/nodejs para quem usa este overlay,
+e assume o acompanhamento de segurança de cada slot que hospeda.
+
+    https://bugs.gentoo.org/580698
+
+
+Referência do eselect nodejs
+============================
+
+    list      mostra todos os slots instalados, marcando o ativo
+    show      imprime o nome do slot ativo, ou nada quando nenhum está
+              ativo
+    set       ativa um slot, pelo nome (node26) ou pelo número na lista
+    update    ativa o slot instalado mais alto
+    cleanup   remove links deixados órfãos por um slot desinstalado e
+              reaponta para o que ainda estiver instalado
+
+Você pode trocar de slot a qualquer momento. Os ebuilds chamam essas
+ações sozinhos no merge e no unmerge, então uma instalação normal nunca
+exige executá-las à mão.
