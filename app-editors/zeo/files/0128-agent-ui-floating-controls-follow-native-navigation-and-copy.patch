@@ -1,0 +1,355 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Thu, 19 Nov 2026 11:01:29 -0300
+Subject: [PATCH] agent_ui: the floating thread controls follow Zed's own
+ navigation and copy
+
+Two native behaviours that 0026's floating controls missed, found by the
+upstream-native review of 2026-11-15 (docs/UPSTREAM-NATIVE-REVIEW.md in the
+hub, defect 4) and proved by a test that failed on the series before this
+patch.
+
+  - Previous and Next stop where Zed's own navigation stops. Since upstream
+    #64007 an accepted AskUserQuestion form leaves its answer on the tool call
+    that asked it, and AcpThread::is_user_authored_scroll_target counts that
+    tool call as a user message for scrolling; every native path uses it.
+    0026 matched AgentThreadEntry::UserMessage alone, so a click from the reply
+    below an answer skipped the answer and landed on the prompt before it. The
+    matchers now take the rule as a parameter and the controls pass the
+    thread's own; 0026's unit tests pass the sent-message rule they were
+    written for.
+  - The floating Copy is upstream's CopyButton, with the check it shows for
+    two seconds after a copy (#64664). Since 0026 it had been a bare
+    IconButton, the one copy control in the panel that gave no feedback.
+
+Not changed: 0102's pinned header keeps pinning sent messages only -- an
+answer is a card, not a line of text to pin.
+
+Test: conversation_view's
+test_floating_previous_control_stops_at_an_answered_question -- the answered
+question is the stop above the reply (Red on the series before this patch).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
+index 2f3a002..5123332 100644
+--- a/crates/agent_ui/src/conversation_view.rs
++++ b/crates/agent_ui/src/conversation_view.rs
+@@ -12417,6 +12417,125 @@ pub(crate) mod tests {
+         });
+     }
+ 
++    /// 0026's floating "previous" control stops where Zed's own navigation does: once an
++    /// AskUserQuestion form is accepted, the tool call holding the answer is a user message for
++    /// scrolling (upstream #64007, `AcpThread::is_user_authored_scroll_target`). Matching
++    /// `UserMessage` alone skipped the answer and landed on the prompt before it.
++    #[gpui::test]
++    async fn test_floating_previous_control_stops_at_an_answered_question(cx: &mut TestAppContext) {
++        init_test(cx);
++
++        let tool_call_id = acp_v2::ToolCallId::new("ask-user-1");
++        let connection = StubAgentConnection::new();
++        connection.set_next_prompt_updates(vec![acp_v1::SessionUpdate::ToolCall(
++            acp_v1::ToolCall::new(
++                acp_v1::ToolCallId::new(tool_call_id.0.clone()),
++                "Which directory should we explore?",
++            )
++            .kind(acp_v1::ToolKind::Other)
++            .status(acp_v1::ToolCallStatus::InProgress)
++            .meta(acp_thread::meta_with_tool_name("ask_user")),
++        )]);
++
++        let (conversation_view, cx) =
++            setup_conversation_view(StubAgentServer::new(connection.clone()), cx).await;
++        let thread = conversation_view
++            .read_with(cx, |view, cx| {
++                view.active_thread().map(|r| r.read(cx).thread.clone())
++            })
++            .unwrap();
++        thread
++            .update(cx, |thread, cx| {
++                thread.send_raw("List the top directories, then ask which to explore", cx)
++            })
++            .await
++            .unwrap();
++        cx.run_until_parked();
++
++        let session_id = thread.read_with(cx, |thread, _| thread.session_id().clone());
++        let response_task = thread.update(cx, |thread, cx| {
++            thread
++                .request_elicitation(
++                    acp_v2::CreateElicitationRequest::new(
++                        acp_v2::ElicitationFormMode::new(
++                            acp_v2::ElicitationSessionScope::new(session_id.clone())
++                                .tool_call_id(tool_call_id.clone()),
++                            acp_v2::ElicitationSchema::new().string("other", true),
++                        ),
++                        "Which directory should we explore?",
++                    ),
++                    cx,
++                )
++                .expect("ask_user elicitation should be accepted")
++        });
++        let elicitation_id = thread
++            .read_with(cx, |thread, _| {
++                thread.entries().iter().find_map(|entry| match entry {
++                    AgentThreadEntry::Elicitation(id) => Some(id.clone()),
++                    _ => None,
++                })
++            })
++            .expect("elicitation entry should exist");
++        thread.update(cx, |thread, cx| {
++            thread.respond_to_elicitation(
++                &elicitation_id,
++                acp_v2::CreateElicitationResponse::new(acp_v2::ElicitationAction::Accept(
++                    acp_v2::ElicitationAcceptAction::new().content(
++                        std::collections::BTreeMap::from([(
++                            "other".to_string(),
++                            acp_v2::ElicitationContentValue::from("delve into src"),
++                        )]),
++                    ),
++                )),
++                cx,
++            );
++        });
++        response_task.await;
++        cx.run_until_parked();
++        thread.update(cx, |thread, cx| {
++            thread
++                .handle_session_update(
++                    acp_v1::SessionUpdate::ToolCallUpdate(acp_v1::ToolCallUpdate::new(
++                        acp_v1::ToolCallId::new(tool_call_id.0.clone()),
++                        acp_v1::ToolCallUpdateFields::new()
++                            .title("Answered: delve into src")
++                            .status(acp_v1::ToolCallStatus::Completed),
++                    )),
++                    cx,
++                )
++                .expect("ask_user tool call should update");
++            thread
++                .handle_session_update(
++                    acp_v1::SessionUpdate::AgentMessageChunk(acp_v1::ContentChunk::new(
++                        "I'll explore src in depth.".into(),
++                    )),
++                    cx,
++                )
++                .expect("follow-up assistant message should apply");
++        });
++        cx.run_until_parked();
++
++        // [User 0, ToolCall 1 (the answer), Elicitation 2, Agent 3]
++        thread.read_with(cx, |thread, _| {
++            let entries = thread.entries();
++            assert_eq!(entries.len(), 4);
++            assert!(matches!(entries[1], AgentThreadEntry::ToolCall(_)));
++        });
++
++        active_thread(&conversation_view, cx).update(cx, |view, cx| {
++            // Reading the reply below the answer: the first click goes to the answer.
++            view.list_state.scroll_to(gpui::ListOffset {
++                item_ix: 3,
++                offset_in_item: gpui::px(40.),
++            });
++            assert_eq!(
++                view.floating_previous_user_message(cx),
++                Some(1),
++                "the answered question is the user message above the reply, as for Zed's own navigation"
++            );
++        });
++    }
++
+     #[gpui::test]
+     async fn test_scroll_to_user_message_skips_accepted_url_elicitation(cx: &mut TestAppContext) {
+         init_test(cx);
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index a1d232b..eaad3e0 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -9306,14 +9306,13 @@ impl ThreadView {
+     fn render_floating_thread_navigation(&self, cx: &Context<Self>) -> impl IntoElement {
+         let entries = self.thread.read(cx).entries();
+ 
+-        let previous_user_message =
+-            Self::previous_user_message_ix(entries, self.list_state.logical_scroll_top());
++        let previous_user_message = self.floating_previous_user_message(cx);
+ 
+         // With the list's end already in view, a scroll to any later message
+         // is clamped to where the viewport already is, so the click would
+         // move nothing.
+         let next_user_message = (!self.is_list_end_in_view())
+-            .then(|| Self::next_user_message_ix(entries, self.list_state.logical_scroll_top()))
++            .then(|| self.floating_next_user_message(cx))
+             .flatten();
+ 
+         // A turn still being written is disabled rather than hidden: copying it
+@@ -9359,22 +9358,24 @@ impl ThreadView {
+                         .color(Color::Accent),
+                 )
+             })
+-            .child(
+-                IconButton::new("floating_copy_agent_response", IconName::Copy)
++            .child({
++                // Upstream's CopyButton: the check it shows for two seconds after a copy
++                // (#64664) is what every other copy control in the panel shows.
++                let thread = self.thread.clone();
++                CopyButton::new("floating_copy_agent_response", "")
+                     .icon_size(IconSize::Small)
+-                    .icon_color(Color::Muted)
+                     .disabled(copy_target.is_none())
+-                    .tooltip(Tooltip::text("Copy This Agent Response"))
+-                    .on_click(cx.listener(move |this, _, _, cx| {
++                    .tooltip_label("Copy This Agent Response")
++                    .custom_on_click(move |_, cx| {
+                         let Some(target) = copy_target else {
+                             return;
+                         };
+-                        let entries = this.thread.read(cx).entries();
++                        let entries = thread.read(cx).entries();
+                         if let Some(text) = Self::get_agent_message_content(entries, target, cx) {
+                             cx.write_to_clipboard(ClipboardItem::new_string(text));
+                         }
+-                    })),
+-            )
++                    })
++            })
+             .child(
+                 IconButton::new(
+                     "floating_scroll_to_previous_user_message",
+@@ -9468,9 +9469,9 @@ impl ThreadView {
+     fn previous_user_message_ix(
+         entries: &[AgentThreadEntry],
+         scroll_top: ListOffset,
++        is_user_message_entry: impl Fn(&AgentThreadEntry) -> bool,
+     ) -> Option<usize> {
+-        let is_user_message =
+-            |ix: usize| matches!(entries.get(ix), Some(AgentThreadEntry::UserMessage(_)));
++        let is_user_message = |ix: usize| entries.get(ix).is_some_and(&is_user_message_entry);
+ 
+         if scroll_top.offset_in_item > px(0.) && is_user_message(scroll_top.item_ix) {
+             return Some(scroll_top.item_ix);
+@@ -9486,9 +9487,35 @@ impl ThreadView {
+     /// The entry at the scroll top is never the answer, whether it sits there
+     /// exactly (just landed on it) or is partly scrolled past: either way it is
+     /// the message being read, not the next one.
+-    fn next_user_message_ix(entries: &[AgentThreadEntry], scroll_top: ListOffset) -> Option<usize> {
++    fn next_user_message_ix(
++        entries: &[AgentThreadEntry],
++        scroll_top: ListOffset,
++        is_user_message_entry: impl Fn(&AgentThreadEntry) -> bool,
++    ) -> Option<usize> {
+         (scroll_top.item_ix + 1..entries.len())
+-            .find(|&ix| matches!(entries.get(ix), Some(AgentThreadEntry::UserMessage(_))))
++            .find(|&ix| entries.get(ix).is_some_and(&is_user_message_entry))
++    }
++
++    /// The entry the floating "previous" control lands on, read off the scroll position, with
++    /// Zed's own rule for what a user message is when scrolling (upstream #64007): a sent
++    /// message, or the tool call that holds an accepted AskUserQuestion answer.
++    pub(super) fn floating_previous_user_message(&self, cx: &App) -> Option<usize> {
++        let thread = self.thread.read(cx);
++        Self::previous_user_message_ix(
++            thread.entries(),
++            self.list_state.logical_scroll_top(),
++            |entry| thread.is_user_authored_scroll_target(entry),
++        )
++    }
++
++    /// The entry the floating "next" control lands on, by the same rule.
++    fn floating_next_user_message(&self, cx: &App) -> Option<usize> {
++        let thread = self.thread.read(cx);
++        Self::next_user_message_ix(
++            thread.entries(),
++            self.list_state.logical_scroll_top(),
++            |entry| thread.is_user_authored_scroll_target(entry),
++        )
+     }
+ 
+     /// Whether the bottom of the list's last item is inside the viewport,
+@@ -16537,6 +16564,12 @@ mod tests {
+             acp_thread::meta_with_command_category(acp_thread::CommandCategory::Mcp),
+         ))
+     }
++    /// 0026's rule before 0128: only a sent message counts. The unit tests keep it; the
++    /// thread's own rule (an answered question too) is covered in `conversation_view`'s tests.
++    fn sent_message(entry: &acp_thread::AgentThreadEntry) -> bool {
++        matches!(entry, acp_thread::AgentThreadEntry::UserMessage(_))
++    }
++
+     fn conversation_entries(cx: &mut App) -> Vec<acp_thread::AgentThreadEntry> {
+         let languages = Arc::new(language::LanguageRegistry::test(
+             cx.background_executor().clone(),
+@@ -16591,25 +16624,28 @@ mod tests {
+ 
+             // Reading the last response: the first click goes to the last message.
+             assert_eq!(
+-                ThreadView::previous_user_message_ix(&entries, at(3, 40.)),
++                ThreadView::previous_user_message_ix(&entries, at(3, 40.), sent_message),
+                 Some(2)
+             );
+             // Landed on it: the next click goes one further back, not to it again.
+             assert_eq!(
+-                ThreadView::previous_user_message_ix(&entries, at(2, 0.)),
++                ThreadView::previous_user_message_ix(&entries, at(2, 0.), sent_message),
+                 Some(0)
+             );
+             // Partly scrolled past a user message: return to that one first.
+             assert_eq!(
+-                ThreadView::previous_user_message_ix(&entries, at(2, 10.)),
++                ThreadView::previous_user_message_ix(&entries, at(2, 10.), sent_message),
+                 Some(2)
+             );
+             // Already on the first message: nothing earlier, so the button disables.
+             assert_eq!(
+-                ThreadView::previous_user_message_ix(&entries, at(0, 0.)),
++                ThreadView::previous_user_message_ix(&entries, at(0, 0.), sent_message),
++                None
++            );
++            assert_eq!(
++                ThreadView::previous_user_message_ix(&[], at(0, 0.), sent_message),
+                 None
+             );
+-            assert_eq!(ThreadView::previous_user_message_ix(&[], at(0, 0.)), None);
+         });
+     }
+ 
+@@ -16625,21 +16661,33 @@ mod tests {
+ 
+             // Landed on the first message: the next click goes to the second.
+             assert_eq!(
+-                ThreadView::next_user_message_ix(&entries, at(0, 0.)),
++                ThreadView::next_user_message_ix(&entries, at(0, 0.), sent_message),
+                 Some(2)
+             );
+             // Reading the first response: the next message is below it.
+             assert_eq!(
+-                ThreadView::next_user_message_ix(&entries, at(1, 40.)),
++                ThreadView::next_user_message_ix(&entries, at(1, 40.), sent_message),
+                 Some(2)
+             );
+             // Partly scrolled past a user message: that one is being read, so
+             // it is skipped rather than returned to.
+-            assert_eq!(ThreadView::next_user_message_ix(&entries, at(2, 10.)), None);
++            assert_eq!(
++                ThreadView::next_user_message_ix(&entries, at(2, 10.), sent_message),
++                None
++            );
+             // Landed on the last message: nothing later, so the button disables.
+-            assert_eq!(ThreadView::next_user_message_ix(&entries, at(2, 0.)), None);
+-            assert_eq!(ThreadView::next_user_message_ix(&entries, at(3, 40.)), None);
+-            assert_eq!(ThreadView::next_user_message_ix(&[], at(0, 0.)), None);
++            assert_eq!(
++                ThreadView::next_user_message_ix(&entries, at(2, 0.), sent_message),
++                None
++            );
++            assert_eq!(
++                ThreadView::next_user_message_ix(&entries, at(3, 40.), sent_message),
++                None
++            );
++            assert_eq!(
++                ThreadView::next_user_message_ix(&[], at(0, 0.), sent_message),
++                None
++            );
+         });
+     }
+ 

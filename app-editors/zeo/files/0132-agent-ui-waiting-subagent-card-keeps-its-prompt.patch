@@ -1,0 +1,194 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Thu, 19 Nov 2026 11:03:57 -0300
+Subject: [PATCH] agent_ui: a waiting subagent's card keeps its prompt and
+ follows the subagent
+
+0072 gave SubagentStatus a Waiting variant for an ACP child that reports
+requires_action, so the sidebar, the tray and the card can tell a child
+waiting for the user apart from one that works. Two checks upstream wrote as
+`status == Running` then read Waiting as "stopped", and no patch touched them.
+Found by the upstream-native review of 2026-11-15
+(docs/UPSTREAM-NATIVE-REVIEW.md in the hub, defect 1).
+
+  - The card embeds a child's pending permission prompt only while the child
+    runs. Claude Agent (Plus) reports requires_action before each permission
+    request of a child, so the prompt left the parent's card exactly while it
+    was pending; the awaiting-permission bar and the child's own view still
+    reached it, one click away.
+  - Full screen opens a stopped card at the start of its part and a running
+    one at the latest entries. A waiting card opened at the start.
+
+SubagentStatus::is_live (Running or Waiting) answers both, as 0072's own doc
+comment says Waiting is "live work, not an ending". The embedded prompt gets a
+debug selector, subagent-card-permission-{entry}, so a test can see it.
+
+Tests: rfd_surfaces_tests' test_rfd_waiting_child_shows_its_permission_in_the_card
+and waiting_card_full_screen_follows_the_latest_entries (both Red on the
+series before this patch).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_ui/src/conversation_view/subagent_card.rs b/crates/agent_ui/src/conversation_view/subagent_card.rs
+index 7ea5fd9..5d841b6 100644
+--- a/crates/agent_ui/src/conversation_view/subagent_card.rs
++++ b/crates/agent_ui/src/conversation_view/subagent_card.rs
+@@ -162,6 +162,13 @@ pub(crate) enum SubagentStatus {
+ }
+ 
+ impl SubagentStatus {
++    /// Running, or waiting for the user: work that has not ended. Upstream's checks read
++    /// `== Running`, which R5.2's `Waiting` would otherwise turn into "stopped" exactly while
++    /// a child waits on a prompt (0132).
++    pub(crate) fn is_live(self) -> bool {
++        matches!(self, Self::Running | Self::Waiting)
++    }
++
+     /// An ACP subagent's status from the state it last reported, with the error to show for a
+     /// failure. Idle with no stop reason, or with one this version does not know, is a normal
+     /// end, as it is for any ACP session.
+@@ -329,8 +336,7 @@ impl SubagentCardState {
+     /// once its work has stopped, or `None` while it runs, so the subagent's view keeps
+     /// following its latest entries.
+     pub(crate) fn fullscreen_entry(&self) -> Option<usize> {
+-        (self.status != SubagentStatus::Running)
+-            .then(|| self.entries.map_or(0, |entries| entries.start))
++        (!self.status.is_live()).then(|| self.entries.map_or(0, |entries| entries.start))
+     }
+ 
+     /// The last `max_entries` of the entries this card covers.
+diff --git a/crates/agent_ui/src/conversation_view/subagent_card/rfd_surfaces_tests.rs b/crates/agent_ui/src/conversation_view/subagent_card/rfd_surfaces_tests.rs
+index aa13140..48135a3 100644
+--- a/crates/agent_ui/src/conversation_view/subagent_card/rfd_surfaces_tests.rs
++++ b/crates/agent_ui/src/conversation_view/subagent_card/rfd_surfaces_tests.rs
+@@ -66,6 +66,10 @@ fn card_stop(entry_ix: usize) -> &'static str {
+     Box::leak(format!("stop-subagent-{entry_ix}").into_boxed_str())
+ }
+ 
++fn card_permission(entry_ix: usize) -> &'static str {
++    Box::leak(format!("subagent-card-permission-{entry_ix}").into_boxed_str())
++}
++
+ fn permission_row(entry_ix: usize) -> &'static str {
+     Box::leak(format!("subagent-permission-{entry_ix}").into_boxed_str())
+ }
+@@ -415,3 +419,66 @@ async fn test_rfd_child_awaiting_permission_is_listed_in_the_bar(cx: &mut TestAp
+     );
+     let _ = rig.panel.clone();
+ }
++
++// ── Defect 1 of the upstream-native review — Waiting is live work ──────────
++
++/// A child waiting for the user shows its pending permission inside its card, as upstream
++/// shows a running child's: upstream embeds the prompt only while `status == Running`, and
++/// R5.2's `Waiting` -- reported by Claude Agent (Plus) before each permission request of a
++/// child -- had made it vanish exactly while a prompt was pending.
++#[gpui::test]
++async fn test_rfd_waiting_child_shows_its_permission_in_the_card(cx: &mut TestAppContext) {
++    let mut rig = rig(cx).await;
++    let alpha = rig.spawn_child("alpha", "Alpha", true);
++    let alpha_card = rig.message("to-alpha", "alpha", false);
++    rig.report(
++        &alpha,
++        acp_v2::StateUpdate::RequiresAction(acp_v2::RequiresActionStateUpdate::new()),
++    );
++    let (_request_id, _outcome) = rig.cx.update(|_, cx| {
++        alpha.update(cx, |thread, cx| {
++            thread
++                .request_tool_call_authorization_with_id(
++                    acp_v1::ToolCall::new(acp_v1::ToolCallId::new("alpha-call"), "Edit a file")
++                        .kind(acp_v1::ToolKind::Edit)
++                        .into(),
++                    PermissionOptions::Flat(vec![acp_v2::PermissionOption::new(
++                        acp_v2::PermissionOptionId::new("allow"),
++                        "Allow",
++                        acp_v2::PermissionOptionKind::AllowOnce,
++                    )]),
++                    acp_thread::AuthorizationKind::PermissionGrant,
++                    cx,
++                )
++                .expect("the request installs")
++        })
++    });
++    rig.cx.run_until_parked();
++
++    assert!(rig.painted(message_card(alpha_card)), "fixture: the card");
++    assert!(
++        rig.painted(card_permission(alpha_card)),
++        "the waiting child's pending permission is drawn inside its card"
++    );
++}
++
++/// Full screen opens a Waiting card where its subagent is, following its latest entries, as it
++/// does for a running one; only a card whose work has stopped opens at the start of its part.
++#[test]
++fn waiting_card_full_screen_follows_the_latest_entries() {
++    let card = |status| SubagentCardState {
++        label: None,
++        label_wins: true,
++        status,
++        error: None,
++        can_stop: false,
++        entries: None,
++    };
++    assert_eq!(card(SubagentStatus::Running).fullscreen_entry(), None);
++    assert_eq!(
++        card(SubagentStatus::Waiting).fullscreen_entry(),
++        None,
++        "a waiting subagent is live, so full screen follows it"
++    );
++    assert_eq!(card(SubagentStatus::Completed).fullscreen_entry(), Some(0));
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index eaad3e0..c9936bc 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -13976,7 +13976,8 @@ impl ThreadView {
+         let files_changed = changed_buffers.len();
+         let diff_stats = DiffStats::all_files(changed_buffers, cx);
+ 
+-        let is_running = state.status == SubagentStatus::Running;
++        // Waiting is live work too: the pending permission it waits on is embedded (0132).
++        let is_running = state.status.is_live();
+         let is_failed_or_canceled = state.status.is_failed_or_canceled();
+ 
+         let model_name = thread_view
+@@ -14257,20 +14258,28 @@ impl ThreadView {
+                         }
+                     }));
+ 
++                let card_entry_ix = entry_ix;
+                 if is_running && let Some((_, subagent_tool_call_id, _)) = pending_tool_call {
+                     if let Some((entry_ix, tool_call)) =
+                         thread.read(cx).tool_call(&subagent_tool_call_id)
+                     {
+                         this.child(Divider::horizontal().color(DividerColor::Border))
+-                            .child(thread_view.read(cx).render_any_tool_call(
+-                                active_session_id,
+-                                entry_ix,
+-                                tool_call,
+-                                focus_handle,
+-                                ToolCallLayout::Embedded,
+-                                window,
+-                                cx,
+-                            ))
++                            .child(
++                                div()
++                                    .w_full()
++                                    .debug_selector(move || {
++                                        format!("subagent-card-permission-{card_entry_ix}")
++                                    })
++                                    .child(thread_view.read(cx).render_any_tool_call(
++                                        active_session_id,
++                                        entry_ix,
++                                        tool_call,
++                                        focus_handle,
++                                        ToolCallLayout::Embedded,
++                                        window,
++                                        cx,
++                                    )),
++                            )
+                             .child(fullscreen_toggle)
+                     } else {
+                         this

@@ -1,0 +1,165 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Thu, 19 Nov 2026 11:02:28 -0300
+Subject: [PATCH] agent_ui: History scopes by the project's identity, not its
+ exact folders
+
+0015 scoped the thread archive to the window's project by comparing each
+thread's folder paths with the workspace's root paths. Two kinds of thread
+fall through that comparison, and Zed relies on History for both. Found by
+the upstream-native review of 2026-11-15 (docs/UPSTREAM-NATIVE-REVIEW.md in
+the hub, defect 3).
+
+  - A thread that ran in a linked git worktree is recorded with the
+    worktree as its folder and the repository as its main path. Zed files it
+    under the repository's group (ProjectGroupKey, which is keyed by main
+    worktree paths and host), and archiving it removes the worktree from
+    disk; the sidebar's open_thread_from_archive then restores the worktree
+    from History. Scoped by exact folders, the thread was never listed in the
+    repository's History, and with its folder gone no window had it either.
+  - A thread started with no folder belongs to no project. Zed archives it at
+    creation so it can be reopened from History, where a project picker
+    adopts it. Scoped by folders, it was reachable only from a window with no
+    folder open.
+
+The scope is now the workspace's project group key (its main worktree paths
+and host, as Workspace::project_group_key gives them), threads match on their
+main worktree paths, and a thread with no folder is listed in every project's
+History. Another project's threads stay out: R4.4 of 0015 holds, and its
+three tests pass unchanged.
+
+Tests: archive_view_lists_a_linked_worktrees_thread_under_its_repository and
+archive_view_keeps_a_thread_without_a_folder_reachable (both Red on the series
+before this patch).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_ui/src/threads_archive_view.rs b/crates/agent_ui/src/threads_archive_view.rs
+index 22368fb..1ffe4c7 100644
+--- a/crates/agent_ui/src/threads_archive_view.rs
++++ b/crates/agent_ui/src/threads_archive_view.rs
+@@ -131,8 +131,13 @@ pub fn fuzzy_match_positions(query: &str, candidate: &str) -> Option<Vec<usize>>
+     None
+ }
+ 
+-/// The threads belonging to one project: those recorded against the same
+-/// worktree paths, on the same connection.
++/// The threads belonging to one project, as Zed groups them (`ProjectGroupKey`):
++/// those recorded against the same main worktree paths, on the same connection.
++/// A thread that ran in a linked git worktree belongs to its repository: Zed files
++/// it there, and archiving it removes the worktree from disk, so the repository's
++/// History is the only place it can be restored from. A thread started with no
++/// folder belongs to no project and is kept too: Zed archives it on purpose so it
++/// can be reopened from History (0130).
+ ///
+ /// Archived threads are kept. The store's own scoped reader,
+ /// [`ThreadMetadataStore::entries_for_path`], drops them, which is exactly
+@@ -143,7 +148,8 @@ fn scoped_entries<'a>(
+     remote_connection: Option<&'a RemoteConnectionOptions>,
+ ) -> impl Iterator<Item = &'a ThreadMetadata> + 'a {
+     store.entries().filter(move |thread| {
+-        thread.folder_paths() == path_list && thread.matches_remote_connection(remote_connection)
++        (thread.main_worktree_paths() == path_list || thread.worktree_paths.is_empty())
++            && thread.matches_remote_connection(remote_connection)
+     })
+ }
+ 
+@@ -335,8 +341,10 @@ impl ThreadsArchiveView {
+             .is_focused(window)
+     }
+ 
+-    /// The project this history is scoped to: the workspace's root paths and
+-    /// the connection they live on — the pair the sidebar scopes by.
++    /// The project this history is scoped to: the workspace's project group key --
++    /// its main worktree paths and the connection they live on, the pair the
++    /// sidebar groups threads by (0130; the root paths until then, which left a
++    /// linked worktree's threads out of their repository's History).
+     ///
+     /// A workspace with no folder open, or one already dropped, scopes to the
+     /// empty path list, which is what a thread started without a folder is
+@@ -345,15 +353,8 @@ impl ThreadsArchiveView {
+         let Some(workspace) = self.workspace.upgrade() else {
+             return (PathList::default(), None);
+         };
+-        let workspace = workspace.read(cx);
+-        (
+-            PathList::new(&workspace.root_paths(cx)),
+-            workspace
+-                .project()
+-                .read(cx)
+-                .remote_connection_options(cx)
+-                .cloned(),
+-        )
++        let key = workspace.read(cx).project_group_key(cx);
++        (key.path_list().clone(), key.host().cloned())
+     }
+ 
+     fn update_items(&mut self, cx: &mut Context<Self>) {
+@@ -1859,6 +1860,66 @@ mod tests {
+         PathList::new(&[std::path::Path::new("/project-b")])
+     }
+ 
++    /// A thread that ran in a linked git worktree is recorded with the worktree as its folder
++    /// and the repository as its main path; Zed files it under the repository's group
++    /// (`ProjectGroupKey`), and archiving it removes the worktree from disk, so the
++    /// repository's History is the one place it can be restored from. Scoped by exact folder
++    /// paths it was never listed there (upstream-native review, defect 3).
++    #[gpui::test]
++    async fn archive_view_lists_a_linked_worktrees_thread_under_its_repository(
++        cx: &mut gpui::TestAppContext,
++    ) {
++        let mut linked = archive_thread_fixture("a-worktree-archived", true, &project_a(), 10);
++        linked.worktree_paths = project::WorktreePaths::from_path_lists(
++            project_a(),
++            PathList::new(&[std::path::Path::new("/worktrees/project-a-feature")]),
++        )
++        .expect("one main path for one folder");
++        let store = store_with(
++            vec![
++                linked,
++                archive_thread_fixture("b-archived", true, &project_b(), 20),
++            ],
++            cx,
++        )
++        .await;
++
++        cx.update(|cx| {
++            let (_, sessions) =
++                scoped_archive_sessions(store.read(cx), ThreadFilter::All, &project_a(), None);
++            assert_eq!(
++                session_ids(&sessions),
++                vec!["a-worktree-archived"],
++                "the repository's History lists the thread of its linked worktree"
++            );
++        });
++    }
++
++    /// A thread started without a folder belongs to no project, and Zed archives it on purpose
++    /// so it can be reopened from History; scoped by folders it was reachable only from a
++    /// window with no folder open.
++    #[gpui::test]
++    async fn archive_view_keeps_a_thread_without_a_folder_reachable(cx: &mut gpui::TestAppContext) {
++        let store = store_with(
++            vec![
++                archive_thread_fixture("no-folder", true, &PathList::default(), 10),
++                archive_thread_fixture("b-archived", true, &project_b(), 20),
++            ],
++            cx,
++        )
++        .await;
++
++        cx.update(|cx| {
++            let (_, sessions) =
++                scoped_archive_sessions(store.read(cx), ThreadFilter::All, &project_a(), None);
++            assert_eq!(
++                session_ids(&sessions),
++                vec!["no-folder"],
++                "a thread with no folder is listed, another project's is not"
++            );
++        });
++    }
++
+     #[gpui::test]
+     async fn archive_view_lists_only_this_projects_threads(cx: &mut gpui::TestAppContext) {
+         // R4.4 itself: another project's threads are not this project's history.

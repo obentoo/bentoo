@@ -134,6 +134,13 @@ USE devtools-panel (default on) needs browser-extension. Applies on top of 0058
 with or without 0057; 0050/0051 apply on top of it unchanged.
 
 Story 055 (zed/.epic/stories/055-devtools-panel-mvp), branch story/055.
+
+Windows (2026-11-18): the isolated window is Chromium, then Edge -- never
+branded Chrome, which ignores --load-extension since 137 (G10). Edge 157
+loads an unpacked extension from the flag (measured in the Windows build
+guest) and lives under Program Files, not on PATH; Windows lookups add .exe.
+The notice there reads "Chromium or Edge not found".
+
 ---
 
 diff --git a/assets/settings/default.json b/assets/settings/default.json
@@ -1592,10 +1599,10 @@ index 82c5813..f6522f8 100644
  #[cfg(test)]
 diff --git a/crates/agent_ui/src/browser_channel_tests/devtools_browser.rs b/crates/agent_ui/src/browser_channel_tests/devtools_browser.rs
 new file mode 100644
-index 0000000..3bbf50d
+index 0000000..e310536
 --- /dev/null
 +++ b/crates/agent_ui/src/browser_channel_tests/devtools_browser.rs
-@@ -0,0 +1,277 @@
+@@ -0,0 +1,303 @@
 +// Story 055, task 13.1 — `devtools: open in browser`, isolated or system (design.md §B6, §B7,
 +// GOTCHA G6, G10). Requirements: R4.1, R4.2, R4.3, R4.4, R4.5, R4.6, R4.7 (Q4, Q5). Wired INSIDE
 +// `src/browser_channel.rs` (path `browser_channel::devtools_browser::…`, filter
@@ -1723,6 +1730,32 @@ index 0000000..3bbf50d
 +        notice.as_deref(),
 +        Some("Chromium not found: opened in your default browser")
 +    );
++}
++
++#[test]
++fn edge_is_looked_for_under_each_program_files_root_that_is_set() {
++    let roots = [
++        Some(std::ffi::OsString::from("C:\\Program Files (x86)")),
++        None,
++        Some(std::ffi::OsString::from("C:\\Program Files")),
++    ];
++    let candidates = crate::devtools_browser::edge_install_candidates(&roots);
++    assert_eq!(
++        candidates,
++        vec![
++            PathBuf::from("C:\\Program Files (x86)")
++                .join("Microsoft")
++                .join("Edge")
++                .join("Application")
++                .join("msedge.exe"),
++            PathBuf::from("C:\\Program Files")
++                .join("Microsoft")
++                .join("Edge")
++                .join("Application")
++                .join("msedge.exe"),
++        ]
++    );
++    assert!(crate::devtools_browser::edge_install_candidates(&[None, None]).is_empty());
 +}
 +
 +#[test]
@@ -7392,10 +7425,10 @@ index 890e188..c473a19 100644
      /// 0052's v1 path already answers v1 requests.
 diff --git a/crates/agent_ui/src/devtools_browser.rs b/crates/agent_ui/src/devtools_browser.rs
 new file mode 100644
-index 0000000..d53f7d8
+index 0000000..c3c2fce
 --- /dev/null
 +++ b/crates/agent_ui/src/devtools_browser.rs
-@@ -0,0 +1,494 @@
+@@ -0,0 +1,542 @@
 +//! `devtools: open in browser` (story 055, design.md §B6-B7): the project's devtools panel, opened
 +//! on a devtools thread created for it, in an isolated Chromium window or the default browser.
 +//!
@@ -7445,11 +7478,21 @@ index 0000000..d53f7d8
 +);
 +
 +/// What R4.4 shows when the isolated window cannot be a Chromium one.
++#[cfg(not(windows))]
 +pub const CHROMIUM_NOT_FOUND: &str = "Chromium not found: opened in your default browser";
++/// What R4.4 shows when the isolated window cannot be a Chromium one: Edge counts on Windows.
++#[cfg(windows)]
++pub const CHROMIUM_NOT_FOUND: &str = "Chromium or Edge not found: opened in your default browser";
 +const NO_LOCAL_PROJECT: &str = "Open a local project to open its devtools panel";
 +
-+/// The Chromium binaries, in the order they are looked up on `PATH`.
++/// The browsers the isolated window may be, in the order they are looked up. Each must still
++/// honour `--load-extension`: Chromium does; branded Google Chrome dropped it in 137, so it is
++/// never one (G10); Edge 157 loads an unpacked extension from the flag, measured in the Windows
++/// build guest on 2026-11-18, and ships with every Windows 11.
++#[cfg(not(windows))]
 +const CHROMIUM_NAMES: [&str; 2] = ["chromium", "chromium-browser"];
++#[cfg(windows)]
++const CHROMIUM_NAMES: [&str; 2] = ["chromium", "msedge"];
 +
 +/// The browser the panel opens in.
 +#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -7739,7 +7782,7 @@ index 0000000..d53f7d8
 +                    &url,
 +                    &data_dir,
 +                    extension_dir.as_deref(),
-+                    &find_on_path,
++                    &find_browser,
 +                );
 +                execute(&root, &url, launch)
 +            }
@@ -7852,9 +7895,47 @@ index 0000000..d53f7d8
 +/// The first executable file called `name` in a `PATH` directory.
 +fn find_on_path(name: &str) -> Option<PathBuf> {
 +    let path = std::env::var_os("PATH")?;
++    // Windows names its programs `<name>.exe`; a bare `chromium` is never a file there.
++    let file = if cfg!(windows) {
++        format!("{name}.exe")
++    } else {
++        name.to_string()
++    };
 +    std::env::split_paths(&path)
-+        .map(|directory| directory.join(name))
++        .map(|directory| directory.join(&file))
 +        .find(|candidate| is_executable(candidate))
++}
++
++/// [`find_on_path`], and on Windows Edge's own install directories: its installer puts
++/// `msedge.exe` under Program Files and never on `PATH`.
++fn find_browser(name: &str) -> Option<PathBuf> {
++    find_on_path(name).or_else(|| {
++        if !cfg!(windows) || name != "msedge" {
++            return None;
++        }
++        let roots = [
++            std::env::var_os("ProgramFiles(x86)"),
++            std::env::var_os("ProgramFiles"),
++        ];
++        edge_install_candidates(&roots)
++            .into_iter()
++            .find(|candidate| is_executable(candidate))
++    })
++}
++
++/// Where the Edge installer puts `msedge.exe`, under each Program Files root that is set.
++pub(crate) fn edge_install_candidates(roots: &[Option<std::ffi::OsString>]) -> Vec<PathBuf> {
++    roots
++        .iter()
++        .flatten()
++        .map(|root| {
++            PathBuf::from(root)
++                .join("Microsoft")
++                .join("Edge")
++                .join("Application")
++                .join("msedge.exe")
++        })
++        .collect()
 +}
 +
 +#[cfg(unix)]
@@ -11639,7 +11720,7 @@ index 59efba5..5ebaa11 100644
              apply_live_row_state(
                  &mut row,
 diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
-index c0e7567..66e3b49 100644
+index fff69b2..4ab992d 100644
 --- a/crates/sidebar/src/sidebar.rs
 +++ b/crates/sidebar/src/sidebar.rs
 @@ -8,6 +8,7 @@ use action_log::DiffStats;
@@ -11773,7 +11854,7 @@ index c0e7567..66e3b49 100644
                      if pending_activation.is_some() {
                          return false;
                      }
-@@ -2155,6 +2200,18 @@ impl Sidebar {
+@@ -2161,6 +2206,18 @@ impl Sidebar {
                      let b_time = Self::thread_display_time(&b.metadata);
                      b_time.cmp(&a_time)
                  });
@@ -11792,7 +11873,7 @@ index c0e7567..66e3b49 100644
              } else {
                  for info in live_infos {
                      if info.status == AgentThreadStatus::Running {
-@@ -2287,7 +2344,10 @@ impl Sidebar {
+@@ -2299,7 +2356,10 @@ impl Sidebar {
                  if tag_query.has_keys() && matched_threads.is_empty() {
                      continue;
                  }
@@ -11804,7 +11885,7 @@ index c0e7567..66e3b49 100644
                  {
                      continue;
                  }
-@@ -2322,6 +2382,10 @@ impl Sidebar {
+@@ -2334,6 +2394,10 @@ impl Sidebar {
                      cx,
                  );
              } else {
@@ -11815,7 +11896,7 @@ index c0e7567..66e3b49 100644
                  let has_terminal_notifications = terminals
                      .iter()
                      .any(|t| notified_terminals.contains(&t.metadata.terminal_id));
-@@ -2363,7 +2427,8 @@ impl Sidebar {
+@@ -2375,7 +2439,8 @@ impl Sidebar {
                      has_threads,
                  });
  
@@ -11825,7 +11906,7 @@ index c0e7567..66e3b49 100644
                      continue;
                  }
  
-@@ -2389,6 +2454,7 @@ impl Sidebar {
+@@ -2401,6 +2466,7 @@ impl Sidebar {
                      path_detail_map: &path_detail_map,
                      branch_by_path: &branch_by_path,
                      resolve_agent_icon: &resolve_agent_icon,
@@ -11833,7 +11914,7 @@ index c0e7567..66e3b49 100644
                      new_live_statuses: &mut new_live_statuses,
                      notified_threads: &mut notified_threads,
                  },
-@@ -2402,7 +2468,16 @@ impl Sidebar {
+@@ -2414,7 +2480,16 @@ impl Sidebar {
              );
              // Like a group's rows, a pinned row the filter drops is not registered below, so the
              // header is decided by, and reports notifications of, only the rows that are shown.
@@ -11851,7 +11932,7 @@ index c0e7567..66e3b49 100644
              if !pinned_rows.is_empty() {
                  // Registered even while the section is collapsed, so the retains below keep the
                  // notifications its header reports.
-@@ -2421,7 +2496,7 @@ impl Sidebar {
+@@ -2433,7 +2508,7 @@ impl Sidebar {
                      project,
                  });
                  // Like a project group, a collapsed section still shows what the filter matches.
@@ -11860,7 +11941,7 @@ index c0e7567..66e3b49 100644
                      entries.extend(pinned_rows.into_iter().map(ListEntry::Thread));
                  }
              }
-@@ -2441,6 +2516,7 @@ impl Sidebar {
+@@ -2453,6 +2528,7 @@ impl Sidebar {
                          path_detail_map: &path_detail_map,
                          branch_by_path: &branch_by_path,
                          resolve_agent_icon: &resolve_agent_icon,
@@ -11868,7 +11949,7 @@ index c0e7567..66e3b49 100644
                          new_live_statuses: &mut new_live_statuses,
                          notified_threads: &mut notified_threads,
                      };
-@@ -2788,7 +2864,7 @@ impl Sidebar {
+@@ -2800,7 +2876,7 @@ impl Sidebar {
      ) -> AnyElement {
          let host = key.host();
  
@@ -11877,7 +11958,7 @@ index c0e7567..66e3b49 100644
  
          let id_prefix = if is_sticky { "sticky-" } else { "" };
          let id = SharedString::from(format!("{id_prefix}project-header-{ix}"));
-@@ -2973,7 +3049,7 @@ impl Sidebar {
+@@ -2985,7 +3061,7 @@ impl Sidebar {
                  cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                      if event.modifiers().secondary(cx) {
                          this.activate_or_open_workspace_for_group(&key_for_focus, window, cx);
@@ -11886,7 +11967,7 @@ index c0e7567..66e3b49 100644
                          this.toggle_collapse(&key_for_toggle, window, cx);
                      }
                  }),
-@@ -3027,7 +3103,7 @@ impl Sidebar {
+@@ -3039,7 +3115,7 @@ impl Sidebar {
              SharedString::from(format!("{id_prefix}project-header-new-thread-{ix}")),
              IconName::Plus,
          )
@@ -11895,7 +11976,7 @@ index c0e7567..66e3b49 100644
              let color = cx.theme().colors();
              button
                  .hover_background(color.element_background)
-@@ -3341,7 +3417,7 @@ impl Sidebar {
+@@ -3353,7 +3429,7 @@ impl Sidebar {
              .with_handle(menu_handle)
              .trigger(
                  IconButton::new(trigger_id, IconName::Ellipsis)
@@ -11904,7 +11985,7 @@ index c0e7567..66e3b49 100644
                          let color = cx.theme().colors();
                          button
                              .hover_background(color.element_background)
-@@ -3729,7 +3805,7 @@ impl Sidebar {
+@@ -3741,7 +3817,7 @@ impl Sidebar {
                          .color(Color::Accent),
                  )
              })
@@ -11913,7 +11994,7 @@ index c0e7567..66e3b49 100644
                  this.child(
                      Icon::new(disclosure_icon)
                          .size(IconSize::Small)
-@@ -3738,7 +3814,7 @@ impl Sidebar {
+@@ -3750,7 +3826,7 @@ impl Sidebar {
              })
              .cursor_pointer()
              .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _window, cx| {
@@ -11922,7 +12003,7 @@ index c0e7567..66e3b49 100644
                      let collapsed = this.pinned_section_collapsed(project);
                      this.set_pinned_section_collapsed(project, !collapsed, cx);
                  }
-@@ -4006,6 +4082,28 @@ impl Sidebar {
+@@ -4020,6 +4096,28 @@ impl Sidebar {
          !self.filter_editor.read(cx).text(cx).is_empty()
      }
  
@@ -11951,7 +12032,7 @@ index c0e7567..66e3b49 100644
      fn start_renaming_entry(
          &mut self,
          ix: usize,
-@@ -7008,6 +7106,9 @@ impl Sidebar {
+@@ -7022,6 +7120,9 @@ impl Sidebar {
              .when_some(thread.pinned_project_label.clone(), |this, label| {
                  this.project_name(label)
              })
@@ -11961,7 +12042,7 @@ index c0e7567..66e3b49 100644
              .map(|item| sub_thread_marker::mark_sub_thread(item, thread.metadata.thread_id, cx))
              .tags(thread_tags::tag_chips_for(thread.metadata.thread_id, cx))
              .timestamp(timestamp)
-@@ -8170,6 +8271,8 @@ impl Sidebar {
+@@ -8184,6 +8285,8 @@ impl Sidebar {
          let has_query = self.has_filter_query(cx);
          let message = if has_query {
              "No threads match your search."
@@ -11970,7 +12051,7 @@ index c0e7567..66e3b49 100644
          } else {
              "No threads yet"
          };
-@@ -8288,6 +8391,20 @@ impl Sidebar {
+@@ -8302,6 +8405,20 @@ impl Sidebar {
                                      && !self.filter_editor.focus_handle(cx).is_focused(window),
                                  |this| this.child(KeyBinding::for_action(&FocusSidebarFilter, cx)),
                              )

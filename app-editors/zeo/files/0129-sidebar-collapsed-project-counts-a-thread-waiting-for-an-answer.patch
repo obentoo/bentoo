@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Thu, 19 Nov 2026 11:01:52 -0300
+Subject: [PATCH] sidebar: a collapsed project counts a thread waiting for an
+ answer
+
+A collapsed project group's header shows how many of its threads wait for
+the user. Upstream counts a pending question there since #66708, under the
+same badge as a permission prompt, because both read WaitingForConfirmation.
+0030 gave a pending question a status of its own, WaitingForAnswer -- and
+0072 gave the same status to a thread whose subagent waits for the user --
+but the header's two counting loops (one for an expanded group, one for a
+collapsed one) still matched WaitingForConfirmation alone. So a collapsed
+project hid exactly the threads that were waiting on the user, where stock
+Zed shows them. Found by the upstream-native review of 2026-11-15
+(docs/UPSTREAM-NATIVE-REVIEW.md in the hub, defect 2).
+
+Both loops now count either status. The header's tooltip keeps upstream's
+wording, "waiting for confirmation", which upstream itself uses for a
+question.
+
+Test: sidebar_child_background_tests'
+test_child_background_collapsed_header_counts_a_thread_waiting_for_an_answer,
+with two rig helpers, project_header and collapse_project (Red on the series
+before this patch). A child waiting for the user reads the same status as
+0030's question, so it stands in for one.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
+index af31cef..fff69b2 100644
+--- a/crates/sidebar/src/sidebar.rs
++++ b/crates/sidebar/src/sidebar.rs
+@@ -2127,7 +2127,13 @@ impl Sidebar {
+                     if info.status == AgentThreadStatus::Running {
+                         has_running_threads = true;
+                     }
+-                    if info.status == AgentThreadStatus::WaitingForConfirmation {
++                    // A thread waiting for an answer (0030) is counted as a permission prompt is,
++                    // as upstream counts a pending question since #66708 (0129).
++                    if matches!(
++                        info.status,
++                        AgentThreadStatus::WaitingForConfirmation
++                            | AgentThreadStatus::WaitingForAnswer
++                    ) {
+                         waiting_thread_count += 1;
+                     }
+                     live_info_by_session.insert(info.session_id.clone(), info);
+@@ -2160,7 +2166,13 @@ impl Sidebar {
+                     if info.status == AgentThreadStatus::Running {
+                         has_running_threads = true;
+                     }
+-                    if info.status == AgentThreadStatus::WaitingForConfirmation {
++                    // A thread waiting for an answer (0030) is counted as a permission prompt is,
++                    // as upstream counts a pending question since #66708 (0129).
++                    if matches!(
++                        info.status,
++                        AgentThreadStatus::WaitingForConfirmation
++                            | AgentThreadStatus::WaitingForAnswer
++                    ) {
+                         waiting_thread_count += 1;
+                     }
+                     // Resolve the thread_id for this session so we can
+diff --git a/crates/sidebar/src/sidebar_child_background_tests.rs b/crates/sidebar/src/sidebar_child_background_tests.rs
+index 48ae393..55c6ca0 100644
+--- a/crates/sidebar/src/sidebar_child_background_tests.rs
++++ b/crates/sidebar/src/sidebar_child_background_tests.rs
+@@ -210,6 +210,36 @@ impl Rig {
+     }
+ }
+ 
++impl Rig {
++    /// The project group's header row: its key and the count of threads it says are waiting.
++    fn project_header(&self, cx: &mut VisualTestContext) -> (ProjectGroupKey, usize) {
++        self.sidebar.read_with(cx, |sidebar, _cx| {
++            sidebar
++                .contents
++                .entries
++                .iter()
++                .find_map(|entry| match entry {
++                    ListEntry::ProjectHeader {
++                        key,
++                        waiting_thread_count,
++                        ..
++                    } => Some((key.clone(), *waiting_thread_count)),
++                    _ => None,
++                })
++                .expect("the project's header is listed")
++        })
++    }
++
++    /// Collapses the project group, as a click on its header does.
++    fn collapse_project(&self, cx: &mut VisualTestContext) {
++        let (key, _) = self.project_header(cx);
++        self.sidebar.update_in(cx, |sidebar, window, cx| {
++            sidebar.toggle_collapse(&key, window, cx);
++        });
++        cx.run_until_parked();
++    }
++}
++
+ /// The child reports a state; no parent event follows.
+ fn report(child: &Entity<AcpThread>, state: acp_v2::StateUpdate, cx: &mut VisualTestContext) {
+     child
+@@ -435,3 +465,30 @@ async fn test_child_background_waiting_child_reads_waiting_for_answer(cx: &mut T
+     report(&first, running(), cx);
+     assert_eq!(rig.status(cx), AgentThreadStatus::Background);
+ }
++
++/// A collapsed project's header counts a thread that waits for an answer. Stock Zed counts a
++/// pending question there since #66708, under the same "waiting" badge as a permission prompt;
++/// 0030 gave the question a status of its own, and the header's two counting loops matched
++/// `WaitingForConfirmation` only, so a collapsed project hid a thread waiting on the user
++/// (upstream-native review, defect 2). A child waiting for the user reads the same status, so it
++/// stands in for the question here.
++#[gpui::test]
++async fn test_child_background_collapsed_header_counts_a_thread_waiting_for_an_answer(
++    cx: &mut TestAppContext,
++) {
++    let (rig, cx) = rig(true, cx).await;
++    let child = rig.spawn_child("child", cx);
++    report(&child, waiting(), cx);
++    assert_eq!(
++        rig.status(cx),
++        AgentThreadStatus::WaitingForAnswer,
++        "fixture"
++    );
++
++    rig.collapse_project(cx);
++    let (_, waiting_threads) = rig.project_header(cx);
++    assert_eq!(
++        waiting_threads, 1,
++        "the collapsed header counts the thread that waits for an answer"
++    );
++}

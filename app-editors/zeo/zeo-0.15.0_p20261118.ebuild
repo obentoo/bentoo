@@ -2269,6 +2269,17 @@ src_prepare() {
 			"${FILESDIR}/0125-agent-ui-tool-cards-in-three-states.patch"
 			# 0126 (Zeo 0.14.0, §6.43): keep an agent's questions out of cards. On 0036/0125.
 			"${FILESDIR}/0126-agent-servers-let-the-user-keep-an-agent-s-questions-out-of-cards.patch"
+			# 0128-0132 (Zeo 0.15.0): the upstream-native review's defects 1-5.
+			# 0128: floating Previous/Next and Copy follow Zed's own. On 0026/0078/0108.
+			"${FILESDIR}/0128-agent-ui-floating-controls-follow-native-navigation-and-copy.patch"
+			# 0129: a collapsed project counts a thread waiting for an answer. On 0030/0072.
+			"${FILESDIR}/0129-sidebar-collapsed-project-counts-a-thread-waiting-for-an-answer.patch"
+			# 0130: History scopes by the project's identity. On 0015.
+			"${FILESDIR}/0130-agent-ui-history-scopes-by-project-identity.patch"
+			# 0131: message times on the receipt transport. On 0087.
+			"${FILESDIR}/0131-acp-thread-message-times-on-the-receipt-transport.patch"
+			# 0132: a waiting subagent's card keeps its prompt. On 0072.
+			"${FILESDIR}/0132-agent-ui-waiting-subagent-card-keeps-its-prompt.patch"
 		)
 	fi
 

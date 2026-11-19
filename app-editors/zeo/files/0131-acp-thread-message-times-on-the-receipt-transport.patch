@@ -1,0 +1,201 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Thu, 19 Nov 2026 11:03:21 -0300
+Subject: [PATCH] acp_thread: message times on the receipt transport too
+
+0087 records when each message was sent: the agent's
+_meta.claudeCode.timestamp when it sends one, else the time Zeo received the
+message -- but only while a turn is running, because a replayed chunk received
+now says nothing about when it was sent. "A turn is running" was written as
+self.running_turn.is_some(), and running_turn exists only on the completion
+transport, the ACP v1 path. The Zed Agent (since upstream #65420) and every
+ACP v2 session submit through receipts and report their own activity
+instead; running_turn stays None there. So those threads recorded no time at
+all: neither for the user's message, which the Zed Agent inserts with
+upsert_local_user_message rather than through send_inner, nor for a reply
+without a timestamp of its own. Found by the upstream-native review of
+2026-11-15 (docs/UPSTREAM-NATIVE-REVIEW.md in the hub, defect 5).
+
+  - is_receiving_live: a turn this client runs, or Running / RequiresAction
+    reported by the agent (foreground_activity, which upstream derives for
+    every transport). The receive-time fallback and turn_duration's "still
+    being written" check both use it; v1 replays still record nothing.
+  - upsert_local_user_message stamps the message when it is sent, through the
+    new record_message_time, which note_message_time now calls as well.
+  - keyed_message_location, which creates every keyed entry on the receipt
+    transport, pushed onto entries directly rather than through push_entry,
+    so those entries got no message_times slot: nothing could be recorded on
+    them, and every slot pushed afterwards landed one entry early. It now
+    resizes message_times to entries once, after creating the entry.
+  - update_keyed_message, the whole-message upsert the receipt transport uses
+    for user, agent and thought messages, recorded no time at all: only
+    append_message_chunk called note_message_time. It now does too, with the
+    message's own metadata, so the same rule applies on both paths.
+
+Test: message_times_are_recorded_on_a_receipt_session (Red on the series
+before this patch).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
+index 986688c..c086153 100644
+--- a/crates/acp_thread/src/acp_thread.rs
++++ b/crates/acp_thread/src/acp_thread.rs
+@@ -5088,7 +5088,7 @@ impl AcpThread {
+             .find(|(_, entry)| matches!(entry, AgentThreadEntry::UserMessage(_)))
+             .map(|(ix, _)| ix);
+         // The last turn is still being written while one runs: no duration until it ends.
+-        if next_turn.is_none() && self.running_turn.is_some() {
++        if next_turn.is_none() && self.is_receiving_live() {
+             return None;
+         }
+         let end = next_turn.unwrap_or(self.entries.len());
+@@ -5100,10 +5100,22 @@ impl AcpThread {
+         (replied - sent).to_std().ok()
+     }
+ 
++    /// Whether a message arriving now belongs to work happening now rather than to history: a
++    /// turn this client runs (`running_turn`, the completion transport), or work the agent
++    /// reports (`foreground_activity`, the receipt transport the Zed Agent and every ACP v2
++    /// session use, where `running_turn` stays `None` -- 0131).
++    fn is_receiving_live(&self) -> bool {
++        self.running_turn.is_some()
++            || matches!(
++                self.foreground_activity(),
++                ForegroundActivity::Running | ForegroundActivity::RequiresAction
++            )
++    }
++
+     /// Records a message chunk's time on the entry it went into: the agent's
+-    /// `_meta.claudeCode.timestamp`, else the receive time while a turn runs. A replayed chunk
+-    /// with no time of its own records nothing -- received now says nothing about when it was
+-    /// sent.
++    /// `_meta.claudeCode.timestamp`, else the receive time while the thread receives live work.
++    /// A replayed chunk with no time of its own records nothing -- received now says nothing
++    /// about when it was sent.
+     fn note_message_time(
+         &mut self,
+         entry_index: usize,
+@@ -5117,10 +5129,15 @@ impl AcpThread {
+         }
+         let Some(time) = meta
+             .and_then(agent_message_time)
+-            .or_else(|| self.running_turn.is_some().then(chrono::Utc::now))
++            .or_else(|| self.is_receiving_live().then(chrono::Utc::now))
+         else {
+             return;
+         };
++        self.record_message_time(entry_index, time);
++    }
++
++    /// Widens the time span recorded for the message at `entry_index` to include `time`.
++    fn record_message_time(&mut self, entry_index: usize, time: chrono::DateTime<chrono::Utc>) {
+         if let Some(slot) = self.message_times.get_mut(entry_index) {
+             *slot = Some(match *slot {
+                 Some(known) => MessageTime {
+@@ -6368,7 +6385,16 @@ impl AcpThread {
+     ) -> Result<()> {
+         let previous_entry_count = self.entries.len();
+         let location = self.keyed_message_location(kind, id, cx)?;
+-        self.replace_message_content(location, kind, content, meta, previous_entry_count, cx)
++        // A whole-message upsert is how the receipt transport delivers most messages, so it
++        // records a time as append_message_chunk does (0131); read before `meta` is applied.
++        let time_meta = match &meta {
++            MetadataUpdate::V1(MaybeUndefined::Value(meta))
++            | MetadataUpdate::V2(MaybeUndefined::Value(meta)) => Some(meta.clone()),
++            _ => None,
++        };
++        self.replace_message_content(location, kind, content, meta, previous_entry_count, cx)?;
++        self.note_message_time(location.entry_index(), time_meta.as_ref());
++        Ok(())
+     }
+ 
+     fn replace_message_content(
+@@ -6534,7 +6560,7 @@ impl AcpThread {
+ 
+         self.flush_streaming_text(cx);
+         let entry_index = self.entries.len();
+-        match kind {
++        let location = match kind {
+             MessageKind::User => {
+                 self.entries
+                     .push(AgentThreadEntry::UserMessage(UserMessage {
+@@ -6597,7 +6623,12 @@ impl AcpThread {
+                     })
+                 }
+             }
+-        }
++        };
++        // These entries bypass push_entry, so give them their message-time slot here: without
++        // it no time is recorded on a keyed message, and every slot after it shifts onto the
++        // wrong entry (0131).
++        self.message_times.resize(self.entries.len(), None);
++        location
+     }
+ 
+     fn emit_message_update(
+@@ -8591,6 +8622,8 @@ impl AcpThread {
+         message
+             .content
+             .replace_prompt(content, &language_registry, path_style, cx);
++        // A local message is sent now; the Zed Agent inserts its user messages this way (0131).
++        self.record_message_time(location.entry_index(), chrono::Utc::now());
+         self.emit_message_update(location, previous_entry_count, cx);
+         cx.notify();
+         Ok(())
+diff --git a/crates/acp_thread/src/acp_thread_message_times_tests.rs b/crates/acp_thread/src/acp_thread_message_times_tests.rs
+index 2e2f466..fe58429 100644
+--- a/crates/acp_thread/src/acp_thread_message_times_tests.rs
++++ b/crates/acp_thread/src/acp_thread_message_times_tests.rs
+@@ -188,3 +188,50 @@ async fn message_times_follow_a_rewind(cx: &mut TestAppContext) {
+         );
+     });
+ }
++
++/// The Zed Agent (since #65420) and every ACP v2 session submit through receipts and report their
++/// own activity: `running_turn` stays `None` there, so times keyed on it never recorded and those
++/// threads showed none (upstream-native review, defect 5). A local message is stamped when it is
++/// sent, and an agent message with no time of its own while the agent reports work.
++#[gpui::test]
++async fn message_times_are_recorded_on_a_receipt_session(cx: &mut TestAppContext) {
++    init_test(cx);
++    let (thread, _connection) = new_receipt_test_thread(cx).await;
++    thread.update(cx, |thread, cx| {
++        thread
++            .upsert_local_user_message(ClientUserMessageId::new(), vec!["Fix the build".into()], cx)
++            .expect("a local message");
++        thread
++            .update_session_state(
++                acp_v2::StateUpdate::Running(acp_v2::RunningStateUpdate::new()),
++                cx,
++            )
++            .expect("a receipt session reports its activity");
++        thread
++            .upsert_assistant_message(
++                acp_v2::AgentMessage::new("reply").content(vec!["On it.".into()]),
++                cx,
++            )
++            .expect("the reply");
++    });
++
++    thread.read_with(cx, |thread, _| {
++        let entries = thread.entries();
++        let user = entries
++            .iter()
++            .position(|entry| matches!(entry, AgentThreadEntry::UserMessage(_)))
++            .expect("the user message");
++        let reply = entries
++            .iter()
++            .position(|entry| matches!(entry, AgentThreadEntry::AssistantMessage(_)))
++            .expect("the reply");
++        assert!(
++            thread.message_time(user).is_some(),
++            "the local message is stamped when it is sent"
++        );
++        assert!(
++            thread.message_time(reply).is_some(),
++            "the reply is stamped when received while the agent reports work"
++        );
++    });
++}
