@@ -1443,6 +1443,22 @@ chromium_configure() {
 			"rustc_version=\"${RUST_SLOT}\""
 		)
 
+		# bentoo: M158's //build/rust/std stdlib_files tracks Google's nightly
+		# toolchain, whose std no longer pulls in its backtrace crates. A
+		# stable std (1.100) still does, and with share-generics those rlibs
+		# also carry the alloc monomorphizations other crates import, so
+		# leaving them out fails the first mixed C++/Rust link
+		# (transport_security_state_generator) with undefined
+		# RawVecInner::finish_grow, gimli::*, addr2line::*, miniz_oxide::*.
+		# Hand back whichever of them this sysroot actually ships.
+		local rust_std_extra=() rust_std_lib
+		for rust_std_lib in addr2line adler2 gimli miniz_oxide; do
+			if compgen -G "$(get_rust_prefix)lib/rustlib/*-linux-*/lib/lib${rust_std_lib}-*.rlib" >/dev/null; then
+				rust_std_extra+=( "\"${rust_std_lib}\"" )
+			fi
+		done
+		myconf_gn+=( "added_rust_stdlib_libs=[$(IFS=,; echo "${rust_std_extra[*]}")]" )
+
 		# Currently disabled, runtime issues with mold
 		#if tc-ld-is-mold; then
 		#	myconf_gn+=(
