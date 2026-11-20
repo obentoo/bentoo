@@ -55,10 +55,11 @@ index 4bc26b3..c41ccda 100644
      // The command is sent to the shell as if typed, so it is interpreted by your
      // configured shell (including on Windows and remote/WSL projects).
 diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
-index 8467891..8b848fb 100644
+index 9cbcca0..14fd70b 100644
 --- a/crates/agent_servers/src/acp.rs
 +++ b/crates/agent_servers/src/acp.rs
-@@ -1,5 +1,6 @@
+@@ -1,6 +1,7 @@
+ mod auth_status;
  mod debug_log;
  mod runtime;
 +mod session_meta;
@@ -147,10 +148,10 @@ index 0000000..4920c64
 +    }
 +}
 diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
-index d5d4d20..dde57b5 100644
+index 8f7879c..d4cd525 100644
 --- a/crates/agent_servers/src/acp/v1.rs
 +++ b/crates/agent_servers/src/acp/v1.rs
-@@ -2122,6 +2122,9 @@ mod recorder_mode_tests;
+@@ -2137,6 +2137,9 @@ mod recorder_mode_tests;
  #[cfg(test)]
  mod round_trip_tests;
  
@@ -160,7 +161,7 @@ index d5d4d20..dde57b5 100644
  #[cfg(test)]
  mod fork_session_tests;
  
-@@ -2285,11 +2288,14 @@ impl AgentConnection for AcpConnection {
+@@ -2300,11 +2303,14 @@ impl AgentConnection for AcpConnection {
          };
          let mcp_servers = mcp_servers_for_project(&project, cx);
          let sends_initial_config_options = self.agent_supports_initial_config_options(cx);
@@ -176,7 +177,7 @@ index d5d4d20..dde57b5 100644
              if sends_initial_config_options {
                  // The default-application pass below still runs, so defaults the agent ignored
                  // here (for example, ones that depend on another option) get another chance.
-@@ -2554,6 +2560,7 @@ impl AgentConnection for AcpConnection {
+@@ -2569,6 +2575,7 @@ impl AgentConnection for AcpConnection {
          }
  
          let mcp_servers = mcp_servers_for_project(&project, cx);
@@ -184,7 +185,7 @@ index d5d4d20..dde57b5 100644
          self.open_or_create_session(
              session_id,
              project,
-@@ -2564,7 +2571,9 @@ impl AgentConnection for AcpConnection {
+@@ -2579,7 +2586,9 @@ impl AgentConnection for AcpConnection {
                  Box::pin(async move {
                      let response = ordered_response(
                          &connection,
@@ -195,7 +196,7 @@ index d5d4d20..dde57b5 100644
                          applied,
                      )
                      .await?;
-@@ -2598,6 +2607,7 @@ impl AgentConnection for AcpConnection {
+@@ -2613,6 +2622,7 @@ impl AgentConnection for AcpConnection {
          }
  
          let mcp_servers = mcp_servers_for_project(&project, cx);
@@ -203,7 +204,7 @@ index d5d4d20..dde57b5 100644
          self.open_or_create_session(
              session_id,
              project,
-@@ -2608,7 +2618,9 @@ impl AgentConnection for AcpConnection {
+@@ -2623,7 +2633,9 @@ impl AgentConnection for AcpConnection {
                  Box::pin(async move {
                      let response = ordered_response(
                          &connection,
@@ -279,7 +280,7 @@ index 0000000..f6ee166
 +    assert_eq!(agent.session_request_metas("session/resume"), vec![opt_out]);
 +}
 diff --git a/crates/agent_servers/src/acp/v1/thread_config_test_support.rs b/crates/agent_servers/src/acp/v1/thread_config_test_support.rs
-index e957c6c..751fcb5 100644
+index 42867e8..65d982a 100644
 --- a/crates/agent_servers/src/acp/v1/thread_config_test_support.rs
 +++ b/crates/agent_servers/src/acp/v1/thread_config_test_support.rs
 @@ -100,7 +100,12 @@ impl ConfigAgent {
@@ -324,7 +325,7 @@ index e957c6c..751fcb5 100644
                          let current_options = options.lock().expect("agent options").clone();
                          let current_modes = modes.lock().expect("agent modes").clone();
                          responder.respond(
-@@ -514,6 +529,18 @@ impl ConfigAgent {
+@@ -515,6 +530,18 @@ impl ConfigAgent {
          sent
      }
  
@@ -344,10 +345,10 @@ index e957c6c..751fcb5 100644
      pub(super) fn mode_requests(&self) -> Vec<String> {
          self.requests
 diff --git a/crates/agent_servers/src/acp/v2.rs b/crates/agent_servers/src/acp/v2.rs
-index ec4d465..fd1b3ca 100644
+index e14cec2..a5a1d27 100644
 --- a/crates/agent_servers/src/acp/v2.rs
 +++ b/crates/agent_servers/src/acp/v2.rs
-@@ -1076,7 +1076,8 @@ impl AcpV2Connection {
+@@ -1092,7 +1092,8 @@ impl AcpV2Connection {
          }
          let mut request = acp::ResumeSessionRequest::new(session_id.clone(), context.cwd.clone())
              .additional_directories(context.additional_directories.clone())
@@ -357,7 +358,7 @@ index ec4d465..fd1b3ca 100644
          if replay_history {
              request = request.replay_from(acp::ReplayFrom::Start(acp::ReplayFromStart::new()));
          }
-@@ -1373,7 +1374,8 @@ impl AgentConnection for AcpV2Connection {
+@@ -1389,7 +1390,8 @@ impl AgentConnection for AcpV2Connection {
          };
          let mut request = acp::NewSessionRequest::new(context.cwd.clone())
              .additional_directories(context.additional_directories.clone())
@@ -367,7 +368,7 @@ index ec4d465..fd1b3ca 100644
          if self.supports_initial_config_options(cx) {
              // `apply_new_session_defaults` still runs after creation, so defaults the agent
              // ignored here (for example, ones that depend on another option) get another chance.
-@@ -5963,6 +5965,55 @@ done
+@@ -5993,6 +5995,55 @@ done
          );
      }
  

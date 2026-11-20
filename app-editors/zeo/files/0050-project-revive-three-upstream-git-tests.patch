@@ -33,7 +33,7 @@ every test the series carries.
 ---
 
 diff --git a/crates/project/tests/integration/project_tests.rs b/crates/project/tests/integration/project_tests.rs
-index fe28841..6eb63cc 100644
+index d38b40a..a054bb0 100644
 --- a/crates/project/tests/integration/project_tests.rs
 +++ b/crates/project/tests/integration/project_tests.rs
 @@ -18441,7 +18441,6 @@ async fn test_git_events_after_project_excludes_dot_git(cx: &mut gpui::TestAppCo
@@ -94,7 +94,7 @@ index fe28841..6eb63cc 100644
  #[gpui::test]
  async fn test_odd_events_for_ignored_dirs(
      executor: BackgroundExecutor,
-@@ -20593,14 +20596,12 @@ async fn test_odd_events_for_ignored_dirs(
+@@ -20593,15 +20596,19 @@ async fn test_odd_events_for_ignored_dirs(
          );
      });
  
@@ -106,12 +106,20 @@ index fe28841..6eb63cc 100644
 -            RepositoryEvent::StatusesChanged,
 -        ],
 -        "Initial worktree scan should produce a repo update event"
+-    );
 +    // Zeo: see test_ignored_dirs_events -- the initial events' count and order are not
-+    // the point; the flycheck emulation below, which must produce none, is.
-+    let initial_updates = repository_updates.lock().drain(..).collect::<Vec<_>>();
-+    assert!(
-+        initial_updates.contains(&RepositoryEvent::HeadChanged),
-+        "Initial worktree scan should produce a repo update event, got {initial_updates:?}"
-     );
++    // the point; the flycheck emulation below, which must produce none, is. Since
++    // upstream's 87e6a02e (worktree: less work under scan_dir's lock, Zed 0a514d7e) the
++    // initial scan can finish before the subscription above exists, so its repository
++    // events may be gone; what the scan must have done is find the repository.
++    repository_updates.lock().clear();
++    project.read_with(cx, |project, cx| {
++        assert_eq!(
++            project.repositories(cx).len(),
++            1,
++            "the initial worktree scan finds the repository"
++        );
++    });
      assert_eq!(
          project_events.lock().drain(..).collect::<Vec<_>>(),
+         vec![

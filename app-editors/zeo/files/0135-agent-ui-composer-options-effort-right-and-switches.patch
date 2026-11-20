@@ -1,0 +1,685 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Fri, 20 Nov 2026 16:06:03 -0300
+Subject: [PATCH] agent_ui: composer options -- effort on the right, options
+ button last, switches
+
+Three changes to the row under the composer and the Agent Options
+menu, as the operator laid them out on 2026-11-20.
+
+Effort moves right. Upstream's df1ba676 split the config options into
+response controls on the left (speed and effort) and the rest on the
+right. Effort now follows the model it depends on: the right-hand row
+reads context ring, mode, model, effort, options button, send. Speed
+stays a response control on the left; Claude Agent (Plus) sends none
+there -- its Fast mode is a model_config boolean, so it lives in the
+menu -- and the left row (add context, preview, follow, voice) is
+unchanged. split_config_options orders the toolbar Speed, Mode, Model,
+ThoughtLevel, and only Speed is a response control.
+
+Effort keeps its compact trigger (thinking_effort_trigger), which
+upstream tied to being a response control; it is now tied to the
+ThoughtLevel category, and its picker opens leftwards (BottomRight),
+as the model's does, since it no longer sits at the row's left end.
+
+The options button closes the row. ConfigOptionsView rendered it
+before the selectors; it now comes after them, so it sits after effort
+and before Send.
+
+On/off options are switches. Plus offers three in the menu: Fast mode
+and Ultracode as booleans, and Thinking as a select whose values are
+"on" and "off" (thinking-option.ts; it stays a select even for a
+client that takes booleans, and offers "on" alone for a model that
+always thinks). Upstream drew a boolean as a check-marked entry with
+its description in a side panel, and that select as a submenu opening
+a picker of its own -- a second popover to flip one setting. Every
+on/off option is now one row: the name, with the description as its
+tooltip, and a ui::Switch. A click anywhere on the row, the switch
+included, flips it; the switch has no handler of its own, or one click
+would flip it twice. An "on"-only select draws a disabled switch and a
+muted name. The new module config_options/switch_row.rs decides what
+is a switch (switch_state), what flips it (flipped_value) and draws
+the row; selects with other values stay submenus.
+
+The menu stays open. It is built with ContextMenu::build_persistent,
+so a click on a row rebuilds it instead of dismissing it, and
+rebuild_selectors -- which runs on every config update and used to
+close the menu -- now redraws it in place while it holds the focus,
+so the switch shows the agent's answer where it was clicked. The menu
+still closes when it has nothing left to show, or when a submenu's
+picker holds the focus, as before. Every switch flips the option for
+this session only, as booleans already did (0059); Shift sets no
+default.
+
+Tests (config_options::tests): on_off_options_are_switches_that_keep_
+the_menu_open (new) -- Thinking is no submenu, its row sends "on", the
+menu stays focused after the click and after the agent's update, and
+the Ultracode row sends a boolean, with no default saved;
+effort_is_not_a_response_control (new). Upstream's composer_uses_the_
+first_matching_option_for_each_toolbar_control now expects fast-mode,
+mode, model, effort, and overflow_options_stay_editable_after_a_
+config_update clicks the boolean's switch row and checks the menu
+stayed open instead of reopening it, and after the submenu's choice it
+checks the menu is still open and focused rather than clicking it open
+again (which would now close it). switch_row::tests cover the
+shapes: a boolean, an on/off select, an "on"-only select, and selects
+that stay submenus.
+---
+
+diff --git a/crates/agent_ui/src/config_options.rs b/crates/agent_ui/src/config_options.rs
+index 219f1cb..465dfa4 100644
+--- a/crates/agent_ui/src/config_options.rs
++++ b/crates/agent_ui/src/config_options.rs
+@@ -9,15 +9,15 @@ use fs::Fs;
+ use fuzzy_nucleo::StringMatchCandidate;
+ use gpui::{
+     App, BackgroundExecutor, Context, DismissEvent, Entity, Focusable as _, Subscription, Task,
+-    Window, prelude::*,
++    WeakEntity, Window, prelude::*,
+ };
+ use menu::SelectParent;
+ use picker::popover_menu::PickerPopoverMenu;
+ use picker::{Picker, PickerDelegate};
+ use settings::{AgentConfigOptionValue, SettingsStore};
+ use ui::{
+-    ContextMenu, ContextMenuEntry, ElevationIndex, IconButton, KeyBinding, ListItem,
+-    ListItemSpacing, PopoverMenu, PopoverMenuHandle, Tooltip, prelude::*,
++    ContextMenu, ElevationIndex, IconButton, KeyBinding, ListItem, ListItemSpacing, PopoverMenu,
++    PopoverMenuHandle, Tooltip, prelude::*,
+ };
+ use unicode_segmentation::UnicodeSegmentation;
+ use util::ResultExt as _;
+@@ -36,6 +36,8 @@ use crate::{
+ 
+ const PICKER_THRESHOLD: usize = 5;
+ 
++mod switch_row;
++
+ fn toolbar_category(
+     option: &acp::SessionConfigOption,
+ ) -> Option<&acp::SessionConfigOptionCategory> {
+@@ -100,7 +102,9 @@ fn split_config_options(
+         return (options, Vec::new());
+     }
+ 
+-    let toolbar = [Speed, ThoughtLevel, Mode, Model]
++    // Zeo: effort sits after the model it depends on, on the composer's right; upstream
++    // placed it first, among the response controls on the left.
++    let toolbar = [Speed, Mode, Model, ThoughtLevel]
+         .iter()
+         .filter_map(|category| {
+             let index = options
+@@ -117,6 +121,8 @@ pub struct ConfigOptionsView {
+     selectors: Vec<Entity<ConfigOptionSelector>>,
+     has_overflow: bool,
+     overflow_menu: PopoverMenuHandle<ContextMenu>,
++    /// The open Agent Options menu, so a config update can redraw it in place.
++    overflow_menu_entity: Option<WeakEntity<ContextMenu>>,
+     agent_server: Rc<dyn AgentServer>,
+     fs: Arc<dyn Fs>,
+     _refresh_task: Task<()>,
+@@ -150,6 +156,7 @@ impl ConfigOptionsView {
+             selectors,
+             has_overflow,
+             overflow_menu: PopoverMenuHandle::default(),
++            overflow_menu_entity: None,
+             agent_server,
+             fs,
+             _refresh_task: refresh_task,
+@@ -375,7 +382,14 @@ impl ConfigOptionsView {
+     fn rebuild_selectors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+         // Config option updates can mutate option values for existing IDs (for example,
+         // reasoning levels after a model switch). Rebuild to refresh cached picker entries.
+-        self.overflow_menu.hide(cx);
++        // Zeo: an Agent Options menu that holds the focus -- its own row was just used,
++        // no submenu picker is open -- stays open and is redrawn, so a switch shows its
++        // new state where it was clicked. Otherwise it closes, as upstream's always did.
++        let open_menu = self
++            .overflow_menu_entity
++            .as_ref()
++            .and_then(WeakEntity::upgrade)
++            .filter(|_| self.overflow_menu.is_focused(window, cx));
+         for selector in &self.selectors {
+             if let Some(handle) = &selector.read(cx).picker_handle {
+                 handle.clone().hide(cx);
+@@ -388,6 +402,12 @@ impl ConfigOptionsView {
+             window,
+             cx,
+         );
++        match open_menu {
++            Some(menu) if self.has_overflow => {
++                menu.update(cx, |menu, cx| menu.rebuild(window, cx));
++            }
++            _ => self.overflow_menu.hide(cx),
++        }
+         cx.notify();
+     }
+ 
+@@ -417,7 +437,7 @@ impl ConfigOptionsView {
+     }
+ 
+     fn build_overflow_menu(
+-        &self,
++        &mut self,
+         window: &mut Window,
+         cx: &mut App,
+     ) -> Option<Entity<ContextMenu>> {
+@@ -427,33 +447,29 @@ impl ConfigOptionsView {
+             return None;
+         }
+ 
+-        Some(ContextMenu::build(window, cx, |mut menu, _, cx| {
++        let view_config_options = self.config_options.clone();
++        let view_agent_server = self.agent_server.clone();
++        let view_fs = self.fs.clone();
++        // Zeo: persistent, so flipping a switch leaves the menu open (`switch_row`).
++        let menu = ContextMenu::build_persistent(window, cx, move |mut menu, _, _| {
++            let (_, overflow) = split_config_options(
++                view_config_options.config_options(),
++                view_config_options.is_read_only(),
++            );
+             menu = menu.header("Agent Options");
+             for option in overflow {
+-                let config_options = self.config_options.clone();
+-                let agent_server = self.agent_server.clone();
+-                let fs = self.fs.clone();
++                let config_options = view_config_options.clone();
++                let agent_server = view_agent_server.clone();
++                let fs = view_fs.clone();
+                 let config_id = option.config_id.clone();
+ 
++                if let Some(state) = switch_row::switch_state(&option) {
++                    menu = menu.item(switch_row::switch_row(config_options, &option, state));
++                    continue;
++                }
++
++                // Every boolean is a switch above, so what is left is a select.
+                 match &option.kind {
+-                    acp::SessionConfigKind::Boolean(boolean) => {
+-                        let entry = ContextMenuEntry::new(option.name)
+-                            .toggleable(IconPosition::End, boolean.current_value)
+-                            .handler(move |window, cx| {
+-                                toggle_boolean_config_option(
+-                                    config_options.clone(),
+-                                    config_id.clone(),
+-                                    window,
+-                                    cx,
+-                                );
+-                            })
+-                            .when_some(option.description, |entry, description| {
+-                                entry.documentation_aside(documentation_aside_side(cx), move |_| {
+-                                    Label::new(description.clone()).into_any_element()
+-                                })
+-                            });
+-                        menu = menu.item(entry);
+-                    }
+                     acp::SessionConfigKind::Select(select) => {
+                         let label = find_option_name(&select.options, &select.current_value)
+                             .map_or_else(
+@@ -494,7 +510,9 @@ impl ConfigOptionsView {
+                 }
+             }
+             menu
+-        }))
++        });
++        self.overflow_menu_entity = Some(menu.downgrade());
++        Some(menu)
+     }
+ 
+     fn render_overflow_menu(&self, cx: &Context<Self>) -> PopoverMenu<ContextMenu> {
+@@ -524,15 +542,17 @@ impl Render for ConfigOptionsView {
+             .min_w_0()
+             .flex_wrap()
+             .gap_1()
+-            .when(self.has_overflow, |this| {
+-                this.child(self.render_overflow_menu(cx))
+-            })
+             .children(
+                 self.selectors
+                     .iter()
+                     .filter(|selector| !selector.read(cx).is_response_control)
+                     .cloned(),
+             )
++            // Zeo: the options button closes the row, after model and effort; upstream
++            // opened it.
++            .when(self.has_overflow, |this| {
++                this.child(self.render_overflow_menu(cx))
++            })
+     }
+ }
+ 
+@@ -554,13 +574,12 @@ impl ConfigOptionSelector {
+         cx: &mut Context<Self>,
+     ) -> Self {
+         let read_only = config_options.is_read_only();
++        // Zeo: only speed stays among the response controls on the composer's left;
++        // effort moved to the right, beside the model.
+         let is_response_control = !read_only
+             && matches!(
+                 toolbar_category(&option),
+-                Some(
+-                    acp::SessionConfigOptionCategory::Speed
+-                        | acp::SessionConfigOptionCategory::ThoughtLevel
+-                )
++                Some(acp::SessionConfigOptionCategory::Speed)
+             );
+         let (picker_handle, picker) =
+             if !read_only && matches!(&option.kind, acp::SessionConfigKind::Select(_)) {
+@@ -665,6 +684,8 @@ impl Render for ConfigOptionSelector {
+                 let show_manual_badge = shows_manual_mode_badge_for_option(&option);
+ 
+                 let option_category = option.category.clone();
++                let is_effort =
++                    option_category == Some(acp::SessionConfigOptionCategory::ThoughtLevel);
+                 let option_name = option.name;
+                 let option_description: Option<SharedString> = option.description.map(Into::into);
+ 
+@@ -730,12 +751,14 @@ impl Render for ConfigOptionSelector {
+                     content.into_any()
+                 });
+ 
+-                if self.is_response_control {
++                // Zeo: effort keeps its compact trigger on the right-hand row, where it
++                // moved; the picker opens leftwards from there, as the model's does.
++                if is_effort {
+                     return PickerPopoverMenu::new(
+                         picker,
+                         thinking_effort_trigger(id, label, menu_open, true).aria_label(aria_label),
+                         tooltip,
+-                        gpui::Anchor::BottomLeft,
++                        gpui::Anchor::BottomRight,
+                         cx,
+                     )
+                     .with_handle(picker_handle)
+@@ -1611,7 +1634,8 @@ mod tests {
+                 .map(|option| option.config_id.to_string())
+                 .collect::<Vec<_>>()
+         };
+-        assert_eq!(ids(toolbar), ["fast-mode", "effort", "mode", "model"]);
++        // Zeo: effort follows the model instead of leading the row.
++        assert_eq!(ids(toolbar), ["fast-mode", "mode", "model", "effort"]);
+         assert_eq!(
+             ids(overflow),
+             ["extra-mode", "another-model", "speed-select", "tools"]
+@@ -1724,13 +1748,12 @@ mod tests {
+             .expect("Agent Options button");
+         cx.simulate_click(overflow.center(), Modifiers::default());
+         draw_menu_frames(cx);
++        // Zeo: a boolean is a switch row, and flipping it leaves the menu open.
+         let boolean = cx
+-            .debug_bounds("MENU_ITEM-Web Search")
+-            .expect("overflow boolean row");
++            .debug_bounds("CONFIG_SWITCH-Web Search")
++            .expect("overflow switch row");
+         cx.simulate_click(boolean.center(), Modifiers::default());
+         cx.run_until_parked();
+-
+-        cx.simulate_click(overflow.center(), Modifiers::default());
+         draw_menu_frames(cx);
+         assert!(cx.update(|window, cx| view.read(cx).overflow_menu.is_focused(window, cx)));
+         cx.dispatch_action(menu::SelectLast);
+@@ -1758,7 +1781,8 @@ mod tests {
+         // upstream saved both as defaults here.
+         assert!(agent_server.saved_defaults.lock().is_empty());
+ 
+-        cx.simulate_click(overflow.center(), Modifiers::default());
++        // Zeo: the menu is persistent, so it outlives the submenu's choice as well -- it is
++        // still open and focused, where upstream's had closed and was clicked open again.
+         draw_menu_frames(cx);
+         assert!(cx.update(|window, cx| view.read(cx).overflow_menu.is_focused(window, cx)));
+         cx.dispatch_action(menu::SelectLast);
+@@ -1779,6 +1803,120 @@ mod tests {
+         );
+     }
+ 
++    /// Zeo: on/off options -- a boolean, or a select of `on` and `off` such as Claude
++    /// Agent (Plus)'s Thinking -- are switch rows, and the menu outlives both the click
++    /// and the agent's answer to it.
++    #[gpui::test]
++    fn on_off_options_are_switches_that_keep_the_menu_open(cx: &mut TestAppContext) {
++        use acp::SessionConfigOptionCategory::*;
++
++        cx.update(init_test_ui);
++        let thinking = |current: &str| {
++            acp::SessionConfigOption::select(
++                "thinking",
++                "Thinking",
++                current.to_string(),
++                vec![
++                    acp::SessionConfigSelectOption::new("on", "On"),
++                    acp::SessionConfigSelectOption::new("off", "Off"),
++                ],
++            )
++            .category(ModelConfig)
++            .description("Extended thinking before responding")
++        };
++        let ultracode = acp::SessionConfigOption::boolean("ultracode", "Ultracode", false)
++            .category(ModelConfig);
++        let config_options = Rc::new(TestSessionConfigOptions::new(vec![
++            thinking("off"),
++            ultracode.clone(),
++        ]));
++        let agent_server = Rc::new(TestAgentServer::default());
++        let fs: Arc<dyn Fs> = FakeFs::new(cx.executor());
++        let (view, cx) = cx.add_window_view({
++            let config_options = config_options.clone();
++            let agent_server = agent_server.clone();
++            move |window, cx| ConfigOptionsView::new(config_options, agent_server, fs, window, cx)
++        });
++        cx.run_until_parked();
++
++        let overflow = cx
++            .debug_bounds("ICON-Filter")
++            .expect("Agent Options button");
++        cx.simulate_click(overflow.center(), Modifiers::default());
++        draw_menu_frames(cx);
++        assert!(
++            cx.debug_bounds("MENU_ITEM-Thinking: Off").is_none(),
++            "Thinking is a switch, not a submenu with a picker"
++        );
++        let thinking_row = cx
++            .debug_bounds("CONFIG_SWITCH-Thinking")
++            .expect("Thinking switch row");
++        cx.simulate_click(thinking_row.center(), Modifiers::default());
++        cx.run_until_parked();
++        draw_menu_frames(cx);
++        assert!(cx.update(|window, cx| view.read(cx).overflow_menu.is_focused(window, cx)));
++
++        // The agent answers with the new state: the open menu is redrawn, not closed.
++        config_options.replace_options(vec![thinking("on"), ultracode]);
++        cx.run_until_parked();
++        draw_menu_frames(cx);
++        assert!(cx.update(|window, cx| view.read(cx).overflow_menu.is_focused(window, cx)));
++
++        let ultracode_row = cx
++            .debug_bounds("CONFIG_SWITCH-Ultracode")
++            .expect("Ultracode switch row");
++        cx.simulate_click(ultracode_row.center(), Modifiers::default());
++        cx.run_until_parked();
++
++        assert_eq!(
++            config_options.set_values.borrow().as_slice(),
++            &[
++                ("thinking".into(), acp::SessionConfigOptionValue::id("on")),
++                (
++                    "ultracode".into(),
++                    acp::SessionConfigOptionValue::boolean(true)
++                ),
++            ]
++        );
++        assert!(agent_server.saved_defaults.lock().is_empty());
++    }
++
++    /// Zeo: effort leaves the composer's left-hand response controls; speed stays there.
++    #[gpui::test]
++    fn effort_is_not_a_response_control(cx: &mut TestAppContext) {
++        use acp::SessionConfigOptionCategory::*;
++
++        cx.update(init_test_ui);
++        let config_options = Rc::new(TestSessionConfigOptions::new(vec![
++            acp::SessionConfigOption::boolean("fast", "Fast Mode", false).category(Speed),
++            acp::SessionConfigOption::select(
++                "effort",
++                "Effort",
++                "medium",
++                vec![
++                    acp::SessionConfigSelectOption::new("medium", "Medium"),
++                    acp::SessionConfigSelectOption::new("high", "High"),
++                ],
++            )
++            .category(ThoughtLevel),
++        ]));
++        let agent_server = Rc::new(TestAgentServer::default());
++        let fs: Arc<dyn Fs> = FakeFs::new(cx.executor());
++        let (view, cx) = cx.add_window_view(move |window, cx| {
++            ConfigOptionsView::new(config_options, agent_server, fs, window, cx)
++        });
++        cx.run_until_parked();
++        view.read_with(cx, |view, cx| {
++            let response = view
++                .selectors
++                .iter()
++                .filter(|selector| selector.read(cx).is_response_control)
++                .map(|selector| selector.read(cx).config_id().to_string())
++                .collect::<Vec<_>>();
++            assert_eq!(response, ["fast"]);
++        });
++    }
++
+     fn option_names(options: Vec<ConfigOptionValue>) -> Vec<String> {
+         options.into_iter().map(|option| option.name).collect()
+     }
+@@ -2399,6 +2537,7 @@ mod tests {
+             selectors: Vec::new(),
+             has_overflow: false,
+             overflow_menu: PopoverMenuHandle::default(),
++            overflow_menu_entity: None,
+             agent_server,
+             fs,
+             _refresh_task: Task::ready(()),
+diff --git a/crates/agent_ui/src/config_options/switch_row.rs b/crates/agent_ui/src/config_options/switch_row.rs
+new file mode 100644
+index 0000000..05a86a5
+--- /dev/null
++++ b/crates/agent_ui/src/config_options/switch_row.rs
+@@ -0,0 +1,220 @@
++//! Zeo: the Agent Options menu draws an on/off option as a row with a switch.
++//!
++//! An agent offers an on/off choice in two shapes: a boolean option, or a select
++//! whose only values are `on` and `off`. The second is the ACP boolean-option RFD's
++//! fallback spelling, and it is also how Claude Agent (Plus) models Thinking
++//! (`thinking-option.ts`), which stays a select even for a client that takes
++//! booleans. Upstream drew the first as a check-marked entry with a side panel for
++//! its description, and the second as a submenu opening a picker of its own. Both
++//! are now the same row: the name, whose tooltip is the description, and a switch.
++//! A click anywhere on the row flips it, and the menu stays open on the new state.
++
++use std::rc::Rc;
++
++use acp_thread::AgentSessionConfigOptions;
++use agent_client_protocol::v2::schema as acp;
++use gpui::{App, Window};
++use ui::{ContextMenuItem, Switch, Tooltip, prelude::*};
++
++use super::set_config_option_for_thread;
++
++/// The value ids of the select fallback, as the RFD spells them.
++const SWITCH_ON: &str = "on";
++const SWITCH_OFF: &str = "off";
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(super) struct SwitchState {
++    pub on: bool,
++    /// False for a select that offers only one of the two values -- Thinking on a
++    /// model that always thinks: the switch shows the state and cannot move.
++    pub can_toggle: bool,
++}
++
++/// The switch an option is drawn as, or `None` when it is not an on/off choice.
++pub(super) fn switch_state(option: &acp::SessionConfigOption) -> Option<SwitchState> {
++    match &option.kind {
++        acp::SessionConfigKind::Boolean(boolean) => Some(SwitchState {
++            on: boolean.current_value,
++            can_toggle: true,
++        }),
++        acp::SessionConfigKind::Select(select) => {
++            let acp::SessionConfigSelectOptions::Ungrouped(values) = &select.options else {
++                return None;
++            };
++            let is_switch_value = |id: &str| id == SWITCH_ON || id == SWITCH_OFF;
++            if values.is_empty() || !values.iter().all(|value| is_switch_value(&value.value.0)) {
++                return None;
++            }
++            let current = select.current_value.0.as_ref();
++            if !is_switch_value(current) {
++                return None;
++            }
++            let offers = |id: &str| values.iter().any(|value| value.value.0.as_ref() == id);
++            Some(SwitchState {
++                on: current == SWITCH_ON,
++                can_toggle: offers(SWITCH_ON) && offers(SWITCH_OFF),
++            })
++        }
++        _ => None,
++    }
++}
++
++/// The value that flips a switch, in the option's own shape.
++pub(super) fn flipped_value(
++    option: &acp::SessionConfigOption,
++    state: SwitchState,
++) -> acp::SessionConfigOptionValue {
++    match &option.kind {
++        acp::SessionConfigKind::Boolean(_) => acp::SessionConfigOptionValue::boolean(!state.on),
++        _ => acp::SessionConfigOptionValue::id(if state.on { SWITCH_OFF } else { SWITCH_ON }),
++    }
++}
++
++/// Flips the option for this session only, as every boolean already is (0059):
++/// a switch has no default to set. The state is read again here rather than
++/// captured when the menu was built, so a stale row cannot send the old value.
++fn toggle_switch_option(
++    config_options: Rc<dyn AgentSessionConfigOptions>,
++    config_id: acp::SessionConfigId,
++    window: &Window,
++    cx: &mut App,
++) {
++    if config_options.is_read_only() {
++        return;
++    }
++    let Some(option) = config_options
++        .config_options()
++        .into_iter()
++        .find(|option| option.config_id == config_id)
++    else {
++        return;
++    };
++    let Some(state) = switch_state(&option).filter(|state| state.can_toggle) else {
++        return;
++    };
++    let value = flipped_value(&option, state);
++    set_config_option_for_thread(config_options, config_id, value, window, cx)
++        .detach_and_log_err(cx);
++}
++
++/// The menu row for an on/off option.
++pub(super) fn switch_row(
++    config_options: Rc<dyn AgentSessionConfigOptions>,
++    option: &acp::SessionConfigOption,
++    state: SwitchState,
++) -> ContextMenuItem {
++    let name = SharedString::from(option.name.clone());
++    let description = option.description.clone().map(SharedString::from);
++    let config_id = option.config_id.clone();
++    let element_id = SharedString::from(format!("config-switch-{}", option.config_id));
++    ContextMenuItem::CustomEntry {
++        entry_render: Box::new(move |_, _| {
++            let selector_name = name.clone();
++            h_flex()
++                .w_full()
++                .gap_4()
++                .justify_between()
++                .debug_selector(move || format!("CONFIG_SWITCH-{selector_name}"))
++                .child(
++                    div()
++                        .id(element_id.clone())
++                        .min_w_0()
++                        .child(
++                            Label::new(name.clone())
++                                .when(!state.can_toggle, |label| label.color(Color::Muted)),
++                        )
++                        .when_some(description.clone(), |this, description| {
++                            this.tooltip(Tooltip::text(description))
++                        }),
++                )
++                // No click handler of its own: a click on the switch reaches the row,
++                // which flips it once. A handler here would flip it twice.
++                .child(
++                    Switch::new(
++                        SharedString::from(format!("{element_id}-switch")),
++                        state.on.into(),
++                    )
++                    .disabled(!state.can_toggle),
++                )
++                .into_any_element()
++        }),
++        handler: Rc::new(move |_, window, cx| {
++            toggle_switch_option(config_options.clone(), config_id.clone(), window, cx);
++        }),
++        selectable: state.can_toggle,
++        documentation_aside: None,
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn select(current: &str, values: &[&str]) -> acp::SessionConfigOption {
++        acp::SessionConfigOption::select(
++            "thinking",
++            "Thinking",
++            current.to_string(),
++            values
++                .iter()
++                .map(|value| acp::SessionConfigSelectOption::new(value.to_string(), *value))
++                .collect::<Vec<_>>(),
++        )
++    }
++
++    #[test]
++    fn a_boolean_is_a_switch() {
++        let option = acp::SessionConfigOption::boolean("fast", "Fast mode", true);
++        let on = SwitchState {
++            on: true,
++            can_toggle: true,
++        };
++        assert_eq!(switch_state(&option), Some(on));
++        assert_eq!(
++            flipped_value(&option, on),
++            acp::SessionConfigOptionValue::boolean(false)
++        );
++    }
++
++    #[test]
++    fn an_on_off_select_is_a_switch_and_flips_by_value_id() {
++        let option = select("off", &["on", "off"]);
++        let state = switch_state(&option);
++        assert_eq!(
++            state,
++            Some(SwitchState {
++                on: false,
++                can_toggle: true
++            })
++        );
++        assert_eq!(
++            flipped_value(
++                &option,
++                SwitchState {
++                    on: false,
++                    can_toggle: true
++                }
++            ),
++            acp::SessionConfigOptionValue::id("on")
++        );
++    }
++
++    #[test]
++    fn an_on_only_select_is_a_switch_that_cannot_move() {
++        assert_eq!(
++            switch_state(&select("on", &["on"])),
++            Some(SwitchState {
++                on: true,
++                can_toggle: false
++            })
++        );
++    }
++
++    #[test]
++    fn other_selects_stay_submenus() {
++        assert_eq!(switch_state(&select("high", &["low", "high"])), None);
++        assert_eq!(switch_state(&select("on", &["on", "off", "auto"])), None);
++        assert_eq!(switch_state(&select("auto", &["on", "off"])), None);
++        assert_eq!(switch_state(&select("on", &[])), None);
++    }
++}

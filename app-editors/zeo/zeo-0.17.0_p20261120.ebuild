@@ -1551,7 +1551,7 @@ declare -A GIT_CRATES=(
 # rewrites the date and EGIT_COMMIT; a second version variable it could not
 # keep current would leave a new tarball under an old, already-manifested name).
 
-EGIT_COMMIT="7279c76ef71d45504d7cfea00ee054f852ca0fbf"
+EGIT_COMMIT="0a514d7ef59c6357878a244fdf8365d03c504767"
 # LLVM 23 only, so it is the default slot: llvm-r2 would always prefer slot 22
 # (its newest stable) whenever 22 is listed. RUST_NEEDS_LLVM ties the Rust slot
 # to it. RUST_MIN_VER is the newest stable Rust, 1.100.0, past upstream's
@@ -2278,6 +2278,12 @@ src_prepare() {
 			"${FILESDIR}/0130-agent-ui-history-scopes-by-project-identity.patch"
 			# 0132: a waiting subagent's card keeps its prompt. On 0072.
 			"${FILESDIR}/0132-agent-ui-waiting-subagent-card-keeps-its-prompt.patch"
+			# 0133: Enter in a question card's field does not send the card. On 0005/0027/0043.
+			"${FILESDIR}/0133-agent-ui-enter-in-a-question-card-field-does-not-send.patch"
+			# 0134: the pinned message's avatar is centred on its card. On 0102/0109.
+			"${FILESDIR}/0134-agent-ui-pinned-message-avatar-centred.patch"
+			# 0135: composer options -- effort on the right, options button last, switches.
+			"${FILESDIR}/0135-agent-ui-composer-options-effort-right-and-switches.patch"
 		)
 	fi
 

@@ -304,7 +304,7 @@ index 0000000..54bdc62
 +    }
 +}
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index ed7bc00..1a33d3a 100644
+index b8e0ee7..05fda83 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -39,6 +39,7 @@ use crate::ExpandMessageEditor;
@@ -330,7 +330,7 @@ index ed7bc00..1a33d3a 100644
  };
  use language::LanguageRegistry;
  use language_model::LanguageModelRegistry;
-@@ -1201,6 +1202,14 @@ pub struct AgentPanel {
+@@ -1263,6 +1264,14 @@ pub struct AgentPanel {
      _settings_subscription: Subscription,
      retained_thread_subscriptions: HashMap<ThreadId, Subscription>,
      last_context_source: Option<AgentContextSource>,
@@ -345,7 +345,7 @@ index ed7bc00..1a33d3a 100644
  
      is_active: bool,
  }
-@@ -1508,7 +1517,7 @@ impl AgentPanel {
+@@ -1570,7 +1579,7 @@ impl AgentPanel {
          })
      }
  
@@ -354,7 +354,7 @@ index ed7bc00..1a33d3a 100644
          let fs = workspace.app_state().fs.clone();
          let user_store = workspace.app_state().user_store.clone();
          let project = workspace.project();
-@@ -1569,7 +1578,7 @@ impl AgentPanel {
+@@ -1631,7 +1640,7 @@ impl AgentPanel {
              &ThreadMetadataStore::global(cx),
              |this, _store, event, cx| {
                  let ThreadMetadataStoreEvent::ThreadArchived(thread_id) = event;
@@ -363,7 +363,7 @@ index ed7bc00..1a33d3a 100644
                      cx.notify();
                  }
              },
-@@ -1577,6 +1586,8 @@ impl AgentPanel {
+@@ -1639,6 +1648,8 @@ impl AgentPanel {
  
          let _settings_subscription = cx.observe_global::<SettingsStore>(|this, cx| {
              this.cleanup_retained_threads(cx);
@@ -372,7 +372,7 @@ index ed7bc00..1a33d3a 100644
          });
  
          cx.on_release(|this, cx| {
-@@ -1584,6 +1595,38 @@ impl AgentPanel {
+@@ -1646,6 +1657,38 @@ impl AgentPanel {
          })
          .detach();
  
@@ -411,7 +411,7 @@ index ed7bc00..1a33d3a 100644
          let panel = Self {
              workspace_id,
              base_view,
-@@ -1623,6 +1666,11 @@ impl AgentPanel {
+@@ -1685,6 +1728,11 @@ impl AgentPanel {
              _settings_subscription,
              retained_thread_subscriptions: HashMap::default(),
              last_context_source: None,
@@ -423,7 +423,7 @@ index ed7bc00..1a33d3a 100644
              is_active: false,
          };
  
-@@ -1766,6 +1814,26 @@ impl AgentPanel {
+@@ -1828,6 +1876,26 @@ impl AgentPanel {
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -450,7 +450,7 @@ index ed7bc00..1a33d3a 100644
          let metadata = ThreadMetadataStore::try_global(cx)
              .and_then(|store| store.read(cx).entry_by_session(&session_id).cloned());
          let Some(metadata) = metadata else {
-@@ -1784,6 +1852,92 @@ impl AgentPanel {
+@@ -1846,6 +1914,92 @@ impl AgentPanel {
          );
      }
  
@@ -543,7 +543,7 @@ index ed7bc00..1a33d3a 100644
      fn external_thread_by_session(
          &mut self,
          agent: Agent,
-@@ -1827,6 +1981,9 @@ impl AgentPanel {
+@@ -1889,6 +2043,9 @@ impl AgentPanel {
          let old_view = std::mem::replace(&mut self.base_view, BaseView::Uninitialized);
          self.retain_running_thread(old_view, cx);
          self.activate_draft(false, AgentThreadSource::AgentPanel, window, cx);
@@ -553,7 +553,7 @@ index ed7bc00..1a33d3a 100644
          self.serialize(cx);
          cx.emit(AgentPanelEvent::ActiveViewChanged);
          cx.notify();
-@@ -3280,7 +3437,7 @@ impl AgentPanel {
+@@ -3342,7 +3499,7 @@ impl AgentPanel {
              return false;
          }
  
@@ -562,7 +562,7 @@ index ed7bc00..1a33d3a 100644
          self.set_ephemeral_draft(conversation_view, cx);
          true
      }
-@@ -3383,7 +3540,7 @@ impl AgentPanel {
+@@ -3445,7 +3602,7 @@ impl AgentPanel {
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -571,7 +571,7 @@ index ed7bc00..1a33d3a 100644
          ThreadMetadataStore::global(cx).update(cx, |store, cx| {
              store.delete(id, cx);
          });
-@@ -3405,6 +3562,9 @@ impl AgentPanel {
+@@ -3467,6 +3624,9 @@ impl AgentPanel {
              } else {
                  self.refresh_base_view_subscriptions(window, cx);
              }
@@ -581,7 +581,7 @@ index ed7bc00..1a33d3a 100644
              self.serialize(cx);
              cx.emit(AgentPanelEvent::ActiveViewChanged);
              cx.notify();
-@@ -4319,6 +4479,7 @@ impl AgentPanel {
+@@ -4381,6 +4541,7 @@ impl AgentPanel {
          self.retained_threads
              .insert(thread_id, conversation_view.clone());
          self.observe_retained_thread(thread_id, conversation_view, cx);
@@ -589,7 +589,7 @@ index ed7bc00..1a33d3a 100644
      }
  
      fn observe_retained_thread(
-@@ -4355,12 +4516,115 @@ impl AgentPanel {
+@@ -4417,12 +4578,115 @@ impl AgentPanel {
              .insert(thread_id, subscription);
      }
  
@@ -707,7 +707,7 @@ index ed7bc00..1a33d3a 100644
          let mut potential_removals = self
              .retained_threads
              .iter()
-@@ -4387,7 +4651,7 @@ impl AgentPanel {
+@@ -4449,7 +4713,7 @@ impl AgentPanel {
              .take(n)
              .collect::<Vec<_>>();
          for id in to_remove {
@@ -716,7 +716,7 @@ index ed7bc00..1a33d3a 100644
          }
      }
  
-@@ -4476,6 +4740,7 @@ impl AgentPanel {
+@@ -4538,6 +4802,7 @@ impl AgentPanel {
              }
          };
          self.serialize(cx);
@@ -724,7 +724,7 @@ index ed7bc00..1a33d3a 100644
      }
  
      fn visible_surface(&self) -> VisibleSurface<'_> {
-@@ -4522,7 +4787,7 @@ impl AgentPanel {
+@@ -4584,7 +4849,7 @@ impl AgentPanel {
                              this.draft_thread = None;
                              this._draft_editor_observation = None;
                          }
@@ -733,7 +733,7 @@ index ed7bc00..1a33d3a 100644
                          cx.emit(AgentPanelEvent::ThreadInteracted { thread_id });
                      }
                  },
-@@ -4598,7 +4863,7 @@ impl AgentPanel {
+@@ -4660,7 +4925,7 @@ impl AgentPanel {
              );
              return;
          }
@@ -742,7 +742,7 @@ index ed7bc00..1a33d3a 100644
              self.try_make_empty_draft_ephemeral(conversation_view.clone(), cx);
              self.set_base_view(
                  BaseView::AgentThread { conversation_view },
-@@ -6718,6 +6983,7 @@ impl Render for AgentPanel {
+@@ -6783,6 +7048,7 @@ impl Render for AgentPanel {
          // - Scrolling in all views works as expected
          // - Files can be dropped into the panel
          let content = v_flex()
@@ -750,7 +750,7 @@ index ed7bc00..1a33d3a 100644
              .key_context(self.key_context(cx))
              .relative()
              .size_full()
-@@ -6801,7 +7067,8 @@ impl Render for AgentPanel {
+@@ -6866,7 +7132,8 @@ impl Render for AgentPanel {
                          .child(self.render_drag_target(cx))
                  }
              })
@@ -760,7 +760,7 @@ index ed7bc00..1a33d3a 100644
  
          match self.visible_font_size() {
              WhichFontSize::AgentFont => {
-@@ -6839,7 +7106,7 @@ impl AgentPanel {
+@@ -6904,7 +7171,7 @@ impl AgentPanel {
      /// Drops a thread's `ConversationView` from `retained_threads` without
      /// deleting its metadata or kvp state. Simulates the post-restart
      pub fn test_unload_retained_thread(&mut self, id: ThreadId) -> bool {
@@ -769,7 +769,7 @@ index ed7bc00..1a33d3a 100644
      }
  
      /// Opens an external thread using an arbitrary AgentServer.
-@@ -9216,6 +9483,61 @@ mod tests {
+@@ -9281,6 +9548,61 @@ mod tests {
          assert_eq!(folders, Some(vec![PathBuf::from("/project")]));
      }
  
@@ -831,7 +831,7 @@ index ed7bc00..1a33d3a 100644
      #[gpui::test]
      async fn test_new_draft_survives_reload_when_real_thread_is_active(cx: &mut TestAppContext) {
          init_test(cx);
-@@ -14719,8 +15041,8 @@ mod tests {
+@@ -14784,8 +15106,8 @@ mod tests {
          // directly remove from retained_threads and drop the handle
          // so on_release → close_all_sessions fires only on A.
          drop(retained_conversation_a);
@@ -843,7 +843,7 @@ index ed7bc00..1a33d3a 100644
          cx.run_until_parked();
  
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index bcbe9b3..9b9a1c8 100644
+index 889913d..f133ec3 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
 @@ -23,6 +23,7 @@ mod model_selector;
@@ -854,7 +854,7 @@ index bcbe9b3..9b9a1c8 100644
  mod terminal_codegen;
  mod terminal_inline_assistant;
  pub mod terminal_thread_metadata_store;
-@@ -1091,6 +1092,10 @@ mod tests {
+@@ -1083,6 +1084,10 @@ mod tests {
              sandbox_permissions: Default::default(),
              show_turn_stats: false,
              elicitation_placement: settings::ElicitationPlacement::default(),
@@ -866,10 +866,10 @@ index bcbe9b3..9b9a1c8 100644
              auto_generate_thread_titles: true,
              max_idle_retained_threads: 5,
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index f418925..af76072 100644
+index f30a7a7..7e5d129 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
-@@ -2040,21 +2040,30 @@ impl ConversationView {
+@@ -2165,21 +2165,30 @@ impl ConversationView {
              }
              AcpThreadEvent::NewEntry => {
                  let len = thread.read(cx).entries().len();
@@ -909,7 +909,7 @@ index f418925..af76072 100644
                          active.sync_editor_mode(cx);
                          active.sync_generating_indicator(cx);
                      });
-@@ -15209,6 +15218,50 @@ pub(crate) mod tests {
+@@ -15451,6 +15460,50 @@ pub(crate) mod tests {
          }
      }
  

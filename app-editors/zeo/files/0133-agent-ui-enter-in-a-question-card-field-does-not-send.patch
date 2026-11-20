@@ -1,0 +1,164 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Fri, 20 Nov 2026 11:59:00 -0300
+Subject: [PATCH] agent_ui: Enter in a question card's field does not send the
+ card
+
+An AskUserQuestion card with several questions went out, unanswered
+questions and all, on one Enter typed in a field of the card. Upstream
+binds Enter in `Elicitation > Editor` to menu::Confirm, and the text
+field's Confirm handler called on_submit directly. Nothing stopped it:
+the Plus adapter marks no question required (its elicitation.ts, "Nothing
+is marked required, so the user can also just skip"), and every question
+carries a free-text "Other" field (question_<n>_custom), so a field to
+press Enter in is always there. The operator types an answer in one of
+them, presses Enter, and the remaining questions are sent as skipped.
+
+Now Enter in a card field does nothing: no answer, and no newline. The
+card goes out from its Submit button only -- a click, or Tab to the
+button and Enter there, where the button's own activation handles the
+keystroke. Shift-Enter still breaks a line in a multi-line answer (0005).
+This is the card's half of what 0043 did for the composer, where Enter
+was already inert while a question is open. Operator's decision,
+2026-11-20: Enter in a field does nothing, rather than a newline or a
+move to the next field.
+
+How it works: the field keeps its menu::Confirm handler, with an empty
+body. Removing the handler is not the same thing: an Enter no handled
+action consumes falls through to the editor's text input as "\n" (the
+reason 0043 binds a no-op action instead of `null`), so the field would
+grow a newline on every Enter. The is_submitting check and the
+on_submit/elicitation_id captures go with it -- they existed only for
+the submit this handler no longer makes.
+
+Tests (conversation_view::tests): Enter in a filled field leaves the
+question Pending, inserts no newline and sends no user message
+(test_elicitation_text_field_enter_does_not_answer, new);
+test_elicitation_text_field_shift_enter_inserts_a_newline (0043) now
+ends with Enter not answering, where it pinned the old behaviour; and
+0043's Tab-then-Enter test keeps proving the keyboard route to Submit.
+Upstream's elicitation::tests::form_text_fields_submit_on_enter pinned the
+submit too; it becomes form_text_fields_do_not_submit_on_enter, asserting
+no submit event and no inserted text for string, integer and number
+fields. Its second half -- Enter ignored while a submission is in flight
+-- had nothing left to prove once Enter never submits, and is dropped.
+---
+
+diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
+index 48056fb..d6445ea 100644
+--- a/crates/agent_ui/src/conversation_view.rs
++++ b/crates/agent_ui/src/conversation_view.rs
+@@ -8223,9 +8223,54 @@ pub(crate) mod tests {
+             "Shift-Enter must not answer the question"
+         );
+ 
++        // 0133: Enter in the field no longer answers either; the card is sent from its Submit
++        // button only.
+         cx.simulate_keystrokes("enter");
+         cx.run_until_parked();
+-        assert!(!pending(&thread_view, cx), "Enter still answers it");
++        assert!(pending(&thread_view, cx), "Enter must not answer it");
++    }
++
++    // 0133: an AskUserQuestion card with several questions was sent, unanswered ones and all,
++    // by an Enter typed in one question's "Other" field: the Plus adapter marks nothing
++    // required, so nothing stopped the submit. Enter in a field now does nothing -- no answer,
++    // no newline -- and the card goes out only from Submit, by click or by Tab then Enter.
++    #[gpui::test]
++    async fn test_elicitation_text_field_enter_does_not_answer(cx: &mut TestAppContext) {
++        let (thread_view, elicitation_id, cx) =
++            setup_question_pending_composer(false, false, cx).await;
++
++        let field = thread_view.read_with(cx, |view, _| {
++            view.elicitation_text_field(&elicitation_id, "name")
++                .expect("the card should have a text field named `name`")
++        });
++        cx.update(|window, cx| {
++            field.update(cx, |editor, cx| editor.set_text("Ada", window, cx));
++            field.update(cx, |editor, cx| {
++                editor.move_to_end(&editor::actions::MoveToEnd, window, cx)
++            });
++            window.focus(&field.focus_handle(cx), cx);
++        });
++        cx.run_until_parked();
++        cx.simulate_keystrokes("enter");
++        cx.simulate_event(gpui::KeyUpEvent {
++            keystroke: gpui::Keystroke::parse("enter").expect("valid keystroke"),
++        });
++        cx.run_until_parked();
++
++        thread_view.read_with(cx, |view, cx| {
++            let (_, elicitation) = view
++                .thread
++                .read(cx)
++                .elicitation(&elicitation_id)
++                .expect("the question should still be in the thread");
++            assert!(
++                matches!(elicitation.status, ElicitationStatus::Pending { .. }),
++                "Enter in a card field must not answer the question"
++            );
++        });
++        let text = cx.update(|_, cx| field.read(cx).text(cx));
++        assert_eq!(text, "Ada", "Enter must not insert a newline either");
++        assert_eq!(user_message_count(&thread_view, cx), 0);
+     }
+ 
+     #[gpui::test]
+diff --git a/crates/agent_ui/src/conversation_view/elicitation.rs b/crates/agent_ui/src/conversation_view/elicitation.rs
+index e9f09ec..229ff58 100644
+--- a/crates/agent_ui/src/conversation_view/elicitation.rs
++++ b/crates/agent_ui/src/conversation_view/elicitation.rs
+@@ -683,8 +683,10 @@ mod tests {
+         }
+     }
+ 
++    // 0133: Enter in a field no longer submits the form -- upstream's test pinned that it did.
++    // It still inserts nothing, for every text-like field kind.
+     #[gpui::test]
+-    fn form_text_fields_submit_on_enter(cx: &mut TestAppContext) {
++    fn form_text_fields_do_not_submit_on_enter(cx: &mut TestAppContext) {
+         init_keyboard_test(cx);
+         let (view, cx) = cx.add_window_view(|window, cx| {
+             TestElicitationView::new(
+@@ -709,14 +711,10 @@ mod tests {
+             press_keys(cx, "enter");
+             assert_eq!(editor.read_with(cx, |editor, cx| editor.text(cx)), value);
+         }
+-        assert_eq!(*events.borrow(), ["submit", "submit", "submit"]);
+-
+-        view.update(cx, |view, cx| {
+-            assert!(view.form_state.begin_submission(cx).is_some());
+-            cx.notify();
+-        });
+-        press_keys(cx, "enter");
+-        assert_eq!(events.borrow().len(), 3);
++        assert!(
++            events.borrow().is_empty(),
++            "Enter in a field must not submit the form"
++        );
+     }
+ 
+     #[gpui::test]
+@@ -3143,17 +3141,13 @@ impl<'a> ElicitationCard<'a> {
+             })
+             .child(match field {
+                 ElicitationFieldState::Text(editor) => {
+-                    let on_submit = self.handlers.on_submit.clone();
+-                    let elicitation_id = self.elicitation.id.clone();
+-                    let is_submitting = self.form_state.is_some_and(|state| state.is_submitting);
+-
+                     div()
+                         .track_focus(&editor.focus_handle(cx).tab_stop(true))
+-                        .on_action(move |_: &menu::Confirm, window, cx| {
+-                            if !is_submitting {
+-                                on_submit(elicitation_id.clone(), window, cx);
+-                            }
+-                        })
++                        // 0133: Enter in a field must not send the card -- with several
++                        // questions and none required, it sent the unanswered ones as
++                        // skipped. The handler stays, empty: an unhandled Enter would fall
++                        // through to the editor as a newline. Submit is the only way out.
++                        .on_action(|_: &menu::Confirm, _window, _cx| {})
+                         .rounded_sm()
+                         .border_1()
+                         .border_color(field_border_color)

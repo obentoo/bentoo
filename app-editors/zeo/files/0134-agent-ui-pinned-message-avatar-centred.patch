@@ -1,0 +1,172 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Fri, 20 Nov 2026 16:06:03 -0300
+Subject: [PATCH] agent_ui: the pinned message's avatar is centred on its card
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The card that pins the turn's user message at the top of the
+conversation (0102, minimized and expandable since 0109) drew its
+avatar at the top of its row: the header was items_start, and the row
+is taller than the icon -- the expand toggle, an IconButton, sets its
+height whenever the message has a second line or does not fit, and the
+text sits in its own padded inner area (§6.46). The operator saw the
+icon ride high on the minimized card (2026-11-20).
+
+Minimized, the row now centres its children, so the avatar, the line
+and the toggle share one axis. Expanded, they keep to the top, where
+the message starts reading; a centred icon beside a scrolled block of
+text would point at nothing.
+
+The avatar is wrapped in a div carrying the debug selector
+thread-pinned-user-message-avatar, which is what the tests measure.
+
+Tests (thread_view::tests::pinned_avatar_tests, new): the avatar's
+centre is within 1px of the card's on a one-line message, and on a
+two-line message, where the toggle is shown.
+---
+
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index b005b52..ec96668 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -16639,6 +16639,8 @@ mod tests {
+ 
+     mod content_width_tests;
+ 
++    mod pinned_avatar_tests;
++
+     mod message_time_tests;
+ 
+     mod account_refresh_line_tests;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
+index 6ec0796..235fc2b 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
+@@ -170,7 +170,16 @@ impl ThreadView {
+             .gap_1p5()
+             .px_2()
+             .py_1()
+-            .items_start()
++            // Minimized, the avatar, the line and the toggle share one row and centre on
++            // it; the avatar sat at the top of the taller toggle button before. Expanded,
++            // they keep to the top, where the message starts.
++            .map(|header| {
++                if expanded {
++                    header.items_start()
++                } else {
++                    header.items_center()
++                }
++            })
+             .rounded_md()
+             .border_1()
+             .border_color(cx.theme().colors().border)
+@@ -186,9 +195,13 @@ impl ThreadView {
+                 cx.notify();
+             }))
+             .child(
+-                Icon::new(IconName::Person)
+-                    .size(IconSize::Small)
+-                    .color(Color::Muted),
++                div()
++                    .debug_selector(|| "thread-pinned-user-message-avatar".to_string())
++                    .child(
++                        Icon::new(IconName::Person)
++                            .size(IconSize::Small)
++                            .color(Color::Muted),
++                    ),
+             )
+             // §6.46 (ask 70, which corrects ask 54): the dark background is an inner area, as an
+             // editor's text sits on its own surface; the card and its border keep their colours.
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/pinned_avatar_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/pinned_avatar_tests.rs
+new file mode 100644
+index 0000000..59bb2b4
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/tests/pinned_avatar_tests.rs
+@@ -0,0 +1,85 @@
++//! Zeo: the pinned user message's avatar is centred on the minimized card's row -- it sat
++//! at the top of the row, which the expand toggle makes taller than the icon. Filter:
++//! `pinned_avatar_tests`.
++//!
++//! Resolves to `crates/agent_ui/src/conversation_view/thread_view/tests/pinned_avatar_tests.rs`.
++
++use acp_thread::AcpThread;
++use agent_client_protocol::v1::schema as acp;
++use gpui::{Entity, ListOffset, VisualTestContext, px};
++
++use super::super::ThreadView;
++use super::elicitation_decline_harness::*;
++
++/// Sends `message`, streams a reply long enough to scroll, and scrolls past the message so
++/// it is pinned at the top.
++fn pin_a_message(
++    message: &str,
++    view: &Entity<ThreadView>,
++    thread: &Entity<AcpThread>,
++    cx: &mut VisualTestContext,
++) {
++    thread.update(cx, |thread, cx| {
++        thread.push_user_content_block(None, message.to_string().into(), cx)
++    });
++    let reply = (0..120)
++        .map(|ix| format!("line {ix} of a reply long enough to scroll"))
++        .collect::<Vec<_>>()
++        .join("\n\n");
++    thread
++        .update(cx, |thread, cx| {
++            thread.handle_session_update(
++                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(reply.into())),
++                cx,
++            )
++        })
++        .expect("the reply applies");
++    draw(cx);
++    view.update(cx, |view, cx| {
++        view.list_state.scroll_to(ListOffset {
++            item_ix: 1,
++            offset_in_item: px(200.),
++        });
++        cx.notify();
++    });
++    draw(cx);
++}
++
++fn assert_avatar_centred(cx: &mut VisualTestContext) {
++    let header = cx
++        .debug_bounds("thread-pinned-user-message")
++        .expect("the user message is pinned");
++    let avatar = cx
++        .debug_bounds("thread-pinned-user-message-avatar")
++        .expect("the avatar is painted");
++    let offset = (avatar.center().y - header.center().y).abs();
++    assert!(
++        offset <= px(1.),
++        "the avatar {avatar:?} is {offset:?} off the centre of the card {header:?}"
++    );
++}
++
++#[gpui::test]
++async fn the_avatar_is_centred_on_a_one_line_card(cx: &mut gpui::TestAppContext) {
++    let (view, thread, mut cx) = setup(cx).await;
++    pin_a_message("fix the build", &view, &thread, &mut cx);
++    assert_avatar_centred(&mut cx);
++}
++
++/// The second line brings the expand toggle, the row's tallest child.
++#[gpui::test]
++async fn the_avatar_is_centred_beside_the_expand_toggle(cx: &mut gpui::TestAppContext) {
++    let (view, thread, mut cx) = setup(cx).await;
++    pin_a_message(
++        "fix the build\nand then run the tests",
++        &view,
++        &thread,
++        &mut cx,
++    );
++    assert!(
++        cx.debug_bounds("thread-pinned-user-message-toggle")
++            .is_some(),
++        "a two-line message shows the toggle"
++    );
++    assert_avatar_centred(&mut cx);
++}
