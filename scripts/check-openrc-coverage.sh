@@ -167,6 +167,7 @@ declare -A ALLOWLIST=(
 	[media-video/pipewire]=$'its system unit is built only with USE=system-service, which\n::gentoo ties to systemd (REQUIRED_USE system-service? ( systemd )): the\nsystem-wide mode cannot be selected without systemd at all. The normal\nper-user mode is covered by its /etc/user/init.d scripts, which the\nclassifier sees. Carried only as a python3_15 mirror (2026-11-04).'
 	[media-video/wireplumber]=$'its system unit is built only with USE=system-service, which\n::gentoo ties to systemd (REQUIRED_USE system-service? ( systemd )), exactly\nas for pipewire. The per-user session manager is covered by its\n/etc/user/init.d script. Carried only as a python3_15 mirror (2026-11-04).'
 	[net-wireless/bluez]=$'its user unit is D-Bus activated: obex.service is Type=dbus with\nBusName=org.bluez.obex, and the package installs the org.bluez.obex session\nbus activation file, so the session bus starts obexd on demand without\nsystemd. The system daemon has its init script. Carried only as a python3_15\nmirror (2026-11-04).'
+	[dev-lang/php]=$'its system unit is covered by app-eselect/eselect-php, which this\nebuild RDEPENDs on as app-eselect/eselect-php[fpm?], exactly as ::gentoo does.\nWith USE=fpm, eselect-php installs /etc/init.d/php-fpm and /etc/conf.d/php-fpm\n(verified 2026-11-20 against the installed eselect-php-0.9.9 CONTENTS). It is\nthe OpenRC side of php-fpm@${SLOT}.service, and it is shared across slots, which\nis why it lives in the eselect package and not in each php slot.'
 )
 
 ### command line #####################################################
@@ -1199,9 +1200,13 @@ self_test_assertions() {
 	# REPINNED 2026-11-05, 1.21.0_pre -> 1.28.0_pre (zed-bin-1.27.0 beside
 	# zed-bin-1.28.0_pre); vercmp('1.28.0_pre', '1.27.0') == 1 was run, not
 	# assumed. Still the weak form: the bases differ (1.28 > 1.27).
+	#
+	# REPINNED 2026-11-20, 1.28.0_pre -> 1.30.1_pre (four ebuilds now: 1.28.1,
+	# 1.29.1_pre, 1.29.2, 1.30.1_pre); vercmp('1.30.1_pre', '1.29.2') == 1 was
+	# run. Still the weak form (1.30 > 1.29).
 	assert_eq A06 \
-		'app-editors/zed-bin: two ebuilds, one row, and the _pre outranks the release (R3.11)' \
-		'rows=1 ebuild=zed-bin-1.28.0_pre.ebuild' \
+		'app-editors/zed-bin: several ebuilds, one row, and the _pre outranks the release (R3.11)' \
+		'rows=1 ebuild=zed-bin-1.30.1_pre.ebuild' \
 		"$(pkg_selection app-editors/zed-bin)"
 
 	# --- the five pins this story MOVED (all six predicted below) -----
@@ -1358,9 +1363,11 @@ self_test_assertions() {
 	#
 	# 13 since 2026-11-04: system-config-printer, polkit, pipewire, wireplumber
 	# and bluez, all carried as python3_15 mirrors (reasons in their entries).
+	# 14 since 2026-11-20: dev-lang/php, whose php-fpm OpenRC script ships in
+	# app-eselect/eselect-php[fpm].
 	assert_eq A12 \
 		'a run with no system-scope gap exits 0 and prints the allowlist (was R3.5)' \
-		'exit=0 rows=1 findings=1 allowlisted=13' \
+		'exit=0 rows=1 findings=1 allowlisted=14' \
 		"$(full_run "${SELF_TEST_SCRATCH}")"
 
 	# --- exit 2: nothing was compared ---------------------------------
