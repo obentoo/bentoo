@@ -707,13 +707,14 @@ src_prepare() {
 			# M156 moved the Web Bundle parser itself to a second Rust crate,
 			# //components/web_package/rust, and deleted the C++ one; its revert
 			# restores the M155 parser and sits on the signed-web-bundles
-			# BUILD.gn hunks, so it must follow that patch.
+			# BUILD.gn hunks, so it must follow that patch. The 158 copy also
+			# follows cbor's M158 move of SimpleValue to cbor::constants.
 			# Every one of these five is a stopgap: building Crubit for the
 			# system toolchain needs a rustc-dev from the same rustc build and
 			# a Rust stdlib compiled by Chromium (assert(!rust_prebuilt_stdlib)
 			# in build/rust/gni_impl/cpp_api_from_rust.gni).
 			"${FILESDIR}/chromium-154-revert-signed-web-bundles-crubit.patch"
-			"${FILESDIR}/chromium-156-revert-web-bundle-parser-crubit.patch"
+			"${FILESDIR}/chromium-158-revert-web-bundle-parser-crubit.patch"
 			"${FILESDIR}/chromium-155-athm-cxx-bridge.patch"
 			# bentoo: rebase of chromium-patches' toolchain/
 			# cr152-fix-rust-2-oxidize-harder.patch, which teaches Crubit to take

@@ -1,0 +1,1277 @@
+From: Lucas C.S. <lucascs@protonmail.com>
+Subject: [PATCH] components/web_package: keep the Web Bundle parser in C++, not Crubit
+
+M156 replaced the C++ Web Bundle parser (web_bundle_parser.cc on top of
+input_reader.{h,cc}) with a Rust crate, //components/web_package/rust, and
+exposed it to C++ through a Crubit `cpp_api_from_rust` binding that
+//components/web_package:web_package_rust_impl depends on unconditionally.
+The C++ parser was deleted outright, so there is no buildflag to gate on.
+
+`cpp_api_from_rust` only defines its target when `enable_cpp_api_from_rust`
+is true, and //build/config/rust.gni turns it false whenever
+`rust_sysroot_absolute` is set.  With a system Rust sysroot gn therefore
+never defines `web_package_rust_bindings`, and `gn gen` dies on an
+unresolved dependency -- the same failure as the Signed Web Bundle crate
+that chromium-154-revert-signed-web-bundles-crubit.patch reverts.
+
+This restores the M155 C++ parser verbatim.  Nothing else in the directory
+needed it to change: web_bundle_parser.h, the mojom and every other source
+are byte-identical between 155.0.8059.84 and 156.0.8078.47, and the cbor
+API the parser uses (Reader::Read, DecoderError, ErrorCodeToString) is
+unchanged.  The orphaned crate under rust/ is left in place; nothing loads
+it once these dependencies are gone.
+
+The revert also drops `NonUtf8HeaderValue`, the one unit test M156 added with
+the crate (RFC 9110 obs-text in a header value must survive parsing).  The C++
+parser checks header values with net::HttpUtil::IsValidHeaderValue, which does
+not require UTF-8, so it should keep that behaviour too -- but the test was
+not run against it here, so treat that as unverified.
+
+M158 rebase: cbor moved SimpleValue out of cbor::Value into
+cbor::constants and renamed TRUE_VALUE/FALSE_VALUE to kTrue/kFalse (same
+values, 21 and 20), so the restored input_reader.cc uses the new names.
+Nothing else in the cbor API the parser calls changed.
+
+Apply after chromium-154-revert-signed-web-bundles-crubit.patch, whose
+BUILD.gn hunks this one sits on.  Same reachability: USE=-bundled-toolchain
+only.  Drop it once the overlay builds Crubit for the system toolchain, or
+upstream gates the dependency on `enable_cpp_api_from_rust`.
+diff --git a/components/web_package/BUILD.gn b/components/web_package/BUILD.gn
+--- a/components/web_package/BUILD.gn
++++ b/components/web_package/BUILD.gn
+@@ -39,6 +39,8 @@
+   visibility = [ ":*" ]
+   public = []
+   sources = [
++    "input_reader.cc",
++    "input_reader.h",
+     "signed_web_bundles/integrity_block_parser.cc",
+     "signed_web_bundles/signed_web_bundle_signature_verifier.cc",
+     "signed_web_bundles/signed_web_bundle_utils.cc",
+@@ -51,7 +53,6 @@
+     "//components/base32",
+     "//components/cbor",
+     "//components/web_package/mojom",
+-    "//components/web_package/rust:web_package_rust_bindings",
+     "//mojo/public/cpp/bindings",
+     "//net",
+     "//services/network/public/mojom",
+@@ -157,7 +158,6 @@
+     ":web_package",
+     "//base/test:test_support",
+     "//components/cbor",
+-    "//components/web_package/rust:web_package_rust_unittests",
+     "//components/web_package/test_support",
+     "//mojo/public/cpp/bindings",
+     "//mojo/public/cpp/test_support:test_utils",
+diff --git a/components/web_package/input_reader.cc b/components/web_package/input_reader.cc
+new file mode 100644
+--- /dev/null
++++ b/components/web_package/input_reader.cc
+@@ -0,0 +1,193 @@
++// Copyright 2022 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "components/web_package/input_reader.h"
++
++#include <algorithm>
++#include <utility>
++
++#include "base/numerics/checked_math.h"
++#include "base/strings/string_util.h"
++#include "base/strings/string_view_util.h"
++#include "components/cbor/constants.h"
++#include "components/cbor/values.h"
++
++namespace web_package {
++
++namespace {
++
++// This array must be kept in sync with the `CBORType` enum.
++constexpr std::array kAcceptedCBORTypes = {
++    // clang-format off
++    CBORType::kUnsignedInt,
++    CBORType::kNegativeInt,
++    CBORType::kByteString,
++    CBORType::kTextString,
++    CBORType::kArray,
++    CBORType::kMap,
++    CBORType::kSimpleValue,
++    // clang-format on
++};
++
++std::optional<int64_t> DecodeValueToNegative(uint64_t value) {
++  auto negative_value = -base::CheckedNumeric<int64_t>(value) - 1;
++  if (!negative_value.IsValid()) {
++    return std::nullopt;
++  }
++  return static_cast<int64_t>(negative_value.ValueOrDie());
++}
++
++std::optional<int64_t> DecodeValueToUnsigned(uint64_t value) {
++  auto unsigned_value = base::CheckedNumeric<int64_t>(value);
++  if (!unsigned_value.IsValid()) {
++    return std::nullopt;
++  }
++  return static_cast<int64_t>(unsigned_value.ValueOrDie());
++}
++
++}  // namespace
++
++InputReader::InputReader(base::span<const uint8_t> buf) : buf_(buf) {}
++
++InputReader::~InputReader() = default;
++
++std::optional<uint8_t> InputReader::ReadByte() {
++  uint8_t b;
++  if (!buf_.ReadU8BigEndian(b)) {
++    return std::nullopt;
++  }
++  return {b};
++}
++
++std::optional<base::span<const uint8_t>> InputReader::ReadBytes(size_t n) {
++  return buf_.Read(n);
++}
++
++std::optional<std::string_view> InputReader::ReadString(size_t n) {
++  auto bytes = buf_.Read(n);
++  if (!bytes) {
++    return std::nullopt;
++  }
++  if (!base::IsStringUTF8(base::as_string_view(*bytes))) {
++    return std::nullopt;
++  }
++  return base::as_string_view(*bytes);
++}
++
++std::optional<uint64_t> InputReader::ReadCBORHeader(CBORType expected_type) {
++  auto pair = ReadTypeAndArgument();
++  if (!pair || pair->first != expected_type) {
++    return std::nullopt;
++  }
++  return pair->second;
++}
++
++std::optional<CBORHeader> InputReader::ReadCBORHeader() {
++  auto pair = ReadTypeAndArgument();
++  if (!pair) {
++    return std::nullopt;
++  }
++
++  const auto& [type, additional_info] = *pair;
++  switch (type) {
++    case CBORType::kSimpleValue: {
++      using SimpleValue = cbor::constants::SimpleValue;
++      if (additional_info == std::to_underlying(SimpleValue::kTrue)) {
++        return {{true}};
++      } else if (additional_info ==
++                 std::to_underlying(SimpleValue::kFalse)) {
++        return {{false}};
++      } else {
++        return std::nullopt;
++      }
++    }
++    case CBORType::kUnsignedInt:
++    case CBORType::kNegativeInt: {
++      std::optional<int64_t> value =
++          type == CBORType::kUnsignedInt
++              ? DecodeValueToUnsigned(additional_info)
++              : DecodeValueToNegative(additional_info);
++      if (!value) {
++        return std::nullopt;
++      }
++      return {{*value}};
++    }
++    case CBORType::kByteString:
++    case CBORType::kTextString: {
++      using StringInfo = CBORHeader::StringInfo;
++      using StringType = CBORHeader::StringInfo::StringType;
++
++      return {{StringInfo{.type = type == CBORType::kByteString
++                                      ? StringType::kByteString
++                                      : StringType::kTextString,
++                          .byte_length = additional_info}}};
++    }
++    case CBORType::kArray:
++    case CBORType::kMap: {
++      using ContainerInfo = CBORHeader::ContainerInfo;
++      using ContainerType = CBORHeader::ContainerInfo::ContainerType;
++
++      return {{ContainerInfo{.type = type == CBORType::kArray
++                                         ? ContainerType::kArray
++                                         : ContainerType::kMap,
++                             .size = additional_info}}};
++    }
++  }
++}
++
++// https://datatracker.ietf.org/doc/html/rfc8949.html#section-3
++std::optional<std::pair<CBORType, uint64_t>>
++InputReader::ReadTypeAndArgument() {
++  std::optional<uint8_t> first_byte = ReadByte();
++  if (!first_byte) {
++    return std::nullopt;
++  }
++
++  // There are more CBOR types in the standard than we accept. To avoid mishits
++  // during `static_cast<CBORType>`, it's safer to validate the type beforehand.
++  uint8_t type_byte = (*first_byte & cbor::constants::kMajorTypeMask) >>
++                      cbor::constants::kMajorTypeBitShift;
++  if (!std::ranges::contains(kAcceptedCBORTypes, type_byte,
++                             &std::to_underlying<CBORType>)) {
++    return std::nullopt;
++  }
++
++  CBORType type = static_cast<CBORType>(type_byte);
++  uint8_t b = *first_byte & cbor::constants::kAdditionalInformationMask;
++
++  if (b <= 23) {
++    return std::make_pair(type, b);
++  }
++  if (b == 24) {
++    auto content = ReadByte();
++    if (!content || *content < 24) {
++      return std::nullopt;
++    }
++    return std::make_pair(type, *content);
++  }
++  if (b == 25) {
++    uint16_t content;
++    if (!ReadBigEndian(&content) || content >> 8 == 0) {
++      return std::nullopt;
++    }
++    return std::make_pair(type, content);
++  }
++  if (b == 26) {
++    uint32_t content;
++    if (!ReadBigEndian(&content) || content >> 16 == 0) {
++      return std::nullopt;
++    }
++    return std::make_pair(type, content);
++  }
++  if (b == 27) {
++    uint64_t content;
++    if (!ReadBigEndian(&content) || content >> 32 == 0) {
++      return std::nullopt;
++    }
++    return std::make_pair(type, content);
++  }
++  return std::nullopt;
++}
++
++}  // namespace web_package
+diff --git a/components/web_package/input_reader.h b/components/web_package/input_reader.h
+new file mode 100644
+--- /dev/null
++++ b/components/web_package/input_reader.h
+@@ -0,0 +1,113 @@
++// Copyright 2022 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef COMPONENTS_WEB_PACKAGE_INPUT_READER_H_
++#define COMPONENTS_WEB_PACKAGE_INPUT_READER_H_
++
++#include <optional>
++#include <string_view>
++#include <variant>
++
++#include "base/containers/span.h"
++#include "base/containers/span_reader.h"
++#include "base/memory/stack_allocated.h"
++#include "base/types/id_type.h"
++
++namespace web_package {
++
++// https://datatracker.ietf.org/doc/html/rfc8949.html#section-3.1
++enum class CBORType {
++  kUnsignedInt = 0,
++  kNegativeInt = 1,
++  kByteString = 2,
++  kTextString = 3,
++  kArray = 4,
++  kMap = 5,
++  // kTag = 6,
++  kSimpleValue = 7,
++  // kFloatValue = 7,
++};
++
++struct CBORHeader {
++  struct StringInfo {
++    enum class StringType {
++      kByteString,
++      kTextString,
++    } type;
++    uint64_t byte_length;
++  };
++  struct ContainerInfo {
++    enum class ContainerType {
++      kArray,
++      kMap,
++    } type;
++    uint64_t size;
++  };
++
++  const std::variant<bool, int64_t, StringInfo, ContainerInfo> data;
++};
++
++// The maximum length of the CBOR item header (type and argument).
++// https://datatracker.ietf.org/doc/html/rfc8949.html#section-3
++// When the additional information (the low-order 5 bits of the first
++// byte) is 27, the argument's value is held in the following 8 bytes.
++constexpr uint64_t kMaxCBORItemHeaderSize = 9;
++
++// A utility class for reading various values from input buffer.
++class InputReader {
++  STACK_ALLOCATED();
++
++ public:
++  explicit InputReader(base::span<const uint8_t> buf);
++
++  InputReader(const InputReader&) = delete;
++  InputReader& operator=(const InputReader&) = delete;
++
++  ~InputReader();
++
++  size_t CurrentOffset() const { return buf_.num_read(); }
++  size_t Size() const { return buf_.remaining(); }
++
++  std::optional<uint8_t> ReadByte();
++
++  template <typename T>
++    requires(std::is_integral_v<T> && std::is_unsigned_v<T>)
++  bool ReadBigEndian(T* out) {
++    if constexpr (sizeof(T) == 1) {
++      return buf_.ReadU8BigEndian(*out);
++    } else if constexpr (sizeof(T) == 2) {
++      return buf_.ReadU16BigEndian(*out);
++    } else if constexpr (sizeof(T) == 4) {
++      return buf_.ReadU32BigEndian(*out);
++    } else {
++      static_assert(sizeof(T) == 8);
++      return buf_.ReadU64BigEndian(*out);
++    }
++  }
++
++  std::optional<base::span<const uint8_t>> ReadBytes(size_t n);
++
++  std::optional<std::string_view> ReadString(size_t n);
++
++  // Parses the type and argument of a CBOR item from the input head. If parsed
++  // successfully and the type matches `expected_type`, returns the argument.
++  // Otherwise returns nullopt.
++  std::optional<uint64_t> ReadCBORHeader(CBORType expected_type);
++
++  // Parses the type and argument of a CBOR item from the input head. If parsed
++  // successfully, returns type and:
++  //  * value for kUnsignedInt/kNegativeInt;
++  //  * value_size for kTextString/kByteString/kMap/kArray.
++  // Otherwise returns nullopt.
++  std::optional<CBORHeader> ReadCBORHeader();
++
++ private:
++  std::optional<std::pair<CBORType, uint64_t>> ReadTypeAndArgument();
++
++  base::SpanReader<const uint8_t> buf_;
++};
++
++}  // namespace web_package
++
++#endif  // COMPONENTS_WEB_PACKAGE_INPUT_READER_H_
+diff --git a/components/web_package/web_bundle_parser.cc b/components/web_package/web_bundle_parser.cc
+--- a/components/web_package/web_bundle_parser.cc
++++ b/components/web_package/web_bundle_parser.cc
+@@ -7,33 +7,175 @@
+ #include <algorithm>
+ #include <memory>
+ #include <optional>
+-#include <string>
+ #include <string_view>
+-#include <utility>
+-#include <vector>
+ 
+ #include "base/check.h"
+ #include "base/compiler_specific.h"
+-#include "base/containers/flat_map.h"
++#include "base/containers/span.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback.h"
+ #include "base/logging.h"
+-#include "base/memory/raw_ref.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/notreached.h"
+-#include "base/numerics/safe_conversions.h"
+-#include "base/strings/strcat.h"
++#include "base/numerics/checked_math.h"
++#include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+-#include "base/strings/string_view_util.h"
++#include "base/strings/stringprintf.h"
++#include "components/cbor/reader.h"
++#include "components/web_package/input_reader.h"
+ #include "components/web_package/mojom/web_bundle_parser.mojom.h"
+-#include "components/web_package/rust/web_package_rust.h"
+ #include "components/web_package/signed_web_bundles/integrity_block_parser.h"
++#include "components/web_package/web_bundle_utils.h"
+ #include "mojo/public/cpp/bindings/remote.h"
++#include "net/http/http_util.h"
+ 
+ namespace web_package {
+ 
+ namespace {
+ 
++// The number of bytes used to specify the length of the web bundle.
++// https://www.ietf.org/archive/id/draft-ietf-wpack-bundled-responses-01.html#name-trailing-length
++constexpr uint64_t kTrailingLengthNumBytes = 8;
++
++// The maximum size of the section-lengths CBOR item.
++constexpr uint64_t kMaxSectionLengthsCBORSize = 8192;
++
++// The maximum size of a metadata section allowed in this implementation.
++constexpr uint64_t kMaxMetadataSectionSize = 1 * 1024 * 1024;
++
++// The maximum size of the response header CBOR.
++constexpr uint64_t kMaxResponseHeaderLength = 512 * 1024;
++
++// The initial buffer size for reading an item from the response section.
++constexpr uint64_t kInitialBufferSizeForResponse = 4096;
++
++// The first byte of WebBundle format >=b2 (Array of length 5).
++constexpr uint8_t kBundleHeadByte = 0x85;
++// The first byte of WebBundle format b1 (Array of length 6).
++constexpr uint8_t kBundleB1HeadByte = 0x86;
++
++// CBOR of the magic string "🌐📦".
++// MetadataParser::ParseMagicBytes() checks the first byte (0x85) and this.
++//
++// The first 10 bytes of the web bundle format are:
++//   85                             -- Array of length 5
++//      48                          -- Byte string of length 8
++//         F0 9F 8C 90 F0 9F 93 A6  -- "🌐📦" in UTF-8
++const uint8_t kBundleMagicBytes[] = {
++    0x48, 0xF0, 0x9F, 0x8C, 0x90, 0xF0, 0x9F, 0x93, 0xA6,
++};
++
++// CBOR of the version string "b2\0\0".
++//   44               -- Byte string of length 4
++//       62 32 00 00  -- "b2\0\0"
++const uint8_t kVersionB2MagicBytes[] = {
++    0x44, 0x62, 0x32, 0x00, 0x00,
++};
++// CBOR of the version string "b1\0\0".
++//   44               -- Byte string of length 4
++//       62 31 00 00  -- "b1\0\0"
++const uint8_t kVersionB1MagicBytes[] = {
++    0x44, 0x62, 0x31, 0x00, 0x00,
++};
++
++// Section names.
++constexpr char kCriticalSection[] = "critical";
++constexpr char kIndexSection[] = "index";
++constexpr char kPrimarySection[] = "primary";
++constexpr char kResponsesSection[] = "responses";
++
++// A list of (section-name, length) pairs.
++using SectionLengths = std::vector<std::pair<std::string, uint64_t>>;
++
++// A map from section name to (offset, length) pair.
++using SectionOffsets = std::map<std::string, std::pair<uint64_t, uint64_t>>;
++
++bool IsMetadataSection(const std::string& name) {
++  return (name == kCriticalSection || name == kIndexSection ||
++          name == kPrimarySection);
++}
++
++// Parses a `section-lengths` CBOR item.
++// https://www.ietf.org/archive/id/draft-ietf-wpack-bundled-responses-01.html#name-bundle-sections
++//   section-lengths = [* (section-name: tstr, length: uint) ]
++std::optional<SectionLengths> ParseSectionLengths(
++    base::span<const uint8_t> data) {
++  cbor::Reader::DecoderError error;
++  std::optional<cbor::Value> value = cbor::Reader::Read(data, &error);
++  if (!value.has_value() || !value->is_array()) {
++    return std::nullopt;
++  }
++
++  const cbor::Value::ArrayValue& array = value->GetArray();
++  if (array.size() % 2 != 0) {
++    return std::nullopt;
++  }
++
++  SectionLengths result;
++  for (size_t i = 0; i < array.size(); i += 2) {
++    if (!array[i].is_string() || !array[i + 1].is_unsigned()) {
++      return std::nullopt;
++    }
++    result.emplace_back(array[i].GetString(), array[i + 1].GetUnsigned());
++  }
++  return result;
++}
++
++struct ParsedHeaders {
++  base::flat_map<std::string, std::string> headers;
++  base::flat_map<std::string, std::string> pseudos;
++};
++
++// https://www.ietf.org/archive/id/draft-ietf-wpack-bundled-responses-01.html#name-responses
++//   headers = {* bstr => bstr}
++std::optional<ParsedHeaders> ConvertCBORValueToHeaders(
++    const cbor::Value& headers_value) {
++  // |headers_value| of headers must be a map.
++  if (!headers_value.is_map()) {
++    return std::nullopt;
++  }
++
++  ParsedHeaders result;
++
++  for (const auto& item : headers_value.GetMap()) {
++    if (!item.first.is_bytestring() || !item.second.is_bytestring()) {
++      return std::nullopt;
++    }
++    std::string_view name = item.first.GetBytestringAsString();
++    std::string_view value = item.second.GetBytestringAsString();
++
++    // If name contains any upper-case or non-ASCII characters, return an error.
++    // This matches the requirement in Section 8.1.2 of [RFC7540].
++    if (!base::IsStringASCII(name) ||
++        std::ranges::any_of(name, base::IsAsciiUpper<char>)) {
++      return std::nullopt;
++    }
++
++    if (!name.empty() && name[0] == ':') {
++      // pseudos[name] must not exist, because CBOR maps cannot contain
++      // duplicate keys. This is ensured by cbor::Reader.
++      DCHECK(!result.pseudos.contains(name));
++      result.pseudos.insert(
++          std::make_pair(std::string(name), std::string(value)));
++      continue;
++    }
++
++    // Both name and value must be valid.
++    if (!net::HttpUtil::IsValidHeaderName(name) ||
++        !net::HttpUtil::IsValidHeaderValue(value)) {
++      return std::nullopt;
++    }
++
++    // headers[name] must not exist, because CBOR maps cannot contain duplicate
++    // keys. This is ensured by cbor::Reader.
++    DCHECK(!result.headers.contains(name));
++
++    result.headers.insert(
++        std::make_pair(std::string(name), std::string(value)));
++  }
++
++  return result;
++}
+ 
+ GURL ParseExchangeURL(std::string_view str, const GURL& base_url) {
+   DCHECK(base_url.is_empty() || base_url.is_valid());
+@@ -128,9 +270,7 @@
+       RunErrorCallback("Error reading bundle length.");
+       return;
+     }
+-    const uint64_t unsigned_file_length =
+-        base::checked_cast<uint64_t>(file_length);
+-    if (unsigned_file_length < rust::TRAILING_LENGTH_NUM_BYTES) {
++    if (static_cast<uint64_t>(file_length) < kTrailingLengthNumBytes) {
+       RunErrorCallback("Error reading bundle length.");
+       return;
+     }
+@@ -138,10 +278,9 @@
+     // Read the last 8 bytes of the file that correspond to the trailing length
+     // field of the web bundle.
+     data_source_->get()->Read(
+-        unsigned_file_length - rust::TRAILING_LENGTH_NUM_BYTES,
+-        rust::TRAILING_LENGTH_NUM_BYTES,
++        file_length - kTrailingLengthNumBytes, kTrailingLengthNumBytes,
+         base::BindOnce(&MetadataParser::ParseWebBundleLength,
+-                       weak_factory_.GetWeakPtr(), unsigned_file_length));
++                       weak_factory_.GetWeakPtr(), file_length));
+   }
+ 
+   void ParseWebBundleLength(const uint64_t file_length,
+@@ -156,20 +295,30 @@
+     // the start of the bundle, instead of assuming that the start of the file
+     // is also the start of the bundle. This allows the bundle to be appended to
+     // another format such as a generic self-extracting executable."
+-    // https://www.ietf.org/archive/id/draft-ietf-wpack-bundled-responses-01.html#name-trailing-length
+-    auto bundle_offset = rust::parse_trailing_length(*data, file_length);
+-    if (!bundle_offset.has_value()) {
+-      RunErrorCallback(bundle_offset.error().message);
++    // https://www.ietf.org/archive/id/draft-ietf-wpack-bundled-responses-01.html#section-4.1.1-3
++    InputReader input(*data);
++    uint64_t web_bundle_length;
++    if (!input.ReadBigEndian(&web_bundle_length)) {
++      RunErrorCallback("Error reading bundle length.");
++      return;
++    }
++
++    if (web_bundle_length > file_length) {
++      RunErrorCallback("Invalid bundle length.");
+       return;
+     }
+-    ReadMagicBytes(*bundle_offset);
++    const uint64_t web_bundle_offset = file_length - web_bundle_length;
++    ReadMagicBytes(web_bundle_offset);
+   }
+ 
+   void ReadMagicBytes(const uint64_t offset_in_stream) {
+     // First, we will parse the CBOR header of the top level array (1-byte),
+     // `magic`, `version`, and the CBOR header of `section-lengths`.
++    const uint64_t length = 1 + sizeof(kBundleMagicBytes) +
++                            sizeof(kVersionB2MagicBytes) +
++                            kMaxCBORItemHeaderSize;
+     data_source_->get()->Read(
+-        offset_in_stream, rust::INITIAL_BUNDLE_HEADER_BUFFER_SIZE,
++        offset_in_stream, length,
+         base::BindOnce(&MetadataParser::ParseMagicBytes,
+                        weak_factory_.GetWeakPtr(), offset_in_stream));
+   }
+@@ -182,23 +331,83 @@
+       return;
+     }
+ 
+-    auto res = rust::parse_magic_and_version(*data, offset_in_stream);
+-    if (!res.has_value()) {
+-      const auto& error = res.error();
+-      RunErrorCallback(error.message,
+-                       error.is_version_error
+-                           ? mojom::BundleParseErrorType::kVersionError
+-                           : mojom::BundleParseErrorType::kFormatError);
++    InputReader input(*data);
++
++    // Read the first byte denoting a CBOR array size. It must be equal to 0x85
++    // (5).
++    const auto array_size = input.ReadByte();
++    if (!array_size) {
++      RunErrorCallback("Missing CBOR array size byte.");
+       return;
+     }
+ 
+-    uint64_t next_offset = res->next_read_offset;
+-    uint64_t next_length = res->next_read_length;
++    // Let kBundleB1HeadByte pass this check, to report custom error message for
++    // b1 bundles.
++    if (*array_size != kBundleHeadByte && *array_size != kBundleB1HeadByte) {
++      RunErrorCallback("Wrong magic bytes.");
++      return;
++    }
++
++    // Check the magic bytes "48 F0 9F 8C 90 F0 9F 93 A6".
++    const auto magic = input.ReadBytes(sizeof(kBundleMagicBytes));
++    if (!magic || !std::ranges::equal(*magic, kBundleMagicBytes)) {
++      RunErrorCallback("Wrong magic bytes.");
++      return;
++    }
++
++    // Let version be the result of reading 5 bytes from stream.
++    const auto version = input.ReadBytes(sizeof(kVersionB2MagicBytes));
++    if (!version) {
++      RunErrorCallback("Cannot read version bytes.");
++      return;
++    }
++    if (!std::ranges::equal(*version, kVersionB2MagicBytes)) {
++      const char* message;
++      if (std::ranges::equal(*version, kVersionB1MagicBytes)) {
++        message =
++            "Bundle format version is 'b1' which is no longer supported."
++            " Currently supported version is: 'b2'";
++      } else {
++        message =
++            "Version error: bundle format does not correspond to the specifed "
++            "version. Currently supported version is: 'b2'";
++      }
++      RunErrorCallback(message, mojom::BundleParseErrorType::kVersionError);
++      return;
++    }
++    if (*array_size != kBundleHeadByte) {
++      RunErrorCallback("Wrong CBOR array size of the top-level structure");
++      return;
++    }
++
++    const auto section_lengths_length =
++        input.ReadCBORHeader(CBORType::kByteString);
++    if (!section_lengths_length) {
++      RunErrorCallback("Cannot parse the size of section-lengths.");
++      return;
++    }
++
++    // https://www.ietf.org/archive/id/draft-ietf-wpack-bundled-responses-01.html#name-top-level-structure
++    // "The section-lengths array is embedded in a byte string to facilitate
++    // reading it from a network. This byte string MUST be less than 8192
++    // (8*1024) bytes long, and parsers MUST NOT load any data from a
++    // section-lengths item longer than this."
++    if (*section_lengths_length >= kMaxSectionLengthsCBORSize) {
++      RunErrorCallback(
++          "The section-lengths CBOR must be smaller than 8192 bytes.");
++      return;
++    }
++
++    // In the next step, we will parse the content of `section-lengths`,
++    // and the CBOR header of `sections`.
++    const uint64_t length = *section_lengths_length + kMaxCBORItemHeaderSize;
++
++    offset_in_stream += input.CurrentOffset();
+     data_source_->get()->Read(
+-        next_offset, next_length,
++        offset_in_stream, length,
+         base::BindOnce(&MetadataParser::ParseBundleHeader,
+-                       weak_factory_.GetWeakPtr(), next_offset,
+-                       res->section_lengths_len));
++                       weak_factory_.GetWeakPtr(), offset_in_stream,
++                       *section_lengths_length));
+   }
+ 
+   void ParseBundleHeader(uint64_t offset_in_stream,
+@@ -208,39 +417,109 @@
+       RunErrorCallback("Error reading bundle header.");
+       return;
+     }
++    InputReader input(*data);
++
++    // webbundle = [
++    //    magic: h'F0 9F 8C 90 F0 9F 93 A6',
++    //    version: bytes .size 4,
++    //    section-lengths: bytes .cbor section-lengths,  <==== here
++    //    sections: [* any ],
++    //    length: bytes .size 8,  ; Big-endian number of bytes in the bundle.
++    // ]
++    const auto section_lengths_bytes = input.ReadBytes(section_lengths_length);
++    if (!section_lengths_bytes) {
++      RunErrorCallback("Cannot read section-lengths.");
++      return;
++    }
++    // https://www.ietf.org/archive/id/draft-ietf-wpack-bundled-responses-01.html#name-bundle-sections
++    //   section-lengths = [* (section-name: tstr, length: uint) ]
++    const auto section_lengths = ParseSectionLengths(*section_lengths_bytes);
++    if (!section_lengths) {
++      RunErrorCallback("Cannot parse section-lengths.");
++      return;
++    }
++
++    // webbundle = [
++    //    magic: h'F0 9F 8C 90 F0 9F 93 A6',
++    //    version: bytes .size 4,
++    //    section-lengths: bytes .cbor section-lengths,
++    //    sections: [* any ],  <==== here
++    //    length: bytes .size 8,  ; Big-endian number of bytes in the bundle.
++    // ]
++    const auto num_sections = input.ReadCBORHeader(CBORType::kArray);
++    if (!num_sections) {
++      RunErrorCallback("Cannot parse the number of sections.");
++      return;
++    }
+ 
+-    auto res = rust::parse_bundle_header(*data, section_lengths_length,
+-                                         offset_in_stream);
+-    if (!res.has_value()) {
+-      RunErrorCallback(res.error().message);
++    // "The sections array contains the sections' content. The length of this
++    // array MUST be exactly half the length of the section-lengths array, and
++    // parsers MUST NOT load any data if that is not the case."
++    if (*num_sections != section_lengths->size()) {
++      RunErrorCallback("Unexpected number of sections.");
+       return;
+     }
+ 
+-    responses_section_offset_ = res->responses_offset;
+-    responses_section_length_ = res->responses_length;
+-    metadata_sections_to_read_ = std::move(res->metadata_sections);
++    const uint64_t sections_start = offset_in_stream + input.CurrentOffset();
++    uint64_t current_offset = sections_start;
++
++    // Convert |section_lengths| to |section_offsets_|.
++    for (const auto& pair : *section_lengths) {
++      const std::string& name = pair.first;
++      const uint64_t length = pair.second;
++      bool added = section_offsets_
++                       .insert(std::make_pair(
++                           name, std::make_pair(current_offset, length)))
++                       .second;
++      if (!added) {
++        RunErrorCallback("Duplicated section.");
++        return;
++      }
++
++      if (!base::CheckAdd(current_offset, length)
++               .AssignIfValid(&current_offset)) {
++        RunErrorCallback("Integer overflow calculating section offsets.");
++        return;
++      }
++    }
++
++    // "The "responses" section MUST appear after the other three sections
++    // defined here, and parsers MUST NOT load any data if that is not the
++    // case."
++    if (section_lengths->empty() ||
++        section_lengths->back().first != kResponsesSection) {
++      RunErrorCallback("Responses section is not the last in section-lengths.");
++      return;
++    }
+ 
++    // Initialize |metadata_|.
+     metadata_ = mojom::BundleMetadata::New();
+     metadata_->version = mojom::BundleFormatVersion::kB2;
+ 
+-    ReadMetadataSections(/*section_index=*/0);
++    ReadMetadataSections(section_offsets_.begin());
+   }
+ 
+   // https://www.ietf.org/archive/id/draft-ietf-wpack-bundled-responses-01.html#name-bundle-sections
+-  void ReadMetadataSections(size_t section_index) {
+-    if (section_index < metadata_sections_to_read_.size()) {
+-      const auto& section = metadata_sections_to_read_[section_index];
+-      if (section.length > rust::MAX_METADATA_SECTION_SIZE) {
++  void ReadMetadataSections(SectionOffsets::const_iterator section_iter) {
++    for (; section_iter != section_offsets_.end(); ++section_iter) {
++      const auto& name = section_iter->first;
++      if (!IsMetadataSection(name)) {
++        continue;
++      }
++      const uint64_t section_offset = section_iter->second.first;
++      const uint64_t section_length = section_iter->second.second;
++      if (section_length > kMaxMetadataSectionSize) {
+         RunErrorCallback(
+             "Metadata sections larger than 1MB are not supported.");
+         return;
+       }
+ 
+       data_source_->get()->Read(
+-          section.offset, section.length,
++          section_offset, section_length,
+           base::BindOnce(&MetadataParser::ParseMetadataSection,
+-                         weak_factory_.GetWeakPtr(), section_index,
+-                         section.length));
++                         weak_factory_.GetWeakPtr(), section_iter,
++                         section_length));
++      // This loop will be resumed by ParseMetadataSection().
+       return;
+     }
+ 
+@@ -253,7 +532,7 @@
+     RunSuccessCallback();
+   }
+ 
+-  void ParseMetadataSection(size_t section_index,
++  void ParseMetadataSection(SectionOffsets::const_iterator section_iter,
+                             uint64_t expected_data_length,
+                             const std::optional<std::vector<uint8_t>>& data) {
+     if (!data || data->size() != expected_data_length) {
+@@ -261,56 +540,152 @@
+       return;
+     }
+ 
+-    const auto& name = metadata_sections_to_read_[section_index].name;
+-    if (name == rust::INDEX_SECTION) {
+-      auto res = rust::parse_index_section(*data, responses_section_offset_,
+-                                           responses_section_length_);
+-      if (!res.has_value()) {
+-        RunErrorCallback(res.error().message);
++    // Parse the section contents as a CBOR item.
++    cbor::Reader::DecoderError error;
++    std::optional<cbor::Value> section_value =
++        cbor::Reader::Read(*data, &error);
++    if (!section_value) {
++      RunErrorCallback(std::string("Error parsing section contents as CBOR: ") +
++                       cbor::Reader::ErrorCodeToString(error));
++      return;
++    }
++
++    const auto& name = section_iter->first;
++    // Note: Parse*Section() delete |this| on failure.
++    if (name == kIndexSection) {
++      if (!ParseIndexSection(*section_value)) {
+         return;
+       }
+-      std::vector<std::pair<GURL, mojom::BundleResponseLocationPtr>> requests;
+-      requests.reserve(res->size());
+-      for (const auto& entry : *res) {
+-        GURL parsed_url = ParseExchangeURL(entry.url, base_url_);
+-        if (!parsed_url.is_valid()) {
+-          std::string message = base::StrCat({"Index section: exchange URL \"",
+-                                              entry.url, "\" is not valid."});
+-          if (base_url_.is_empty()) {
+-            message += " (Relative URLs are not allowed in this context.)";
+-          }
+-          RunErrorCallback(message);
+-          return;
+-        }
+-        requests.emplace_back(
+-            std::move(parsed_url),
+-            mojom::BundleResponseLocation::New(entry.offset, entry.length));
+-      }
+-      metadata_->requests =
+-          base::flat_map<GURL, mojom::BundleResponseLocationPtr>(
+-              std::move(requests));
+-    } else if (name == rust::CRITICAL_SECTION) {
+-      if (auto res = rust::parse_critical_section(*data); !res.has_value()) {
+-        RunErrorCallback(res.error().message);
++    } else if (name == kCriticalSection) {
++      if (!ParseCriticalSection(*section_value)) {
+         return;
+       }
+-    } else if (name == rust::PRIMARY_SECTION) {
+-      auto res = rust::parse_primary_section(*data);
+-      if (!res.has_value()) {
+-        RunErrorCallback(res.error().message);
++    } else if (name == kPrimarySection) {
++      if (!ParsePrimarySection(*section_value)) {
+         return;
+       }
+-      GURL parsed_url = ParseExchangeURL(*res, base_url_);
+-      if (!parsed_url.is_valid()) {
+-        RunErrorCallback("Primary URL is not a valid exchange URL.");
+-        return;
+-      }
+-      metadata_->primary_url = std::move(parsed_url);
+     } else {
+       NOTREACHED();
+     }
+     // Read the next metadata section.
+-    ReadMetadataSections(section_index + 1);
++    ReadMetadataSections(++section_iter);
++  }
++
++  // https://www.ietf.org/archive/id/draft-ietf-wpack-bundled-responses-01.html#name-the-index-section
++  // The index section has the following structure:
++  //   index = {* whatwg-url => [ location-in-responses ] }
++  //   location-in-responses = (offset: uint, length: uint)
++  bool ParseIndexSection(const cbor::Value& section_value) {
++    // |section_value| of index section must be a map.
++    if (!section_value.is_map()) {
++      RunErrorCallback("Index section must be a map.");
++      return false;
++    }
++
++    base::flat_map<GURL, mojom::BundleResponseLocationPtr> requests;
++
++    auto responses_section = section_offsets_.find(kResponsesSection);
++    CHECK(responses_section != section_offsets_.end());
++    const uint64_t responses_section_offset = responses_section->second.first;
++    const uint64_t responses_section_length = responses_section->second.second;
++
++    // For each (url, responses) entry in the index map.
++    for (const auto& item : section_value.GetMap()) {
++      if (!item.first.is_string()) {
++        RunErrorCallback("Index section: key must be a string.");
++        return false;
++      }
++      if (!item.second.is_array()) {
++        RunErrorCallback("Index section: value must be an array.");
++        return false;
++      }
++      const std::string& url = item.first.GetString();
++      const cbor::Value::ArrayValue& responses_array = item.second.GetArray();
++
++      GURL parsed_url = ParseExchangeURL(url, base_url_);
++
++      if (!parsed_url.is_valid()) {
++        std::string message = base::StringPrintf(
++            "Index section: exchange URL \"%s\" is not valid.", url.c_str());
++        if (base_url_.is_empty()) {
++          message += " (Relative URLs are not allowed in this context.)";
++        }
++        RunErrorCallback(message);
++        return false;
++      }
++
++      if (responses_array.size() != 2) {
++        RunErrorCallback(
++            "Index section: the size of a response array per URL should be "
++            "exactly 2.");
++        return false;
++      }
++      if (!responses_array[0].is_unsigned() ||
++          !responses_array[1].is_unsigned()) {
++        RunErrorCallback(
++            "Index section: offset and length values must be unsigned.");
++        return false;
++      }
++      uint64_t offset = responses_array[0].GetUnsigned();
++      uint64_t length = responses_array[1].GetUnsigned();
++
++      uint64_t response_end;
++      if (!base::CheckAdd(offset, length).AssignIfValid(&response_end) ||
++          response_end > responses_section_length) {
++        RunErrorCallback("Index section: response out of range.");
++        return false;
++      }
++      uint64_t offset_within_stream = responses_section_offset + offset;
++
++      requests.insert(std::make_pair(
++          parsed_url,
++          mojom::BundleResponseLocation::New(offset_within_stream, length)));
++    }
++
++    metadata_->requests = std::move(requests);
++    return true;
++  }
++
++  // https://www.ietf.org/archive/id/draft-ietf-wpack-bundled-responses-01.html#critical-section
++  //   critical = [*tstr]
++  bool ParseCriticalSection(const cbor::Value& section_value) {
++    if (!section_value.is_array()) {
++      RunErrorCallback("Critical section must be an array.");
++      return false;
++    }
++    // "If the client has not implemented a section named by one of the items in
++    // this list, the client MUST fail to parse the bundle as a whole."
++    for (const cbor::Value& elem : section_value.GetArray()) {
++      if (!elem.is_string()) {
++        RunErrorCallback("Non-string element in the critical section.");
++        return false;
++      }
++      const auto& section_name = elem.GetString();
++      if (!IsMetadataSection(section_name) &&
++          section_name != kResponsesSection) {
++        RunErrorCallback("Unknown critical section.");
++        return false;
++      }
++    }
++    return true;
++  }
++
++  // https://github.com/WICG/webpackage/blob/main/extensions/primary-section.md
++  //  primary = whatwg-url
++  bool ParsePrimarySection(const cbor::Value& section_value) {
++    if (!section_value.is_string()) {
++      RunErrorCallback("Primary section must be a string.");
++      return false;
++    }
++
++    GURL parsed_url = ParseExchangeURL(section_value.GetString(), base_url_);
++
++    if (!parsed_url.is_valid()) {
++      RunErrorCallback("Primary URL is not a valid exchange URL.");
++      return false;
++    }
++    metadata_->primary_url = std::move(parsed_url);
++    return true;
+   }
+ 
+   void RunSuccessCallback() {
+@@ -319,14 +694,12 @@
+                             nullptr));
+   }
+ 
+-  void RunErrorCallback(std::string_view message,
++  void RunErrorCallback(const std::string& message,
+                         mojom::BundleParseErrorType error_type =
+                             mojom::BundleParseErrorType::kFormatError) {
+     DLOG(ERROR) << "Parsing web bundle error: " << message;
+-    // Avoids an extra temporary std::string allocation in Mojo's New().
+-    auto err = mojom::BundleMetadataParseError::New();
+-    err->type = error_type;
+-    err->message = message;
++    mojom::BundleMetadataParseErrorPtr err =
++        mojom::BundleMetadataParseError::New(error_type, message);
+     std::move(complete_callback_)
+         .Run(base::BindOnce(std::move(result_callback_), nullptr,
+                             std::move(err)));
+@@ -337,9 +710,7 @@
+   std::optional<uint64_t> start_reading_offset_;
+   ParseMetadataCallback result_callback_;
+   ParsingCompleteCallback complete_callback_;
+-  rs_std::Vec<rust::SectionOffsetEntry> metadata_sections_to_read_;
+-  uint64_t responses_section_offset_ = 0;
+-  uint64_t responses_section_length_ = 0;
++  SectionOffsets section_offsets_;
+   mojom::BundleMetadataPtr metadata_;
+   base::WeakPtrFactory<MetadataParser> weak_factory_{this};
+ };
+@@ -373,7 +744,7 @@
+       override {
+     CHECK(!result_callback_.is_null());
+     complete_callback_ = std::move(callback);
+-    StartWithBufferSize(rust::INITIAL_BUFFER_SIZE_FOR_RESPONSE);
++    StartWithBufferSize(kInitialBufferSizeForResponse);
+   }
+ 
+  private:
+@@ -384,36 +755,115 @@
+         base::BindOnce(&ResponseParser::ParseResponseHeader,
+                        weak_factory_.GetWeakPtr(), length));
+   }
++  // https://www.ietf.org/archive/id/draft-ietf-wpack-bundled-responses-01.html#name-responses
++  //   responses = [*response]
++  //   response = [headers: bstr .cbor headers, payload: bstr]
++  //   headers = {* bstr => bstr}
+   void ParseResponseHeader(uint64_t expected_data_length,
+                            const std::optional<std::vector<uint8_t>>& data) {
+     if (!data || data->size() != expected_data_length) {
+       RunErrorCallback("Error reading response header.");
+       return;
+     }
++    InputReader input(*data);
++
++    // |response| must be an array of length 2 (headers and payload).
++    auto num_elements = input.ReadCBORHeader(CBORType::kArray);
++    if (!num_elements || *num_elements != 2) {
++      RunErrorCallback("Array size of response must be 2.");
++      return;
++    }
+ 
+-    auto parse_res =
+-        rust::parse_response(*data, response_offset_, response_length_);
+-    if (!parse_res.has_value()) {
+-      RunErrorCallback(parse_res.error().message);
++    auto header_length = input.ReadCBORHeader(CBORType::kByteString);
++    if (!header_length) {
++      RunErrorCallback("Cannot parse response header length.");
+       return;
+     }
+-    if (parse_res->needs_more_data) {
++
++    // "The length of the headers byte string in a response MUST be less than
++    // 524288 (512*1024) bytes, and recipients MUST fail to load a response with
++    // longer headers"
++    if (*header_length >= kMaxResponseHeaderLength) {
++      RunErrorCallback("Response header is too big.");
++      return;
++    }
++
++    // If we don't have enough data for the headers and the CBOR header of the
++    // payload, re-read with a larger buffer size.
++    const uint64_t required_buffer_size = std::min(
++        input.CurrentOffset() + *header_length + kMaxCBORItemHeaderSize,
++        response_length_);
++    if (data->size() < required_buffer_size) {
+       DVLOG(1) << "Re-reading response header with a buffer of size "
+-               << parse_res->required_buffer_size;
+-      StartWithBufferSize(parse_res->required_buffer_size);
++               << required_buffer_size;
++      StartWithBufferSize(required_buffer_size);
++      return;
++    }
++
++    // Parse headers.
++    auto headers_bytes = input.ReadBytes(*header_length);
++    if (!headers_bytes) {
++      RunErrorCallback("Cannot read response headers.");
++      return;
++    }
++    cbor::Reader::DecoderError error;
++    std::optional<cbor::Value> headers_value =
++        cbor::Reader::Read(*headers_bytes, &error);
++    if (!headers_value) {
++      RunErrorCallback("Cannot parse response headers.");
++      return;
++    }
++
++    auto parsed_headers = ConvertCBORValueToHeaders(*headers_value);
++    if (!parsed_headers) {
++      RunErrorCallback("Cannot parse response headers.");
++      return;
++    }
++
++    // "Each response's headers MUST include a :status pseudo-header with
++    // exactly 3 ASCII decimal digits and MUST NOT include any other
++    // pseudo-headers."
++    const auto pseudo_status = parsed_headers->pseudos.find(":status");
++    if (parsed_headers->pseudos.size() != 1 ||
++        pseudo_status == parsed_headers->pseudos.end()) {
++      RunErrorCallback(
++          "Response headers map must have exactly one pseudo-header, :status.");
++      return;
++    }
++    int status;
++    const auto& status_str = pseudo_status->second;
++    if (status_str.size() != 3 ||
++        !std::ranges::all_of(status_str, base::IsAsciiDigit<char>) ||
++        !base::StringToInt(status_str, &status)) {
++      RunErrorCallback(":status must be 3 ASCII decimal digits.");
++      return;
++    }
++
++    // Parse payload.
++    auto payload_length = input.ReadCBORHeader(CBORType::kByteString);
++    if (!payload_length) {
++      RunErrorCallback("Cannot parse response payload length.");
++      return;
++    }
++
++    // "If a response's payload is not empty, its headers MUST include a
++    // Content-Type header (Section 8.3 of [I-D.ietf-httpbis-semantics])."
++    if (*payload_length > 0 &&
++        !parsed_headers->headers.contains("content-type")) {
++      RunErrorCallback("Non-empty response must have a content-type header.");
++      return;
++    }
++
++    if (input.CurrentOffset() + *payload_length != response_length_) {
++      RunErrorCallback("Unexpected payload length.");
+       return;
+     }
+ 
+     mojom::BundleResponsePtr response = mojom::BundleResponse::New();
+-    response->response_code = parse_res->response_code;
+-    response->response_headers = base::MakeFlatMap<std::string, std::string>(
+-        parse_res->headers, {}, [](const rust::HeaderEntry& header) {
+-          return std::make_pair(
+-              std::string(base::as_string_view(header.name.to_span())),
+-              std::string(base::as_string_view(header.value.to_span())));
+-        });
+-    response->payload_offset = parse_res->payload_offset;
+-    response->payload_length = parse_res->payload_length;
++    response->response_code = status;
++    response->response_headers = std::move(parsed_headers->headers);
++    response->payload_offset = response_offset_ + input.CurrentOffset();
++    response->payload_length = *payload_length;
+     RunSuccessCallback(std::move(response));
+   }
+ 
+@@ -423,15 +873,13 @@
+                             nullptr));
+   }
+ 
+-  void RunErrorCallback(const std::string_view message,
++  void RunErrorCallback(const std::string& message,
+                         mojom::BundleParseErrorType error_type =
+                             mojom::BundleParseErrorType::kFormatError) {
+-    auto err = mojom::BundleResponseParseError::New();
+-    err->type = error_type;
+-    err->message = message;
+     std::move(complete_callback_)
+-        .Run(base::BindOnce(std::move(result_callback_), nullptr,
+-                            std::move(err)));
++        .Run(base::BindOnce(
++            std::move(result_callback_), nullptr,
++            mojom::BundleResponseParseError::New(error_type, message)));
+   }
+ 
+   const raw_ref<mojo::Remote<mojom::BundleDataSource>> data_source_;
+diff --git a/components/web_package/web_bundle_parser_unittest.cc b/components/web_package/web_bundle_parser_unittest.cc
+--- a/components/web_package/web_bundle_parser_unittest.cc
++++ b/components/web_package/web_bundle_parser_unittest.cc
+@@ -457,29 +457,6 @@
+   ASSERT_FALSE(ParseResponse(&data_source, location));
+ }
+ 
+-// RFC 9110 Section 5.5 permits obs-text (%x80-FF) in a field value and directs
+-// recipients to treat those octets as opaque data, so a value that is not valid
+-// UTF-8 must be preserved rather than rejected.
+-TEST_F(WebBundleParserTest, NonUtf8HeaderValue) {
+-  // "café.pdf" encoded as ISO-8859-1, which is not valid UTF-8.
+-  const std::string kLatin1Value = "attachment; filename=\"caf\xe9.pdf\"";
+-  WebBundleBuilder builder;
+-  builder.AddExchange("https://test.example.com/",
+-                      {{":status", "200"},
+-                       {"content-type", "text/plain"},
+-                       {"content-disposition", kLatin1Value}},
+-                      "payload");
+-  TestDataSource data_source(builder.CreateBundle());
+-
+-  mojom::BundleMetadataPtr metadata = ParseUnsignedBundle(&data_source).first;
+-  ASSERT_TRUE(metadata);
+-  auto location = FindResponse(metadata, GURL("https://test.example.com/"));
+-  ASSERT_TRUE(location);
+-  auto response = ParseResponse(&data_source, location);
+-  ASSERT_TRUE(response);
+-  EXPECT_EQ(response->response_headers["content-disposition"], kLatin1Value);
+-}
+-
+ TEST_F(WebBundleParserTest, NoContentTypeWithNonEmptyContent) {
+   WebBundleBuilder builder;
+   builder.AddExchange("https://test.example.com/", {{":status", "200"}},
