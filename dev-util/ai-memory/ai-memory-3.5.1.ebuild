@@ -66,9 +66,16 @@ EAPI=8
 # for the requirement `libz-sys = "^1.1.0"` (locked to 1.1.33)". Topped up
 # inline over the 3.4.5 tarball; checked against the lock's registry entries:
 # 527 = 527, nothing else missing.
+#
+# 3.5.1 moved rustix 1.1.4 -> 1.1.6 (via tempfile 3.27, ai-memory-store), and
+# the build died with "failed to select a version for the requirement
+# `rustix = "^1.1.4"` (locked to 1.1.6)". Topped up inline the same way;
+# checked against the lock's registry entries: 525 in the lock, all of them
+# in the tarball or below, nothing else missing.
 CRATES="
 	libz-sys@1.1.33
 	quinn-udp@0.5.16
+	rustix@1.1.6
 	win-custody@0.1.2
 "
 
