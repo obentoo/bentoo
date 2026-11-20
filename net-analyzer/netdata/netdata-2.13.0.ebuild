@@ -147,9 +147,13 @@ src_configure() {
 		-DENABLE_PLUGIN_CHARTS=ON
 		-DENABLE_PLUGIN_CUPS=$(usex cups)
 		-DENABLE_PLUGIN_DEBUGFS=ON
+		-DENABLE_PLUGIN_DEM=OFF # go, new in 2.13.0, default on
 		-DENABLE_PLUGIN_EBPF=OFF # bundles libbpf
 		-DENABLE_PLUGIN_GO=OFF
 		-DENABLE_PLUGIN_IBM=OFF
+		# go ipmi.plugin, new in 2.13.0, default on; fetches Go modules at
+		# build time. USE=ipmi keeps driving the C freeipmi.plugin below.
+		-DENABLE_PLUGIN_IPMI=OFF
 		-DENABLE_PLUGIN_NETFLOW=OFF # rust
 		-DENABLE_PLUGIN_FREEIPMI=$(usex ipmi)
 		-DENABLE_PLUGIN_NFACCT=$(usex nfacct)
