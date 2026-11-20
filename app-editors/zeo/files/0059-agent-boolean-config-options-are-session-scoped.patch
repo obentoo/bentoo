@@ -39,14 +39,23 @@ skipped, and the recorder and round-trip tests that asserted a recorded
 boolean were rewritten to the new contract -- the round trip now expects the
 agent's value on reopen (the entry default before 0.6.1_p20261021). agent_servers 150 passed; config_options 6 passed.
 
+Zeo 0.16.0_p20261119 (Zed 7279c76e): upstream df1ba676 added three more
+ways to flip a switch -- its toggle button, an entry in the new Agent
+Options menu, and the ToggleFastMode key -- all of which saved the value
+as a default. They all go through toggle_boolean_config_option, which is
+now session-only (no persist argument, no agent server or fs); the
+button's tooltip says "Applies to this session only".
+ConfigOptionSelector drops agent_server and fs again, which only the
+switch needed.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
-index 6656674..541a95a 100644
+index 7b2439b..d69677d 100644
 --- a/crates/agent_servers/src/acp/v1.rs
 +++ b/crates/agent_servers/src/acp/v1.rs
-@@ -1301,9 +1301,13 @@ impl AcpConnection {
+@@ -1302,9 +1302,13 @@ impl AcpConnection {
                          return None;
                      }
                      let config_id = option.config_id.0.as_ref();
@@ -254,121 +263,135 @@ index 74cec93..8b4c0a7 100644
  
  #[test]
 diff --git a/crates/agent_ui/src/config_options.rs b/crates/agent_ui/src/config_options.rs
-index b152270..7185a22 100644
+index 94960a0..08b8554 100644
 --- a/crates/agent_ui/src/config_options.rs
 +++ b/crates/agent_ui/src/config_options.rs
-@@ -23,7 +23,7 @@ use zed_actions::agent::ToggleModelSelector;
+@@ -26,7 +26,7 @@ use zed_actions::agent::ToggleModelSelector;
  
  use crate::model_search;
  use crate::set_as_default::{
 -    SET_AS_DEFAULT_HINT, default_hint_footer, default_marker, persists_default,
 +    SESSION_ONLY_HINT, default_hint_footer, default_marker, persists_default,
  };
- use crate::ui::documentation_aside_side;
+ use crate::ui::{documentation_aside_side, fast_mode_button, thinking_effort_trigger};
  use crate::{
-@@ -303,8 +303,6 @@ impl Render for ConfigOptionsView {
- struct ConfigOptionSelector {
+@@ -180,17 +180,7 @@ impl ConfigOptionsView {
+             return;
+         };
+ 
+-        // A keyboard action, so thread-local like cycling: it has no menu in
+-        // which to hold Shift.
+-        toggle_boolean_config_option(
+-            self.config_options.clone(),
+-            self.agent_server.clone(),
+-            option.config_id,
+-            self.fs.clone(),
+-            false,
+-            window,
+-            cx,
+-        );
++        toggle_boolean_config_option(self.config_options.clone(), option.config_id, window, cx);
+     }
+ 
+     pub fn cycle_category_option(
+@@ -378,10 +368,7 @@ impl ConfigOptionsView {
+                             .handler(move |window, cx| {
+                                 toggle_boolean_config_option(
+                                     config_options.clone(),
+-                                    agent_server.clone(),
+                                     config_id.clone(),
+-                                    fs.clone(),
+-                                    persists_default(window),
+                                     window,
+                                     cx,
+                                 );
+@@ -479,8 +466,6 @@ struct ConfigOptionSelector {
      config_options: Rc<dyn AgentSessionConfigOptions>,
      config_id: acp::SessionConfigId,
+     is_response_control: bool,
 -    agent_server: Rc<dyn AgentServer>,
 -    fs: Arc<dyn Fs>,
      picker_handle: Option<PopoverMenuHandle<Picker<ConfigOptionPickerDelegate>>>,
      picker: Option<Entity<Picker<ConfigOptionPickerDelegate>>>,
-     setting_value: bool,
-@@ -336,8 +334,6 @@ impl ConfigOptionSelector {
-         let (picker_handle, picker) = if is_select {
-             let config_options = config_options.clone();
-             let config_id = config_id.clone();
--            let agent_server = agent_server.clone();
--            let fs = fs.clone();
-             let picker = cx.new(move |picker_cx| {
-                 let delegate = ConfigOptionPickerDelegate::new(
-                     config_options,
-@@ -364,8 +360,6 @@ impl ConfigOptionSelector {
-         Self {
+ }
+@@ -523,8 +508,6 @@ impl ConfigOptionSelector {
              config_options,
-             config_id,
+             config_id: option.config_id,
+             is_response_control,
 -            agent_server,
 -            fs,
              picker_handle,
              picker,
-             setting_value: false,
-@@ -624,11 +618,11 @@ impl Render for ConfigOptionSelector {
+         }
+@@ -765,25 +748,20 @@ impl Render for ConfigOptionSelector {
+                                     .color(Color::Muted),
+                             )
+                         })
+-                        // A toggle has no menu to carry the footer the other
+-                        // surfaces use, so the tooltip is where the gesture is
+-                        // taught.
++                        // A switch is scoped to this session: it has no default
++                        // to set, and a reopened thread does not restore it
++                        // (`thread_config_store::snapshot` skips booleans).
+                         .child(
+-                            Label::new(SET_AS_DEFAULT_HINT)
++                            Label::new(SESSION_ONLY_HINT)
+                                 .size(LabelSize::Small)
                                  .color(Color::Muted),
-                         );
-                     }
--                    // A switch has no menu to carry the footer the other
--                    // surfaces use, so the tooltip is where the gesture is
--                    // taught.
-+                    // A switch is scoped to this session: it has no default
-+                    // to set, and a reopened thread does not restore it
-+                    // (`thread_config_store::snapshot` skips booleans).
-                     content = content.child(
--                        Label::new(SET_AS_DEFAULT_HINT)
-+                        Label::new(SESSION_ONLY_HINT)
-                             .size(LabelSize::Small)
-                             .color(Color::Muted),
+                         )
+                         .into_any()
+                 }))
+                 .on_click(cx.listener(|this, _, window, cx| {
+-                    // Shift persists the choice, once the agent accepts it; a
+-                    // plain click moves this thread only.
+                     toggle_boolean_config_option(
+                         this.config_options.clone(),
+-                        this.agent_server.clone(),
+                         this.config_id.clone(),
+-                        this.fs.clone(),
+-                        persists_default(window),
+                         window,
+                         cx,
                      );
-@@ -637,8 +631,6 @@ impl Render for ConfigOptionSelector {
+@@ -1366,14 +1344,12 @@ fn set_config_option_for_thread(
+     })
+ }
  
-                 let config_id = self.config_id.clone();
-                 let config_options = self.config_options.clone();
--                let agent_server = self.agent_server.clone();
--                let fs = self.fs.clone();
-                 let current_value = boolean.current_value;
-                 let toggle_state = if current_value {
-                     ToggleState::Selected
-@@ -662,7 +654,7 @@ impl Render for ConfigOptionSelector {
-                         .label_size(LabelSize::Small)
-                         .label_color(Color::Muted)
-                         .disabled(self.setting_value)
--                        .on_click(move |state, window, cx| {
-+                        .on_click(move |state, _window, cx| {
-                             if !config_options.config_options().iter().any(|option| {
-                                 option.config_id == config_id
-                                     && matches!(&option.kind, acp::SessionConfigKind::Boolean(_))
-@@ -671,24 +663,18 @@ impl Render for ConfigOptionSelector {
-                             }
+-/// Flips a boolean option. `persist` is the Shift gesture: it also saves the
+-/// accepted value as the default; without it only this thread moves.
++/// Flips a boolean option for this session only: a switch has no default to
++/// set, so every way of flipping one -- the button, the Agent Options menu,
++/// the fast-mode key, cycling -- leaves the settings alone.
+ fn toggle_boolean_config_option(
+     config_options: Rc<dyn AgentSessionConfigOptions>,
+-    agent_server: Rc<dyn AgentServer>,
+     config_id: acp::SessionConfigId,
+-    fs: Arc<dyn Fs>,
+-    persist: bool,
+     window: &Window,
+     cx: &mut App,
+ ) {
+@@ -1389,13 +1365,8 @@ fn toggle_boolean_config_option(
+         return;
+     };
+     let value = acp::SessionConfigOptionValue::boolean(!boolean.current_value);
+-    if persist {
+-        set_config_option_and_default(config_options, agent_server, config_id, value, fs, window, cx)
+-            .detach_and_log_err(cx);
+-    } else {
+-        set_config_option_for_thread(config_options, config_id, value, window, cx)
+-            .detach_and_log_err(cx);
+-    }
++    set_config_option_for_thread(config_options, config_id, value, window, cx)
++        .detach_and_log_err(cx);
+ }
  
-                             let next_value = matches!(state, ToggleState::Selected);
--                            let value = acp::SessionConfigOptionValue::boolean(next_value);
--                            // Shift persists the choice, once the agent accepts it;
--                            // a plain click moves this thread only.
--                            if persists_default(window) {
--                                set_config_option_and_default(
--                                    config_options.clone(),
--                                    agent_server.clone(),
--                                    config_id.clone(),
--                                    value,
--                                    fs.clone(),
--                                    cx,
--                                )
--                                .detach_and_log_err(cx);
--                            } else {
--                                config_options
--                                    .set_config_option(config_id.clone(), value, cx)
--                                    .detach_and_log_err(cx);
--                            }
-+                            let task = config_options.set_config_option(
-+                                config_id.clone(),
-+                                acp::SessionConfigOptionValue::boolean(next_value),
-+                                cx,
-+                            );
-+
-+                            cx.spawn(async move |_| {
-+                                if let Err(err) = task.await {
-+                                    log::error!("Failed to set config option: {:?}", err);
-+                                }
-+                            })
-+                            .detach();
-                         }),
-                     )
-                     .into_any_element()
+ fn setting_value_for_config_option(
 diff --git a/crates/agent_ui/src/set_as_default.rs b/crates/agent_ui/src/set_as_default.rs
-index a633d24..25b9ad2 100644
+index 258e3b5..c0483b7 100644
 --- a/crates/agent_ui/src/set_as_default.rs
 +++ b/crates/agent_ui/src/set_as_default.rs
-@@ -30,6 +30,11 @@ const DEFAULT_MARKER_TOOLTIP: &str = "Default for new threads";
+@@ -28,6 +28,11 @@ pub(crate) fn persists_default(window: &Window) -> bool {
  /// honours it.
  pub(crate) const SET_AS_DEFAULT_HINT: &str = "Shift-click to set as default";
  
@@ -377,6 +400,6 @@ index a633d24..25b9ad2 100644
 +/// Shift-click gesture the menus teach does not exist for them.
 +pub(crate) const SESSION_ONLY_HINT: &str = "Applies to this session only";
 +
- /// The marker on the entry that is the persisted default.
- ///
- /// Deliberately not the check mark: the check says "this is what the thread is
+ /// The marker on the entry that is the persisted default. It lives in
+ /// `language_model_selector`, beside the model picker upstream moved there, so
+ /// the model menu and these menus draw the same one.

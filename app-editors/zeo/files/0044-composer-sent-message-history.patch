@@ -86,11 +86,11 @@ content, so its behaviour is unchanged.
 ---
 
 diff --git a/assets/keymaps/default-linux.json b/assets/keymaps/default-linux.json
-index a8e7b75..2490b7a 100644
+index d2de039..9fc583d 100644
 --- a/assets/keymaps/default-linux.json
 +++ b/assets/keymaps/default-linux.json
-@@ -339,6 +339,16 @@
-       "ctrl-alt-.": "agent::ToggleFastMode",
+@@ -340,6 +340,16 @@
+       "ctrl-alt-]": "agent::CycleResponseSpeed",
      },
    },
 +  {
@@ -107,11 +107,11 @@ index a8e7b75..2490b7a 100644
      "context": "AcpThread > Editor && start_of_input",
      "use_key_equivalents": true,
 diff --git a/assets/keymaps/default-macos.json b/assets/keymaps/default-macos.json
-index 5570604..7d31295 100644
+index 0bbd134..8b2460b 100644
 --- a/assets/keymaps/default-macos.json
 +++ b/assets/keymaps/default-macos.json
-@@ -373,6 +373,16 @@
-       "cmd-alt-.": "agent::ToggleFastMode",
+@@ -374,6 +374,16 @@
+       "ctrl-alt-]": "agent::CycleResponseSpeed",
      },
    },
 +  {
@@ -128,11 +128,11 @@ index 5570604..7d31295 100644
      "context": "AcpThread > Editor && start_of_input",
      "use_key_equivalents": true,
 diff --git a/assets/keymaps/default-windows.json b/assets/keymaps/default-windows.json
-index 925d420..2d6df81 100644
+index 4709714..b7cf8c1 100644
 --- a/assets/keymaps/default-windows.json
 +++ b/assets/keymaps/default-windows.json
-@@ -342,6 +342,16 @@
-       "ctrl-alt-.": "agent::ToggleFastMode",
+@@ -343,6 +343,16 @@
+       "ctrl-alt-]": "agent::CycleResponseSpeed",
      },
    },
 +  {
@@ -170,10 +170,10 @@ index 5902ad1..6a1ac3b 100644
      // Outranks the binding above while the agent waits on an answer to its
      // question, as the default keymaps' `question_pending` block does.
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index 63fc567..68debca 100644
+index 1a239b5..f6d4858 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
-@@ -344,6 +344,14 @@ actions!(
+@@ -337,6 +337,14 @@ actions!(
          /// is what keeps the keystroke from reaching the editor as a newline,
          /// which an unbound (`null`) Enter would.
          IgnoreSendWhileQuestionPending,
@@ -189,7 +189,7 @@ index 63fc567..68debca 100644
          CycleNextInlineAssist,
          /// Cycles to the previous inline assist suggestion.
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index c79632b..2a0598a 100644
+index 54d5dd4..2571f44 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -110,6 +110,7 @@ pub(crate) const DRAFT_PROMPT_PERSIST_DEBOUNCE: Duration = Duration::from_millis
@@ -200,7 +200,7 @@ index c79632b..2a0598a 100644
  mod session_stats;
  mod subagent_card;
  mod thread_search_bar;
-@@ -2089,6 +2090,7 @@ impl ConversationView {
+@@ -2088,6 +2089,7 @@ impl ConversationView {
                      active.update(cx, |active, cx| {
                          for index in new_entries {
                              active.sync_elicitation_state_for_entry(index, window, cx);
@@ -208,7 +208,7 @@ index c79632b..2a0598a 100644
                          }
                          active.sync_editor_mode(cx);
                          active.sync_generating_indicator(cx);
-@@ -4482,6 +4484,14 @@ pub(crate) mod tests {
+@@ -4486,6 +4488,14 @@ pub(crate) mod tests {
  
      use super::*;
  
@@ -2141,18 +2141,19 @@ index 0000000..96d4c2b
 +    assert_eq!(composer_text(&view, cx), "my draft");
 +}
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 80c55a3..7221f34 100644
+index 8bb7b34..c622a04 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
-@@ -1,5 +1,6 @@
+@@ -1,5 +1,7 @@
  use crate::{
--    DEFAULT_THREAD_TITLE, SelectPermissionGranularity,
-+    DEFAULT_THREAD_TITLE, RecallNewerMessage, RecallOlderMessage, SelectPermissionGranularity,
+-    CycleResponseSpeed, DEFAULT_THREAD_TITLE, SelectPermissionGranularity,
++    CycleResponseSpeed, DEFAULT_THREAD_TITLE, RecallNewerMessage, RecallOlderMessage,
++    SelectPermissionGranularity,
 +    conversation_view::sent_history::{Recall, SentMessageHistory},
      conversation_view::thread_search_bar::{ThreadSearchBar, ThreadSearchBarEvent},
      entry_view_state::TERMINAL_CONTENT_TOP_PADDING,
      open_abs_path_at_point, project_path_for_file_link,
-@@ -133,6 +134,11 @@ impl ThreadRecovery {
+@@ -133,6 +135,11 @@ impl ThreadRecovery {
      }
  }
  
@@ -2164,7 +2165,7 @@ index 80c55a3..7221f34 100644
  #[derive(Default)]
  struct ThreadFeedbackState {
      feedback: Option<ThreadFeedback>,
-@@ -777,6 +783,10 @@ pub struct ThreadView {
+@@ -777,6 +784,10 @@ pub struct ThreadView {
      pub should_be_following: bool,
      pub editing_message: Option<usize>,
      pub message_queue: MessageQueue,
@@ -2175,7 +2176,7 @@ index 80c55a3..7221f34 100644
      pub turn_fields: TurnFields,
      pub discarded_partial_edits: HashSet<acp_v2::ToolCallId>,
      pub is_loading_contents: bool,
-@@ -1227,7 +1237,9 @@ impl ThreadView {
+@@ -1231,7 +1242,9 @@ impl ThreadView {
          }
  
          subscriptions.push(cx.observe(&message_editor, |this, editor, cx| {
@@ -2186,7 +2187,7 @@ index 80c55a3..7221f34 100644
                  this._draft_resolve_task.take();
                  return;
              }
-@@ -1245,7 +1257,9 @@ impl ThreadView {
+@@ -1249,7 +1262,9 @@ impl ThreadView {
                      None
                  };
                  this.update(cx, |this, cx| {
@@ -2197,7 +2198,7 @@ index 80c55a3..7221f34 100644
                          return;
                      }
                      this.thread.update(cx, |thread, cx| {
-@@ -1308,6 +1322,8 @@ impl ThreadView {
+@@ -1312,6 +1327,8 @@ impl ThreadView {
              should_be_following: false,
              editing_message: None,
              message_queue: MessageQueue::default(),
@@ -2206,7 +2207,7 @@ index 80c55a3..7221f34 100644
              turn_fields: TurnFields::default(),
              discarded_partial_edits: HashSet::default(),
              is_loading_contents: false,
-@@ -1435,7 +1451,13 @@ impl ThreadView {
+@@ -1439,7 +1456,13 @@ impl ThreadView {
                  self.run_local_command(*command, window, cx);
              }
              MessageEditorEvent::InputAttempted { .. } => {}
@@ -2221,7 +2222,7 @@ index 80c55a3..7221f34 100644
          }
      }
  
-@@ -2194,6 +2216,7 @@ impl ThreadView {
+@@ -2198,6 +2221,7 @@ impl ThreadView {
      }
  
      pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2229,7 +2230,7 @@ index 80c55a3..7221f34 100644
          if self.message_editor.read(cx).editor().read(cx).read_only(cx) {
              self.handle_thread_error(
                  anyhow!(
-@@ -3281,6 +3304,207 @@ impl ThreadView {
+@@ -3284,6 +3308,207 @@ impl ThreadView {
          self.move_queued_message_to_main_editor(last_id, None, None, window, cx);
      }
  
@@ -2437,7 +2438,7 @@ index 80c55a3..7221f34 100644
      // editor methods
  
      pub fn expand_message_editor(
-@@ -5630,6 +5854,8 @@ impl ThreadView {
+@@ -5635,6 +5860,8 @@ impl ThreadView {
              .bg(editor_bg_color)
              .justify_center()
              .on_action(cx.listener(Self::handle_message_editor_move_up))

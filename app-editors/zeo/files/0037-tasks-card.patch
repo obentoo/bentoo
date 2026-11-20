@@ -121,10 +121,18 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 On Zed 483b746b (bump to zeo-0.9.0_p20261109): gpui now implements IntoElement for
 every Element (#64864), so TasksCardOverlay's hand-written impl is gone.
 
+
+Zeo 0.16.0_p20261119 (Zed 7279c76e): upstream 5a0e9521 removed
+Tooltip::new_element as unused; it is restored in ui (seven lines, as
+upstream had it), because the card's and the tasks panel's tooltips need
+an element title -- for their debug selectors -- and, in the panel,
+meta, which Tooltip::element cannot take. Upstream 4e2c957a deleted
+AgentPanel::activate_retained_thread, whose call this patch used to
+touch; that hunk is gone.
 ---
 
 diff --git a/assets/settings/default.json b/assets/settings/default.json
-index 3f66a14..26a5b02 100644
+index 4c908fd..e82fdf4 100644
 --- a/assets/settings/default.json
 +++ b/assets/settings/default.json
 @@ -1444,6 +1444,15 @@
@@ -159,7 +167,7 @@ index 043097e..f97fbd2 100644
              auto_generate_thread_titles: true,
              max_idle_retained_threads: 5,
 diff --git a/crates/agent_settings/src/agent_settings.rs b/crates/agent_settings/src/agent_settings.rs
-index 9431704..4f1542e 100644
+index 9648a63..19a800c 100644
 --- a/crates/agent_settings/src/agent_settings.rs
 +++ b/crates/agent_settings/src/agent_settings.rs
 @@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
@@ -296,7 +304,7 @@ index 0000000..54bdc62
 +    }
 +}
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index 2c51f9c..9bf46ce 100644
+index ed7bc00..1a33d3a 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -39,6 +39,7 @@ use crate::ExpandMessageEditor;
@@ -322,7 +330,7 @@ index 2c51f9c..9bf46ce 100644
  };
  use language::LanguageRegistry;
  use language_model::LanguageModelRegistry;
-@@ -1154,6 +1155,14 @@ pub struct AgentPanel {
+@@ -1201,6 +1202,14 @@ pub struct AgentPanel {
      _settings_subscription: Subscription,
      retained_thread_subscriptions: HashMap<ThreadId, Subscription>,
      last_context_source: Option<AgentContextSource>,
@@ -337,7 +345,7 @@ index 2c51f9c..9bf46ce 100644
  
      is_active: bool,
  }
-@@ -1461,7 +1470,7 @@ impl AgentPanel {
+@@ -1508,7 +1517,7 @@ impl AgentPanel {
          })
      }
  
@@ -346,7 +354,7 @@ index 2c51f9c..9bf46ce 100644
          let fs = workspace.app_state().fs.clone();
          let user_store = workspace.app_state().user_store.clone();
          let project = workspace.project();
-@@ -1522,7 +1531,7 @@ impl AgentPanel {
+@@ -1569,7 +1578,7 @@ impl AgentPanel {
              &ThreadMetadataStore::global(cx),
              |this, _store, event, cx| {
                  let ThreadMetadataStoreEvent::ThreadArchived(thread_id) = event;
@@ -355,7 +363,7 @@ index 2c51f9c..9bf46ce 100644
                      cx.notify();
                  }
              },
-@@ -1530,6 +1539,8 @@ impl AgentPanel {
+@@ -1577,6 +1586,8 @@ impl AgentPanel {
  
          let _settings_subscription = cx.observe_global::<SettingsStore>(|this, cx| {
              this.cleanup_retained_threads(cx);
@@ -364,7 +372,7 @@ index 2c51f9c..9bf46ce 100644
          });
  
          cx.on_release(|this, cx| {
-@@ -1537,6 +1548,38 @@ impl AgentPanel {
+@@ -1584,6 +1595,38 @@ impl AgentPanel {
          })
          .detach();
  
@@ -403,7 +411,7 @@ index 2c51f9c..9bf46ce 100644
          let panel = Self {
              workspace_id,
              base_view,
-@@ -1576,6 +1619,11 @@ impl AgentPanel {
+@@ -1623,6 +1666,11 @@ impl AgentPanel {
              _settings_subscription,
              retained_thread_subscriptions: HashMap::default(),
              last_context_source: None,
@@ -415,7 +423,7 @@ index 2c51f9c..9bf46ce 100644
              is_active: false,
          };
  
-@@ -1719,6 +1767,26 @@ impl AgentPanel {
+@@ -1766,6 +1814,26 @@ impl AgentPanel {
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -442,7 +450,7 @@ index 2c51f9c..9bf46ce 100644
          let metadata = ThreadMetadataStore::try_global(cx)
              .and_then(|store| store.read(cx).entry_by_session(&session_id).cloned());
          let Some(metadata) = metadata else {
-@@ -1737,6 +1805,92 @@ impl AgentPanel {
+@@ -1784,6 +1852,92 @@ impl AgentPanel {
          );
      }
  
@@ -535,7 +543,7 @@ index 2c51f9c..9bf46ce 100644
      fn external_thread_by_session(
          &mut self,
          agent: Agent,
-@@ -1780,6 +1934,9 @@ impl AgentPanel {
+@@ -1827,6 +1981,9 @@ impl AgentPanel {
          let old_view = std::mem::replace(&mut self.base_view, BaseView::Uninitialized);
          self.retain_running_thread(old_view, cx);
          self.activate_draft(false, AgentThreadSource::AgentPanel, window, cx);
@@ -545,7 +553,7 @@ index 2c51f9c..9bf46ce 100644
          self.serialize(cx);
          cx.emit(AgentPanelEvent::ActiveViewChanged);
          cx.notify();
-@@ -3233,7 +3390,7 @@ impl AgentPanel {
+@@ -3280,7 +3437,7 @@ impl AgentPanel {
              return false;
          }
  
@@ -554,16 +562,7 @@ index 2c51f9c..9bf46ce 100644
          self.set_ephemeral_draft(conversation_view, cx);
          true
      }
-@@ -3311,7 +3468,7 @@ impl AgentPanel {
-         window: &mut Window,
-         cx: &mut Context<Self>,
-     ) {
--        let conversation_view = if let Some(view) = self.remove_retained_thread(&id) {
-+        let conversation_view = if let Some(view) = self.remove_retained_thread(&id, cx) {
-             self.try_make_empty_draft_ephemeral(view.clone(), cx);
-             view
-         } else if let Some(draft) = &self.draft_thread {
-@@ -3363,7 +3520,7 @@ impl AgentPanel {
+@@ -3383,7 +3540,7 @@ impl AgentPanel {
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -572,7 +571,7 @@ index 2c51f9c..9bf46ce 100644
          ThreadMetadataStore::global(cx).update(cx, |store, cx| {
              store.delete(id, cx);
          });
-@@ -3385,6 +3542,9 @@ impl AgentPanel {
+@@ -3405,6 +3562,9 @@ impl AgentPanel {
              } else {
                  self.refresh_base_view_subscriptions(window, cx);
              }
@@ -582,7 +581,7 @@ index 2c51f9c..9bf46ce 100644
              self.serialize(cx);
              cx.emit(AgentPanelEvent::ActiveViewChanged);
              cx.notify();
-@@ -4299,6 +4459,7 @@ impl AgentPanel {
+@@ -4319,6 +4479,7 @@ impl AgentPanel {
          self.retained_threads
              .insert(thread_id, conversation_view.clone());
          self.observe_retained_thread(thread_id, conversation_view, cx);
@@ -590,7 +589,7 @@ index 2c51f9c..9bf46ce 100644
      }
  
      fn observe_retained_thread(
-@@ -4335,12 +4496,115 @@ impl AgentPanel {
+@@ -4355,12 +4516,115 @@ impl AgentPanel {
              .insert(thread_id, subscription);
      }
  
@@ -708,7 +707,7 @@ index 2c51f9c..9bf46ce 100644
          let mut potential_removals = self
              .retained_threads
              .iter()
-@@ -4367,7 +4631,7 @@ impl AgentPanel {
+@@ -4387,7 +4651,7 @@ impl AgentPanel {
              .take(n)
              .collect::<Vec<_>>();
          for id in to_remove {
@@ -717,7 +716,7 @@ index 2c51f9c..9bf46ce 100644
          }
      }
  
-@@ -4456,6 +4720,7 @@ impl AgentPanel {
+@@ -4476,6 +4740,7 @@ impl AgentPanel {
              }
          };
          self.serialize(cx);
@@ -725,7 +724,7 @@ index 2c51f9c..9bf46ce 100644
      }
  
      fn visible_surface(&self) -> VisibleSurface<'_> {
-@@ -4502,7 +4767,7 @@ impl AgentPanel {
+@@ -4522,7 +4787,7 @@ impl AgentPanel {
                              this.draft_thread = None;
                              this._draft_editor_observation = None;
                          }
@@ -734,7 +733,7 @@ index 2c51f9c..9bf46ce 100644
                          cx.emit(AgentPanelEvent::ThreadInteracted { thread_id });
                      }
                  },
-@@ -4578,7 +4843,7 @@ impl AgentPanel {
+@@ -4598,7 +4863,7 @@ impl AgentPanel {
              );
              return;
          }
@@ -743,7 +742,7 @@ index 2c51f9c..9bf46ce 100644
              self.try_make_empty_draft_ephemeral(conversation_view.clone(), cx);
              self.set_base_view(
                  BaseView::AgentThread { conversation_view },
-@@ -6698,6 +6963,7 @@ impl Render for AgentPanel {
+@@ -6718,6 +6983,7 @@ impl Render for AgentPanel {
          // - Scrolling in all views works as expected
          // - Files can be dropped into the panel
          let content = v_flex()
@@ -751,7 +750,7 @@ index 2c51f9c..9bf46ce 100644
              .key_context(self.key_context(cx))
              .relative()
              .size_full()
-@@ -6781,7 +7047,8 @@ impl Render for AgentPanel {
+@@ -6801,7 +7067,8 @@ impl Render for AgentPanel {
                          .child(self.render_drag_target(cx))
                  }
              })
@@ -761,7 +760,7 @@ index 2c51f9c..9bf46ce 100644
  
          match self.visible_font_size() {
              WhichFontSize::AgentFont => {
-@@ -6819,7 +7086,7 @@ impl AgentPanel {
+@@ -6839,7 +7106,7 @@ impl AgentPanel {
      /// Drops a thread's `ConversationView` from `retained_threads` without
      /// deleting its metadata or kvp state. Simulates the post-restart
      pub fn test_unload_retained_thread(&mut self, id: ThreadId) -> bool {
@@ -770,7 +769,7 @@ index 2c51f9c..9bf46ce 100644
      }
  
      /// Opens an external thread using an arbitrary AgentServer.
-@@ -9196,6 +9463,61 @@ mod tests {
+@@ -9216,6 +9483,61 @@ mod tests {
          assert_eq!(folders, Some(vec![PathBuf::from("/project")]));
      }
  
@@ -832,7 +831,7 @@ index 2c51f9c..9bf46ce 100644
      #[gpui::test]
      async fn test_new_draft_survives_reload_when_real_thread_is_active(cx: &mut TestAppContext) {
          init_test(cx);
-@@ -14699,8 +15021,8 @@ mod tests {
+@@ -14719,8 +15041,8 @@ mod tests {
          // directly remove from retained_threads and drop the handle
          // so on_release → close_all_sessions fires only on A.
          drop(retained_conversation_a);
@@ -844,10 +843,10 @@ index 2c51f9c..9bf46ce 100644
          cx.run_until_parked();
  
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index 0e9001f..b61157e 100644
+index bcbe9b3..9b9a1c8 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
-@@ -26,6 +26,7 @@ mod model_selector;
+@@ -23,6 +23,7 @@ mod model_selector;
  mod model_selector_popover;
  mod profile_selector;
  mod set_as_default;
@@ -855,7 +854,7 @@ index 0e9001f..b61157e 100644
  mod terminal_codegen;
  mod terminal_inline_assistant;
  pub mod terminal_thread_metadata_store;
-@@ -1111,6 +1112,10 @@ mod tests {
+@@ -1091,6 +1092,10 @@ mod tests {
              sandbox_permissions: Default::default(),
              show_turn_stats: false,
              elicitation_placement: settings::ElicitationPlacement::default(),
@@ -867,10 +866,10 @@ index 0e9001f..b61157e 100644
              auto_generate_thread_titles: true,
              max_idle_retained_threads: 5,
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 41b18ec..1f79b1d 100644
+index f418925..af76072 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
-@@ -2041,21 +2041,30 @@ impl ConversationView {
+@@ -2040,21 +2040,30 @@ impl ConversationView {
              }
              AcpThreadEvent::NewEntry => {
                  let len = thread.read(cx).entries().len();
@@ -910,7 +909,7 @@ index 41b18ec..1f79b1d 100644
                          active.sync_editor_mode(cx);
                          active.sync_generating_indicator(cx);
                      });
-@@ -15117,6 +15126,50 @@ pub(crate) mod tests {
+@@ -15209,6 +15218,50 @@ pub(crate) mod tests {
          }
      }
  
@@ -5167,7 +5166,7 @@ index 0000000..0208066
 +    cx.run_until_parked();
 +}
 diff --git a/crates/settings_content/src/agent.rs b/crates/settings_content/src/agent.rs
-index 6ebdb68..dcc07fe 100644
+index cfb0590..b8f176c 100644
 --- a/crates/settings_content/src/agent.rs
 +++ b/crates/settings_content/src/agent.rs
 @@ -124,6 +124,49 @@ pub enum ElicitationPlacement {
@@ -5230,3 +5229,25 @@ index 6ebdb68..dcc07fe 100644
      /// Whether to show the merge conflict indicator in the status bar
      /// that offers to resolve conflicts using the agent.
      ///
+diff --git a/crates/ui/src/components/tooltip.rs b/crates/ui/src/components/tooltip.rs
+index ae0b250..e1c2326 100644
+--- a/crates/ui/src/components/tooltip.rs
++++ b/crates/ui/src/components/tooltip.rs
+@@ -157,6 +157,17 @@ impl Tooltip {
+         }
+     }
+ 
++    /// An element title that can still take `meta`/`key_binding`, which `element` cannot.
++    /// Upstream removed it as unused (5a0e9521); Zeo's tasks card and tasks panel give
++    /// their tooltips a debug selector this way.
++    pub fn new_element(title: impl Fn(&mut Window, &mut App) -> AnyElement + 'static) -> Self {
++        Self {
++            title: Title::Callback(Rc::new(title)),
++            meta: None,
++            key_binding: None,
++        }
++    }
++
+     pub fn element(
+         title: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
+     ) -> impl Fn(&mut Window, &mut App) -> AnyView {

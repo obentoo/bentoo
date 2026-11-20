@@ -156,15 +156,22 @@ It is `#[cfg(unix)]` now; off Unix the identity is length plus `modified()`,
 enough to notice a replaced file. ai-jail runs nowhere but Linux, so on
 Windows the sandbox reads as unavailable.
 
+Zeo 0.16.0_p20261119 (Zed 7279c76e): upstream 07278edd made stdio take a
+ResolvedAgentServerCommand whose installation lease keeps a registry
+agent's version on disk while it runs. stdio_with (v1 and v2) takes the
+same type and holds the lease the same way, and the jailed launch in
+custom.rs keeps the lease get_command returned through the launch
+decision: the jail runs that same installation.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
-index e4871e6..7dbde1f 100644
+index 5911320..5b20951 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -371,6 +371,39 @@ dependencies = [
-  "strum 0.28.0",
+@@ -372,6 +372,39 @@ dependencies = [
+  "uuid",
  ]
  
 +[[package]]
@@ -203,7 +210,7 @@ index e4871e6..7dbde1f 100644
  [[package]]
  name = "agent_servers"
  version = "0.1.0"
-@@ -378,6 +411,7 @@ dependencies = [
+@@ -379,6 +412,7 @@ dependencies = [
   "acp_thread",
   "action_log",
   "agent-client-protocol",
@@ -211,7 +218,7 @@ index e4871e6..7dbde1f 100644
   "anyhow",
   "async-channel 2.5.0",
   "base64 0.22.1",
-@@ -395,10 +429,12 @@ dependencies = [
+@@ -396,10 +430,12 @@ dependencies = [
   "indoc",
   "language_model",
   "log",
@@ -224,7 +231,7 @@ index e4871e6..7dbde1f 100644
   "serde",
   "serde_json",
   "settings",
-@@ -410,6 +446,7 @@ dependencies = [
+@@ -411,6 +447,7 @@ dependencies = [
   "util",
   "uuid",
   "watch",
@@ -232,7 +239,7 @@ index e4871e6..7dbde1f 100644
   "zed_credentials_provider",
  ]
  
-@@ -491,6 +528,7 @@ dependencies = [
+@@ -494,6 +531,7 @@ dependencies = [
   "action_log",
   "agent",
   "agent-client-protocol",
@@ -240,7 +247,7 @@ index e4871e6..7dbde1f 100644
   "agent_servers",
   "agent_settings",
   "agent_skills",
-@@ -16575,6 +16613,7 @@ name = "settings_ui"
+@@ -16596,6 +16634,7 @@ name = "settings_ui"
  version = "0.1.0"
  dependencies = [
   "agent",
@@ -248,7 +255,7 @@ index e4871e6..7dbde1f 100644
   "agent_settings",
   "agent_skills",
   "anyhow",
-@@ -16608,6 +16647,7 @@ dependencies = [
+@@ -16629,6 +16668,7 @@ dependencies = [
   "language_models",
   "log",
   "menu",
@@ -256,7 +263,7 @@ index e4871e6..7dbde1f 100644
   "paths",
   "picker",
   "platform_title_bar",
-@@ -16618,13 +16658,16 @@ dependencies = [
+@@ -16639,12 +16679,15 @@ dependencies = [
   "rodio",
   "schemars 1.0.4",
   "search",
@@ -264,7 +271,6 @@ index e4871e6..7dbde1f 100644
   "serde",
   "serde_json",
 + "serde_json_lenient",
-  "serde_yaml_ng",
   "settings",
   "shell_command_parser",
   "strum 0.28.0",
@@ -273,7 +279,7 @@ index e4871e6..7dbde1f 100644
   "theme",
   "theme_settings",
   "ui",
-@@ -22605,6 +22648,7 @@ dependencies = [
+@@ -22623,6 +22666,7 @@ dependencies = [
   "activity_indicator",
   "agent",
   "agent-client-protocol",
@@ -282,7 +288,7 @@ index e4871e6..7dbde1f 100644
   "agent_settings",
   "agent_skills",
 diff --git a/Cargo.toml b/Cargo.toml
-index 92104a7..d56203a 100644
+index 30847b5..c095e89 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -6,6 +6,7 @@ members = [
@@ -293,7 +299,7 @@ index 92104a7..d56203a 100644
      "crates/agent_servers",
      "crates/agent_settings",
      "crates/agent_skills",
-@@ -294,6 +295,7 @@ acp_tools = { path = "crates/acp_tools" }
+@@ -295,6 +296,7 @@ acp_tools = { path = "crates/acp_tools" }
  action_log = { path = "crates/action_log" }
  activity_indicator = { path = "crates/activity_indicator" }
  agent = { path = "crates/agent" }
@@ -302,7 +308,7 @@ index 92104a7..d56203a 100644
  agent_settings = { path = "crates/agent_settings" }
  agent_skills = { path = "crates/agent_skills" }
 diff --git a/assets/settings/default.json b/assets/settings/default.json
-index 7a70668..0da3f4c 100644
+index 6437b2b..d5e3b19 100644
 --- a/assets/settings/default.json
 +++ b/assets/settings/default.json
 @@ -3151,4 +3151,26 @@
@@ -10797,7 +10803,7 @@ index d091060..37f2bc5 100644
  tempfile.workspace = true
 +workspace = { workspace = true, features = ["test-support"] }
 diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
-index 38c2270..d1fe3d5 100644
+index 8b848fb..45d2eac 100644
 --- a/crates/agent_servers/src/acp.rs
 +++ b/crates/agent_servers/src/acp.rs
 @@ -11,6 +11,7 @@ use debug_log::AcpDebugLog;
@@ -10808,7 +10814,7 @@ index 38c2270..d1fe3d5 100644
  #[cfg(any(test, feature = "test-support"))]
  pub use v1::test_support;
  pub use v1::{AcpConnection, AcpSessionList, GEMINI_TERMINAL_AUTH_METHOD_ID};
-@@ -127,31 +128,53 @@ fn fallback_failure(failure: anyhow::Error, negotiation: anyhow::Error) -> anyho
+@@ -132,31 +133,53 @@ fn fallback_failure(failure: anyhow::Error, negotiation: anyhow::Error) -> anyho
      failure.context(context)
  }
  
@@ -10816,7 +10822,7 @@ index 38c2270..d1fe3d5 100644
 +pub(crate) async fn connect(
      agent_id: AgentId,
      project: Entity<Project>,
-     command: AgentServerCommand,
+     command: ResolvedAgentServerCommand,
      agent_server_store: WeakEntity<AgentServerStore>,
      default_mode: Option<acp_v2::SessionConfigValueId>,
      default_config_options: HashMap<String, settings::AgentConfigOptionValue>,
@@ -10868,7 +10874,7 @@ index 38c2270..d1fe3d5 100644
      };
      v1::connect(
          agent_id,
-@@ -160,6 +183,7 @@ pub async fn connect(
+@@ -165,6 +188,7 @@ pub async fn connect(
          agent_server_store,
          default_mode,
          default_config_options,
@@ -10876,7 +10882,7 @@ index 38c2270..d1fe3d5 100644
          cx,
      )
      .await
-@@ -1449,6 +1473,7 @@ done
+@@ -1552,6 +1576,7 @@ done
                          WeakEntity::new_invalid(),
                          None,
                          HashMap::default(),
@@ -10884,7 +10890,7 @@ index 38c2270..d1fe3d5 100644
                          &mut cx,
                      )
                      .await
-@@ -1605,6 +1630,7 @@ done
+@@ -1708,6 +1733,7 @@ done
                          WeakEntity::new_invalid(),
                          None,
                          HashMap::default(),
@@ -10893,7 +10899,7 @@ index 38c2270..d1fe3d5 100644
                      )
                      .await
 diff --git a/crates/agent_servers/src/acp/acp_beta_connect_tests.rs b/crates/agent_servers/src/acp/acp_beta_connect_tests.rs
-index 4d596de..ff94965 100644
+index a2e59c5..3c4f9a2 100644
 --- a/crates/agent_servers/src/acp/acp_beta_connect_tests.rs
 +++ b/crates/agent_servers/src/acp/acp_beta_connect_tests.rs
 @@ -120,6 +120,7 @@ async fn connect_beta_once(
@@ -10905,19 +10911,19 @@ index 4d596de..ff94965 100644
              )
              .await
 diff --git a/crates/agent_servers/src/acp/transport.rs b/crates/agent_servers/src/acp/transport.rs
-index 86f3d0c..0dc9ca6 100644
+index 418344a..8a96b58 100644
 --- a/crates/agent_servers/src/acp/transport.rs
 +++ b/crates/agent_servers/src/acp/transport.rs
-@@ -7,7 +7,7 @@ use futures::{
- use gpui::{AsyncApp, Entity};
- use project::{Project, agent_server_store::AgentServerCommand};
+@@ -11,7 +11,7 @@ use project::{
+     agent_server_store::{AgentInstallationLease, AgentServerCommand},
+ };
  use remote::command::RemoteCommand;
 -use std::{io, pin::Pin, process::Stdio};
 +use std::{io, path::Path, pin::Pin, process::Stdio};
  use task::{Shell, ShellBuilder};
  use util::{ResultExt as _, process::Child};
  
-@@ -28,11 +28,34 @@ pub(super) struct StdioProcess {
+@@ -49,11 +49,34 @@ pub(super) struct StdioProcess {
      pub debug_log: AcpDebugLog,
  }
  
@@ -10952,7 +10958,7 @@ index 86f3d0c..0dc9ca6 100644
      let root_dir = project.read_with(cx, |project, cx| {
          project
              .default_path_list(cx)
-@@ -77,8 +100,16 @@ pub(super) fn spawn_stdio(
+@@ -98,8 +121,16 @@ pub(super) fn spawn_stdio(
      }) {
          child.current_dir(cwd);
      }
@@ -10970,7 +10976,7 @@ index 86f3d0c..0dc9ca6 100644
      let stdout = child.stdout.take().context("Failed to take stdout")?;
      let stdin = child.stdin.take().context("Failed to take stdin")?;
      let stderr = child.stderr.take().context("Failed to take stderr")?;
-@@ -184,7 +215,7 @@ mod tests {
+@@ -243,7 +274,7 @@ mod tests {
                  mut outgoing,
                  stderr,
                  debug_log,
@@ -10979,7 +10985,7 @@ index 86f3d0c..0dc9ca6 100644
                  .expect("spawn fresh transport");
              let stderr_task = cx.background_executor.spawn(stderr);
              let params = serde_json::json!({ "attempt": attempt });
-@@ -249,4 +280,137 @@ mod tests {
+@@ -308,4 +339,137 @@ mod tests {
              }));
          }
      }
@@ -11118,10 +11124,10 @@ index 86f3d0c..0dc9ca6 100644
 +    }
  }
 diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
-index 3db73b9..7a1934f 100644
+index dde57b5..dcb42ea 100644
 --- a/crates/agent_servers/src/acp/v1.rs
 +++ b/crates/agent_servers/src/acp/v1.rs
-@@ -649,22 +649,35 @@ impl AgentSessionList for AcpSessionList {
+@@ -651,22 +651,35 @@ impl AgentSessionList for AcpSessionList {
      }
  }
  
@@ -11140,7 +11146,7 @@ index 3db73b9..7a1934f 100644
 +pub(crate) async fn connect(
      agent_id: AgentId,
      project: Entity<Project>,
-     command: AgentServerCommand,
+     command: ResolvedAgentServerCommand,
      agent_server_store: WeakEntity<AgentServerStore>,
      default_mode: Option<acp_v2::SessionConfigValueId>,
      default_config_options: HashMap<String, AgentConfigOptionValue>,
@@ -11151,8 +11157,7 @@ index 3db73b9..7a1934f 100644
 +    let conn = AcpConnection::stdio_with(
          agent_id,
          project,
--        command.clone(),
-+        command,
+         command,
          agent_server_store,
          default_mode,
          default_config_options,
@@ -11160,7 +11165,7 @@ index 3db73b9..7a1934f 100644
          cx,
      )
      .await?;
-@@ -952,6 +965,9 @@ impl AcpConnection {
+@@ -954,6 +967,9 @@ impl AcpConnection {
          self.debug_log.subscribe()
      }
  
@@ -11170,7 +11175,7 @@ index 3db73b9..7a1934f 100644
      pub async fn stdio(
          agent_id: AgentId,
          project: Entity<Project>,
-@@ -961,6 +977,30 @@ impl AcpConnection {
+@@ -963,6 +979,30 @@ impl AcpConnection {
          default_config_options: HashMap<String, AgentConfigOptionValue>,
          cx: &mut AsyncApp,
      ) -> Result<Self> {
@@ -11190,7 +11195,7 @@ index 3db73b9..7a1934f 100644
 +    pub(crate) async fn stdio_with(
 +        agent_id: AgentId,
 +        project: Entity<Project>,
-+        command: AgentServerCommand,
++        command: ResolvedAgentServerCommand,
 +        agent_server_store: WeakEntity<AgentServerStore>,
 +        default_mode: Option<acp_v2::SessionConfigValueId>,
 +        default_config_options: HashMap<String, AgentConfigOptionValue>,
@@ -11198,10 +11203,10 @@ index 3db73b9..7a1934f 100644
 +        cx: &mut AsyncApp,
 +    ) -> Result<Self> {
 +        let StdioLaunch { cwd, io_ended } = launch;
-         let original_command = command.clone();
-         let transport::StdioProcess {
-             child,
-@@ -968,7 +1008,7 @@ impl AcpConnection {
+         let ResolvedAgentServerCommand {
+             command,
+             installation_lease,
+@@ -974,7 +1014,7 @@ impl AcpConnection {
              outgoing,
              stderr,
              debug_log,
@@ -11210,7 +11215,7 @@ index 3db73b9..7a1934f 100644
          let mut child = transport::OwnedChild(child);
          let sessions = Rc::new(RefCell::new(HashMap::default()));
  
-@@ -1013,7 +1053,14 @@ impl AcpConnection {
+@@ -1019,7 +1059,14 @@ impl AcpConnection {
              connection_tx,
              runtime::shutdown_requested(shutdown),
          );
@@ -11227,7 +11232,7 @@ index 3db73b9..7a1934f 100644
          let connection_rx = async move {
              connection_rx
 diff --git a/crates/agent_servers/src/acp/v2.rs b/crates/agent_servers/src/acp/v2.rs
-index 03fa6d3..a1cac44 100644
+index fd1b3ca..de6fe60 100644
 --- a/crates/agent_servers/src/acp/v2.rs
 +++ b/crates/agent_servers/src/acp/v2.rs
 @@ -1,7 +1,7 @@
@@ -11248,7 +11253,7 @@ index 03fa6d3..a1cac44 100644
  }
  
  impl AcpV2Connection {
-@@ -232,13 +234,36 @@ impl AcpV2Connection {
+@@ -232,6 +234,29 @@ impl AcpV2Connection {
          agent_server_store: WeakEntity<AgentServerStore>,
          cx: &mut AsyncApp,
      ) -> Result<Self> {
@@ -11269,24 +11274,25 @@ index 03fa6d3..a1cac44 100644
 +    pub(crate) async fn stdio_with(
 +        agent_id: AgentId,
 +        project: Entity<Project>,
-+        command: AgentServerCommand,
++        command: ResolvedAgentServerCommand,
 +        agent_server_store: WeakEntity<AgentServerStore>,
 +        launch: StdioLaunch,
 +        cx: &mut AsyncApp,
 +    ) -> Result<Self> {
 +        let StdioLaunch { cwd, io_ended } = launch;
-         let transport::StdioProcess {
-             child,
-             incoming,
+         let ResolvedAgentServerCommand {
+             command,
+             installation_lease,
+@@ -242,7 +267,7 @@ impl AcpV2Connection {
              outgoing,
              stderr,
              debug_log,
 -        } = transport::spawn_stdio(&project, command, cx)?;
 +        } = transport::spawn_stdio(&project, command, cwd.as_deref(), cx)?;
          let mut child = transport::OwnedChild(child);
-         let status = child
-             .0
-@@ -280,6 +305,7 @@ impl AcpV2Connection {
+         let status = child.exit_status(installation_lease);
+         let stderr_task = cx
+@@ -278,6 +303,7 @@ impl AcpV2Connection {
                          stderr_task,
                          runtime,
                          drain: Some(drain_sender),
@@ -11294,7 +11300,7 @@ index 03fa6d3..a1cac44 100644
                      }),
                      &mut cx,
                  )
-@@ -324,18 +350,20 @@ impl AcpV2Connection {
+@@ -322,18 +348,20 @@ impl AcpV2Connection {
          startup: Option<StdioStartup>,
          cx: &mut AsyncApp,
      ) -> Result<Self> {
@@ -11316,7 +11322,7 @@ index 03fa6d3..a1cac44 100644
              ),
          };
          let request_elicitations = cx.new(|_| ElicitationStore::default());
-@@ -367,7 +395,15 @@ impl AcpV2Connection {
+@@ -365,7 +393,15 @@ impl AcpV2Connection {
                      )
                      .await
                  });
@@ -11333,7 +11339,7 @@ index 03fa6d3..a1cac44 100644
          let stderr_for_drain = stderr_task.clone();
          *runtime.borrow_mut() = Some(ConnectionRuntime {
              _client: client_runtime,
-@@ -8180,6 +8216,7 @@ exec sleep 60
+@@ -8392,6 +8428,7 @@ exec sleep 60
                      stderr_task: Task::ready(()).shared(),
                      runtime: Rc::new(RefCell::new(None)),
                      drain: None,
@@ -11359,7 +11365,7 @@ index 1dfc726..017f603 100644
  pub mod thread_config_store;
  
 diff --git a/crates/agent_servers/src/custom.rs b/crates/agent_servers/src/custom.rs
-index 3992b03..6851a2f 100644
+index 3992b03..acbe88e 100644
 --- a/crates/agent_servers/src/custom.rs
 +++ b/crates/agent_servers/src/custom.rs
 @@ -1,6 +1,8 @@
@@ -11371,7 +11377,16 @@ index 3992b03..6851a2f 100644
  use anyhow::{Context as _, Result};
  use collections::HashSet;
  use fs::Fs;
-@@ -264,20 +266,63 @@ impl AgentServer for CustomAgentServer {
+@@ -8,7 +10,7 @@ use gpui::{App, AppContext as _, Entity, Task};
+ use language_model::{ApiKey, EnvVar, GOOGLE_AI_API_URL};
+ use project::{
+     Project,
+-    agent_server_store::{AgentId, AllAgentServersSettings},
++    agent_server_store::{AgentId, AllAgentServersSettings, ResolvedAgentServerCommand},
+ };
+ use settings::{AgentConfigOptionValue, SettingsStore, update_settings_file};
+ use std::{rc::Rc, sync::Arc};
+@@ -264,27 +266,82 @@ impl AgentServer for CustomAgentServer {
                      extra_env.insert("GEMINI_API_KEY".into(), api_key);
                  }
              }
@@ -11409,7 +11424,12 @@ index 3992b03..6851a2f 100644
 +                    agent_env,
 +                ))
 +            })??;
-+            let command = command.await?;
++            // The lease outlives the launch decision: a jailed start runs the same
++            // installation, inside the jail.
++            let ResolvedAgentServerCommand {
++                command,
++                installation_lease,
++            } = command.await?;
 +            configured_env.extend(agent_env);
 +
 +            let plan = launch::plan(
@@ -11449,7 +11469,11 @@ index 3992b03..6851a2f 100644
              let connection = crate::acp::connect(
                  agent_id,
                  project,
-@@ -285,6 +330,10 @@ impl AgentServer for CustomAgentServer {
+-                command,
++                ResolvedAgentServerCommand {
++                    command,
++                    installation_lease,
++                },
                  store.clone(),
                  default_mode,
                  default_config_options,
@@ -11460,7 +11484,7 @@ index 3992b03..6851a2f 100644
                  cx,
              )
              .await?;
-@@ -297,6 +346,58 @@ impl AgentServer for CustomAgentServer {
+@@ -297,6 +354,58 @@ impl AgentServer for CustomAgentServer {
      }
  }
  
@@ -12608,7 +12632,7 @@ index 4fb94c7..024a465 100644
  /// parallel in one process, so callers pass needles unique to their test.
  pub(crate) fn logged(needles: &[&str]) -> bool {
 diff --git a/crates/agent_ui/Cargo.toml b/crates/agent_ui/Cargo.toml
-index 4e9c635..b3c9b39 100644
+index 2a3b5a4..7a8659c 100644
 --- a/crates/agent_ui/Cargo.toml
 +++ b/crates/agent_ui/Cargo.toml
 @@ -31,6 +31,7 @@ action_log.workspace = true
@@ -13529,10 +13553,10 @@ index 0000000..0c6c92d
 +    }
 +}
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index 9baf725..5cf4f38 100644
+index 2c4d752..37508b9 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
-@@ -729,6 +729,7 @@ pub fn init(cx: &mut App) {
+@@ -776,6 +776,7 @@ pub fn init(cx: &mut App) {
          },
      )
      .detach();
@@ -13540,7 +13564,7 @@ index 9baf725..5cf4f38 100644
  }
  
  fn format_selection_for_terminal(
-@@ -1159,6 +1160,8 @@ pub struct AgentPanel {
+@@ -1206,6 +1207,8 @@ pub struct AgentPanel {
      _active_draft_reclaim_observation: Option<Subscription>,
      _thread_metadata_store_subscription: Subscription,
      _settings_subscription: Subscription,
@@ -13549,7 +13573,7 @@ index 9baf725..5cf4f38 100644
      retained_thread_subscriptions: HashMap<ThreadId, Subscription>,
      last_context_source: Option<AgentContextSource>,
      /// The floating list of the live tasks of every conversation this panel holds.
-@@ -1550,6 +1553,8 @@ impl AgentPanel {
+@@ -1597,6 +1600,8 @@ impl AgentPanel {
              // The tasks card's `enabled` and `position` are read when the panel renders.
              cx.notify();
          });
@@ -13558,7 +13582,7 @@ index 9baf725..5cf4f38 100644
  
          cx.on_release(|this, cx| {
              this.dismiss_all_terminal_notifications(cx);
-@@ -1676,6 +1681,7 @@ impl AgentPanel {
+@@ -1723,6 +1728,7 @@ impl AgentPanel {
              _active_draft_reclaim_observation: None,
              _thread_metadata_store_subscription,
              _settings_subscription,
@@ -13566,7 +13590,7 @@ index 9baf725..5cf4f38 100644
              retained_thread_subscriptions: HashMap::default(),
              last_context_source: None,
              tasks_card,
-@@ -7193,7 +7199,12 @@ impl AgentPanel {
+@@ -7244,7 +7250,12 @@ impl AgentPanel {
                  .active_conversation_view()
                  .and_then(|conversation_view| conversation_view.read(cx).root_thread_view())
                  .and_then(|thread_view| {
@@ -13800,22 +13824,21 @@ index 0000000..51b1d6b
 +    }
 +}
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index d8e15c7..25d64e9 100644
+index 4f16041..c27ef14 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
-@@ -1,9 +1,11 @@
+@@ -1,8 +1,10 @@
  mod agent_configuration;
  pub mod agent_connection_store;
  mod agent_diff;
 +pub mod agent_jail_status;
- mod agent_model_selector;
  mod agent_panel;
  mod agent_registry_ui;
 +pub mod agent_sandbox_actions;
  mod agent_session_router;
  mod buffer_codegen;
  mod completion_provider;
-@@ -1127,6 +1129,9 @@ mod slash_command_in_code_block_tests;
+@@ -1107,6 +1109,9 @@ mod slash_command_in_code_block_tests;
  #[cfg(test)]
  mod devtools_mention_tests;
  
@@ -13826,10 +13849,10 @@ index d8e15c7..25d64e9 100644
  mod devtools_delivery_tests;
  
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 678add7..6efa41a 100644
+index db624b2..4d878d4 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
-@@ -6931,6 +6931,68 @@ impl ThreadView {
+@@ -6935,6 +6935,68 @@ impl ThreadView {
          )
      }
  
@@ -13896,13 +13919,13 @@ index 678add7..6efa41a 100644
 +    }
 +
      fn render_fast_mode_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-         if !self.fast_mode_available(cx) {
-             return None;
+         let thread = self.as_native_thread(cx)?.read(cx);
+         let model = thread.model()?;
 diff --git a/crates/project/src/agent_server_store.rs b/crates/project/src/agent_server_store.rs
-index 737e21a..943cf15 100644
+index 5414967..8a8f242 100644
 --- a/crates/project/src/agent_server_store.rs
 +++ b/crates/project/src/agent_server_store.rs
-@@ -143,6 +143,14 @@ pub trait ExternalAgentServer {
+@@ -193,6 +193,14 @@ pub trait ExternalAgentServer {
  
      fn set_loading_status_tx(&mut self, _tx: watch::Sender<Option<String>>) {}
  
@@ -13917,7 +13940,7 @@ index 737e21a..943cf15 100644
      fn as_any(&self) -> &dyn Any;
      fn as_any_mut(&mut self) -> &mut dyn Any;
  }
-@@ -1154,6 +1162,16 @@ impl ExternalAgentServer for LocalRegistryArchiveAgent {
+@@ -1425,6 +1433,16 @@ impl ExternalAgentServer for LocalRegistryArchiveAgent {
          self.loading_status_tx = Some(tx);
      }
  
@@ -13934,7 +13957,7 @@ index 737e21a..943cf15 100644
      fn get_command(
          &mut self,
          extra_args: Vec<String>,
-@@ -1355,6 +1373,18 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
+@@ -1624,6 +1642,18 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
          self.new_version_available_tx = Some(tx);
      }
  
@@ -13953,7 +13976,7 @@ index 737e21a..943cf15 100644
      fn get_command(
          &mut self,
          extra_args: Vec<String>,
-@@ -1596,6 +1626,16 @@ struct LocalCustomAgent {
+@@ -1869,6 +1899,16 @@ struct LocalCustomAgent {
  }
  
  impl ExternalAgentServer for LocalCustomAgent {
@@ -13970,7 +13993,7 @@ index 737e21a..943cf15 100644
      fn get_command(
          &mut self,
          extra_args: Vec<String>,
-@@ -2599,6 +2639,109 @@ mod tests {
+@@ -3030,6 +3070,109 @@ mod tests {
          result
      }
  
@@ -14061,7 +14084,7 @@ index 737e21a..943cf15 100644
 +                _: Vec<String>,
 +                _: HashMap<String, String>,
 +                _: &mut AsyncApp,
-+            ) -> Task<Result<AgentServerCommand>> {
++            ) -> Task<Result<ResolvedAgentServerCommand>> {
 +                Task::ready(Err(anyhow::anyhow!("not started in this test")))
 +            }
 +            fn as_any(&self) -> &dyn Any {
@@ -14081,10 +14104,10 @@ index 737e21a..943cf15 100644
          fs.remove_dir(
              &npx_install_dir(registry_id),
 diff --git a/crates/remote_server/Cargo.toml b/crates/remote_server/Cargo.toml
-index 85685bb..bbe54f3 100644
+index faec0ed..3cf3201 100644
 --- a/crates/remote_server/Cargo.toml
 +++ b/crates/remote_server/Cargo.toml
-@@ -87,7 +87,7 @@ acp_thread.workspace = true
+@@ -88,7 +88,7 @@ acp_thread.workspace = true
  action_log.workspace = true
  agent = { workspace = true, features = ["test-support"] }
  agent-client-protocol.workspace = true
@@ -14204,7 +14227,7 @@ index b5c9e9c..fe8b5c8 100644
      defaults: {},
  });
 diff --git a/crates/settings_ui/Cargo.toml b/crates/settings_ui/Cargo.toml
-index b0b2f7c..456a63c 100644
+index 62865a2..b5c7522 100644
 --- a/crates/settings_ui/Cargo.toml
 +++ b/crates/settings_ui/Cargo.toml
 @@ -18,6 +18,7 @@ test-support = []
@@ -14222,8 +14245,8 @@ index b0b2f7c..456a63c 100644
 +semver.workspace = true
  serde.workspace = true
  serde_json.workspace = true
- serde_yaml_ng.workspace = true
-@@ -80,12 +82,16 @@ credentials_provider = { workspace = true, features = ["test-support"] }
+ settings.workspace = true
+@@ -79,12 +81,16 @@ credentials_provider = { workspace = true, features = ["test-support"] }
  fs = { workspace = true, features = ["test-support"] }
  futures.workspace = true
  gpui = { workspace = true, features = ["test-support"] }
@@ -14241,7 +14264,7 @@ index b0b2f7c..456a63c 100644
  
  [package.metadata.cargo-shear]
 diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_data.rs
-index fe5d830..bc25e1d 100644
+index a7fe013..c2f68ce 100644
 --- a/crates/settings_ui/src/page_data.rs
 +++ b/crates/settings_ui/src/page_data.rs
 @@ -13,9 +13,10 @@ use crate::{
@@ -14300,7 +14323,7 @@ index fe5d830..bc25e1d 100644
                  title: "Tool Permissions".into(),
                  r#type: Default::default(),
 diff --git a/crates/settings_ui/src/pages.rs b/crates/settings_ui/src/pages.rs
-index 2b491a7..bb4b3c9 100644
+index f6d3c0c..6968307 100644
 --- a/crates/settings_ui/src/pages.rs
 +++ b/crates/settings_ui/src/pages.rs
 @@ -1,3 +1,4 @@
@@ -17060,7 +17083,7 @@ index 0000000..8fac6d8
 +    }
 +}
 diff --git a/crates/zed/Cargo.toml b/crates/zed/Cargo.toml
-index 0fffb10..b801fd1 100644
+index 9ce604f..a43d462 100644
 --- a/crates/zed/Cargo.toml
 +++ b/crates/zed/Cargo.toml
 @@ -70,6 +70,7 @@ action_log = { workspace = true, optional = true }
@@ -17072,7 +17095,7 @@ index 0fffb10..b801fd1 100644
  agent_settings.workspace = true
  agent_skills.workspace = true
 diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
-index db5995f..c5ccca5 100644
+index 99c720f..962f21f 100644
 --- a/crates/zed/src/main.rs
 +++ b/crates/zed/src/main.rs
 @@ -719,6 +719,7 @@ fn main() {
@@ -17084,7 +17107,7 @@ index db5995f..c5ccca5 100644
          edit_prediction_registry::init(app_state.client.clone(), app_state.user_store.clone(), cx);
          let prompt_builder = PromptBuilder::load(app_state.fs.clone(), stdout_is_a_pty(), cx);
 diff --git a/crates/zed/src/zed.rs b/crates/zed/src/zed.rs
-index 9f41b6e..bdbcf65 100644
+index 31b4b59..cfd61c9 100644
 --- a/crates/zed/src/zed.rs
 +++ b/crates/zed/src/zed.rs
 @@ -6436,6 +6436,8 @@ mod tests {
@@ -17097,7 +17120,7 @@ index 9f41b6e..bdbcf65 100644
                  "agents_sidebar",
                  "app_menu",
 diff --git a/crates/zed_actions/src/lib.rs b/crates/zed_actions/src/lib.rs
-index 632e1dd..2bdcaa2 100644
+index 9501336..f2408db 100644
 --- a/crates/zed_actions/src/lib.rs
 +++ b/crates/zed_actions/src/lib.rs
 @@ -174,6 +174,10 @@ pub const AGENT_SKILLS_SETTINGS_PATH: &str = "agent.skills";

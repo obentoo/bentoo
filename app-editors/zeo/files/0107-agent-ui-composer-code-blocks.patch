@@ -44,21 +44,12 @@ seen with the call removed.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- crates/agent_ui/src/agent_ui.rs              |   3 +-
- crates/agent_ui/src/composer_blocks.rs       | 174 ++++++++++++++
- crates/agent_ui/src/composer_blocks_tests.rs | 237 +++++++++++++++++++
- crates/agent_ui/src/message_editor.rs        |  25 +-
- crates/editor/src/editor.rs                  |  24 ++
- crates/editor/src/element.rs                 |  13 +
- 6 files changed, 474 insertions(+), 2 deletions(-)
- create mode 100644 crates/agent_ui/src/composer_blocks.rs
- create mode 100644 crates/agent_ui/src/composer_blocks_tests.rs
 
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index 8763d56..e1dc06c 100644
+index 7fffd1e..8f8a93d 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
-@@ -7,6 +7,7 @@ mod agent_registry_ui;
+@@ -6,6 +6,7 @@ mod agent_registry_ui;
  mod agent_session_router;
  mod buffer_codegen;
  mod completion_provider;
@@ -66,7 +57,7 @@ index 8763d56..e1dc06c 100644
  mod config_options;
  mod context;
  mod context_server_configuration;
-@@ -40,10 +41,10 @@ pub mod terminal_thread_metadata_store;
+@@ -37,10 +38,10 @@ pub mod terminal_thread_metadata_store;
  mod terminals_minimized;
  #[cfg(any(test, feature = "test-support"))]
  pub mod test_support;
@@ -552,11 +543,11 @@ index 0f337eb..3b19711 100644
          for block in source_blocks {
              if acp_thread::content::can_convert_to_v1(&block)
 diff --git a/crates/editor/src/editor.rs b/crates/editor/src/editor.rs
-index 22a0f0a..3b7a379 100644
+index afaa963..794f248 100644
 --- a/crates/editor/src/editor.rs
 +++ b/crates/editor/src/editor.rs
-@@ -1053,6 +1053,8 @@ pub struct Editor {
-     buffers_with_disabled_indent_guides: HashSet<BufferId>,
+@@ -1049,6 +1049,8 @@ pub struct Editor {
+     show_indent_guides: Option<bool>,
      highlight_order: usize,
      highlighted_rows: TypeIdHashMap<Vec<RowHighlight>>,
 +    /// Zeo: a left border per row-highlight type (the agent composer's code blocks and quotes).
@@ -564,15 +555,15 @@ index 22a0f0a..3b7a379 100644
      background_highlights: HashMap<HighlightKey, BackgroundHighlight>,
      navigation_overlays: HashMap<NavigationOverlayKey, Arc<[NavigationTargetOverlay]>>,
      gutter_highlights: TypeIdHashMap<GutterHighlight>,
-@@ -2443,6 +2445,7 @@ impl Editor {
-             buffers_with_disabled_indent_guides: HashSet::default(),
+@@ -2436,6 +2438,7 @@ impl Editor {
+             show_indent_guides,
              highlight_order: 0,
              highlighted_rows: Default::default(),
 +            row_highlight_left_borders: Default::default(),
              background_highlights: HashMap::default(),
              navigation_overlays: HashMap::default(),
              gutter_highlights: Default::default(),
-@@ -9411,6 +9414,21 @@ impl Editor {
+@@ -9402,6 +9405,21 @@ impl Editor {
          self.highlighted_rows.remove(&TypeId::of::<T>());
      }
  
@@ -594,7 +585,7 @@ index 22a0f0a..3b7a379 100644
      /// For a highlight given context type, gets all anchor ranges that will be used for row highlighting.
      pub fn highlighted_rows<'a, T: 'static>(
          &'a self,
-@@ -9533,6 +9551,10 @@ impl Editor {
+@@ -9524,6 +9542,10 @@ impl Editor {
                                  LineHighlight {
                                      include_gutter: highlight.options.include_gutter,
                                      border: None,
@@ -605,7 +596,7 @@ index 22a0f0a..3b7a379 100644
                                      background: (highlight.color)(cx).into(),
                                      type_id: Some(highlight.type_id),
                                  },
-@@ -13425,6 +13447,8 @@ impl Focusable for PromptEditor {
+@@ -13416,6 +13438,8 @@ impl Focusable for PromptEditor {
  pub struct LineHighlight {
      pub background: Background,
      pub border: Option<gpui::Hsla>,
@@ -615,7 +606,7 @@ index 22a0f0a..3b7a379 100644
      pub type_id: Option<TypeId>,
  }
 diff --git a/crates/editor/src/element.rs b/crates/editor/src/element.rs
-index afc15a1..757de28 100644
+index 1d15c2c..9e58325 100644
 --- a/crates/editor/src/element.rs
 +++ b/crates/editor/src/element.rs
 @@ -5190,6 +5190,16 @@ impl EditorElement {

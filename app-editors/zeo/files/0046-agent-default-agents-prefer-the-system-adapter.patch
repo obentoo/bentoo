@@ -54,10 +54,15 @@ one; get_command keeps npm for other registry agents, rechecks every start,
 and launches the system binary without preparing an npm install; with
 default.json both defaults resolve the system binary and a user entry of the
 same id wins.
+
+Zeo 0.16.0_p20261119 (Zed 7279c76e): get_command returns upstream
+07278edd's ResolvedAgentServerCommand. The system-adapter branch carries
+no installation lease -- the package manager owns that install, Zed
+never removes it -- and the tests read the command out of it.
 ---
 
 diff --git a/assets/settings/default.json b/assets/settings/default.json
-index aa353ca..5180b7c 100644
+index f1a7c58..8467c2b 100644
 --- a/assets/settings/default.json
 +++ b/assets/settings/default.json
 @@ -3047,8 +3047,10 @@
@@ -343,7 +348,7 @@ index 288a63f..1dbcea5 100644
 +    }
  }
 diff --git a/crates/project/src/agent_server_store.rs b/crates/project/src/agent_server_store.rs
-index 3d652ea..737e21a 100644
+index eda0cf3..5414967 100644
 --- a/crates/project/src/agent_server_store.rs
 +++ b/crates/project/src/agent_server_store.rs
 @@ -29,7 +29,10 @@ use url::Url;
@@ -358,7 +363,7 @@ index 3d652ea..737e21a 100644
  
  use crate::worktree_store::WorktreeStore;
  
-@@ -433,6 +436,7 @@ impl AgentServerStore {
+@@ -486,6 +489,7 @@ impl AgentServerStore {
                                          distribution_env: agent.env.clone(),
                                          settings_env: env.clone(),
                                          new_version_available_tx: None,
@@ -366,7 +371,7 @@ index 3d652ea..737e21a 100644
                                      })
                                          as Box<dyn ExternalAgentServer>,
                                      ExternalAgentSource::Registry,
-@@ -1333,6 +1337,9 @@ struct LocalRegistryNpxAgent {
+@@ -1602,6 +1606,9 @@ struct LocalRegistryNpxAgent {
      distribution_env: HashMap<String, String>,
      settings_env: HashMap<String, String>,
      new_version_available_tx: Option<watch::Sender<Option<String>>>,
@@ -376,7 +381,7 @@ index 3d652ea..737e21a 100644
  }
  
  impl ExternalAgentServer for LocalRegistryNpxAgent {
-@@ -1363,6 +1370,20 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
+@@ -1632,6 +1639,20 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
          let distribution_env = self.distribution_env.clone();
          let settings_env = self.settings_env.clone();
  
@@ -397,7 +402,7 @@ index 3d652ea..737e21a 100644
          cx.spawn(async move |cx| {
              let mut env = project_environment
                  .update(cx, |project_environment, cx| {
-@@ -1371,6 +1392,31 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
+@@ -1640,6 +1661,35 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
                  .await
                  .unwrap_or_default();
  
@@ -412,11 +417,15 @@ index 3d652ea..737e21a 100644
 +                    env.extend(settings_env);
 +                    let mut command_args = args;
 +                    command_args.extend(extra_args);
-+                    return Ok(AgentServerCommand {
-+                        path: path.clone(),
-+                        args: command_args,
-+                        env: Some(env),
-+                    });
++                    // A system adapter is the package manager's, never an
++                    // installation Zed removes, so it holds no lease.
++                    return Ok(ResolvedAgentServerCommand::without_installation_lease(
++                        AgentServerCommand {
++                            path: path.clone(),
++                            args: command_args,
++                            env: Some(env),
++                        },
++                    ));
 +                }
 +                ZeoLaunchSource::Npm(spec) if !spec.is_empty() => {
 +                    log::info!(
@@ -429,7 +438,7 @@ index 3d652ea..737e21a 100644
              let install_dir = paths::external_agents_dir()
                  .join("registry")
                  .join("npx")
-@@ -2500,4 +2546,363 @@ mod tests {
+@@ -2927,4 +2977,363 @@ mod tests {
              );
          });
      }
@@ -481,7 +490,7 @@ index 3d652ea..737e21a 100644
 +        extra_env: HashMap<String, String>,
 +    ) -> Result<AgentServerCommand> {
 +        let task = cx.update(|cx| agent.get_command(extra_args, extra_env, &mut cx.to_async()));
-+        let result = task.await;
++        let result = task.await.map(|resolved| resolved.command);
 +        cx.run_until_parked();
 +        result
 +    }
@@ -701,7 +710,7 @@ index 3d652ea..737e21a 100644
 +            npx.launch_probe = Arc::new(move |_| Ok(binary_present));
 +            npx.get_command(Vec::new(), HashMap::default(), &mut cx.to_async())
 +        });
-+        let result = task.await;
++        let result = task.await.map(|resolved| resolved.command);
 +        cx.run_until_parked();
 +        result
 +    }
@@ -783,7 +792,7 @@ index 3d652ea..737e21a 100644
 +            );
 +            agent.get_command(Vec::new(), HashMap::default(), &mut cx.to_async())
 +        });
-+        let command = task.await.expect("the user's command should start");
++        let command = task.await.expect("the user's command should start").command;
 +        assert_eq!(command.path, PathBuf::from("/opt/user/claude-plus"));
 +        assert_eq!(command.args, vec!["--mine".to_string()]);
 +

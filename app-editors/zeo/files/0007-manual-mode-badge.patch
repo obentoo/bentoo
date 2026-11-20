@@ -13,26 +13,32 @@ value id is `default` (R4.1) and cleared on any other mode (R4.2). The
 badge element is identical on both paths (R4.3); the id predicate is
 shared via mode_selector::shows_manual_mode_badge.
 
+Zeo 0.16.0_p20261119 (Zed 7279c76e): upstream df1ba676 split the select
+trigger into a response-control path (speed, effort; drawn beside Add
+Context) and the row's own button. The badge rides only the latter,
+where Mode lives; the stale show_category_keybindings local, which
+df1ba676 dropped, is gone.
+
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
 
 diff --git a/crates/agent_ui/src/config_options.rs b/crates/agent_ui/src/config_options.rs
-index 242e9fa..61baf85 100644
+index 4e305ba..b85dc8a 100644
 --- a/crates/agent_ui/src/config_options.rs
 +++ b/crates/agent_ui/src/config_options.rs
-@@ -493,6 +493,8 @@ impl Render for ConfigOptionSelector {
- 
-                 let trigger_button = self.render_trigger_button(window, cx);
+@@ -597,6 +597,8 @@ impl Render for ConfigOptionSelector {
+                 let label = truncate_value_name(value_name);
+                 let menu_open = picker_handle.is_deployed();
  
 +                let show_manual_badge = shows_manual_mode_badge_for_option(&option);
 +
-                 let show_category_keybindings = option
-                     .category
-                     .as_ref()
-@@ -564,16 +566,40 @@ impl Render for ConfigOptionSelector {
-                     content.into_any()
-                 });
- 
+                 let option_category = option.category.clone();
+                 let option_name = option.name;
+                 let option_description: Option<SharedString> = option.description.map(Into::into);
+@@ -687,16 +689,40 @@ impl Render for ConfigOptionSelector {
+                     .color(color)
+                     .end_icon(Icon::new(chevron).size(IconSize::XSmall).color(color))
+                     .selected_style(ButtonStyle::Tinted(ui::TintColor::Accent));
 -                PickerPopoverMenu::new(
 -                    picker,
 -                    trigger_button,
@@ -79,8 +85,8 @@ index 242e9fa..61baf85 100644
 +                    .into_any_element()
              }
              acp::SessionConfigKind::Boolean(boolean) => {
-                 let option_id = option.config_id.clone();
-@@ -1013,6 +1039,22 @@ fn get_current_select_value(
+                 let (action, state) = if boolean.current_value {
+@@ -1189,6 +1215,22 @@ fn get_current_select_value(
          })
  }
  
@@ -103,8 +109,8 @@ index 242e9fa..61baf85 100644
  fn set_config_option_and_default(
      config_options: Rc<dyn AgentSessionConfigOptions>,
      agent_server: Rc<dyn AgentServer>,
-@@ -1729,6 +1771,57 @@ mod tests {
-         });
+@@ -2184,6 +2226,57 @@ mod tests {
+         }
      }
  
 +    // ---- R4.1/R4.2: manual-mode badge next to the Mode-category select trigger ----

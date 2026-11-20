@@ -43,10 +43,21 @@ option leaves the composer row while other booleans stay.
 Packaging: claude-agent-acp-plus group, after 0072. It follows 0010's rule
 that a gesture moves the thread and only Shift-confirm saves a default, and
 the only agent that offers the option is that adapter.
+
+Zeo 0.16.0_p20261119 (Zed 7279c76e): upstream df1ba676 splits the
+options into the composer row and a new Agent Options menu, where
+plan_updates would have landed beside this patch's ToDo entry.
+split_config_options now leaves it out of both (is_todo_option replaces
+shows_in_composer_row), and the test checks both halves of the split.
+
+Same bump: upstream's test double now reports every change to a watcher
+and panics when none listens, so the toggle test holds one, as a live
+view does. Red-probed: dropping the plan_updates filter fails the split
+test.
 ---
 
 diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
-index 1358e1f..3498059 100644
+index b78d0b5..f4d1934 100644
 --- a/crates/agent_ui/src/agent_panel.rs
 +++ b/crates/agent_ui/src/agent_panel.rs
 @@ -39,6 +39,7 @@ use crate::ExpandMessageEditor;
@@ -57,7 +68,7 @@ index 1358e1f..3498059 100644
  use crate::tasks_card::{TasksCard, TasksCardEvent, TasksCardOverlay};
  use crate::terminal_thread_metadata_store::{
      TerminalThreadMetadata, TerminalThreadMetadataStore, compose_terminal_thread_title,
-@@ -6448,6 +6449,13 @@ impl AgentPanel {
+@@ -6499,6 +6500,13 @@ impl AgentPanel {
          let workspace = self.workspace.clone();
          let fs = self.fs.clone();
  
@@ -71,7 +82,7 @@ index 1358e1f..3498059 100644
          PopoverMenu::new("agent-options-menu")
              .trigger_with_tooltip(
                  IconButton::new("agent-options-menu", IconName::Ellipsis)
-@@ -6468,10 +6476,35 @@ impl AgentPanel {
+@@ -6519,10 +6527,35 @@ impl AgentPanel {
                      Some(ContextMenu::build(window, cx, |mut menu, _window, cx| {
                          menu = menu.context(menu_action_context.clone());
  
@@ -109,7 +120,7 @@ index 1358e1f..3498059 100644
                                  if can_regenerate_thread_title {
                                      menu = menu.entry("Regenerate Thread Title", None, {
                                          let conversation_view = conversation_view.clone();
-@@ -6504,9 +6537,9 @@ impl AgentPanel {
+@@ -6555,9 +6588,9 @@ impl AgentPanel {
                                          }
                                      });
                                  }
@@ -122,12 +133,12 @@ index 1358e1f..3498059 100644
  
                          if !showing_terminal {
 diff --git a/crates/agent_ui/src/config_options.rs b/crates/agent_ui/src/config_options.rs
-index 7185a22..0072048 100644
+index 08b8554..219f1cb 100644
 --- a/crates/agent_ui/src/config_options.rs
 +++ b/crates/agent_ui/src/config_options.rs
-@@ -33,6 +33,34 @@ use crate::{
- 
- const PICKER_THRESHOLD: usize = 5;
+@@ -53,6 +53,31 @@ fn toolbar_category(
+     }
+ }
  
 +/// Claude Agent (Plus)'s todo-tools option (`plan-updates.ts`). Zeo shows it as
 +/// a toggle in the agent panel's options menu instead of the composer row: it is
@@ -140,11 +151,8 @@ index 7185a22..0072048 100644
 +const TODO_SELECT_ON: &str = "on";
 +const TODO_SELECT_OFF: &str = "off";
 +
-+fn shows_in_composer_row(option: &acp::SessionConfigOption) -> bool {
-+    matches!(
-+        &option.kind,
-+        acp::SessionConfigKind::Select(_) | acp::SessionConfigKind::Boolean(_)
-+    ) && option.config_id.0.as_ref() != TODO_CONFIG_ID
++fn is_todo_option(option: &acp::SessionConfigOption) -> bool {
++    option.config_id.0.as_ref() == TODO_CONFIG_ID
 +}
 +
 +fn todo_option_enabled(option: &acp::SessionConfigOption) -> Option<bool> {
@@ -157,11 +165,21 @@ index 7185a22..0072048 100644
 +    }
 +}
 +
- pub struct ConfigOptionsView {
-     config_options: Rc<dyn AgentSessionConfigOptions>,
-     selectors: Vec<Entity<ConfigOptionSelector>>,
-@@ -80,6 +108,52 @@ impl ConfigOptionsView {
-         self.config_options.is_read_only()
+ fn split_config_options(
+     options: Vec<acp::SessionConfigOption>,
+     read_only: bool,
+@@ -61,6 +86,9 @@ fn split_config_options(
+ 
+     let mut options: Vec<_> = options
+         .into_iter()
++        // The ToDo option is the agent menu's toggle (`todo_enabled`), so it
++        // stays out of both the composer row and the Agent Options menu.
++        .filter(|option| !is_todo_option(option))
+         .filter(|option| match &option.kind {
+             acp::SessionConfigKind::Select(_) => read_only || count_config_options(option) > 0,
+             acp::SessionConfigKind::Boolean(_) => true,
+@@ -142,6 +170,52 @@ impl ConfigOptionsView {
+             .map(|selector| selector.clone().into_any_element())
      }
  
 +    /// Whether the session's ToDo option is on; `None` when the agent does not
@@ -213,21 +231,7 @@ index 7185a22..0072048 100644
      pub fn toggle_category_picker(
          &mut self,
          category: acp::SessionConfigOptionCategory,
-@@ -258,12 +332,7 @@ impl ConfigOptionsView {
-         config_options
-             .config_options()
-             .into_iter()
--            .filter(|option| {
--                matches!(
--                    &option.kind,
--                    acp::SessionConfigKind::Select(_) | acp::SessionConfigKind::Boolean(_)
--                )
--            })
-+            .filter(shows_in_composer_row)
-             .map(|option| {
-                 let config_options = config_options.clone();
-                 let agent_server = agent_server.clone();
-@@ -1851,6 +1920,102 @@ mod tests {
+@@ -2311,6 +2385,112 @@ mod tests {
          );
      }
  
@@ -241,9 +245,10 @@ index 7185a22..0072048 100644
 +        let agent_server: Rc<dyn AgentServer> = agent_server.clone();
 +        let fs = fs.clone();
 +        cx.new(|_| ConfigOptionsView {
-+            config_option_ids: ConfigOptionsView::config_option_ids(&config_options),
 +            config_options,
 +            selectors: Vec::new(),
++            has_overflow: false,
++            overflow_menu: PopoverMenuHandle::default(),
 +            agent_server,
 +            fs,
 +            _refresh_task: Task::ready(()),
@@ -273,6 +278,8 @@ index 7185a22..0072048 100644
 +        for (offered, expected) in shapes {
 +            let agent_server = Rc::new(TestAgentServer::default());
 +            let config_options = Rc::new(TestSessionConfigOptions::new(vec![offered]));
++            // The test double reports every change to a watcher, as a live view would hold.
++            let _updates = config_options.updates.borrow().receiver();
 +            let fs: Arc<dyn Fs> = FakeFs::new(cx.executor());
 +            let view = cx.update(|cx| todo_view(&config_options, &agent_server, &fs, cx));
 +
@@ -314,17 +321,24 @@ index 7185a22..0072048 100644
 +    }
 +
 +    #[test]
-+    fn todo_leaves_the_composer_row_and_other_options_stay() {
-+        assert!(!shows_in_composer_row(&acp::SessionConfigOption::boolean(
-+            TODO_CONFIG_ID,
-+            "Plan updates",
-+            true
-+        )));
-+        assert!(shows_in_composer_row(&acp::SessionConfigOption::boolean(
-+            "fast",
-+            "Fast mode",
-+            true
-+        )));
++    fn todo_leaves_the_composer_row_and_the_agent_options_menu() {
++        let ids = |options: &[acp::SessionConfigOption]| {
++            options
++                .iter()
++                .map(|option| option.config_id.0.to_string())
++                .collect::<Vec<_>>()
++        };
++        let (toolbar, overflow) = split_config_options(
++            vec![
++                acp::SessionConfigOption::boolean(TODO_CONFIG_ID, "Plan updates", true),
++                acp::SessionConfigOption::boolean("fast", "Fast mode", true)
++                    .category(acp::SessionConfigOptionCategory::Speed),
++                acp::SessionConfigOption::boolean("web_search", "Web search", false),
++            ],
++            false,
++        );
++        assert_eq!(ids(&toolbar), vec!["fast"]);
++        assert_eq!(ids(&overflow), vec!["web_search"]);
 +    }
 +
      #[derive(Default)]

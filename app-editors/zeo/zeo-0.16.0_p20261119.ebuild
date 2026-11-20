@@ -17,9 +17,9 @@ CRATES="
 	adler2@2.0.1
 	adler32@1.2.0
 	aes@0.8.4
-	agent-client-protocol-derive@5.3.0
-	agent-client-protocol-schema@1.18.0
-	agent-client-protocol@5.3.0
+	agent-client-protocol-derive@5.4.0
+	agent-client-protocol-schema@1.19.0
+	agent-client-protocol@5.4.0
 	ahash@0.8.12
 	aho-corasick@1.1.3
 	aliasable@0.1.3
@@ -231,19 +231,19 @@ CRATES="
 	cpp_demangle@0.5.1
 	cpufeatures@0.2.17
 	cpufeatures@0.3.0
-	cranelift-assembler-x64-meta@0.135.7
-	cranelift-assembler-x64@0.135.7
-	cranelift-bforest@0.135.7
-	cranelift-bitset@0.135.7
-	cranelift-codegen-meta@0.135.7
-	cranelift-codegen-shared@0.135.7
-	cranelift-codegen@0.135.7
-	cranelift-control@0.135.7
-	cranelift-entity@0.135.7
-	cranelift-frontend@0.135.7
-	cranelift-isle@0.135.7
-	cranelift-native@0.135.7
-	cranelift-srcgen@0.135.7
+	cranelift-assembler-x64-meta@0.135.9
+	cranelift-assembler-x64@0.135.9
+	cranelift-bforest@0.135.9
+	cranelift-bitset@0.135.9
+	cranelift-codegen-meta@0.135.9
+	cranelift-codegen-shared@0.135.9
+	cranelift-codegen@0.135.9
+	cranelift-control@0.135.9
+	cranelift-entity@0.135.9
+	cranelift-frontend@0.135.9
+	cranelift-isle@0.135.9
+	cranelift-native@0.135.9
+	cranelift-srcgen@0.135.9
 	crash-handler@0.8.0
 	crc-catalog@2.4.0
 	crc-fast@1.9.0
@@ -794,7 +794,7 @@ CRATES="
 	pin-project-lite@0.2.16
 	pin-project@1.1.10
 	pin-utils@0.1.0
-	piper@0.2.4
+	piper@0.2.5
 	pkcs1@0.7.5
 	pkcs8@0.10.2
 	pkcs8@0.9.0
@@ -852,8 +852,8 @@ CRATES="
 	pulldown-cmark-escape@0.10.1
 	pulldown-cmark@0.10.3
 	pulldown-cmark@0.13.6
-	pulley-interpreter@48.0.7
-	pulley-macros@48.0.7
+	pulley-interpreter@48.0.9
+	pulley-macros@48.0.9
 	pxfm@0.1.25
 	qoi@0.4.1
 	quick-error@1.2.3
@@ -1249,22 +1249,22 @@ CRATES="
 	wasmparser@0.244.0
 	wasmparser@0.254.2
 	wasmprinter@0.254.2
-	wasmtime-c-api-impl@48.0.7
-	wasmtime-environ@48.0.7
-	wasmtime-internal-c-api-macros@48.0.7
-	wasmtime-internal-component-macro@48.0.7
-	wasmtime-internal-component-util@48.0.7
-	wasmtime-internal-core@48.0.7
-	wasmtime-internal-cranelift@48.0.7
-	wasmtime-internal-fiber@48.0.7
-	wasmtime-internal-jit-debug@48.0.7
-	wasmtime-internal-jit-icache-coherence@48.0.7
-	wasmtime-internal-unwinder@48.0.7
-	wasmtime-internal-versioned-export-macros@48.0.7
-	wasmtime-internal-wit-bindgen@48.0.7
+	wasmtime-c-api-impl@48.0.9
+	wasmtime-environ@48.0.9
+	wasmtime-internal-c-api-macros@48.0.9
+	wasmtime-internal-component-macro@48.0.9
+	wasmtime-internal-component-util@48.0.9
+	wasmtime-internal-core@48.0.9
+	wasmtime-internal-cranelift@48.0.9
+	wasmtime-internal-fiber@48.0.9
+	wasmtime-internal-jit-debug@48.0.9
+	wasmtime-internal-jit-icache-coherence@48.0.9
+	wasmtime-internal-unwinder@48.0.9
+	wasmtime-internal-versioned-export-macros@48.0.9
+	wasmtime-internal-wit-bindgen@48.0.9
 	wasmtime-wasi-io@48.0.7
 	wasmtime-wasi@48.0.7
-	wasmtime@48.0.7
+	wasmtime@48.0.9
 	wax@0.7.0
 	wayland-backend@0.3.15
 	wayland-client@0.31.11
@@ -1515,11 +1515,11 @@ declare -A GIT_CRATES=(
 	[tree-sitter-gomod]='https://github.com/camdencheek/tree-sitter-go-mod;2e886870578eeba1927a2dc4bd2e2b3f598c5f9a;tree-sitter-go-mod-%commit%'
 	[tree-sitter-gowork]='https://github.com/zed-industries/tree-sitter-go-work;acb0617bf7f4fda02c6217676cc64acb89536dc7;tree-sitter-go-work-%commit%'
 	[tree-sitter-heex]='https://github.com/zed-industries/tree-sitter-heex;1dd45142fbb05562e35b2040c6129c9bca346592;tree-sitter-heex-%commit%'
-	[tree-sitter-language]='https://github.com/tree-sitter/tree-sitter;803c6ebaac27d69e1808b45058482e868d073ceb;tree-sitter-%commit%/crates/language'
+	[tree-sitter-language]='https://github.com/tree-sitter/tree-sitter;cf5d3a63f9fa069fc32b9a73dc28830e427d5ee0;tree-sitter-%commit%/crates/language'
 	[tree-sitter-md]='https://github.com/zed-industries/tree-sitter-markdown;b596e737286780d7bfa9fcddceaeeb754574b352;tree-sitter-markdown-%commit%'
 	[tree-sitter-typescript]='https://github.com/zed-industries/tree-sitter-typescript;e2c53597d6a5d9cf7bbe8dccde576fe1e46c5899;tree-sitter-typescript-%commit%'
 	[tree-sitter-yaml]='https://github.com/zed-industries/tree-sitter-yaml;baff0b51c64ef6a1fb1f8390f3ad6015b83ec13a;tree-sitter-yaml-%commit%'
-	[tree-sitter]='https://github.com/tree-sitter/tree-sitter;803c6ebaac27d69e1808b45058482e868d073ceb;tree-sitter-%commit%/lib'
+	[tree-sitter]='https://github.com/tree-sitter/tree-sitter;cf5d3a63f9fa069fc32b9a73dc28830e427d5ee0;tree-sitter-%commit%/lib'
 	[wasm_thread]='https://github.com/zed-industries/wasm_thread;0cf96c7708dfb97ccf3da50347e25edcf75d6937;wasm_thread-%commit%'
 	[webrtc-sys-build]='https://github.com/zed-industries/livekit-rust-sdks;fbda05eb278b4a7c5be8fc9b2a92e9b62e732236;livekit-rust-sdks-%commit%/webrtc-sys/build'
 	[webrtc-sys]='https://github.com/zed-industries/livekit-rust-sdks;fbda05eb278b4a7c5be8fc9b2a92e9b62e732236;livekit-rust-sdks-%commit%/webrtc-sys'
@@ -1551,7 +1551,7 @@ declare -A GIT_CRATES=(
 # rewrites the date and EGIT_COMMIT; a second version variable it could not
 # keep current would leave a new tarball under an old, already-manifested name).
 
-EGIT_COMMIT="96362135eb98a011ac17b56a5c90cf77f9f597f1"
+EGIT_COMMIT="7279c76ef71d45504d7cfea00ee054f852ca0fbf"
 # LLVM 23 only, so it is the default slot: llvm-r2 would always prefer slot 22
 # (its newest stable) whenever 22 is listed. RUST_NEEDS_LLVM ties the Rust slot
 # to it. RUST_MIN_VER is the newest stable Rust, 1.100.0, past upstream's
@@ -2170,13 +2170,11 @@ src_prepare() {
 			"${FILESDIR}/0081-agent-ui-plan-scrollbar.patch"
 			"${FILESDIR}/0082-agent-ui-question-card-minimize.patch"
 			"${FILESDIR}/0083-agent-ui-tasks-card-start-minimized.patch"
-			# 0086 (Zeo 0.9.1): the composer's config options keep the agent's
-			# order, left to right; Zed 483b746b reversed the row, which drew
-			# Claude Agent's Mode last. Upstream code only.
-			"${FILESDIR}/0086-agent-ui-config-options-keep-agent-order.patch"
+			# 0086 (keep the agent's option order) was retired in 0.16.0: Zed
+			# df1ba676's fixed category order already puts Mode left of Model.
 			# 0087 (Wave 3, Zeo next proposal §6.4): message times and turn
 			# duration, from plus's _meta.claudeCode.timestamp or the live
-			# receive time. On 0086.
+			# receive time. After 0083.
 			"${FILESDIR}/0087-agent-ui-message-times-and-turn-duration.patch"
 			# 0088 (Wave 3, Zeo next proposal §6.14): the tasks card keeps clear of
 			# a child thread's titlebar. On 0037.
@@ -2269,15 +2267,15 @@ src_prepare() {
 			"${FILESDIR}/0125-agent-ui-tool-cards-in-three-states.patch"
 			# 0126 (Zeo 0.14.0, §6.43): keep an agent's questions out of cards. On 0036/0125.
 			"${FILESDIR}/0126-agent-servers-let-the-user-keep-an-agent-s-questions-out-of-cards.patch"
-			# 0128-0132 (Zeo 0.15.0): the upstream-native review's defects 1-5.
+			# 0128-0132 (Zeo 0.15.0): the upstream-native review's defects 1-5. 0131
+			# (message times on Zed Agent / ACP v2 threads) was dropped in 0.16.0:
+			# agent-side features are for Claude Agent (Plus) and the TUI only.
 			# 0128: floating Previous/Next and Copy follow Zed's own. On 0026/0078/0108.
 			"${FILESDIR}/0128-agent-ui-floating-controls-follow-native-navigation-and-copy.patch"
 			# 0129: a collapsed project counts a thread waiting for an answer. On 0030/0072.
 			"${FILESDIR}/0129-sidebar-collapsed-project-counts-a-thread-waiting-for-an-answer.patch"
 			# 0130: History scopes by the project's identity. On 0015.
 			"${FILESDIR}/0130-agent-ui-history-scopes-by-project-identity.patch"
-			# 0131: message times on the receipt transport. On 0087.
-			"${FILESDIR}/0131-acp-thread-message-times-on-the-receipt-transport.patch"
 			# 0132: a waiting subagent's card keeps its prompt. On 0072.
 			"${FILESDIR}/0132-agent-ui-waiting-subagent-card-keeps-its-prompt.patch"
 		)
@@ -2460,7 +2458,7 @@ src_prepare() {
 	NOTIFY_GIT+=", rev = \"${NOTIFY_COMMIT}\""
 	local NOTIFY_PATH="notify = \\{ path = \"${WORKDIR}/notify-${NOTIFY_COMMIT}/notify\""
 
-	local TREE_SITTER_COMMIT="803c6ebaac27d69e1808b45058482e868d073ceb"
+	local TREE_SITTER_COMMIT="cf5d3a63f9fa069fc32b9a73dc28830e427d5ee0"
 	local TREE_SITTER_GIT="tree-sitter = { git = \"https://github.com/tree-sitter/tree-sitter\""
 	TREE_SITTER_GIT+=", rev = \"${TREE_SITTER_COMMIT}\""
 	local TREE_SITTER_PATH="tree-sitter = \\{ path = \"${WORKDIR}/tree-sitter-${TREE_SITTER_COMMIT}/lib\""
