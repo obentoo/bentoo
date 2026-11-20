@@ -3,7 +3,6 @@
 
 EAPI=8
 PYTHON_REQ_USE="xml(+)"
-# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
 PYTHON_COMPAT=( python3_{12..15} )
 USE_RUBY="ruby32 ruby33 ruby34 ruby40"
 
@@ -17,7 +16,7 @@ SRC_URI="https://www.webkitgtk.org/releases/${MY_P}.tar.xz"
 S="${WORKDIR}/${MY_P}"
 
 LICENSE="LGPL-2+ BSD"
-SLOT="6/0" # soname version of libwebkit2gtk-6.0
+SLOT="4.1/0" # soname version of libwebkit2gtk-4.1
 KEYWORDS="~amd64 ~arm ~arm64 ~loong ~ppc ~ppc64 ~riscv ~sparc ~x86"
 
 # BENTOO-DIVERGENCE: IUSE - "webdriver", which ::gentoo does not expose at all:
@@ -36,7 +35,7 @@ KEYWORDS="~amd64 ~arm ~arm64 ~loong ~ppc ~ppc64 ~riscv ~sparc ~x86"
 # every WEBDRIVER_*_INTERACTIONS option ON regardless, precisely so the rest of
 # the tree is identical either way. A GTK4 build of the WebKitWebDriver target
 # on 2.54.0 compiled and linked clean (1368/1368) and the binary runs.
-IUSE="aqua avif cpu_flags_x86_sse cpu_flags_x86_sse2 custom-cflags examples gamepad keyring +gstreamer +introspection pdf jpegxl +jumbo-build lcms seccomp spell systemd wayland +webdriver X"
+IUSE="aqua avif cpu_flags_x86_sse cpu_flags_x86_sse2 custom-cflags examples gamepad keyring +gstreamer +introspection pdf jpegxl +jumbo-build lcms seccomp spell systemd wayland webdriver X"
 REQUIRED_USE="|| ( aqua wayland X )"
 
 # Tests do not run when built from tarballs
@@ -54,14 +53,8 @@ RESTRICT="test"
 # * TODO: gst-plugins-base[X] is only needed when build configuration ends up
 #         with GLX set, but that's a bit automagic too to fix
 #
-# * at-spi2-core (atspi-2.pc) is checked at build time, but not linked
-#   to in the gtk4 SLOT - is it an upstream check bug and only gtk-4.14
-#   a11y support is used?
-#
-# * Cairo is only needed on big-endian systems, where Skia is not officially
-#   supported (the build system will choose a backend for you). We could probably
-#   hard-code a list of BE arches here, to avoid the extra dependency? But I am
-#   holding out hope that this might actually get fixed before we need to do that.
+# * Support for x11-libs/cairo was supposedly removed in 2.54.0, but
+#   it's still linked (https://codeberg.org/gentoo/gentoo/pulls/2450)
 #
 # * dev-util/sysprof-capture is disabled because it was a new dependency in 2.46
 #   and we don't need any more new problems.
@@ -77,7 +70,6 @@ RDEPEND="
 	dev-libs/libtasn1:=
 	dev-libs/libxml2:2=
 	dev-libs/libxslt
-	>=gui-libs/gtk-4.14.0:4[aqua?,introspection?,wayland?,X?]
 	media-libs/fontconfig:1.0
 	media-libs/freetype:2
 	media-libs/harfbuzz:=[icu(+)]
@@ -92,6 +84,7 @@ RDEPEND="
 	net-libs/libsoup:3.0[introspection?]
 	virtual/zlib:=
 	x11-libs/cairo[X?]
+	x11-libs/gtk+:3[aqua?,introspection?,wayland?,X?]
 	x11-libs/libdrm
 	avif? ( media-libs/libavif:= )
 	gamepad? ( dev-libs/libmanette )
@@ -117,7 +110,7 @@ RDEPEND="
 		dev-libs/wayland
 		dev-libs/wayland-protocols
 	)
-	webdriver? ( !net-libs/webkit-gtk:4.1[webdriver] )
+	webdriver? ( !net-libs/webkit-gtk:6[webdriver] )
 "
 # BENTOO-DIVERGENCE: DEPEND - the cross-slot "!net-libs/webkit-gtk:<other>[webdriver]"
 # blocker inside the dependency string below.
@@ -165,6 +158,12 @@ PATCHES=(
 	"${FILESDIR}"/2.52.3-disable-nvidia-dmabuf.patch
 	# https://bugs.gentoo.org/730044 -- x86 without SSE2
 	"${FILESDIR}"/2.52.6-no-sse2.patch
+	# Synced from ::gentoo, which added these to its 2.54.3-r410/-r600 in place
+	# (no revbump); hence this -r411/-r601.
+	"${FILESDIR}"/2.54.2-fix-no-touch-build.patch
+	"${FILESDIR}"/2.54.2-fix-32bit-builds.patch
+	"${FILESDIR}"/2.54.2-fix-ftbfs-32bit.patch
+	"${FILESDIR}"/${PV}-fix-gtk-builds.patch
 )
 
 pkg_pretend() {
@@ -284,7 +283,7 @@ src_configure() {
 		-DENABLE_WAYLAND_TARGET=$(usex wayland)
 		-DENABLE_X11_TARGET=$(usex X)
 		-DUSE_GBM=ON
-		-DUSE_GTK4=ON # webkit2gtk-6.0
+		-DUSE_GTK4=OFF
 		-DUSE_JPEGXL=$(usex jpegxl)
 		-DUSE_LCMS=$(usex lcms)
 		-DUSE_LIBBACKTRACE=OFF
@@ -332,14 +331,6 @@ src_configure() {
 	append-cppflags -DNDEBUG
 
 	WK_USE_CCACHE=NO cmake_src_configure
-}
-
-src_install() {
-	cmake_src_install
-
-	insinto /usr/share/gtk-doc/html
-	# This will install API docs specific to webkit2gtk-6.0
-	doins -r "${S}"/Documentation/{jsc-glib,webkitgtk,webkitgtk-web-process-extension}-6.0
 }
 
 pkg_postinst() {

@@ -1,0 +1,290 @@
+Use system SQLite (recover extension only), dlib, libsensors and libJudy
+instead of the vendored copies.
+
+Origin: rebased onto netdata 2.13.0 from ::gentoo's
+netdata-2.11.1-system-libs.patch by Arthur Zamarin <arthurzam@gentoo.org>.
+Same intent as the original; 2.13.0 moved the libJudy and libsensors build
+rules (src/libnetdata/CMakeLists.txt, NetdataPluginDebugfs.cmake) and added
+include_guard() to the SQLite module, so those hunks were redone.
+
+diff --git a/packaging/cmake/Modules/NetdataDlib.cmake b/packaging/cmake/Modules/NetdataDlib.cmake
+--- a/packaging/cmake/Modules/NetdataDlib.cmake
++++ b/packaging/cmake/Modules/NetdataDlib.cmake
+@@ -1,60 +1,14 @@
+ # SPDX-License-Identifier: GPL-3.0-or-later
+ # Functions and macros for handling of dlib
++#
++# Gentoo: use system dlib.
+ 
+ include_guard()
+ 
+ function(netdata_bundle_dlib)
+-  include(FetchContent)
+-  include(NetdataFetchContentExtra)
+-
+-  message(STATUS "Preparing vendored copy of dlib")
+-
+-  if(NETDATA_DLIB_SOURCE_DIR)
+-    set(FETCHCONTENT_SOURCE_DIR_DLIB "${NETDATA_DLIB_SOURCE_DIR}")
+-    message(STATUS "Using local dlib source: ${NETDATA_DLIB_SOURCE_DIR}")
+-  endif()
+-
+-  set(repo https://github.com/davisking/dlib.git)
+-  set(tag 636c0bcd1e4f428d167699891bc12b404d2d1b41) # v19.24.8
+-
+-  # CMP0077 NEW so the DLIB_* values below override dlib's own option() defaults.
+-  set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+-  # Everything the ML feature does not need stays off: each of these pulls a
+-  # transitive dependency (GUI toolkit, image codecs, BLAS/LAPACK, CUDA) the
+-  # agent does not ship.
+-  set(DLIB_NO_GUI_SUPPORT ON)
+-  set(DLIB_JPEG_SUPPORT OFF)
+-  set(DLIB_LINK_WITH_SQLITE3 OFF)
+-  set(DLIB_USE_BLAS OFF)
+-  set(DLIB_USE_LAPACK OFF)
+-  set(DLIB_USE_CUDA OFF)
+-  set(DLIB_PNG_SUPPORT OFF)
+-  set(DLIB_GIF_SUPPORT OFF)
+-  set(DLIB_WEBP_SUPPORT OFF)
+-  set(DLIB_JXL_SUPPORT OFF)
+-  set(DLIB_USE_MKL_FFT OFF)
+-  set(DLIB_USE_FFMPEG OFF)
+-
+-  if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.28)
+-    FetchContent_Declare(dlib
+-      GIT_REPOSITORY ${repo}
+-      GIT_TAG ${tag}
+-      EXCLUDE_FROM_ALL
+-    )
+-  else()
+-    FetchContent_Declare(dlib
+-      GIT_REPOSITORY ${repo}
+-      GIT_TAG ${tag}
+-    )
+-  endif()
+-
+-  FetchContent_MakeAvailable_NoInstall(dlib)
+-
+-  message(STATUS "Finished preparing vendored copy of dlib")
++  find_package(dlib REQUIRED)
+ endfunction()
+ 
+ function(netdata_add_dlib_to_target _target)
+-  get_target_property(NETDATA_DLIB_INCLUDE_DIRS dlib INTERFACE_INCLUDE_DIRECTORIES)
+-  target_include_directories(${_target} PRIVATE ${NETDATA_DLIB_INCLUDE_DIRS})
+-  target_link_libraries(${_target} PRIVATE dlib)
++  target_link_libraries(${_target} PRIVATE dlib::dlib)
+ endfunction()
+diff --git a/packaging/cmake/Modules/NetdataPluginDebugfs.cmake b/packaging/cmake/Modules/NetdataPluginDebugfs.cmake
+--- a/packaging/cmake/Modules/NetdataPluginDebugfs.cmake
++++ b/packaging/cmake/Modules/NetdataPluginDebugfs.cmake
+@@ -30,14 +30,11 @@
+ if(ENABLE_PLUGIN_DEBUGFS)
+     add_executable(debugfs.plugin ${DEBUGFS_PLUGIN_FILES})
+ 
+-    add_subdirectory(src/collectors/debugfs.plugin/libsensors)
+-
+-    target_link_libraries(debugfs.plugin PRIVATE vendored_libsensors)
+-
+-    target_include_directories(debugfs.plugin PRIVATE
+-            src/collectors/debugfs.plugin/libsensors/vendored/lib
+-            ${CMAKE_CURRENT_BINARY_DIR}/src/collectors/debugfs.plugin/libsensors # For generated headers
+-    )
++    # Gentoo: use system libsensors
++    find_path(SENSORS_INCLUDE_DIR sensors/sensors.h REQUIRED)
++    find_library(SENSORS_LIBRARY sensors REQUIRED)
++    target_link_libraries(debugfs.plugin PRIVATE ${SENSORS_LIBRARY})
++    target_include_directories(debugfs.plugin PRIVATE ${SENSORS_INCLUDE_DIR})
+ 
+     target_link_libraries(debugfs.plugin PRIVATE libnetdata
+             "$<$<BOOL:${CAP_FOUND}>:PkgConfig::CAP>")
+diff --git a/packaging/cmake/Modules/NetdataSQLite.cmake b/packaging/cmake/Modules/NetdataSQLite.cmake
+--- a/packaging/cmake/Modules/NetdataSQLite.cmake
++++ b/packaging/cmake/Modules/NetdataSQLite.cmake
+@@ -1,110 +1,32 @@
+ # SPDX-License-Identifier: GPL-3.0-or-later
+ # Functions and macros for handling of SQLite
+ #
+-# Handle bundling of SQLite.
+-#
+-# This fetches the SQLite source tree (via tarball, git clone, or a local
+-# source directory), generates the amalgamation at build time (with
+-# --enable-update-limit so the parser supports UPDATE/DELETE ... LIMIT), then
+-# compiles it as a separate static library that links into libnetdata.
++# Gentoo: use system SQLite, and only build the recover extension
++# (not part of libsqlite3) from NETDATA_SQLITE_RECOVER_SOURCE_DIR.
+ 
+ include_guard()
+ 
+-include(ExternalProject)
+-
+-set(SQLITE_VERSION "3.53.4")
+-set(SQLITE_VERSION_NUMBER "3530400")
+-set(SQLITE_VERSION_YEAR "2026")
+-
+-set(SQLITE_TARBALL_SHA256 "d18fa15aec74d8c17e1463f861095adc01b5ad190256acb4f91d22f0368d232b")
+-set(SQLITE_GIT_SHA "b09c88c14082339b66c7b7158d609a771e64ca69") # tag is: version-${SQLITE_VERSION}
++set(NETDATA_SQLITE_RECOVER_SOURCE_DIR "" CACHE PATH "Path to SQLite ext/recover sources")
+ 
+ function(netdata_bundle_sqlite3)
+-        message(STATUS "Preparing SQLite ${SQLITE_VERSION}")
++        pkg_check_modules(SQLITE3 REQUIRED sqlite3)
+ 
+-        set(sqlite_SOURCE_DIR "${CMAKE_BINARY_DIR}/sqlite-src")
+-        set(sqlite_BINARY_DIR "${CMAKE_BINARY_DIR}/sqlite-build")
+-        set(sqlite_OUTPUT_DIR "${CMAKE_BINARY_DIR}/sqlite-output")
+-
+-        file(MAKE_DIRECTORY "${sqlite_OUTPUT_DIR}")
+-
+-        if(NETDATA_SQLITE_SOURCE_DIR)
+-                # Offline builds: an already-unpacked SQLite source tree replaces
+-                # the download step entirely (#23510).
+-                message(STATUS "Using local SQLite sources: ${NETDATA_SQLITE_SOURCE_DIR}")
+-                set(sqlite_SOURCE_DIR "${NETDATA_SQLITE_SOURCE_DIR}")
+-                set(SQLITE_FETCH_ARGS "")
+-        elseif(SQLITE_USE_GIT)
+-                message(STATUS "Fetching SQLite via git clone")
+-                set(SQLITE_FETCH_ARGS
+-                        GIT_REPOSITORY https://github.com/sqlite/sqlite.git
+-                        GIT_TAG "${SQLITE_GIT_SHA}"
+-                )
+-        else()
+-                message(STATUS "Fetching SQLite via tarball")
+-                set(SQLITE_FETCH_ARGS
+-                        URL "https://www.sqlite.org/${SQLITE_VERSION_YEAR}/sqlite-src-${SQLITE_VERSION_NUMBER}.zip"
+-                        URL_HASH "SHA256=${SQLITE_TARBALL_SHA256}"
+-                )
+-        endif()
+-
+-        ExternalProject_Add(
+-                sqlite_project
+-                ${SQLITE_FETCH_ARGS}
+-                SOURCE_DIR "${sqlite_SOURCE_DIR}"
+-                BINARY_DIR "${sqlite_BINARY_DIR}"
+-                CONFIGURE_COMMAND "${sqlite_SOURCE_DIR}/configure" --enable-update-limit
+-                # GNU Make jobserver flags are not understood by FreeBSD make.
+-                BUILD_COMMAND "${CMAKE_COMMAND}" -E env MAKEFLAGS= make sqlite3.c sqlite3.h
+-                INSTALL_COMMAND ${CMAKE_COMMAND} -E copy
+-                        "${sqlite_BINARY_DIR}/sqlite3.c"
+-                        "${sqlite_BINARY_DIR}/sqlite3.h"
+-                        "${sqlite_SOURCE_DIR}/ext/recover/sqlite3recover.c"
+-                        "${sqlite_SOURCE_DIR}/ext/recover/sqlite3recover.h"
+-                        "${sqlite_SOURCE_DIR}/ext/recover/dbdata.c"
+-                        "${sqlite_OUTPUT_DIR}"
+-                BUILD_BYPRODUCTS
+-                        "${sqlite_OUTPUT_DIR}/sqlite3.c"
+-                        "${sqlite_OUTPUT_DIR}/sqlite3.h"
+-                        "${sqlite_OUTPUT_DIR}/sqlite3recover.c"
+-                        "${sqlite_OUTPUT_DIR}/sqlite3recover.h"
+-                        "${sqlite_OUTPUT_DIR}/dbdata.c"
+-                EXCLUDE_FROM_ALL 1
+-                UPDATE_DISCONNECTED ON
++        set(SQLITE_RECOVER_SOURCES
++                "${NETDATA_SQLITE_RECOVER_SOURCE_DIR}/sqlite3recover.c"
++                "${NETDATA_SQLITE_RECOVER_SOURCE_DIR}/dbdata.c"
+         )
+ 
+-        set(SQLITE_SOURCES
+-                "${sqlite_OUTPUT_DIR}/sqlite3.c"
+-                "${sqlite_OUTPUT_DIR}/sqlite3recover.c"
+-                "${sqlite_OUTPUT_DIR}/dbdata.c"
++        add_library(sqlite3recover STATIC ${SQLITE_RECOVER_SOURCES})
++        target_compile_options(sqlite3recover PRIVATE -Wno-unused-parameter ${SQLITE3_CFLAGS_OTHER})
++        target_include_directories(sqlite3recover PUBLIC
++                "${NETDATA_SQLITE_RECOVER_SOURCE_DIR}"
++                ${SQLITE3_INCLUDE_DIRS}
+         )
++        target_link_libraries(sqlite3recover PUBLIC ${SQLITE3_LDFLAGS})
+ 
+-        set_source_files_properties(${SQLITE_SOURCES} PROPERTIES GENERATED TRUE)
+-
+-        add_library(sqlite3 STATIC ${SQLITE_SOURCES})
+-
+-        target_compile_definitions(sqlite3 PRIVATE
+-                SQLITE_ENABLE_UPDATE_DELETE_LIMIT
+-                SQLITE_ENABLE_MEMORY_MANAGEMENT
+-                SQLITE_OMIT_LOAD_EXTENSION
+-                SQLITE_ENABLE_DBSTAT_VTAB
+-                SQLITE_ENABLE_DBPAGE_VTAB
+-        )
+-
+-        target_compile_options(sqlite3 PRIVATE -Wno-unused-parameter)
+-
+-        target_include_directories(sqlite3 PUBLIC "${sqlite_OUTPUT_DIR}")
+-
+-        add_dependencies(sqlite3 sqlite_project)
+-
+-        set(NETDATA_SQLITE_INCLUDE_DIRS "${sqlite_OUTPUT_DIR}" PARENT_SCOPE)
+-        set(NETDATA_SQLITE_LIBRARIES sqlite3 PARENT_SCOPE)
+-
+-        message(STATUS "Finished preparing SQLite ${SQLITE_VERSION}")
++        set(NETDATA_SQLITE_LIBRARIES sqlite3recover PARENT_SCOPE)
+ endfunction()
+ 
+ function(netdata_add_sqlite3_to_target _target)
+-        target_include_directories(${_target} BEFORE PUBLIC "${NETDATA_SQLITE_INCLUDE_DIRS}")
+         target_link_libraries(${_target} PUBLIC ${NETDATA_SQLITE_LIBRARIES})
+-        add_dependencies(${_target} sqlite3)
+ endfunction()
+diff --git a/src/collectors/debugfs.plugin/module-libsensors.c b/src/collectors/debugfs.plugin/module-libsensors.c
+--- a/src/collectors/debugfs.plugin/module-libsensors.c
++++ b/src/collectors/debugfs.plugin/module-libsensors.c
+@@ -5,8 +5,8 @@
+ 
+ #define NETDATA_CALCULATED_STATES 1
+ 
+-#include "libsensors/vendored/lib/sensors.h"
+-#include "libsensors/vendored/lib/error.h"
++#include <sensors/sensors.h>
++#include <sensors/error.h>
+ 
+ typedef short SENSOR_BUS_TYPE;
+ ENUM_STR_MAP_DEFINE(SENSOR_BUS_TYPE) = {
+diff --git a/src/libnetdata/CMakeLists.txt b/src/libnetdata/CMakeLists.txt
+--- a/src/libnetdata/CMakeLists.txt
++++ b/src/libnetdata/CMakeLists.txt
+@@ -56,31 +56,9 @@
+ # build libjudy
+ #
+ 
+-add_library(judy STATIC ${LIBJUDY_FILES})
+-
+-target_compile_options(judy PRIVATE
+-        -Wno-all -Wno-extra
+-        -Wno-shadow
+-        -Wformat
+-)
+-
+-target_compile_definitions(judy PRIVATE
+-        JUDYL
+-        $<$<EQUAL:${CMAKE_SIZEOF_VOID_P},8>:JU_64BIT>
+-)
+-
+-target_include_directories(judy PUBLIC
+-        libjudy/vendored
+-        libjudy/vendored/JudyCommon
+-)
+-
+-set_source_files_properties(${LIBJUDY_PREV_FILES} PROPERTIES COMPILE_OPTIONS "-DJUDYPREV")
+-set_source_files_properties(${LIBJUDY_NEXT_FILES} PROPERTIES COMPILE_OPTIONS "-DJUDYNEXT")
+-set_source_files_properties(libjudy/vendored/JudyL/j__udyLGet.c PROPERTIES COMPILE_OPTIONS "-DJUDYGETINLINE")
+-set_source_files_properties(libjudy/vendored/JudyL/JudyLByCount.c PROPERTIES COMPILE_OPTIONS "-DNOSMARTJBB -DNOSMARTJBU -DNOSMARTJLB")
+-# A fourth call, on a bare JudyLTables.c, was dropped in e72c68bca0 rather than
+-# moved: the bare name resolved against the repository root and matched nothing,
+-# and the -I it added pointed at a directory that does not exist.
++# Gentoo: use system libJudy (JudyMalloc/JudyFree are still interposed by libnetdata)
++find_path(JUDY_INCLUDE_DIR Judy.h REQUIRED)
++find_library(JUDY_LIBRARY Judy REQUIRED)
+ 
+ #
+ # build netipc (standalone IPC library, no Netdata deps)
+@@ -249,7 +227,8 @@
+ endif()
+ 
+ # judy
+-target_link_libraries(libnetdata PUBLIC judy)
++target_include_directories(libnetdata PUBLIC ${JUDY_INCLUDE_DIR})
++target_link_libraries(libnetdata PUBLIC ${JUDY_LIBRARY})
+ 
+ netdata_add_jsonc_to_target(libnetdata)
+ 
