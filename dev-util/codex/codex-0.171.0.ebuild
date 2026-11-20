@@ -73,13 +73,13 @@ CRATES="
 # to re-apply, and re-verify, on every bump.
 declare -A GIT_CRATES=(
 	[mxc-sdk]='https://github.com/microsoft/mxc;b21120168d70befe12356411423266bfef168446;mxc-%commit%/src/mxc-sdk'
-	[crossterm]='https://github.com/openai-oss-forks/crossterm;ed1cdab335221515706178d68495bba2aed1924f;crossterm-%commit%'
+	[crossterm]='https://github.com/openai-oss-forks/crossterm;37ca4a27a9424ec5dbe6451f48c339d7b45f8d63;crossterm-%commit%'
 	[h3-quinn]='https://github.com/hyperium/h3;e07e69412876f7e26f026bd75a48b2704d8c8283;h3-%commit%/h3-quinn'
 	[h3]='https://github.com/hyperium/h3;e07e69412876f7e26f026bd75a48b2704d8c8283;h3-%commit%/h3'
 	[nucleo-matcher]='https://github.com/helix-editor/nucleo;4253de9faabb4e5c6d81d946a5e35a90f87347ee;nucleo-%commit%/matcher'
 	[nucleo]='https://github.com/helix-editor/nucleo;4253de9faabb4e5c6d81d946a5e35a90f87347ee;nucleo-%commit%'
-	[rmcp-macros]='https://github.com/modelcontextprotocol/rust-sdk;98a54789b80110ad210495c4ad845c89e1980471;rust-sdk-%commit%/crates/rmcp-macros'
-	[rmcp]='https://github.com/modelcontextprotocol/rust-sdk;98a54789b80110ad210495c4ad845c89e1980471;rust-sdk-%commit%/crates/rmcp'
+	[rmcp-macros]='https://github.com/modelcontextprotocol/rust-sdk;b11a40d889e022087d7f2b8cd23aa28e19ceaf5b;rust-sdk-%commit%/crates/rmcp-macros'
+	[rmcp]='https://github.com/modelcontextprotocol/rust-sdk;b11a40d889e022087d7f2b8cd23aa28e19ceaf5b;rust-sdk-%commit%/crates/rmcp'
 	[runfiles]='https://github.com/dzbarsky/rules_rust;b56cbaa8465e74127f1ea216f813cd377295ad81;rules_rust-%commit%/rust/runfiles'
 	[sqlx-core]='https://github.com/transact-rs/sqlx;10462fa4414c6c7f1ed1d39bb31678e3b726878c;sqlx-%commit%/sqlx-core'
 	[sqlx-sqlite]='https://github.com/transact-rs/sqlx;10462fa4414c6c7f1ed1d39bb31678e3b726878c;sqlx-%commit%/sqlx-sqlite'
@@ -109,10 +109,7 @@ RUST_MIN_VER="1.95.0"
 # tag and why, as the 0.150.1 case did (both locks hashed
 # beb9a924bf01f03ecfa9fedbf50a602cbaa5399df5cbe57e2d6bd40529e055a6).
 #
-# 0.169.1: the fork published no rust-v0.169.1 tarball, and the compare
-# rust-v0.169.0...rust-v0.169.1 does not touch codex-rs/Cargo.lock (only the
-# workspace version in codex-rs/Cargo.toml), so reuse the 0.169.0 tarball.
-MY_CRATES_TAG="rust-v0.169.0"
+MY_CRATES_TAG="rust-v${PV}"
 
 # Version of the prebuilt V8 static library, which MUST equal the version of
 # the "v8" crate the lock resolves -- the archive ships its own FFI bindings
