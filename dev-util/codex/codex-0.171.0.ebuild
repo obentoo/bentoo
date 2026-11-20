@@ -108,7 +108,11 @@ RUST_MIN_VER="1.95.0"
 # release AND the two codex-rs/Cargo.lock files are byte-identical; say which
 # tag and why, as the 0.150.1 case did (both locks hashed
 # beb9a924bf01f03ecfa9fedbf50a602cbaa5399df5cbe57e2d6bd40529e055a6).
-MY_CRATES_TAG="rust-v${PV}"
+#
+# 0.169.1: the fork published no rust-v0.169.1 tarball, and the compare
+# rust-v0.169.0...rust-v0.169.1 does not touch codex-rs/Cargo.lock (only the
+# workspace version in codex-rs/Cargo.toml), so reuse the 0.169.0 tarball.
+MY_CRATES_TAG="rust-v0.169.0"
 
 # Version of the prebuilt V8 static library, which MUST equal the version of
 # the "v8" crate the lock resolves -- the archive ships its own FFI bindings
