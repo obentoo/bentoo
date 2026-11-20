@@ -53,9 +53,9 @@ RDEPEND="
 	)
 "
 DEPEND="${RDEPEND}
-	>=dev-util/vulkan-headers-1.4.360_p20260814
+	>=dev-util/vulkan-headers-1.4.369
 	X? ( x11-libs/libXrandr[${MULTILIB_USEDEP}] )
-	test? ( >=media-libs/vulkan-loader-1.4.360_p20260814[${MULTILIB_USEDEP},wayland?,X?] )
+	test? ( >=media-libs/vulkan-loader-1.4.369[${MULTILIB_USEDEP},wayland?,X?] )
 "
 
 pkg_setup() {

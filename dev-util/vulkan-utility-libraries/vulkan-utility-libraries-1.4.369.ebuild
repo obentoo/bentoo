@@ -30,7 +30,7 @@ RESTRICT="!test? ( test )"
 # bentoo ships snapshots that bump on independent dates, so an exact pin can
 # never be satisfied. A floor on the companion snapshot keeps the coupling the
 # pin exists to enforce. Raise it on every vulkan-headers bump.
-DEPEND=">=dev-util/vulkan-headers-1.4.360_p20260814
+DEPEND=">=dev-util/vulkan-headers-1.4.369
 	test? (
 		dev-cpp/gtest
 		>=dev-cpp/magic_enum-0.9.7

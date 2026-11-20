@@ -35,8 +35,8 @@ DEPEND="${RDEPEND}
 	${PYTHON_DEPS}
 	>=dev-util/glslang-1.4.357.0_p20260911:=[${MULTILIB_USEDEP}]
 	>=dev-util/spirv-headers-1.4.357.0_p20260826-r1
-	>=dev-util/vulkan-headers-1.4.363_p20260918
-	>=dev-util/vulkan-utility-libraries-1.4.363_p20260923:=[${MULTILIB_USEDEP}]
+	>=dev-util/vulkan-headers-1.4.369
+	>=dev-util/vulkan-utility-libraries-1.4.369:=[${MULTILIB_USEDEP}]
 	wayland? ( dev-libs/wayland:=[${MULTILIB_USEDEP}] )
 	X? (
 		x11-libs/libX11:=[${MULTILIB_USEDEP}]
