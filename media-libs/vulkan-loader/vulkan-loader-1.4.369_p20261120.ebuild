@@ -31,7 +31,7 @@ IUSE="layers wayland X"
 # never be satisfied. A floor on the companion snapshot keeps the coupling the
 # pin exists to enforce. Raise it on every vulkan-headers bump.
 DEPEND="
-	>=dev-util/vulkan-headers-1.4.367_p20261030
+	>=dev-util/vulkan-headers-1.4.369
 	wayland? ( dev-libs/wayland:=[${MULTILIB_USEDEP}] )
 	X? (
 		x11-base/xorg-proto
