@@ -2284,6 +2284,8 @@ src_prepare() {
 			"${FILESDIR}/0134-agent-ui-pinned-message-avatar-centred.patch"
 			# 0135: composer options -- effort on the right, options button last, switches.
 			"${FILESDIR}/0135-agent-ui-composer-options-effort-right-and-switches.patch"
+			# 0136: an on/off option that cannot change (Thinking on an always-thinking model) is not shown.
+			"${FILESDIR}/0136-agent-ui-a-thinking-option-that-cannot-change-is-not-shown.patch"
 		)
 	fi
 

@@ -1,0 +1,191 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sat, 21 Nov 2026 13:39:42 -0300
+Subject: [PATCH] agent_ui: a Thinking option that cannot change is not shown
+
+0135 made the Agent Options menu's on/off options switch rows, and drew
+an on/off select that offers only one value as a disabled switch with a
+muted name. Claude Agent (Plus) sends Thinking that way for a model that
+always thinks (thinking-option.ts: options [On] only, description "This
+model always thinks: it cannot turn thinking off"). The operator, on the
+installed 0.17.0 (2026-11-21): if the model already thinks, showing the
+selector makes no sense.
+
+Now such an option is not drawn at all. split_config_options drops it
+before deciding the composer row and the menu, so it is neither a menu
+row nor a reason to show the Agent Options button: with nothing else to
+offer, the button is gone. switch_row::is_fixed_switch is the test -- an
+on/off option whose switch cannot move -- and the row no longer carries
+the muted-name and disabled-switch branches that only that case used.
+A model that can turn thinking off still gets its Thinking switch.
+
+Tests (config_options::tests): a_thinking_option_that_cannot_change_is_
+not_shown (new) -- alone, it leaves no Agent Options button and no
+overflow; beside Ultracode, the menu has the Ultracode row and no
+Thinking row. switch_row::tests::only_an_on_off_option_that_cannot_move_
+is_fixed (new) -- an on-only select is fixed; an on/off select, a
+boolean and a one-value select that is not on/off are not.
+---
+
+diff --git a/crates/agent_ui/src/config_options.rs b/crates/agent_ui/src/config_options.rs
+index 465dfa4..cf6d02b 100644
+--- a/crates/agent_ui/src/config_options.rs
++++ b/crates/agent_ui/src/config_options.rs
+@@ -91,6 +91,10 @@ fn split_config_options(
+         // The ToDo option is the agent menu's toggle (`todo_enabled`), so it
+         // stays out of both the composer row and the Agent Options menu.
+         .filter(|option| !is_todo_option(option))
++        // Zeo (0136): an on/off option the agent does not let the user change --
++        // Thinking on a model that always thinks -- has nothing to choose, so it is
++        // neither a menu row nor a reason to show the Agent Options button.
++        .filter(|option| !switch_row::is_fixed_switch(option))
+         .filter(|option| match &option.kind {
+             acp::SessionConfigKind::Select(_) => read_only || count_config_options(option) > 0,
+             acp::SessionConfigKind::Boolean(_) => true,
+@@ -1881,6 +1885,54 @@ mod tests {
+         assert!(agent_server.saved_defaults.lock().is_empty());
+     }
+ 
++    /// Zeo (0136): Thinking on a model that always thinks -- plus sends it as a select
++    /// offering "on" alone -- is not drawn: alone it leaves no Agent Options button, and
++    /// beside another option the menu shows only that one.
++    #[gpui::test]
++    fn a_thinking_option_that_cannot_change_is_not_shown(cx: &mut TestAppContext) {
++        use acp::SessionConfigOptionCategory::*;
++
++        cx.update(init_test_ui);
++        let always_thinks = acp::SessionConfigOption::select(
++            "thinking",
++            "Thinking",
++            "on",
++            vec![acp::SessionConfigSelectOption::new("on", "On")],
++        )
++        .category(ModelConfig)
++        .description("This model always thinks: it cannot turn thinking off");
++        let config_options = Rc::new(TestSessionConfigOptions::new(vec![always_thinks.clone()]));
++        let agent_server = Rc::new(TestAgentServer::default());
++        let fs: Arc<dyn Fs> = FakeFs::new(cx.executor());
++        let (view, cx) = cx.add_window_view({
++            let config_options = config_options.clone();
++            move |window, cx| ConfigOptionsView::new(config_options, agent_server, fs, window, cx)
++        });
++        cx.run_until_parked();
++        assert!(
++            cx.debug_bounds("ICON-Filter").is_none(),
++            "a fixed Thinking alone is no reason for the Agent Options button"
++        );
++        view.read_with(cx, |view, _| assert!(!view.has_overflow));
++
++        config_options.replace_options(vec![
++            always_thinks,
++            acp::SessionConfigOption::boolean("ultracode", "Ultracode", false)
++                .category(ModelConfig),
++        ]);
++        cx.run_until_parked();
++        let overflow = cx
++            .debug_bounds("ICON-Filter")
++            .expect("Agent Options button for Ultracode");
++        cx.simulate_click(overflow.center(), Modifiers::default());
++        draw_menu_frames(cx);
++        assert!(cx.debug_bounds("CONFIG_SWITCH-Ultracode").is_some());
++        assert!(
++            cx.debug_bounds("CONFIG_SWITCH-Thinking").is_none(),
++            "the fixed Thinking has no row"
++        );
++    }
++
+     /// Zeo: effort leaves the composer's left-hand response controls; speed stays there.
+     #[gpui::test]
+     fn effort_is_not_a_response_control(cx: &mut TestAppContext) {
+diff --git a/crates/agent_ui/src/config_options/switch_row.rs b/crates/agent_ui/src/config_options/switch_row.rs
+index 05a86a5..891be71 100644
+--- a/crates/agent_ui/src/config_options/switch_row.rs
++++ b/crates/agent_ui/src/config_options/switch_row.rs
+@@ -8,6 +8,11 @@
+ //! its description, and the second as a submenu opening a picker of its own. Both
+ //! are now the same row: the name, whose tooltip is the description, and a switch.
+ //! A click anywhere on the row flips it, and the menu stays open on the new state.
++//!
++//! An on/off option that cannot move -- a select offering only one of the two values,
++//! as Plus sends Thinking for a model that always thinks -- is not drawn at all
++//! (0136): there is nothing to choose, and a disabled switch only asked the question.
++//! `is_fixed_switch` is what `split_config_options` filters it out with.
+ 
+ use std::rc::Rc;
+ 
+@@ -26,7 +31,7 @@ const SWITCH_OFF: &str = "off";
+ pub(super) struct SwitchState {
+     pub on: bool,
+     /// False for a select that offers only one of the two values -- Thinking on a
+-    /// model that always thinks: the switch shows the state and cannot move.
++    /// model that always thinks. Such an option is left out of the menu (0136).
+     pub can_toggle: bool,
+ }
+ 
+@@ -59,6 +64,11 @@ pub(super) fn switch_state(option: &acp::SessionConfigOption) -> Option<SwitchSt
+     }
+ }
+ 
++/// Whether the option is an on/off choice the agent does not let the user change.
++pub(super) fn is_fixed_switch(option: &acp::SessionConfigOption) -> bool {
++    switch_state(option).is_some_and(|state| !state.can_toggle)
++}
++
+ /// The value that flips a switch, in the option's own shape.
+ pub(super) fn flipped_value(
+     option: &acp::SessionConfigOption,
+@@ -119,29 +129,23 @@ pub(super) fn switch_row(
+                     div()
+                         .id(element_id.clone())
+                         .min_w_0()
+-                        .child(
+-                            Label::new(name.clone())
+-                                .when(!state.can_toggle, |label| label.color(Color::Muted)),
+-                        )
++                        .child(Label::new(name.clone()))
+                         .when_some(description.clone(), |this, description| {
+                             this.tooltip(Tooltip::text(description))
+                         }),
+                 )
+                 // No click handler of its own: a click on the switch reaches the row,
+                 // which flips it once. A handler here would flip it twice.
+-                .child(
+-                    Switch::new(
+-                        SharedString::from(format!("{element_id}-switch")),
+-                        state.on.into(),
+-                    )
+-                    .disabled(!state.can_toggle),
+-                )
++                .child(Switch::new(
++                    SharedString::from(format!("{element_id}-switch")),
++                    state.on.into(),
++                ))
+                 .into_any_element()
+         }),
+         handler: Rc::new(move |_, window, cx| {
+             toggle_switch_option(config_options.clone(), config_id.clone(), window, cx);
+         }),
+-        selectable: state.can_toggle,
++        selectable: true,
+         documentation_aside: None,
+     }
+ }
+@@ -210,6 +214,18 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn only_an_on_off_option_that_cannot_move_is_fixed() {
++        assert!(is_fixed_switch(&select("on", &["on"])));
++        assert!(!is_fixed_switch(&select("on", &["on", "off"])));
++        assert!(!is_fixed_switch(&acp::SessionConfigOption::boolean(
++            "fast",
++            "Fast mode",
++            true
++        )));
++        assert!(!is_fixed_switch(&select("high", &["high"])));
++    }
++
+     #[test]
+     fn other_selects_stay_submenus() {
+         assert_eq!(switch_state(&select("high", &["low", "high"])), None);
