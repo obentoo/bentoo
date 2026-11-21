@@ -11,6 +11,7 @@ DISTUTILS_USE_PEP517=setuptools
 # BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: RDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
+# BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
 PYTHON_COMPAT=( python3_{11..15} )
 inherit distutils-r1
 
