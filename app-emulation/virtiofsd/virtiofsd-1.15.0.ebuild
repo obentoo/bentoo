@@ -97,11 +97,11 @@ CRATES="
 	utf8parse@0.2.1
 	uuid@1.11.0
 	version_check@0.9.4
-	vhost-user-backend@0.22.0
-	vhost@0.16.0
+	vhost-user-backend@0.24.1
+	vhost@0.18.1
 	virtio-bindings@0.2.7
-	virtio-queue@0.17.0
-	vm-memory@0.17.1
+	virtio-queue@0.18.0
+	vm-memory@0.18.0
 	vmm-sys-util@0.15.0
 	wasi@0.11.0+wasi-snapshot-preview1
 	winapi-i686-pc-windows-gnu@0.4.0
@@ -141,11 +141,15 @@ LICENSE="Apache-2.0 BSD"
 # Dependent crate licenses
 LICENSE+=" Apache-2.0 BSD MIT Unicode-DFS-2016"
 SLOT="0"
-# BENTOO-DIVERGENCE: IUSE - xen exposes upstream's "xen" cargo feature, which
-# ::gentoo does not. Upstream makes it exclusive: a xen build serves Xen guests
-# and no longer serves QEMU/KVM, so it stays off by default.
+# BENTOO-DIVERGENCE: IUSE - ::gentoo declares "+seccomp xen" but wires neither:
+# upstream's virtiofsd binary has required-features = ["seccomp"] (on by
+# default), so -seccomp cannot drop libseccomp, and xen never reaches cargo.
+# Here xen enables upstream's "xen" cargo feature. Upstream makes it
+# exclusive: a xen build serves Xen guests and no longer QEMU/KVM, so it stays
+# off by default.
 IUSE="xen"
 
+# BENTOO-DIVERGENCE: DEPEND - libseccomp is unconditional (see IUSE).
 DEPEND="
 	sys-libs/libcap-ng
 	sys-libs/libseccomp
@@ -159,6 +163,12 @@ RDEPEND="
 # update with proper path to binaries this crate installs, omit leading /
 QA_FLAGS_IGNORED="usr/libexec/${PN}"
 
+DOCS=(
+	doc
+	CONTRIBUTING.md
+	README.md
+)
+
 src_unpack() {
 	if [[ "${PV}" == *9999* ]]; then
 		git-r3_src_unpack
@@ -169,6 +179,7 @@ src_unpack() {
 }
 
 src_configure() {
+	# BENTOO-DIVERGENCE: src_configure - pass USE=xen to cargo.
 	local myfeatures=( $(usev xen) )
 	cargo_src_configure
 }
@@ -176,19 +187,15 @@ src_configure() {
 src_install() {
 	cargo_src_install
 
+	dodoc -r "${DOCS[@]}"
+
 	mkdir "${ED}/usr/libexec" || die
 	mv "${ED}/usr/"{bin,libexec}/${PN} || die
 
-	# Install 50-virtiofsd.json but to avoid conflicts with
-	# <app-emulation/qemu-8.0.0 install it under different name. In this case,
-	# smaller number means higher priority, but that's probably what users want
-	# anyway if they install this package on top of app-emulation/qemu.
-	# TODO: remove once old QEMUs are removed from the portage.
-	#
-	# The descriptor advertises the binary to QEMU/libvirt for KVM guests,
-	# which a Xen-only build cannot serve.
+	# BENTOO-DIVERGENCE: src_install - the descriptor advertises the binary to
+	# QEMU/libvirt for KVM guests, which a Xen-only build cannot serve.
 	if ! use xen; then
 		insinto "/usr/share/qemu/vhost-user"
-		newins "50-virtiofsd.json" "40-virtiofsd.json"
+		doins "50-virtiofsd.json"
 	fi
 }

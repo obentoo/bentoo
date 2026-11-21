@@ -17,11 +17,11 @@ inherit autotools flag-o-matic linux-info python-single-r1 readme.gentoo-r1 udev
 DESCRIPTION="HP Linux Imaging and Printing - Print, scan, fax drivers and service tools"
 HOMEPAGE="https://developers.hp.com/hp-linux-imaging-and-printing"
 SRC_URI="https://downloads.sourceforge.net/project/${PN}/${PN}/${PV}/${P}.tar.gz
-	https://dev.gentoo.org/~billie/distfiles/${PN}-3.26.6-patches-1.tar.xz"
+	https://dev.gentoo.org/~billie/distfiles/${PN}-3.26.6-patches-2.tar.xz"
 
 LICENSE="GPL-2"
 SLOT="0"
-KEYWORDS="amd64 arm arm64 ppc ppc64 x86"
+KEYWORDS="~amd64 ~arm ~arm64 ~ppc ~ppc64 ~x86"
 
 IUSE="doc fax +hpcups hpijs kde libusb0 minimal parport scanner +snmp static-ppds X"
 
