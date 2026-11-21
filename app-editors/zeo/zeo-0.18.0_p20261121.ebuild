@@ -1551,7 +1551,7 @@ declare -A GIT_CRATES=(
 # rewrites the date and EGIT_COMMIT; a second version variable it could not
 # keep current would leave a new tarball under an old, already-manifested name).
 
-EGIT_COMMIT="0a514d7ef59c6357878a244fdf8365d03c504767"
+EGIT_COMMIT="2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4"
 # LLVM 23 only, so it is the default slot: llvm-r2 would always prefer slot 22
 # (its newest stable) whenever 22 is listed. RUST_NEEDS_LLVM ties the Rust slot
 # to it. RUST_MIN_VER is the newest stable Rust, 1.100.0, past upstream's
@@ -2286,6 +2286,14 @@ src_prepare() {
 			"${FILESDIR}/0135-agent-ui-composer-options-effort-right-and-switches.patch"
 			# 0136: an on/off option that cannot change (Thinking on an always-thinking model) is not shown.
 			"${FILESDIR}/0136-agent-ui-a-thinking-option-that-cannot-change-is-not-shown.patch"
+			# 0137: the default pin is Claude Agent (Plus)'s only, beside the check and the star.
+			"${FILESDIR}/0137-agent-ui-the-default-pin-is-claude-agent-plus-s.patch"
+			# 0138: the Agent Tasks panel lists only the tasks of its window's project.
+			"${FILESDIR}/0138-agent-tasks-panel-lists-only-this-project-s-tasks.patch"
+			# 0139: the collapsed terminal card is one row, the directory in a tooltip.
+			"${FILESDIR}/0139-agent-ui-the-collapsed-terminal-card-is-one-row.patch"
+			# 0140: "Open Recent File" on the Welcome page, after "Open Project".
+			"${FILESDIR}/0140-workspace-open-recent-file-on-the-welcome-page.patch"
 		)
 	fi
 

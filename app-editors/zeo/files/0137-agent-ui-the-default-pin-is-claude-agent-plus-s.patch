@@ -1,0 +1,462 @@
+From 7fd128440553b14e86cc4182e04fcecc94071325 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sat, 21 Nov 2026 16:02:11 -0300
+Subject: [PATCH] agent_ui: the default pin is Claude Agent (Plus)'s, beside
+ the check and the star
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.57 (ask 81), correcting §6.48. The pin was always
+meant for Claude Agent (Plus) only (operator, 2026-11-17). Plus's mode,
+model and effort come through the config-options picker, whose hover slot
+held only the favourite star: ListItem::end_slot_on_hover replaces the
+resting slot, so on hover the pin and the check vanished, and at rest the
+three icons were 12, 16 and 14 px.
+
+- language_model_selector::menu_row_markers lays out the end of a menu row
+  once -- the pin, the check, and on hover the star -- with one padding
+  and one size (IconSize::Small) for all three. The config-options picker
+  uses it for both slots, so hovering adds the star and keeps the others.
+- In the config-options picker the pin shows only when the agent is
+  Claude Agent (Plus) (agent id `claude-agent-acp-plus`,
+  ZEO_PLUS_AGENT_ID). The Shift-click gesture and its hint are unchanged
+  for every agent.
+- The pin is removed from the native agent's menus, where §6.48 (0010)
+  put it: the model list (ModelSelectorListItem loses is_default), the
+  mode menu and the effort menu. AgentModelSelector::default_model_id is
+  left in place, now unread by the UI.
+
+A separate patch rather than an amendment of 0010: the files it touches
+were rewritten by later patches (0059, 0073, 0135), so the change only
+applies on top of them.
+
+Test config_options::tests::only_claude_agent_plus_shows_the_default_pin.
+Proved on Xvfb with a stub under Plus's id (docs/assets/zeo-wave3-fixes-2026-11-21/
+in the hub: pin and check at rest, pin, check and star on hover).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_ui/src/config_options.rs b/crates/agent_ui/src/config_options.rs
+index cf6d02b..d8e7def 100644
+--- a/crates/agent_ui/src/config_options.rs
++++ b/crates/agent_ui/src/config_options.rs
+@@ -26,7 +26,7 @@ use zed_actions::agent::ToggleModelSelector;
+ 
+ use crate::model_search;
+ use crate::set_as_default::{
+-    SESSION_ONLY_HINT, default_hint_footer, default_marker, persists_default,
++    SESSION_ONLY_HINT, default_hint_footer, menu_row_markers, persists_default,
+ };
+ use crate::ui::{documentation_aside_side, fast_mode_button, thinking_effort_trigger};
+ use crate::{
+@@ -1180,12 +1180,14 @@ impl PickerDelegate for ConfigOptionPickerDelegate {
+                 let current_value = self.current_value();
+                 let is_selected = current_value.as_ref() == Some(&option.value);
+ 
+-                let is_default = matches!(
+-                    self.agent_server
+-                        .default_config_option(self.config_id.0.as_ref(), cx),
+-                    Some(AgentConfigOptionValue::ValueId(ref id))
+-                        if id.as_str() == option.value.0.as_ref()
+-                );
++                // Zeo next §6.57 (ask 81): the default pin is Claude Agent (Plus)'s only.
++                let is_default = shows_default_pin(&self.agent_server.agent_id())
++                    && matches!(
++                        self.agent_server
++                            .default_config_option(self.config_id.0.as_ref(), cx),
++                        Some(AgentConfigOptionValue::ValueId(ref id))
++                            if id.as_str() == option.value.0.as_ref()
++                    );
+ 
+                 let is_favorite = self.favorites.contains(&option.value);
+ 
+@@ -1213,23 +1215,17 @@ impl PickerDelegate for ConfigOptionPickerDelegate {
+                                 .spacing(ListItemSpacing::Sparse)
+                                 .toggle_state(selected)
+                                 .child(h_flex().w_full().child(Label::new(option_name).truncate()))
+-                                .end_slot(
+-                                    h_flex()
+-                                        .gap_1()
+-                                        .pr_2()
+-                                        .when(is_default, |this| {
+-                                            this.child(default_marker((
+-                                                "config-option-default",
+-                                                ix,
+-                                            )))
+-                                        })
+-                                        .when(is_selected, |this| {
+-                                            this.child(
+-                                                Icon::new(IconName::Check).color(Color::Accent),
+-                                            )
+-                                        }),
+-                                )
+-                                .end_slot_on_hover(div().pr_1p5().child({
++                                .end_slot(menu_row_markers(
++                                    ("config-option-default", ix),
++                                    is_default,
++                                    is_selected,
++                                    None,
++                                ))
++                                .end_slot_on_hover(menu_row_markers(
++                                    ("config-option-default-hover", ix),
++                                    is_default,
++                                    is_selected,
++                                    Some({
+                                     let (icon, color, tooltip) = if is_favorite {
+                                         (IconName::StarFilled, Color::Accent, "Unfavorite")
+                                     } else {
+@@ -1263,7 +1259,9 @@ impl PickerDelegate for ConfigOptionPickerDelegate {
+                                                 cx,
+                                             );
+                                         })
+-                                })),
++                                        .into_any_element()
++                                    }),
++                                )),
+                         )
+                         .into_any_element(),
+                 )
+@@ -1589,6 +1587,13 @@ fn count_config_options(option: &acp::SessionConfigOption) -> usize {
+     }
+ }
+ 
++/// Zeo next §6.57 (ask 81): whether this agent's config-option menus mark the default value with
++/// the pin. The pin was always meant for Claude Agent (Plus) only (operator, 2026-11-17); the
++/// Shift-click gesture itself is unchanged for every agent.
++fn shows_default_pin(agent_id: &project::AgentId) -> bool {
++    agent_id.0.as_ref() == project::agent_registry_store::ZEO_PLUS_AGENT_ID
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -1599,6 +1604,21 @@ mod tests {
+     use project::{AgentId, Project};
+     use std::{any::Any, cell::RefCell};
+ 
++    /// Zeo next §6.57 (ask 81): only Claude Agent (Plus) shows the default pin.
++    #[test]
++    fn only_claude_agent_plus_shows_the_default_pin() {
++        assert!(shows_default_pin(&AgentId::new("claude-agent-acp-plus")));
++        for other in [
++            "claude-agent-tui",
++            "claude-acp",
++            "codex-acp",
++            "Zed",
++            "Claude Agent (Plus)",
++        ] {
++            assert!(!shows_default_pin(&AgentId::new(other)), "{other}");
++        }
++    }
++
+     #[test]
+     fn composer_uses_the_first_matching_option_for_each_toolbar_control() {
+         use acp::SessionConfigOptionCategory::*;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index ec96668..2a6165a 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -28,7 +28,7 @@ use sandbox::{SandboxFsPolicy, SandboxNetPolicy, SandboxPolicy};
+ 
+ use crate::completion_provider::{AvailableSkill, PromptLocalCommand, pluralize};
+ use crate::message_editor::SharedSessionCapabilities;
+-use crate::set_as_default::{SET_AS_DEFAULT_HINT, default_marker, persists_default};
++use crate::set_as_default::{SET_AS_DEFAULT_HINT, persists_default};
+ use crate::ui::{
+     SandboxGroup, SandboxRow, SandboxSection, SandboxStatusTooltip, TerminalSandboxWarning,
+     TerminalToolHeader, fast_mode_button, thinking_effort_trigger,
+@@ -7354,22 +7354,13 @@ impl ThreadView {
+         PopoverMenu::new("effort-selector")
+             .trigger_with_tooltip(trigger, tooltip)
+             .menu(move |window, cx| {
+-                Some(ContextMenu::build(window, cx, |mut menu, _window, cx| {
++                Some(ContextMenu::build(window, cx, |mut menu, _window, _cx| {
+                     menu = menu.header("Change Thinking Effort");
+ 
+-                    let persisted_effort = AgentSettings::get_global(cx)
+-                        .default_model
+-                        .as_ref()
+-                        .and_then(|model| model.effort.clone());
+-
+-                    for (ix, effort_level) in
+-                        supported_effort_levels.clone().into_iter().enumerate()
+-                    {
++                    for effort_level in supported_effort_levels.clone() {
+                         let is_selected = selected
+                             .as_ref()
+                             .is_some_and(|selected| selected.value == effort_level.value);
+-                        let is_default =
+-                            persisted_effort.as_deref() == Some(effort_level.value.as_ref());
+ 
+                         // A custom entry rather than a ContextMenuEntry: the
+                         // built-in entry renders one icon at the end, and this
+@@ -7384,9 +7375,8 @@ impl ThreadView {
+                                 .child(
+                                     h_flex()
+                                         .gap_1()
+-                                        .when(is_default, |this| {
+-                                            this.child(default_marker(("effort-default", ix)))
+-                                        })
++                                        // Zeo next §6.57: no default pin in the native agent's
++                                        // effort menu; it is Claude Agent (Plus)'s only.
+                                         .when(is_selected, |this| {
+                                             this.child(
+                                                 Icon::new(IconName::Check)
+diff --git a/crates/agent_ui/src/mode_selector.rs b/crates/agent_ui/src/mode_selector.rs
+index f27e1fd..3e1b75c 100644
+--- a/crates/agent_ui/src/mode_selector.rs
++++ b/crates/agent_ui/src/mode_selector.rs
+@@ -11,7 +11,7 @@ use ui::{
+     PopoverMenuHandle, Tooltip, prelude::*,
+ };
+ 
+-use crate::set_as_default::{SET_AS_DEFAULT_HINT, default_marker, persists_default};
++use crate::set_as_default::{SET_AS_DEFAULT_HINT, persists_default};
+ use crate::{CycleModeSelector, ToggleProfileSelector, ui::documentation_aside_side};
+ 
+ pub struct ModeSelector {
+@@ -118,7 +118,6 @@ impl ModeSelector {
+         ContextMenu::build(window, cx, move |mut menu, _window, cx| {
+             let all_modes = self.connection.all_modes();
+             let current_mode = self.connection.current_mode();
+-            let default_mode = self.agent_server.default_mode(cx);
+ 
+             let side = documentation_aside_side(cx);
+ 
+@@ -126,9 +125,8 @@ impl ModeSelector {
+             // renders one icon at the end, and this menu now has two things to
+             // say about a mode -- that the thread is on it, and that it is the
+             // one new threads start on.
+-            for (ix, mode) in all_modes.into_iter().enumerate() {
++            for mode in all_modes {
+                 let is_selected = mode.value == current_mode;
+-                let is_default = default_mode.as_ref() == Some(&mode.value);
+ 
+                 let documentation = mode.description.as_ref().map(|description| {
+                     let description = description.clone();
+@@ -151,9 +149,8 @@ impl ModeSelector {
+                             .child(
+                                 h_flex()
+                                     .gap_1()
+-                                    .when(is_default, |this| {
+-                                        this.child(default_marker(("mode-default", ix)))
+-                                    })
++                                    // Zeo next §6.57: no default pin here; it is Claude Agent
++                                    // (Plus)'s only, whose modes come through its config options.
+                                     .when(is_selected, |this| {
+                                         this.child(
+                                             Icon::new(IconName::Check)
+diff --git a/crates/agent_ui/src/model_selector.rs b/crates/agent_ui/src/model_selector.rs
+index 617e639..062da2f 100644
+--- a/crates/agent_ui/src/model_selector.rs
++++ b/crates/agent_ui/src/model_selector.rs
+@@ -304,8 +304,6 @@ impl PickerDelegate for ModelPickerDelegate {
+             }
+             ModelPickerEntry::Model(model_info, is_favorite) => {
+                 let is_selected = Some(model_info) == self.selected_model.as_ref();
+-                let is_default =
+-                    self.selector.default_model_id(cx).as_ref() == Some(&model_info.id);
+ 
+                 let is_favorite = *is_favorite;
+                 let handle_action_click = {
+@@ -342,7 +340,6 @@ impl PickerDelegate for ModelPickerDelegate {
+                                 })
+                                 .disabled(model_info.disabled.clone())
+                                 .is_selected(is_selected)
+-                                .is_default(is_default)
+                                 .is_focused(selected)
+                                 .is_latest(model_info.is_latest)
+                                 .is_favorite(is_favorite)
+diff --git a/crates/agent_ui/src/set_as_default.rs b/crates/agent_ui/src/set_as_default.rs
+index c0483b7..35d6bcb 100644
+--- a/crates/agent_ui/src/set_as_default.rs
++++ b/crates/agent_ui/src/set_as_default.rs
+@@ -33,10 +33,10 @@ pub(crate) const SET_AS_DEFAULT_HINT: &str = "Shift-click to set as default";
+ /// Shift-click gesture the menus teach does not exist for them.
+ pub(crate) const SESSION_ONLY_HINT: &str = "Applies to this session only";
+ 
+-/// The marker on the entry that is the persisted default. It lives in
+-/// `language_model_selector`, beside the model picker upstream moved there, so
+-/// the model menu and these menus draw the same one.
+-pub(crate) use language_model_selector::default_marker;
++/// The end of a menu row -- the default pin, the check, the favourite star. It
++/// lives in `language_model_selector`, beside the model picker upstream moved
++/// there, so every menu draws them alike (Zeo next §6.57).
++pub(crate) use language_model_selector::menu_row_markers;
+ 
+ /// The hint as a menu footer, for the two menus built out of a `Picker`.
+ pub(crate) fn default_hint_footer(cx: &App) -> impl IntoElement {
+diff --git a/crates/language_model_selector/src/language_model_selector.rs b/crates/language_model_selector/src/language_model_selector.rs
+index 7bb412b..1ccec93 100644
+--- a/crates/language_model_selector/src/language_model_selector.rs
++++ b/crates/language_model_selector/src/language_model_selector.rs
+@@ -24,7 +24,7 @@ mod model_selector_components;
+ pub use favorite_models::toggle_in_settings;
+ pub use model_selector_components::{
+     ModelSelectorFooter, ModelSelectorHeader, ModelSelectorListItem, ModelSelectorTooltip,
+-    default_marker,
++    default_marker, menu_row_markers,
+ };
+ 
+ type OnModelChanged = Arc<dyn Fn(LanguageModel, &mut App) + 'static>;
+diff --git a/crates/language_model_selector/src/model_selector_components.rs b/crates/language_model_selector/src/model_selector_components.rs
+index 1c3c986..43490f6 100644
+--- a/crates/language_model_selector/src/model_selector_components.rs
++++ b/crates/language_model_selector/src/model_selector_components.rs
+@@ -13,12 +13,41 @@ pub fn default_marker(id: impl Into<ElementId>) -> impl IntoElement {
+         .id(id)
+         .child(
+             Icon::new(IconName::Pin)
+-                .size(IconSize::XSmall)
++                .size(MENU_ROW_MARKER_SIZE)
+                 .color(Color::Muted),
+         )
+         .tooltip(Tooltip::text("Default for new threads"))
+ }
+ 
++/// Zeo next §6.57 (ask 81): one size for the default pin, the check and the favourite star, which
++/// used to be 12, 16 and 14 px side by side.
++const MENU_ROW_MARKER_SIZE: IconSize = IconSize::Small;
++
++/// Zeo next §6.57 (ask 81): the end of a menu row -- the default pin, the check, and on hover the
++/// favourite star -- laid out once, so every menu that shows them spaces and sizes them alike. The
++/// hover slot replaces the resting one (`ListItem::end_slot_on_hover`), so it must repeat the pin
++/// and the check: one that held only the star clipped them away on hover.
++pub fn menu_row_markers(
++    pin_id: impl Into<ElementId>,
++    is_default: bool,
++    is_selected: bool,
++    star: Option<AnyElement>,
++) -> impl IntoElement {
++    let has_star = star.is_some();
++    h_flex()
++        .gap_1p5()
++        .map(|this| if has_star { this.pr_1p5() } else { this.pr_2() })
++        .when(is_default, |this| this.child(default_marker(pin_id)))
++        .when(is_selected, |this| {
++            this.child(
++                Icon::new(IconName::Check)
++                    .size(MENU_ROW_MARKER_SIZE)
++                    .color(Color::Accent),
++            )
++        })
++        .children(star)
++}
++
+ enum ModelIcon {
+     Name(IconName),
+     Path(SharedString),
+@@ -64,7 +93,6 @@ pub struct ModelSelectorListItem {
+     title: SharedString,
+     icon: Option<ModelIcon>,
+     is_selected: bool,
+-    is_default: bool,
+     is_focused: bool,
+     is_latest: bool,
+     is_favorite: bool,
+@@ -80,7 +108,6 @@ impl ModelSelectorListItem {
+             title: title.into(),
+             icon: None,
+             is_selected: false,
+-            is_default: false,
+             is_focused: false,
+             is_latest: false,
+             is_favorite: false,
+@@ -105,13 +132,6 @@ impl ModelSelectorListItem {
+         self
+     }
+ 
+-    /// Marks the model new threads start on, which is not necessarily the one
+-    /// this thread is on.
+-    pub fn is_default(mut self, is_default: bool) -> Self {
+-        self.is_default = is_default;
+-        self
+-    }
+-
+     pub fn disabled(mut self, disabled: Option<DisabledReason>) -> Self {
+         self.disabled = disabled;
+         self
+@@ -200,53 +220,41 @@ impl RenderOnce for ModelSelectorListItem {
+                         this.child(Chip::new(cost_info).tooltip(Tooltip::text(tooltip_text)))
+                     }),
+             )
++            // Zeo next §6.57 (ask 81): no default pin here. This list is the native agent's model
++            // menu, and the pin is Claude Agent (Plus)'s only, whose model comes through the
++            // config-options picker.
+             .end_slot(
+                 h_flex()
+-                    .pr_2()
+-                    .gap_1p5()
+-                    .when(self.is_default, |this| {
+-                        this.child(default_marker(("model-default", self.index)))
+-                    })
+-                    .when(self.is_selected, |this| {
+-                        this.child(Icon::new(IconName::Check).color(Color::Accent))
+-                    })
++                    .child(menu_row_markers(
++                        ("model-default", self.index),
++                        false,
++                        self.is_selected,
++                        None,
++                    ))
+                     .when(is_disabled, |this| {
+                         this.child(Icon::new(IconName::Info).color(Color::Muted))
+                     }),
+             )
+             .when(!is_disabled, |this| {
+-                // Zeo next §6.48 (ask 72): the hover slot replaces the resting one, so it repeats
+-                // the default pin and the check before the star; hovering only adds the star.
+-                this.end_slot_on_hover(
+-                    h_flex()
+-                        .pr_1p5()
+-                        .gap_1p5()
+-                        .when(self.is_default, |this| {
+-                            this.child(default_marker(("model-default-hover", self.index)))
+-                        })
+-                        .when(self.is_selected, |this| {
+-                            this.child(Icon::new(IconName::Check).color(Color::Accent))
+-                        })
+-                        .when_some(self.on_toggle_favorite, {
+-                            |this, handle_click| {
+-                                let (icon, color, tooltip) = if is_favorite {
+-                                    (IconName::StarFilled, Color::Accent, "Unfavorite Model")
+-                                } else {
+-                                    (IconName::Star, Color::Default, "Favorite Model")
+-                                };
+-                                this.child(
+-                                    IconButton::new(("toggle-favorite", self.index), icon)
+-                                        .layer(ElevationIndex::ElevatedSurface)
+-                                        .icon_color(color)
+-                                        .icon_size(IconSize::Small)
+-                                        .tooltip(Tooltip::text(tooltip))
+-                                        .on_click(move |event, window, cx| {
+-                                            (handle_click)(event, window, cx)
+-                                        }),
+-                                )
+-                            }
+-                        }),
+-                )
++                this.end_slot_on_hover(menu_row_markers(
++                    ("model-default-hover", self.index),
++                    false,
++                    self.is_selected,
++                    self.on_toggle_favorite.map(|handle_click| {
++                        let (icon, color, tooltip) = if is_favorite {
++                            (IconName::StarFilled, Color::Accent, "Unfavorite Model")
++                        } else {
++                            (IconName::Star, Color::Default, "Favorite Model")
++                        };
++                        IconButton::new(("toggle-favorite", self.index), icon)
++                            .layer(ElevationIndex::ElevatedSurface)
++                            .icon_color(color)
++                            .icon_size(MENU_ROW_MARKER_SIZE)
++                            .tooltip(Tooltip::text(tooltip))
++                            .on_click(move |event, window, cx| (handle_click)(event, window, cx))
++                            .into_any_element()
++                    }),
++                ))
+             })
+     }
+ }

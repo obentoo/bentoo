@@ -1,0 +1,200 @@
+From ed1a398b40939fdc0349c2a2be9dfa534cc5fcfe Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sat, 21 Nov 2026 16:33:27 -0300
+Subject: [PATCH] agent_ui: the collapsed terminal card is one row
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.58 (ask 82). The two rows were not 0118's (that
+moved the plan card's disclosure): they are upstream's TerminalToolHeader,
+which always draws the working directory -- "current directory" when it
+is unknown -- and then the command below it. Collapsed (0125's state that
+shows one line of the command), the card now draws one row: the command,
+truncated, in the directory's place, and the directory in the command's
+tooltip (operator, 2026-11-17). The minimized and expanded states keep two
+rows, where the wrapped command needs the width.
+
+TerminalToolHeader::single_row, set by the thread view when the card is
+Collapsed; the header row drops its own top and left padding then, since
+the collapsed command carries its own.
+
+Test ui::terminal_tool_header::tests::a_single_row_header_puts_the_command_where_the_directory_was
+(by debug bounds: two rows, then one row holding the command and no
+directory row). Red seen with single_row ignored.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 2a6165a..0dff8e5 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -11187,6 +11187,8 @@ impl ThreadView {
+         .when_some(tool_call.sandbox_not_applied.as_ref(), |header, reason| {
+             header.sandbox_warning(self.sandbox_not_applied_warning(reason, cx))
+         })
++        // Zeo next §6.58 (ask 82): collapsed, the card is one row.
++        .single_row(card_display == settings::ToolCardDisplay::Collapsed)
+         .command_slot(command_element);
+ 
+         v_flex()
+diff --git a/crates/agent_ui/src/ui/terminal_tool_header.rs b/crates/agent_ui/src/ui/terminal_tool_header.rs
+index 1d6f6c2..c44ba01 100644
+--- a/crates/agent_ui/src/ui/terminal_tool_header.rs
++++ b/crates/agent_ui/src/ui/terminal_tool_header.rs
+@@ -30,6 +30,8 @@ pub struct TerminalToolHeader {
+     on_stop: Option<ClickHandler>,
+     stop_description: SharedString,
+     command_slot: Option<AnyElement>,
++    /// Zeo next §6.58 (ask 82): the command in the directory's row, the directory in its tooltip.
++    single_row: bool,
+     rounded_top: bool,
+     rounded_bottom: bool,
+ }
+@@ -56,6 +58,7 @@ impl TerminalToolHeader {
+             on_stop: None,
+             stop_description: "Also possible by placing your cursor inside the terminal and using regular terminal bindings.".into(),
+             command_slot: None,
++            single_row: false,
+             rounded_top: false,
+             rounded_bottom: false,
+         }
+@@ -118,6 +121,14 @@ impl TerminalToolHeader {
+         self.command_slot = Some(element.into_any_element());
+         self
+     }
++
++    /// Zeo next §6.58 (ask 82): one row -- the command where the working directory was, the
++    /// directory in the command's tooltip. For the collapsed card; the minimized and expanded
++    /// cards keep two rows, where the wrapped command needs the width.
++    pub fn single_row(mut self, single_row: bool) -> Self {
++        self.single_row = single_row;
++        self
++    }
+ }
+ 
+ impl RenderOnce for TerminalToolHeader {
+@@ -141,9 +152,15 @@ impl RenderOnce for TerminalToolHeader {
+             on_stop,
+             stop_description,
+             command_slot,
++            single_row,
+             rounded_top,
+             rounded_bottom,
+         } = self;
++        let (row_command, command_slot) = if single_row {
++            (command_slot, None)
++        } else {
++            (None, command_slot)
++        };
+ 
+         let child_id = |name: &str| format!("terminal-tool-{name}-{id}");
+ 
+@@ -155,22 +172,39 @@ impl RenderOnce for TerminalToolHeader {
+ 
+         let header_row = h_flex()
+             .id(child_id("header"))
+-            .pt_1()
+-            .pl_1p5()
++            // The command brings its own padding when it takes the directory's place.
++            .when(row_command.is_none(), |row| row.pt_1().pl_1p5())
+             .pr_1()
+             .flex_none()
+             .gap_1()
+             .justify_between()
+             .rounded_t_md()
+-            .child(
+-                div().w_full().min_w_0().overflow_hidden().child(
+-                    Label::new(working_dir)
+-                        .buffer_font(cx)
+-                        .size(LabelSize::XSmall)
+-                        .color(Color::Muted)
+-                        .truncate_start(),
++            .map(|row| match row_command {
++                Some(command) => row.child(
++                    div()
++                        .id(child_id("command"))
++                        .debug_selector(|| "TERMINAL_HEADER_COMMAND_ROW".into())
++                        .w_full()
++                        .min_w_0()
++                        .overflow_hidden()
++                        .tooltip(Tooltip::text(working_dir))
++                        .child(command),
+                 ),
+-            )
++                None => row.child(
++                    div()
++                        .debug_selector(|| "TERMINAL_HEADER_WORKING_DIR".into())
++                        .w_full()
++                        .min_w_0()
++                        .overflow_hidden()
++                        .child(
++                            Label::new(working_dir)
++                                .buffer_font(cx)
++                                .size(LabelSize::XSmall)
++                                .color(Color::Muted)
++                                .truncate_start(),
++                        ),
++                ),
++            })
+             .child(
+                 Disclosure::new(child_id("disclosure"), is_expanded)
+                     .opened_icon(IconName::ChevronUp)
+@@ -313,6 +347,56 @@ mod tests {
+         cx.simulate_click(stop.center(), gpui::Modifiers::default());
+         assert_eq!(header.read_with(cx, |header, _| header.stops), 1);
+     }
++
++    /// Zeo next §6.58 (ask 82): the collapsed card is one row -- the command takes the
++    /// directory's place, the directory moves to its tooltip -- and the other states keep two.
++    #[gpui::test]
++    fn a_single_row_header_puts_the_command_where_the_directory_was(cx: &mut gpui::TestAppContext) {
++        struct Header {
++            single_row: bool,
++        }
++        impl Render for Header {
++            fn render(&mut self, _: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
++                div().w(px(400.)).child(
++                    TerminalToolHeader::new("test", "test", "/project", false)
++                        .single_row(self.single_row)
++                        .command_slot(
++                            div()
++                                .debug_selector(|| "TEST_COMMAND".into())
++                                .child("cargo test"),
++                        ),
++                )
++            }
++        }
++
++        crate::test_support::init_test(cx);
++        let (header, cx) = cx.add_window_view(|_, _| Header { single_row: false });
++        cx.run_until_parked();
++        let directory = cx
++            .debug_bounds("TERMINAL_HEADER_WORKING_DIR")
++            .expect("two rows: the directory has its own row");
++        let command = cx.debug_bounds("TEST_COMMAND").expect("the command");
++        assert!(
++            command.top() >= directory.bottom(),
++            "two rows: the command is below the directory ({command:?}, {directory:?})"
++        );
++        assert!(cx.debug_bounds("TERMINAL_HEADER_COMMAND_ROW").is_none());
++
++        header.update(cx, |header, cx| {
++            header.single_row = true;
++            cx.notify();
++        });
++        cx.run_until_parked();
++        assert!(
++            cx.debug_bounds("TERMINAL_HEADER_WORKING_DIR").is_none(),
++            "one row: the directory is no row of its own"
++        );
++        let row = cx
++            .debug_bounds("TERMINAL_HEADER_COMMAND_ROW")
++            .expect("the command sits in the header row");
++        let command = cx.debug_bounds("TEST_COMMAND").expect("the command");
++        assert!(row.contains(&command.center()), "{row:?} holds {command:?}");
++    }
+ }
+ 
+ impl Component for TerminalToolHeader {

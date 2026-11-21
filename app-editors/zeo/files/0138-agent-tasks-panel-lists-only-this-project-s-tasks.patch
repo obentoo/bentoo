@@ -1,0 +1,788 @@
+From cf4a8ae38b150307e12d0fe526a4b392165e526d Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sat, 21 Nov 2026 16:26:17 -0300
+Subject: [PATCH] agent_tasks_panel: list only the tasks of this window's
+ project
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.51 (ask 75). The panel read one app-wide store,
+TaskHistoryStore, and AgentTasksPanel::groups filtered only by status;
+the module's own comment said it listed "every task of every window". The
+tasks card in the agent panel was already scoped (it follows its own
+panel's threads) and is unchanged.
+
+- groups keeps a record when its thread's metadata maps to the window's
+  project: agent_ui::thread_organization::list_scope::session_project
+  derives the key the way thread_project does for lists per project
+  (0123), and the panel compares it with ProjectKey::from_group of its
+  project. A thread started with another set of folders is another
+  project and is not listed, as in the sidebar (operator, 2026-11-17).
+  A record whose thread is gone is hidden: with no thread there is no
+  project to list it under (operator, 2026-11-21, over the "Thread no
+  longer exists" row the panel showed before). Opened by key -- the
+  router other callers use -- such a record still says so.
+- "Delete All Archived" counts and deletes, and has_archived offers it,
+  only over this project's records. Unscoped, the prompt would count, and
+  the store delete, records of projects the window does not show.
+- The rows re-filter when the thread metadata store changes (a thread's
+  folders become known or change) and on the project's worktree events.
+- The project is held as a weak Entity<Project>, passed into new: new
+  runs inside the workspace's own update, and groups runs inside it too,
+  so neither can read the workspace. `project` moves from dev- to normal
+  dependencies (Cargo.lock already listed it).
+
+Tests: multi_window's live-value test now runs in a second window of the
+same project and proves a third window's other project is not listed
+(its first version passed vacuously: two StopConnections number their
+sessions from 1 alike, and the third window had no Agent Tasks panel to
+register its card); delete_action_all_archived_spares_another_projects_records;
+delete_action_scope_follows_a_thread_that_changes_project. The three
+"thread vanished" tests assert the row is hidden and the router's notice.
+Fixtures: adopt_orphan_sessions gives each seeded session the thread
+metadata a session that ran would have, in the window's folders;
+forget_thread and move_thread_to simulate deleting and moving a thread;
+notice_of and find_record read the panel and the store, not the rows, so
+a cross-window test still reads what another project's panel shows.
+Red seen with the scope disabled: those 6 tests failed. agent_tasks_panel
+289/289.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_tasks_panel/Cargo.toml b/crates/agent_tasks_panel/Cargo.toml
+index aa9d9dc..ea7b097 100644
+--- a/crates/agent_tasks_panel/Cargo.toml
++++ b/crates/agent_tasks_panel/Cargo.toml
+@@ -24,6 +24,7 @@ futures.workspace = true
+ gpui.workspace = true
+ log.workspace = true
+ menu.workspace = true
++project.workspace = true
+ settings.workspace = true
+ ui.workspace = true
+ workspace.workspace = true
+diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
+index d152dc2..eb5e74f 100644
+--- a/crates/agent_tasks_panel/src/panel.rs
++++ b/crates/agent_tasks_panel/src/panel.rs
+@@ -1,9 +1,9 @@
+ //! `AgentTasksPanel`: the dock panel that lists the agent task history (R2).
+ //!
+ //! Records come from the global `TaskHistoryStore`, grouped by thread and filtered by
+-//! outcome. The panel lists every task of every window, so a running row reads its progress
+-//! from whichever registered `TasksCard` holds it (R2.3) — never from the store, which never
+-//! writes progress (R1.4).
++//! outcome. The panel lists the tasks of its window's project (Zeo next §6.51) — every window
++//! of that project, so a running row reads its progress from whichever registered `TasksCard`
++//! holds it (R2.3) — never from the store, which never writes progress (R1.4).
+ //!
+ //! The dock the panel sits in is saved in the key-value store under the panel's key: the
+ //! workspace saves each panel's size, but a panel's dock only through that panel's settings,
+@@ -17,7 +17,9 @@ use agent_ui::{
+     AgentPanel, DEFAULT_THREAD_TITLE, OpenAgentSessionOptions, OpenedAgentSession,
+     OpenedAgentSubagent, SUBAGENT_TASK_ID_PREFIX, TASK_WAITING_LABEL, TaskRecord, TasksCard,
+     can_send_to_background, collapse_label, display_label, offers_open_at_task, open_agent_session,
+-    open_agent_subagent, task_log, thread_metadata_store::ThreadMetadataStore,
++    open_agent_subagent, task_log,
++    thread_metadata_store::ThreadMetadataStore,
++    thread_organization::{ProjectKey, list_scope::session_project},
+ };
+ use anyhow::{Result, anyhow};
+ use collections::HashMap;
+@@ -341,6 +343,8 @@ pub struct AgentTasksPanel {
+     position: DockPosition,
+     /// The workspace whose agent panel a click opens threads in.
+     workspace: WeakEntity<Workspace>,
++    /// The window's project, whose tasks the panel lists (Zeo next §6.51).
++    project: WeakEntity<project::Project>,
+     store: Entity<TaskHistoryStore>,
+     filters: TaskFilters,
+     /// The text filter, as typed; matched trimmed, and no filter at all while blank (story 034
+@@ -428,10 +432,18 @@ impl AgentTasksPanel {
+                     anyhow!("agent_tasks_panel::init must run before the Agent Tasks panel loads")
+                 })?;
+                 let agent_panel = workspace.panel::<AgentPanel>(cx);
++                let project = workspace.project().clone();
+                 let workspace_entity = cx.entity();
+                 Ok(cx.new(|cx| {
+-                    let mut panel =
+-                        Self::new(store, position, &workspace_entity, agent_panel, window, cx);
++                    let mut panel = Self::new(
++                        store,
++                        position,
++                        &workspace_entity,
++                        project,
++                        agent_panel,
++                        window,
++                        cx,
++                    );
+                     panel.page_size = page_size;
+                     panel
+                 }))
+@@ -443,6 +455,8 @@ impl AgentTasksPanel {
+         store: Entity<TaskHistoryStore>,
+         position: DockPosition,
+         workspace: &Entity<Workspace>,
++        // Passed in: `new` runs inside the workspace's own update, which cannot read it.
++        project: Entity<project::Project>,
+         agent_panel: Option<Entity<AgentPanel>>,
+         window: &mut Window,
+         cx: &mut Context<Self>,
+@@ -482,6 +496,18 @@ impl AgentTasksPanel {
+             }),
+             // The agent panel loads alongside this one, and is torn down and rebuilt when AI
+             // is turned off and on again; each one brings a new card.
++            // Zeo next §6.51: the rows follow the project, so they re-filter when a thread's
++            // folders become known or change, and when the window's folders change.
++            cx.subscribe(&project, |_, _, event: &project::Event, cx| {
++                if matches!(
++                    event,
++                    project::Event::WorktreeAdded(_)
++                        | project::Event::WorktreeRemoved(_)
++                        | project::Event::WorktreeOrderChanged
++                ) {
++                    cx.notify();
++                }
++            }),
+             cx.subscribe_in(
+                 workspace,
+                 window,
+@@ -494,10 +520,15 @@ impl AgentTasksPanel {
+                 },
+             ),
+         ];
++        let mut subscriptions = subscriptions;
++        if let Some(metadata) = ThreadMetadataStore::try_global(cx) {
++            subscriptions.push(cx.observe(&metadata, |_, _, cx| cx.notify()));
++        }
+         let mut panel = Self {
+             focus_handle: cx.focus_handle(),
+             position,
+             workspace: workspace.downgrade(),
++            project: project.downgrade(),
+             store,
+             filters: TaskFilters::default(),
+             filter_query: SharedString::default(),
+@@ -539,6 +570,23 @@ impl AgentTasksPanel {
+             .update(cx, |store, cx| store.register_card(&card, cx));
+     }
+ 
++    /// The notice a task's row carries, listed or not: a task of another project can be opened
++    /// from this panel by key (the router), though the panel does not list it (§6.51).
++    #[cfg(test)]
++    pub(crate) fn notice(&self, key: &TaskKey) -> Option<SharedString> {
++        self.notices.get(key).cloned()
++    }
++
++    /// The window's project, keyed as lists per project are (`0123`), or `None` once the
++    /// workspace is gone.
++    fn project_key(&self, cx: &App) -> Option<ProjectKey> {
++        // The project, not the workspace: `groups` runs while the workspace is being updated.
++        let project = self.project.upgrade()?;
++        Some(ProjectKey::from_group(
++            &project.read(cx).project_group_key(cx),
++        ))
++    }
++
+     /// The visible rows (after filters), grouped by thread: groups ordered by their newest
+     /// task, rows newest first (R2.2).
+     pub fn groups(&self, cx: &App) -> Vec<PanelGroup> {
+@@ -546,9 +594,11 @@ impl AgentTasksPanel {
+         let cards: Vec<Entity<TasksCard>> = store.cards().collect();
+         let snapshot = CardSnapshot::read(&cards, cx);
+ 
++        let project = self.project_key(cx);
+         let mut rows: Vec<PanelRow> = store
+             .records()
+             .iter()
++            .filter(|entry| in_project(entry, project.as_ref(), cx))
+             .filter(|entry| self.filters.shows(entry))
+             .map(|entry| {
+                 let key = (
+@@ -1453,7 +1503,16 @@ impl AgentTasksPanel {
+     /// Deletes every archived record once the user confirms (story 025). The batch is the one
+     /// the prompt counted, so a task archived while it is open is not deleted unasked.
+     pub fn request_delete_all_archived(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+-        let keys = archived_keys(self.store.read(cx).records());
++        // Only this project's: unscoped, the prompt would count, and the store delete, the
++        // archived records of projects this window does not show (Zeo next §6.51).
++        let project = self.project_key(cx);
++        let keys = archived_keys(
++            self.store
++                .read(cx)
++                .records()
++                .iter()
++                .filter(|entry| in_project(entry, project.as_ref(), cx)),
++        );
+         if keys.is_empty() {
+             return;
+         }
+@@ -1819,12 +1878,13 @@ impl AgentTasksPanel {
+     }
+ 
+     fn render_filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
++        let project = self.project_key(cx);
+         let has_archived = self
+             .store
+             .read(cx)
+             .records()
+             .iter()
+-            .any(|entry| entry.archived);
++            .any(|entry| entry.archived && in_project(entry, project.as_ref(), cx));
+         let delete_all =
+             (self.filters.archived && has_archived).then(|| {
+                 Button::new("agent-tasks-delete-all-archived", "Delete All Archived")
+@@ -2628,9 +2688,9 @@ fn row_key(row: &PanelRow) -> TaskKey {
+ }
+ 
+ /// The keys of every archived record, in the store's order.
+-fn archived_keys(records: &[HistoryEntry]) -> Vec<TaskKey> {
++fn archived_keys<'a>(records: impl IntoIterator<Item = &'a HistoryEntry>) -> Vec<TaskKey> {
+     records
+-        .iter()
++        .into_iter()
+         .filter(|entry| entry.archived)
+         .map(|entry| {
+             (
+@@ -2641,6 +2701,15 @@ fn archived_keys(records: &[HistoryEntry]) -> Vec<TaskKey> {
+         .collect()
+ }
+ 
++/// Zeo next §6.51 (ask 75): whether `entry` belongs to `project` -- its thread's folders map to
++/// it, as the sidebar groups threads. A thread started with another set of folders is another
++/// project, and a record whose thread is gone is hidden. `None` (no workspace) keeps everything.
++fn in_project(entry: &HistoryEntry, project: Option<&ProjectKey>, cx: &App) -> bool {
++    project.is_none_or(|project| {
++        session_project(&entry.record.session_id, cx).as_ref() == Some(project)
++    })
++}
++
+ /// Newest task first; session and task id break ties, so equal start times list the same
+ /// way on every render.
+ fn newest_first(a: &HistoryEntry, b: &HistoryEntry) -> std::cmp::Ordering {
+diff --git a/crates/agent_tasks_panel/src/panel/actions_tests.rs b/crates/agent_tasks_panel/src/panel/actions_tests.rs
+index 056fd0f..1fa353e 100644
+--- a/crates/agent_tasks_panel/src/panel/actions_tests.rs
++++ b/crates/agent_tasks_panel/src/panel/actions_tests.rs
+@@ -107,12 +107,19 @@ async fn panel_actions_click_opens_the_thread_of_the_task(cx: &mut TestAppContex
+     assert_eq!(window_count(&mut panels.cx), 1);
+ }
+ 
+-// R2.7 — a recorded task whose thread is gone says so on its row and opens nothing.
++// R2.7, amended by Zeo next §6.51 (ask 75): a recorded task whose thread is gone is no longer
++// listed -- with no thread there is no project to list it under (operator, 2026-11-21). Opened
++// by key, as the router still can, it opens nothing and says so.
+ #[gpui::test]
+ async fn panel_actions_click_on_a_task_whose_thread_vanished_says_so(cx: &mut TestAppContext) {
+     let db = init_base(cx);
+     seed_finished(&db, "gone-session", "t", AgentTaskStatus::Completed, 1_000).await;
+     let mut panels = open_panels(cx).await;
++    forget_thread("gone-session", &mut panels.cx);
++    assert!(
++        find_row(&mut panels, "gone-session", "t").is_none(),
++        "a task whose thread is gone is not listed"
++    );
+     let thread = open_live_thread(&mut panels, "Still here");
+     send_tasks(
+         &thread,
+@@ -126,10 +133,13 @@ async fn panel_actions_click_on_a_task_whose_thread_vanished_says_so(cx: &mut Te
+     open(&mut panels, "gone-session", "t");
+ 
+     assert_eq!(active_session(&panels), before, "no empty thread is opened");
+-    let notice = find_row(&mut panels, "gone-session", "t")
+-        .expect("the row is still listed")
+-        .notice
+-        .expect("the row says why nothing opened");
++    let notice = notice_of(
++        &panels.tasks_panel,
++        &sid("gone-session"),
++        "t",
++        &mut panels.cx,
++    )
++    .expect("the panel says why nothing opened");
+     assert!(notice.contains("Thread no longer exists"), "got {notice:?}");
+     assert_eq!(
+         find_row(&mut panels, &here.to_string(), "t")
+diff --git a/crates/agent_tasks_panel/src/panel/delete_action_tests.rs b/crates/agent_tasks_panel/src/panel/delete_action_tests.rs
+index 7c11553..3e0c16e 100644
+--- a/crates/agent_tasks_panel/src/panel/delete_action_tests.rs
++++ b/crates/agent_tasks_panel/src/panel/delete_action_tests.rs
+@@ -204,6 +204,58 @@ async fn delete_action_all_archived_asks_with_the_count_and_empties_the_archived
+     );
+ }
+ 
++// Zeo next §6.51 (ask 75): Delete All Archived counts and deletes only the archived records of
++// this window's project. Unscoped, it would delete another project's records, which the panel
++// does not even show; with only theirs archived, it is not offered.
++#[gpui::test]
++async fn delete_action_all_archived_spares_another_projects_records(cx: &mut TestAppContext) {
++    let db = init_base(cx);
++    seed(&db, "mine", "a1", AgentTaskStatus::Completed, 1_000, true).await;
++    seed(&db, "theirs", "b1", AgentTaskStatus::Completed, 1_100, true).await;
++    let mut panels = open_panels(cx).await;
++    move_thread_to("theirs", "/elsewhere", &mut panels.cx);
++
++    only(&mut panels, &[TaskFilter::Archived]);
++    assert_eq!(
++        visible_keys(&mut panels),
++        vec![("mine".to_string(), "a1".to_string())],
++        "another project's archived record is not listed"
++    );
++    request_delete_all(&mut panels);
++    let (message, _) = panels.cx.pending_prompt().unwrap();
++    assert_eq!(
++        message, "Delete 1 task record?",
++        "only this project's is counted"
++    );
++    answer(&mut panels, "Delete");
++    let left: Vec<(String, String)> = load(&db).await.iter().map(key_of).collect();
++    assert_eq!(
++        left,
++        vec![("theirs".to_string(), "b1".to_string())],
++        "another project's archived record is not deleted"
++    );
++    let labels = painted_labels(&mut panels);
++    assert!(
++        !labels.iter().any(|label| label == "Delete All Archived"),
++        "only another project's archived records are left, so nothing is offered: {labels:?}"
++    );
++}
++
++// Zeo next §6.51: the list re-filters when a thread's folders change, as the sidebar does.
++#[gpui::test]
++async fn delete_action_scope_follows_a_thread_that_changes_project(cx: &mut TestAppContext) {
++    let db = init_base(cx);
++    seed(&db, "s1", "a1", AgentTaskStatus::Completed, 1_000, false).await;
++    let mut panels = open_panels(cx).await;
++    only(&mut panels, &[TaskFilter::Finished]);
++    assert_eq!(visible_keys(&mut panels).len(), 1, "listed in its project");
++    move_thread_to("s1", "/elsewhere", &mut panels.cx);
++    assert!(
++        visible_keys(&mut panels).is_empty(),
++        "gone from the list once its thread is another project's"
++    );
++}
++
+ // Hostile (race): the archive state changes while the confirmation is open. "Delete" removes
+ // exactly the counted batch that is still archived -- not a row unarchived meanwhile, and
+ // not one archived after the count was shown.
+diff --git a/crates/agent_tasks_panel/src/panel/label_contract_tests.rs b/crates/agent_tasks_panel/src/panel/label_contract_tests.rs
+index aa71e9e..327c832 100644
+--- a/crates/agent_tasks_panel/src/panel/label_contract_tests.rs
++++ b/crates/agent_tasks_panel/src/panel/label_contract_tests.rs
+@@ -195,7 +195,8 @@ async fn panel_label_contract_rename_reaches_the_open_card(cx: &mut TestAppConte
+     assert_eq!(count(&strings, "Open thread: Renamed"), 1);
+ }
+ 
+-// R3.10 — a rename in one window shows in every open window's panel.
++// R3.10 — a rename in one window shows in every open window's panel of that project (a panel
++// lists only its project's tasks since Zeo next §6.51).
+ #[gpui::test]
+ async fn panel_label_contract_rename_shows_in_a_second_window(cx: &mut TestAppContext) {
+     init_base(cx);
+@@ -214,7 +215,7 @@ async fn panel_label_contract_rename_shows_in_a_second_window(cx: &mut TestAppCo
+     );
+     let session = session_of(&thread, &panels.cx).to_string();
+ 
+-    let (second, mut second_cx) = open_window(cx, "/second").await;
++    let (second, mut second_cx) = open_window(cx, "/project").await;
+     let weak = second.downgrade();
+     let loading = second_cx.update(|window, cx| AgentTasksPanel::load(weak, window.to_async(cx)));
+     second_cx.run_until_parked();
+diff --git a/crates/agent_tasks_panel/src/panel/multi_window_tests.rs b/crates/agent_tasks_panel/src/panel/multi_window_tests.rs
+index 3cac469..e968774 100644
+--- a/crates/agent_tasks_panel/src/panel/multi_window_tests.rs
++++ b/crates/agent_tasks_panel/src/panel/multi_window_tests.rs
+@@ -1,9 +1,10 @@
+ // Story 014, task 4.1 review — the cards the panel reads (R2.3) and how it reaches them.
+ // Module path: `panel::multi_window`.
+ //
+-// The panel lists every task of every window, so a running row reads its live values from
+-// whichever registered card holds it; and the card is attached whenever the agent panel
+-// appears, because Zeo loads the agent panel alongside this one rather than before it.
++// The panel lists the tasks of its window's project in every window of that project (Zeo next
++// §6.51), so a running row reads its live values from whichever registered card holds it; and
++// the card is attached whenever the agent panel appears, because Zeo loads the agent panel
++// alongside this one rather than before it.
+ 
+ use std::path::Path;
+ 
+@@ -86,13 +87,14 @@ fn card_count(cx: &mut VisualTestContext) -> usize {
+     cx.update(|_, cx| TaskHistoryStore::global(cx).read(cx).cards().count())
+ }
+ 
+-// R2.3 across windows: a task running in window B shows live in window A's panel, Stop is
+-// offered there, and once B's card is released nothing reads it any more.
++// R2.3 across windows, scoped by Zeo next §6.51 (ask 75): a task running in window B of the same
++// project shows live in window A's panel, Stop is offered there, and once B's card is released
++// nothing reads it any more; a task of another project's window is not listed in A at all.
+ #[gpui::test]
+ async fn panel_reads_live_values_from_the_card_of_another_window(cx: &mut TestAppContext) {
+     init_base(cx);
+     let mut panels = open_panels(cx).await;
+-    let (workspace_b, mut cx_b) = open_window(cx, "/other").await;
++    let (workspace_b, mut cx_b) = open_window(cx, "/project").await;
+     let agent_panel_b = add_agent_panel(&workspace_b, &mut cx_b);
+     let tasks_panel_b = add_tasks_panel(&workspace_b, &mut cx_b).await;
+     assert_eq!(
+@@ -101,7 +103,10 @@ async fn panel_reads_live_values_from_the_card_of_another_window(cx: &mut TestAp
+         "one card per window is registered"
+     );
+ 
+-    let thread_b = open_thread_on(&agent_panel_b, StopConnection::new(), "Thread B", &mut cx_b);
++    // One connection for B and O: each new connection numbers its sessions from 1, and two
++    // threads under one session id would be one thread to the metadata store.
++    let connection = StopConnection::new();
++    let thread_b = open_thread_on(&agent_panel_b, connection.clone(), "Thread B", &mut cx_b);
+     let session_b = session_of(&thread_b, &cx_b).to_string();
+     send_tasks(
+         &thread_b,
+@@ -154,6 +159,43 @@ async fn panel_reads_live_values_from_the_card_of_another_window(cx: &mut TestAp
+         row.entry.record.tokens, None,
+         "no live value from a released card"
+     );
++
++    // Another project, in a third window: its task is recorded, but window A does not list it.
++    let (workspace_o, mut cx_o) = open_window(cx, "/other").await;
++    let agent_panel_o = add_agent_panel(&workspace_o, &mut cx_o);
++    // Its own Agent Tasks panel registers its card, which is what records its tasks.
++    let tasks_panel_o = add_tasks_panel(&workspace_o, &mut cx_o).await;
++    let thread_o = open_thread_on(&agent_panel_o, connection, "Thread O", &mut cx_o);
++    let session_o = session_of(&thread_o, &cx_o).to_string();
++    send_tasks(
++        &thread_o,
++        vec![wire_task("elsewhere", "running", 20_000, None)],
++        &mut cx_o,
++    );
++    panels.cx.run_until_parked();
++    let recorded = cx_o.update(|_, cx| {
++        TaskHistoryStore::global(cx)
++            .read(cx)
++            .records()
++            .iter()
++            .any(|entry| {
++                entry.record.session_id.to_string() == session_o
++                    && entry.record.task_id.as_ref() == "elsewhere"
++            })
++    });
++    assert!(
++        recorded,
++        "precondition: the other project's task is recorded"
++    );
++    assert!(
++        row_of(&tasks_panel_o, &session_o, "elsewhere", &mut cx_o).is_some(),
++        "precondition: its own project's panel lists it"
++    );
++    assert!(
++        find_row(&mut panels, &session_o, "elsewhere").is_none(),
++        "window A does not list a task of another project"
++    );
++    drop((thread_o, agent_panel_o, tasks_panel_o, workspace_o));
+ }
+ 
+ // Zeo loads the agent panel alongside this one, so the card usually arrives after `load`:
+@@ -233,6 +275,8 @@ async fn panel_attaches_the_card_of_an_agent_panel_added_after_it(cx: &mut TestA
+         started(&record("replaced", "t1", AgentTaskStatus::Running, 20_000)),
+         &mut cx,
+     );
++    // The record's session is seeded, with no thread: give it this project's (§6.51).
++    adopt_orphan_sessions(&workspace, &mut cx);
+     assert!(
+         row_of(&tasks_panel, "replaced", "t1", &mut cx).is_some(),
+         "activity on the new card reaches the store and the panel"
+diff --git a/crates/agent_tasks_panel/src/panel/open_at_task_tests.rs b/crates/agent_tasks_panel/src/panel/open_at_task_tests.rs
+index cbb189f..9a838ca 100644
+--- a/crates/agent_tasks_panel/src/panel/open_at_task_tests.rs
++++ b/crates/agent_tasks_panel/src/panel/open_at_task_tests.rs
+@@ -134,6 +134,13 @@ async fn open_at_task_of_a_vanished_thread_opens_nothing(cx: &mut TestAppContext
+     .await
+     .unwrap();
+     let mut panels = open_panels(cx).await;
++    // Zeo next §6.51: the thread is gone, so the row is not listed; opened by key, as the router
++    // still can, it says so.
++    forget_thread("gone-session", &mut panels.cx);
++    assert!(
++        find_row(&mut panels, "gone-session", "gone-task").is_none(),
++        "a task whose thread is gone is not listed"
++    );
+     let here = open_live_thread(&mut panels, "Still here");
+     let here = session_of(&here, &panels.cx);
+     let windows = window_count(&mut panels.cx);
+@@ -145,10 +152,13 @@ async fn open_at_task_of_a_vanished_thread_opens_nothing(cx: &mut TestAppContext
+         &mut panels.cx,
+     );
+ 
+-    let notice = find_row(&mut panels, "gone-session", "gone-task")
+-        .expect("the row is still listed")
+-        .notice
+-        .expect("the row says why nothing opened");
++    let notice = notice_of(
++        &tasks_panel,
++        &sid("gone-session"),
++        "gone-task",
++        &mut panels.cx,
++    )
++    .expect("the panel says why nothing opened");
+     assert!(notice.contains("Thread no longer exists"), "got {notice:?}");
+     assert!(!notice.contains("no entry to jump to"), "got {notice:?}");
+     assert_eq!(active_session(&panels), Some(here), "nothing else opened");
+@@ -231,18 +241,22 @@ fn find_record(
+     task: &str,
+     cx: &mut gpui::VisualTestContext,
+ ) -> Option<String> {
+-    panel
+-        .update(cx, |panel, cx| panel.groups(cx))
+-        .into_iter()
+-        .flat_map(|group| group.rows)
+-        .find(|row| {
+-            &row.entry.record.session_id == session && row.entry.record.task_id.as_ref() == task
+-        })
+-        .expect("the task is listed")
+-        .entry
+-        .record
+-        .tool_call_id
+-        .map(|id| id.to_string())
++    // From the store: since §6.51 a panel lists only its project's tasks, and this one may be
++    // reading another window's.
++    let store = panel.read_with(cx, |panel, _| panel.store.clone());
++    store.read_with(cx, |store, _| {
++        store
++            .records()
++            .iter()
++            .find(|entry| {
++                &entry.record.session_id == session && entry.record.task_id.as_ref() == task
++            })
++            .expect("the task is recorded")
++            .record
++            .tool_call_id
++            .clone()
++            .map(|id| id.to_string())
++    })
+ }
+ 
+ // Review follow-up: the no-entry notice reads as an outcome, not a failure, and a later jump
+diff --git a/crates/agent_tasks_panel/src/panel/selection_gesture_tests.rs b/crates/agent_tasks_panel/src/panel/selection_gesture_tests.rs
+index 7eb7710..3be0a71 100644
+--- a/crates/agent_tasks_panel/src/panel/selection_gesture_tests.rs
++++ b/crates/agent_tasks_panel/src/panel/selection_gesture_tests.rs
+@@ -141,21 +141,17 @@ async fn selection_gesture_modifier_click_on_a_vanished_thread_sets_no_notice(
+         .unwrap();
+     let mut panels = open_panels(cx).await;
+     show_panel(&panels.workspace.clone(), &mut panels.cx);
+-
+-    secondary_click_row(&mut panels, "agent-tasks-row-label-tg");
+-    click_row(&mut panels, "agent-tasks-row-label-tg", Modifiers::shift());
+-    assert_eq!(
+-        find_row(&mut panels, "gone", "tg").unwrap().notice,
+-        None,
+-        "no open was attempted"
++    assert!(
++        find_row(&mut panels, "gone", "tg").is_some(),
++        "listed while its thread exists"
+     );
+-    click_row(&mut panels, "agent-tasks-row-label-tg", Modifiers::none());
++
++    // Zeo next §6.51 (ask 75): once its thread is gone the row is not listed at all, so there
++    // is nothing to click (operator, 2026-11-21).
++    forget_thread("gone", &mut panels.cx);
+     assert!(
+-        find_row(&mut panels, "gone", "tg")
+-            .unwrap()
+-            .notice
+-            .is_some_and(|notice| notice.contains("Thread no longer exists")),
+-        "a plain click still tries to open"
++        find_row(&mut panels, "gone", "tg").is_none(),
++        "a task whose thread is gone is not listed"
+     );
+ }
+ 
+diff --git a/crates/agent_tasks_panel/src/panel/sub_thread_row_tests.rs b/crates/agent_tasks_panel/src/panel/sub_thread_row_tests.rs
+index b9b3b60..9803d71 100644
+--- a/crates/agent_tasks_panel/src/panel/sub_thread_row_tests.rs
++++ b/crates/agent_tasks_panel/src/panel/sub_thread_row_tests.rs
+@@ -206,6 +206,8 @@ async fn panel_sub_thread_running_is_active_only_and_idle_is_finished_only(
+         &mut panels,
+         SubThreadActivity::Linked(sub_record(&parent, "sub-idle", "Sleeper")),
+     );
++    // The seeded parent session has no thread: give it this project's (§6.51).
++    adopt_orphan_sessions(&panels.workspace, &mut panels.cx);
+     let running = ("p1".to_string(), sub_task("sub-run"));
+     let idle = ("p1".to_string(), sub_task("sub-idle"));
+ 
+@@ -243,6 +245,8 @@ async fn panel_sub_thread_text_filter_matches_the_title_not_the_derived_id(
+         &mut panels,
+         SubThreadActivity::Linked(sub_record(&parent, "sub-a", "Quokka research")),
+     );
++    // The seeded parent session has no thread: give it this project's (§6.51).
++    adopt_orphan_sessions(&panels.workspace, &mut panels.cx);
+     let item = ("p1".to_string(), sub_task("sub-a"));
+     let tasks_panel = panels.tasks_panel.clone();
+ 
+diff --git a/crates/agent_tasks_panel/src/store/title_tests.rs b/crates/agent_tasks_panel/src/store/title_tests.rs
+index 1ffb554..fffce52 100644
+--- a/crates/agent_tasks_panel/src/store/title_tests.rs
++++ b/crates/agent_tasks_panel/src/store/title_tests.rs
+@@ -282,6 +282,8 @@ async fn panel_groups_a_thread_under_its_newest_title_after_a_restart(
+     emit(&card, ended(&only), &mut panels.cx);
+     card.update(&mut panels.cx, |_, cx| cx.emit(retitle("s1", GENERATED)));
+     panels.cx.run_until_parked();
++    // The seeded session has no thread: give it this project's (§6.51).
++    adopt_orphan_sessions(&panels.workspace, &mut panels.cx);
+ 
+     let title = |groups: Vec<crate::PanelGroup>| {
+         groups
+diff --git a/crates/agent_tasks_panel/src/test_helpers.rs b/crates/agent_tasks_panel/src/test_helpers.rs
+index 8a2243b..151e061 100644
+--- a/crates/agent_tasks_panel/src/test_helpers.rs
++++ b/crates/agent_tasks_panel/src/test_helpers.rs
+@@ -489,6 +489,7 @@ pub(crate) async fn open_panels(cx: &mut TestAppContext) -> Panels {
+         workspace.add_panel(tasks_panel.clone(), window, cx);
+     });
+     cx.run_until_parked();
++    adopt_orphan_sessions(&workspace, &mut cx);
+     Panels {
+         workspace,
+         agent_panel,
+@@ -497,6 +498,57 @@ pub(crate) async fn open_panels(cx: &mut TestAppContext) -> Panels {
+     }
+ }
+ 
++/// Zeo next §6.51: the panel lists a record only when its thread's folders map to the window's
++/// project, and a record seeded straight into the history database has no thread at all. In
++/// Zeo every record comes from a thread that ran, so each seeded session is given the thread
++/// metadata it would have had, in `workspace`'s folders. Sessions that already have metadata
++/// (a real thread, a decoy, a remote thread) are left as they are.
++pub(crate) fn adopt_orphan_sessions(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) {
++    cx.update(|_, cx| {
++        let paths = workspace.read(cx).project().read(cx).worktree_paths(cx);
++        let Some(history) = crate::TaskHistoryStore::try_global(cx) else {
++            return;
++        };
++        let sessions: Vec<acp_v2::SessionId> = history
++            .read(cx)
++            .records()
++            .iter()
++            .map(|entry| entry.record.session_id.clone())
++            .collect();
++        let metadata = agent_ui::thread_metadata_store::ThreadMetadataStore::global(cx);
++        let orphans: Vec<acp_v2::SessionId> = {
++            let store = metadata.read(cx);
++            let mut seen = std::collections::HashSet::new();
++            sessions
++                .into_iter()
++                .filter(|session| store.entry_by_session(session).is_none())
++                .filter(|session| seen.insert(session.clone()))
++                .collect()
++        };
++        metadata.update(cx, |store, cx| {
++            for session in orphans {
++                store.save(
++                    agent_ui::thread_metadata_store::ThreadMetadata {
++                        thread_id: agent_ui::thread_metadata_store::ThreadId::new(),
++                        session_id: Some(session),
++                        agent_id: "stub".into(),
++                        title: None,
++                        title_override: None,
++                        updated_at: Default::default(),
++                        created_at: None,
++                        interacted_at: None,
++                        worktree_paths: paths.clone(),
++                        remote_connection: None,
++                        archived: false,
++                    },
++                    cx,
++                );
++            }
++        });
++    });
++    cx.run_until_parked();
++}
++
+ /// Opens a thread in the agent panel on `connection`, sends one message so it is a real
+ /// (persisted) thread, titles it, and returns it.
+ pub(crate) fn open_thread_on<C>(
+@@ -762,6 +814,33 @@ pub(crate) fn row_thread_id(
+     })
+ }
+ 
++/// Zeo next §6.51: removes `session`'s thread metadata, as deleting its thread does, so the
++/// record's thread is gone (`adopt_orphan_sessions` gave every seeded session one).
++pub(crate) fn forget_thread(session: &str, cx: &mut VisualTestContext) {
++    let thread_id = row_thread_id(&sid(session), cx);
++    cx.update(|_, cx| {
++        agent_ui::thread_metadata_store::ThreadMetadataStore::global(cx)
++            .update(cx, |store, cx| store.delete(thread_id, cx))
++    });
++    cx.run_until_parked();
++}
++
++/// Zeo next §6.51: moves `session`'s thread to `folder`, another project than the test window's.
++pub(crate) fn move_thread_to(session: &str, folder: &str, cx: &mut VisualTestContext) {
++    cx.update(|_, cx| {
++        let store = agent_ui::thread_metadata_store::ThreadMetadataStore::global(cx);
++        let mut metadata = store
++            .read(cx)
++            .entry_by_session(&sid(session))
++            .cloned()
++            .expect("the session has a metadata row");
++        metadata.worktree_paths =
++            project::WorktreePaths::from_folder_paths(&PathList::new(&[Path::new(folder)]));
++        store.update(cx, |store, cx| store.save(metadata, cx));
++    });
++    cx.run_until_parked();
++}
++
+ /// The session `agent_panel` shows, if any.
+ pub(crate) fn shown_session(
+     agent_panel: &Entity<AgentPanel>,
+@@ -806,15 +885,11 @@ pub(crate) fn notice_of(
+     task: &str,
+     cx: &mut VisualTestContext,
+ ) -> Option<SharedString> {
+-    panel
+-        .update(cx, |panel, cx| panel.groups(cx))
+-        .into_iter()
+-        .flat_map(|group| group.rows)
+-        .find(|row| {
+-            &row.entry.record.session_id == session && row.entry.record.task_id.as_ref() == task
+-        })
+-        .expect("the task is listed")
+-        .notice
++    // Read from the panel, not from its rows: since §6.51 a panel lists only its project's tasks,
++    // and a task of another window's project still gets its notice when opened from here.
++    panel.read_with(cx, |panel, _| {
++        panel.notice(&(session.clone(), AgentTaskId::from(task.to_string())))
++    })
+ }
+ 
+ // ── Story 023 — tool call ids, root entries, the scroll position, log lines ──
+diff --git a/crates/agent_ui/src/thread_organization/list_scope.rs b/crates/agent_ui/src/thread_organization/list_scope.rs
+index 7bbe54e..d31e487 100644
+--- a/crates/agent_ui/src/thread_organization/list_scope.rs
++++ b/crates/agent_ui/src/thread_organization/list_scope.rs
+@@ -199,6 +199,23 @@ pub fn thread_project(thread_id: ThreadId, cx: &App) -> Option<ProjectKey> {
+     ))
+ }
+ 
++/// Zeo next §6.51 (ask 75): the project of the thread `session_id` belongs to, derived the way
++/// `thread_project` derives it, so the Agent Tasks panel scopes its rows as the sidebar does.
++pub fn session_project(
++    session_id: &agent_client_protocol::v2::schema::SessionId,
++    cx: &App,
++) -> Option<ProjectKey> {
++    let metadata = ThreadMetadataStore::try_global(cx)?;
++    let metadata = metadata.read(cx);
++    let entry = metadata.entry_by_session(session_id)?;
++    Some(ProjectKey::from_group(
++        &ProjectGroupKey::from_worktree_paths(
++            &entry.worktree_paths,
++            entry.remote_connection.clone(),
++        ),
++    ))
++}
++
+ impl ThreadOrganizationStore {
+     /// The project `list` belongs to, or `None` for a global list.
+     pub fn list_project(&self, list: ListId, cx: &App) -> Option<ProjectKey> {

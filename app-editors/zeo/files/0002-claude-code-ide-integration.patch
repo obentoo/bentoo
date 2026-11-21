@@ -100,10 +100,24 @@ Protocol alignment with the VS Code extension (story 066, 2026-11-03, CLI 2.1.31
 Proven live: a real `claude` 2.1.316 on this build showed "Selected 3 lines from
 sample.rs" and turned the mention into `@sample.rs#L1-3`; on the shipped build it
 received neither notification. The crate is now rustfmt-clean.
+
+getDiagnostics in the shape the CLI parses (proposal 4.4, 2026-11-21, CLI 2.1.329, VS Code
+extension 2.1.328): the CLI calls it around every edit -- with `uri` for a baseline, then
+with no arguments -- and reads the first text item as a JSON array of
+`{uri, diagnostics: [{message, severity, source, code, range}]}`
+(`parseDiagnosticResult`). This answered one text item per diagnostic, each a flat
+`{filePath, line, character, severity: <number>, ...}`, so the CLI never had a baseline
+and the model was never told what an edit broke. Now (src/diagnostics.rs): one compact
+array, one entry per file, `file://` uris, 0-based ranges, severities by name, the LSP
+code, `linesInFile`; only primary entries, since Zed splits related information into
+non-primary ones of the same group. From VS Code's newer tool: `minSeverity`, and
+without `uri` a file left with no diagnostic is omitted; with `uri` its entry is always
+there, empty when the file is clean or not open, because the CLI reads `[0]` and checks
+its uri. An unknown `minSeverity` is an INVALID_REQUEST naming the four choices.
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
-index 29b6402..9c67802 100644
+index 731f8f2..fc8d3a9 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -3041,6 +3041,35 @@ version = "0.7.6"
@@ -142,7 +156,7 @@ index 29b6402..9c67802 100644
  [[package]]
  name = "cli"
  version = "0.1.0"
-@@ -22586,6 +22615,7 @@ dependencies = [
+@@ -22590,6 +22619,7 @@ dependencies = [
   "channel",
   "chrono",
   "clap",
@@ -151,7 +165,7 @@ index 29b6402..9c67802 100644
   "client",
   "clock",
 diff --git a/Cargo.toml b/Cargo.toml
-index 13f8594..a3de384 100644
+index 28dea3b..120f950 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -29,6 +29,7 @@ members = [
@@ -253,7 +267,7 @@ index 0000000..2e424c1
 +zed_actions.workspace = true
 diff --git a/crates/claude_code_ide/README.md b/crates/claude_code_ide/README.md
 new file mode 100644
-index 0000000..ebb1e4f
+index 0000000..91bdc69
 --- /dev/null
 +++ b/crates/claude_code_ide/README.md
 @@ -0,0 +1,79 @@
@@ -318,7 +332,7 @@ index 0000000..ebb1e4f
 +| `getCurrentSelection` / `getLatestSelection` | Active editor selection (for `@`-mentions). |
 +| `getWorkspaceFolders` | Visible worktree roots. |
 +| `getOpenEditors` | Open buffers with uri/label/language/dirty state. |
-+| `getDiagnostics` | Language diagnostics, all buffers or one uri. |
++| `getDiagnostics` | Open buffers' diagnostics as VS Code shapes them (the CLI parses the answer to report what an edit broke): one compact JSON array, one entry per file; `uri` for one file (always listed), `minSeverity` to drop the milder ones, clean files left out without `uri`. |
 +| `openFile` | Open a path, optionally selecting a line range. |
 +| `saveDocument` / `checkDocumentDirty` | Save a buffer / query its dirty state. |
 +| `openDiff` | Blocking side-by-side diff: `FILE_SAVED`, `DIFF_REJECTED` or `TAB_CLOSED`. |
@@ -338,10 +352,10 @@ index 0000000..ebb1e4f
 +
 diff --git a/crates/claude_code_ide/src/claude_code_ide.rs b/crates/claude_code_ide/src/claude_code_ide.rs
 new file mode 100644
-index 0000000..79434d6
+index 0000000..2d06eec
 --- /dev/null
 +++ b/crates/claude_code_ide/src/claude_code_ide.rs
-@@ -0,0 +1,488 @@
+@@ -0,0 +1,489 @@
 +//! IDE-side implementation of the Claude Code editor integration protocol.
 +//!
 +//! This lets the Claude Code CLI connect to Zed the same way it connects to the
@@ -354,6 +368,7 @@ index 0000000..79434d6
 +//! loopback port, writes the lock file, and serves connections until the window
 +//! closes, at which point the lock file is removed.
 +
++mod diagnostics;
 +mod lockfile;
 +mod open_diff;
 +mod selection;
@@ -828,6 +843,311 @@ index 0000000..79434d6
 +        );
 +        assert!(!lock.exists(), "and withdraws the lock file");
 +        std::fs::remove_dir_all(&dir).ok();
++    }
++}
+diff --git a/crates/claude_code_ide/src/diagnostics.rs b/crates/claude_code_ide/src/diagnostics.rs
+new file mode 100644
+index 0000000..ea7a4fb
+--- /dev/null
++++ b/crates/claude_code_ide/src/diagnostics.rs
+@@ -0,0 +1,299 @@
++//! `getDiagnostics`: the one IDE tool whose answer the Claude Code CLI parses
++//! itself, so its shape is a contract rather than a courtesy.
++//!
++//! The CLI calls it around every edit — with `uri` before, to take a baseline,
++//! and with no arguments after, to find what the edit broke — and reads the
++//! first text item of the result as a JSON array of
++//! `{uri, diagnostics: [{message, severity, source, code, range}]}` (read from
++//! CLI 2.1.329, `parseDiagnosticResult`). It keys each diagnostic on exactly
++//! those fields and matches `uri` against the path it asked for. The shape is
++//! VS Code's (extension 2.1.328, the IDE server's `getDiagnostics`); the
++//! `minSeverity` argument and leaving clean files out without `uri` are its
++//! newer `getDiagnostics` tool's (parity report §24, proposal §4.4).
++
++use language::DiagnosticSeverity;
++use serde_json::{Value, json};
++
++/// Most to least severe, as VS Code names them. The index is the rank.
++pub(crate) const SEVERITY_NAMES: [&str; 4] = ["Error", "Warning", "Information", "Hint"];
++
++/// What a `getDiagnostics` call asked for.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct DiagnosticsQuery {
++    /// The absolute path of the one file asked about, from a `file://` uri.
++    pub path: Option<String>,
++    /// The least severe rank to keep; `SEVERITY_NAMES.len() - 1` keeps all.
++    pub max_rank: usize,
++}
++
++impl DiagnosticsQuery {
++    pub(crate) fn from_arguments(arguments: &Value) -> Result<Self, String> {
++        let path = arguments
++            .get("uri")
++            .and_then(Value::as_str)
++            .map(|uri| uri.strip_prefix("file://").unwrap_or(uri).to_owned());
++        let max_rank = match arguments.get("minSeverity") {
++            None | Some(Value::Null) => SEVERITY_NAMES.len() - 1,
++            Some(value) => value
++                .as_str()
++                .and_then(|name| SEVERITY_NAMES.iter().position(|known| *known == name))
++                .ok_or_else(|| {
++                    format!(
++                        "minSeverity must be one of {}, got {value}",
++                        SEVERITY_NAMES.join(", ")
++                    )
++                })?,
++        };
++        Ok(Self { path, max_rank })
++    }
++}
++
++/// One diagnostic as read from a buffer, before it is shaped for the wire.
++/// Positions are 0-based `(line, character)`, as VS Code sends them.
++#[derive(Debug, Clone)]
++pub(crate) struct RawDiagnostic {
++    pub message: String,
++    pub severity: DiagnosticSeverity,
++    pub start: (u32, u32),
++    pub end: (u32, u32),
++    pub source: Option<String>,
++    /// The LSP code, already a JSON number or string.
++    pub code: Option<Value>,
++}
++
++/// The diagnostics of one open file.
++#[derive(Debug, Clone)]
++pub(crate) struct FileDiagnostics {
++    pub path: String,
++    pub lines_in_file: Option<u32>,
++    pub diagnostics: Vec<RawDiagnostic>,
++}
++
++/// An LSP severity outside the four named ones is ranked as the least severe,
++/// so `minSeverity` can only ever drop it, never promote it.
++fn severity_rank(severity: DiagnosticSeverity) -> usize {
++    match severity {
++        DiagnosticSeverity::ERROR => 0,
++        DiagnosticSeverity::WARNING => 1,
++        DiagnosticSeverity::INFORMATION => 2,
++        _ => 3,
++    }
++}
++
++fn file_uri(path: &str) -> String {
++    format!("file://{path}")
++}
++
++fn diagnostic_json(diagnostic: &RawDiagnostic) -> Value {
++    let point = |(line, character): (u32, u32)| json!({ "line": line, "character": character });
++    json!({
++        "message": diagnostic.message,
++        "severity": SEVERITY_NAMES[severity_rank(diagnostic.severity)],
++        "range": { "start": point(diagnostic.start), "end": point(diagnostic.end) },
++        "source": diagnostic.source,
++        "code": diagnostic.code,
++    })
++}
++
++/// Shape `files` into the tool result: one compact-JSON text item. With a
++/// `path`, that file's entry is always present, empty if it is not open or
++/// clean — the CLI's baseline reads `[0]` and checks its uri. Without one,
++/// only the files left with a diagnostic after `minSeverity` are listed.
++pub(crate) fn diagnostics_result(query: &DiagnosticsQuery, files: Vec<FileDiagnostics>) -> Value {
++    let mut entries = Vec::new();
++    for file in files {
++        if query.path.as_ref().is_some_and(|path| *path != file.path) {
++            continue;
++        }
++        let diagnostics: Vec<Value> = file
++            .diagnostics
++            .iter()
++            .filter(|diagnostic| severity_rank(diagnostic.severity) <= query.max_rank)
++            .map(diagnostic_json)
++            .collect();
++        if query.path.is_none() && diagnostics.is_empty() {
++            continue;
++        }
++        let mut entry = json!({ "uri": file_uri(&file.path), "diagnostics": diagnostics });
++        if let Some(lines) = file.lines_in_file {
++            entry["linesInFile"] = json!(lines);
++        }
++        entries.push(entry);
++    }
++    if let Some(path) = &query.path
++        && entries.is_empty()
++    {
++        entries.push(json!({ "uri": file_uri(path), "diagnostics": [] }));
++    }
++    json!({ "content": [{ "type": "text", "text": Value::Array(entries).to_string() }] })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn raw(severity: DiagnosticSeverity, message: &str) -> RawDiagnostic {
++        RawDiagnostic {
++            message: message.to_owned(),
++            severity,
++            start: (2, 4),
++            end: (2, 9),
++            source: Some("rustc".to_owned()),
++            code: Some(json!("E0308")),
++        }
++    }
++
++    fn file(path: &str, diagnostics: Vec<RawDiagnostic>) -> FileDiagnostics {
++        FileDiagnostics {
++            path: path.to_owned(),
++            lines_in_file: Some(10),
++            diagnostics,
++        }
++    }
++
++    /// What the CLI's `parseDiagnosticResult` does: the first text item, as JSON.
++    fn parsed(result: &Value) -> Value {
++        let text = result["content"][0]["text"].as_str().expect("a text item");
++        serde_json::from_str(text).expect("valid JSON")
++    }
++
++    #[test]
++    fn the_result_is_one_compact_array_the_cli_can_parse() {
++        let query = DiagnosticsQuery::from_arguments(&json!({})).unwrap();
++        let result = diagnostics_result(
++            &query,
++            vec![file(
++                "/p/a.rs",
++                vec![
++                    raw(DiagnosticSeverity::ERROR, "mismatched types"),
++                    raw(DiagnosticSeverity::WARNING, "unused"),
++                ],
++            )],
++        );
++        assert_eq!(result["content"].as_array().unwrap().len(), 1);
++        let text = result["content"][0]["text"].as_str().unwrap();
++        assert!(!text.contains('\n'), "compact JSON, got {text}");
++        assert_eq!(
++            parsed(&result),
++            json!([{
++                "uri": "file:///p/a.rs",
++                "linesInFile": 10,
++                "diagnostics": [
++                    {
++                        "message": "mismatched types",
++                        "severity": "Error",
++                        "range": { "start": { "line": 2, "character": 4 }, "end": { "line": 2, "character": 9 } },
++                        "source": "rustc",
++                        "code": "E0308",
++                    },
++                    {
++                        "message": "unused",
++                        "severity": "Warning",
++                        "range": { "start": { "line": 2, "character": 4 }, "end": { "line": 2, "character": 9 } },
++                        "source": "rustc",
++                        "code": "E0308",
++                    },
++                ],
++            }])
++        );
++    }
++
++    #[test]
++    fn without_a_uri_clean_files_are_left_out() {
++        let query = DiagnosticsQuery::from_arguments(&json!({})).unwrap();
++        let result = diagnostics_result(
++            &query,
++            vec![
++                file("/p/clean.rs", vec![]),
++                file("/p/a.rs", vec![raw(DiagnosticSeverity::HINT, "consider")]),
++            ],
++        );
++        let entries = parsed(&result);
++        assert_eq!(entries.as_array().unwrap().len(), 1);
++        assert_eq!(entries[0]["uri"], "file:///p/a.rs");
++    }
++
++    #[test]
++    fn with_a_uri_its_entry_is_there_even_when_clean_or_not_open() {
++        let clean =
++            DiagnosticsQuery::from_arguments(&json!({ "uri": "file:///p/clean.rs" })).unwrap();
++        let entries = parsed(&diagnostics_result(
++            &clean,
++            vec![file("/p/clean.rs", vec![])],
++        ));
++        assert_eq!(
++            entries,
++            json!([{ "uri": "file:///p/clean.rs", "linesInFile": 10, "diagnostics": [] }])
++        );
++
++        let closed =
++            DiagnosticsQuery::from_arguments(&json!({ "uri": "file:///p/closed.rs" })).unwrap();
++        let entries = parsed(&diagnostics_result(
++            &closed,
++            vec![file("/p/a.rs", vec![raw(DiagnosticSeverity::ERROR, "x")])],
++        ));
++        assert_eq!(
++            entries,
++            json!([{ "uri": "file:///p/closed.rs", "diagnostics": [] }])
++        );
++    }
++
++    #[test]
++    fn min_severity_keeps_that_severity_and_worse() {
++        let query = DiagnosticsQuery::from_arguments(&json!({ "minSeverity": "Warning" })).unwrap();
++        let result = diagnostics_result(
++            &query,
++            vec![
++                file(
++                    "/p/a.rs",
++                    vec![
++                        raw(DiagnosticSeverity::ERROR, "e"),
++                        raw(DiagnosticSeverity::WARNING, "w"),
++                        raw(DiagnosticSeverity::INFORMATION, "i"),
++                        raw(DiagnosticSeverity::HINT, "h"),
++                    ],
++                ),
++                file("/p/hints.rs", vec![raw(DiagnosticSeverity::HINT, "h")]),
++            ],
++        );
++        let entries = parsed(&result);
++        assert_eq!(
++            entries.as_array().unwrap().len(),
++            1,
++            "a file left with none is omitted"
++        );
++        let messages: Vec<&str> = entries[0]["diagnostics"]
++            .as_array()
++            .unwrap()
++            .iter()
++            .map(|diagnostic| diagnostic["message"].as_str().unwrap())
++            .collect();
++        assert_eq!(messages, ["e", "w"]);
++    }
++
++    #[test]
++    fn an_unknown_min_severity_is_an_error_naming_the_choices() {
++        let error =
++            DiagnosticsQuery::from_arguments(&json!({ "minSeverity": "Fatal" })).unwrap_err();
++        assert!(
++            error.contains("Error, Warning, Information, Hint"),
++            "{error}"
++        );
++        assert!(DiagnosticsQuery::from_arguments(&json!({ "minSeverity": 1 })).is_err());
++    }
++
++    #[test]
++    fn a_severity_outside_the_four_is_ranked_least_severe() {
++        // No constructor takes an arbitrary value; the type is serde-transparent.
++        let seven: DiagnosticSeverity = serde_json::from_value(json!(7)).unwrap();
++        let odd = raw(seven, "odd");
++        assert_eq!(severity_rank(odd.severity), 3);
++        let errors_only =
++            DiagnosticsQuery::from_arguments(&json!({ "minSeverity": "Error" })).unwrap();
++        let entries = parsed(&diagnostics_result(
++            &errors_only,
++            vec![file("/p/a.rs", vec![odd])],
++        ));
++        assert_eq!(entries, json!([]));
 +    }
 +}
 diff --git a/crates/claude_code_ide/src/lockfile.rs b/crates/claude_code_ide/src/lockfile.rs
@@ -2757,21 +3077,22 @@ index 0000000..427d33c
 +}
 diff --git a/crates/claude_code_ide/src/tools.rs b/crates/claude_code_ide/src/tools.rs
 new file mode 100644
-index 0000000..f20733b
+index 0000000..99124f0
 --- /dev/null
 +++ b/crates/claude_code_ide/src/tools.rs
-@@ -0,0 +1,582 @@
+@@ -0,0 +1,587 @@
 +//! The GPUI-backed [`Dispatcher`] implementation: this is where the wire
 +//! protocol meets Zed's editor state. Each `tools/call` is satisfied by reading
 +//! the active workspace, editor, and buffers and shaping the result into the
 +//! JSON the Claude Code CLI expects (mirroring the official extensions).
 +
++use crate::diagnostics::{DiagnosticsQuery, FileDiagnostics, RawDiagnostic, diagnostics_result};
 +use crate::selection::selection_params;
 +use crate::selection_watch::SelectionHub;
 +use crate::server::{Dispatcher, ProtocolError, ToolDescriptor, error_codes};
 +use editor::{Editor, SplittableEditor};
 +use gpui::{AnyWindowHandle, AsyncApp, Entity, WeakEntity};
-+use language::{Buffer, DiagnosticSeverity};
++use language::Buffer;
 +use serde_json::{Value, json};
 +use std::{cell::RefCell, path::PathBuf, rc::Rc};
 +use text::Point;
@@ -2934,12 +3255,10 @@ index 0000000..f20733b
 +        arguments: &Value,
 +        cx: &mut AsyncApp,
 +    ) -> Result<Value, ProtocolError> {
-+        let target = arguments
-+            .get("uri")
-+            .and_then(Value::as_str)
-+            .map(|uri| uri.strip_prefix("file://").unwrap_or(uri).to_owned());
++        let query = DiagnosticsQuery::from_arguments(arguments)
++            .map_err(|message| ProtocolError::new(error_codes::INVALID_REQUEST, message))?;
 +
-+        let diagnostics = self
++        let files = self
 +            .workspace
 +            .update(cx, |workspace, cx| {
 +                let buffers = workspace
@@ -2949,7 +3268,7 @@ index 0000000..f20733b
 +                    .read(cx)
 +                    .buffers()
 +                    .collect::<Vec<_>>();
-+                let mut out = Vec::new();
++                let mut files = Vec::new();
 +                for buffer in buffers {
 +                    let buffer = buffer.read(cx);
 +                    let Some(path) = buffer
@@ -2959,33 +3278,43 @@ index 0000000..f20733b
 +                    else {
 +                        continue;
 +                    };
-+                    if target.as_ref().is_some_and(|target| target != &path) {
++                    if query.path.as_ref().is_some_and(|wanted| *wanted != path) {
 +                        continue;
 +                    }
 +                    let snapshot = buffer.snapshot();
-+                    for entry in snapshot.diagnostics_in_range::<Point, Point>(
-+                        Point::new(0, 0)..snapshot.max_point(),
-+                        false,
-+                    ) {
-+                        out.push(json!({
-+                            "filePath": path,
-+                            "line": entry.range.start.row + 1,
-+                            "character": entry.range.start.column + 1,
-+                            "severity": severity_to_number(entry.diagnostic.severity),
-+                            "message": entry.diagnostic.message.clone(),
-+                            "source": entry.diagnostic.source.clone(),
-+                        }));
-+                    }
++                    // Only primary entries: Zed splits an LSP diagnostic's related
++                    // information into non-primary entries of the same group, which VS
++                    // Code shows nested under the diagnostic, never as problems of their own.
++                    let diagnostics = snapshot
++                        .diagnostics_in_range::<Point, Point>(
++                            Point::new(0, 0)..snapshot.max_point(),
++                            false,
++                        )
++                        .filter(|entry| entry.diagnostic.is_primary)
++                        .map(|entry| RawDiagnostic {
++                            message: entry.diagnostic.message.as_str().to_owned(),
++                            severity: entry.diagnostic.severity,
++                            start: (entry.range.start.row, entry.range.start.column),
++                            end: (entry.range.end.row, entry.range.end.column),
++                            source: entry.diagnostic.source.clone(),
++                            code: entry
++                                .diagnostic
++                                .code
++                                .as_ref()
++                                .and_then(|code| serde_json::to_value(code).ok()),
++                        })
++                        .collect();
++                    files.push(FileDiagnostics {
++                        path,
++                        lines_in_file: Some(snapshot.max_point().row + 1),
++                        diagnostics,
++                    });
 +                }
-+                out
++                files
 +            })
 +            .map_err(|error| ProtocolError::internal(error.to_string()))?;
 +
-+        let content = diagnostics
-+            .into_iter()
-+            .map(|diagnostic| json!({ "type": "text", "text": diagnostic.to_string() }))
-+            .collect::<Vec<_>>();
-+        Ok(json!({ "content": content }))
++        Ok(diagnostics_result(&query, files))
 +    }
 +
 +    fn check_document_dirty(
@@ -3131,18 +3460,6 @@ index 0000000..f20733b
 +        .ok_or_else(|| ProtocolError::new(error_codes::INVALID_REQUEST, format!("missing {field}")))
 +}
 +
-+/// Maps Zed/LSP diagnostic severities to the numeric scale the protocol uses
-+/// (1 = error, 2 = warning, 3 = information, 4 = hint).
-+fn severity_to_number(severity: DiagnosticSeverity) -> u8 {
-+    match severity {
-+        DiagnosticSeverity::ERROR => 1,
-+        DiagnosticSeverity::WARNING => 2,
-+        DiagnosticSeverity::INFORMATION => 3,
-+        DiagnosticSeverity::HINT => 4,
-+        _ => 0,
-+    }
-+}
-+
 +/// Every tool this server answers, as `tools/list` advertises it. A free function
 +/// so a plain test can hold it against `DISPATCHED`: `close_tab` was dispatched
 +/// and never advertised, and nothing noticed (parity report item 32).
@@ -3194,13 +3511,21 @@ index 0000000..f20733b
 +        },
 +        ToolDescriptor {
 +            name: "getDiagnostics",
-+            description: "Get language diagnostics (errors, warnings) from the editor",
++            description: "Get the errors, warnings and other diagnostics the editor currently shows, including those for unsaved changes in open files. Returns a JSON array with one entry per file, each listing that file's diagnostics. Pass `uri` to check one file; its entry is returned even when it has no diagnostics. Omit `uri` to get only the files that have at least one diagnostic. Pass `minSeverity` to include only diagnostics at least that severe, for example `Warning` for errors and warnings only; without `uri`, files left with none are omitted. Language servers often analyze only open files, so a missing file or an empty list can mean the file has not been checked, not that it is clean.",
 +            input_schema: json!({
 +                "type": "object",
 +                "additionalProperties": false,
 +                "$schema": "http://json-schema.org/draft-07/schema#",
 +                "properties": {
-+                    "uri": { "type": "string" },
++                    "uri": {
++                        "type": "string",
++                        "description": "file:// URI of the one file to check. Omit to get every file that has at least one diagnostic (at or above `minSeverity`, when given).",
++                    },
++                    "minSeverity": {
++                        "type": "string",
++                        "enum": crate::diagnostics::SEVERITY_NAMES,
++                        "description": "Include only diagnostics at least this severe. From most to least severe: Error, Warning, Information, Hint. Omit to include every severity.",
++                    },
 +                },
 +            }),
 +        },

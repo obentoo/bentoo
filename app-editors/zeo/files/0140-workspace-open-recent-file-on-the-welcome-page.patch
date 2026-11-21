@@ -1,0 +1,80 @@
+From 2959c9db379ef5d3e822c28cd1fffd25cc2fce32 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sat, 21 Nov 2026 16:33:27 -0300
+Subject: [PATCH] workspace: "Open Recent File" on the Welcome page
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next proposal §6.59 (ask 83). The Welcome page's Get Started section
+gains an entry after "Open Project" for zed_actions::OpenRecentFile, the
+action 0117 added to the File menu as "Open Recent File…". No keybinding
+(none is bound by default). CONTENT's first section grows from four
+entries to five; its tab order follows it, as the section's buttons are
+numbered from the entries.
+
+Test welcome::tests::get_started_offers_open_recent_file_after_open_project.
+Red seen with the entry removed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/workspace/src/welcome.rs b/crates/workspace/src/welcome.rs
+index 06c053a..62a19a9 100644
+--- a/crates/workspace/src/welcome.rs
++++ b/crates/workspace/src/welcome.rs
+@@ -163,7 +163,7 @@ impl SectionEntry {
+     }
+ }
+ 
+-const CONTENT: (Section<4>, Section<3>) = (
++const CONTENT: (Section<5>, Section<3>) = (
+     Section {
+         title: "Get Started",
+         entries: [
+@@ -179,6 +179,13 @@ const CONTENT: (Section<4>, Section<3>) = (
+                 action: &Open::DEFAULT,
+                 visibility_guard: SectionVisibility::Always,
+             },
++            // Zeo next §6.59 (ask 83): the File menu's "Open Recent File…" (0117), here too.
++            SectionEntry {
++                icon: IconName::HistoryRerun,
++                title: "Open Recent File",
++                action: &zed_actions::OpenRecentFile,
++                visibility_guard: SectionVisibility::Always,
++            },
+             SectionEntry {
+                 icon: IconName::CloudDownload,
+                 title: "Clone Repository",
+@@ -673,6 +680,31 @@ fn project_name(paths: &PathList) -> String {
+ mod tests {
+     use super::*;
+ 
++    /// Zeo next §6.59 (ask 83): "Open Recent File" follows "Open Project" under Get Started and
++    /// runs the action the File menu's "Open Recent File…" runs.
++    #[test]
++    fn get_started_offers_open_recent_file_after_open_project() {
++        let (get_started, _) = CONTENT;
++        let titles: Vec<&str> = get_started
++            .entries
++            .iter()
++            .map(|entry| entry.title)
++            .collect();
++        let project = titles
++            .iter()
++            .position(|title| *title == "Open Project")
++            .unwrap();
++        assert_eq!(
++            titles.get(project + 1),
++            Some(&"Open Recent File"),
++            "{titles:?}"
++        );
++        assert_eq!(
++            get_started.entries[project + 1].action.name(),
++            zed_actions::OpenRecentFile.name()
++        );
++    }
++
+     #[test]
+     fn test_project_name_empty() {
+         let paths = PathList::new::<&str>(&[]);

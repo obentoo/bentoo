@@ -42,6 +42,33 @@ look vanished once the message was sent. set_source_message now applies
 it after setting the text. Test a_sent_message_keeps_the_block_look; Red
 seen with the call removed.
 
+Zeo next proposal §6.56 (ask 80, 2026-11-21): the look came and went.
+The editor paints row highlights only in Full and Minimap (element.rs's
+paint_background); the composer is Full while empty or expanded and
+AutoHeight after the first message, and a sent message is always
+AutoHeight, so the look showed intermittently and §6.39's never painted.
+The tests had checked the data, not the paint. Now:
+- paint_background paints, outside Full and Minimap, the row highlights
+  that carry a left border -- Zeo's only -- grouped by bordered_row_runs
+  (a pure function, tested); every other highlight stays unpainted there,
+  as upstream.
+- Fences follow CommonMark: three or more backticks or tildes; a backtick
+  in a backtick fence's info string makes the line inline code (```` ```x``` ````
+  used to open a block and flip every later one); a block closes on the
+  same character, at least as long. Whether a typed ``` opens a block is
+  read from the blocks above, not from counting fences.
+- The look is refreshed on BufferEdited, not only Edited: the closing
+  fence itself and insert_selections edit outside a typed transaction.
+- No fence is closed while text is marked (a dead-key or IME composition).
+- Code rows use element_hover, which shows on a sent message's bubble
+  (editor_background); element_background barely did.
+The proposal's "the empty last row of an open block is dropped" did not
+reproduce: anchor_after at the end of the buffer is Anchor::Max, which the
+row mapping keeps; a test guards it. Tests: 6 more in composer_blocks (Red
+seen for 5 with the old code; the last-row one is the guard) and
+element::tests::bordered_row_runs_keep_only_bordered_highlights_in_runs.
+Proved on Xvfb: docs/assets/zeo-wave3-fixes-2026-11-21/ in the hub.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -71,10 +98,10 @@ index f1ef936..a7a658d 100644
  pub mod thread_worktree_archive;
 diff --git a/crates/agent_ui/src/composer_blocks.rs b/crates/agent_ui/src/composer_blocks.rs
 new file mode 100644
-index 0000000..e4453ac
+index 0000000..6503acc
 --- /dev/null
 +++ b/crates/agent_ui/src/composer_blocks.rs
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,224 @@
 +//! Code blocks and quotes in the agent composer (Zeo next proposal §6.12, ask 11).
 +//!
 +//! The composer is a Markdown buffer, so fences and `>` quotes are already highlighted while
@@ -83,7 +110,10 @@ index 0000000..e4453ac
 +//! its own, outside a block, inserts the closing fence below and leaves the cursor after the
 +//! opening one, where a language name goes.
 +//!
-+//! Only ``` fences count; an unclosed fence runs to the end of the draft, as CommonMark reads it.
++//! Fences follow CommonMark: three or more backticks or tildes, indented at most three spaces; a
++//! backtick fence whose info string holds a backtick is inline code, not a fence; a block closes
++//! on a fence of the same character, at least as long, with nothing after it but whitespace; an
++//! unclosed fence runs to the end of the draft. Only a bare ``` is closed as it is typed.
 +
 +use std::ops::Range;
 +
@@ -104,10 +134,39 @@ index 0000000..e4453ac
 +    pub quote: Vec<Range<u32>>,
 +}
 +
-+/// Whether `line` is a fence: up to three spaces, then three backticks (CommonMark).
-+fn is_fence(line: &str) -> bool {
++/// A fence line (CommonMark §4.5): its character and the length of its run.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++struct Fence {
++    ch: char,
++    len: usize,
++    /// Nothing but whitespace after the run, which a closing fence needs.
++    bare: bool,
++}
++
++/// `line` as a fence, if it is one: up to three spaces, then three or more backticks or tildes.
++/// A backtick in a backtick fence's info string makes the line inline code instead (```` ```x``` ````).
++fn fence(line: &str) -> Option<Fence> {
 +    let indent = line.len() - line.trim_start_matches(' ').len();
-+    indent <= 3 && line[indent..].starts_with("```")
++    if indent > 3 {
++        return None;
++    }
++    let rest = &line[indent..];
++    let ch = rest.chars().next().filter(|ch| *ch == '`' || *ch == '~')?;
++    let len = rest.len() - rest.trim_start_matches(ch).len();
++    let info = &rest[len..];
++    if len < 3 || (ch == '`' && info.contains('`')) {
++        return None;
++    }
++    Some(Fence {
++        ch,
++        len,
++        bare: info.trim().is_empty(),
++    })
++}
++
++/// Whether `line` closes the block `open` opened.
++fn closes(open: Fence, line: &str) -> bool {
++    fence(line).is_some_and(|fence| fence.ch == open.ch && fence.len >= open.len && fence.bare)
 +}
 +
 +/// Whether `line` is a quote line: up to three spaces, then `>`.
@@ -120,32 +179,31 @@ index 0000000..e4453ac
 +/// A range is `start..end` with `end` inclusive, so a one-row block is `r..r`.
 +pub(crate) fn scan_composer_blocks(text: &str) -> ComposerBlockRows {
 +    let mut rows = ComposerBlockRows::default();
-+    let mut open_fence: Option<u32> = None;
++    let mut open_fence: Option<(u32, Fence)> = None;
 +    let mut quote_start: Option<u32> = None;
 +    let mut last_row = 0;
 +    for (row, line) in text.split('\n').enumerate() {
 +        let row = row as u32;
 +        last_row = row;
-+        if let Some(start) = open_fence {
-+            // A closing fence carries nothing after its backticks but whitespace.
-+            if is_fence(line) && line.trim().trim_start_matches('`').is_empty() {
++        if let Some((start, open)) = open_fence {
++            if closes(open, line) {
 +                rows.code.push(start..row);
 +                open_fence = None;
 +            }
 +            continue;
 +        }
-+        if is_fence(line) {
++        if let Some(opened) = fence(line) {
 +            if let Some(start) = quote_start.take() {
 +                rows.quote.push(start..row - 1);
 +            }
-+            open_fence = Some(row);
++            open_fence = Some((row, opened));
 +        } else if is_quote(line) {
 +            quote_start.get_or_insert(row);
 +        } else if let Some(start) = quote_start.take() {
 +            rows.quote.push(start..row - 1);
 +        }
 +    }
-+    if let Some(start) = open_fence {
++    if let Some((start, _)) = open_fence {
 +        rows.code.push(start..last_row);
 +    }
 +    if let Some(start) = quote_start {
@@ -154,23 +212,34 @@ index 0000000..e4453ac
 +    rows
 +}
 +
++/// Whether a block is still open at the end of `text`.
++fn ends_inside_a_block(text: &str) -> bool {
++    let mut open: Option<Fence> = None;
++    for line in text.split('\n') {
++        match open {
++            Some(fence) if closes(fence, line) => open = None,
++            Some(_) => {}
++            None => open = fence(line),
++        }
++    }
++    open.is_some()
++}
++
 +/// Whether typing just completed an opening fence at `cursor` that should be closed: the line
-+/// up to the cursor is a bare fence (indent and backticks only, nothing after the cursor), and
-+/// the fences above it are paired, so it opens a block rather than closing one.
++/// up to the cursor is a bare ``` (indent and backticks only, nothing after the cursor), and no
++/// block is open above it, so it opens one rather than closing one.
 +pub(crate) fn fence_to_close(text: &str, cursor: usize) -> bool {
 +    let line_start = text[..cursor].rfind('\n').map_or(0, |ix| ix + 1);
 +    let line_end = text[cursor..]
 +        .find('\n')
 +        .map_or(text.len(), |ix| cursor + ix);
 +    let line = &text[line_start..line_end];
-+    if cursor != line_end || !is_fence(line) || line.trim() != "```" {
++    if cursor != line_end || fence(line).is_none() || line.trim() != "```" {
 +        return false;
 +    }
-+    let fences_above = text[..line_start]
-+        .split('\n')
-+        .filter(|line| is_fence(line))
-+        .count();
-+    fences_above % 2 == 0
++    // Everything above the fence line, without the newline that ends it.
++    let above = text[..line_start].strip_suffix('\n').unwrap_or("");
++    !ends_inside_a_block(above)
 +}
 +
 +/// Re-highlights the composer's blocks from its text as it stands.
@@ -199,7 +268,9 @@ index 0000000..e4453ac
 +    for block in &rows.code {
 +        editor.highlight_rows::<ComposerCodeBlock>(
 +            anchor_range(block),
-+            |cx| cx.theme().colors().element_background,
++            // Stronger than `element_background`, which barely shows on a sent message's bubble
++            // (`editor_background`, as the composer is).
++            |cx| cx.theme().colors().element_hover,
 +            options,
 +            cx,
 +        );
@@ -221,7 +292,13 @@ index 0000000..e4453ac
 +    window: &mut Window,
 +    cx: &mut Context<Editor>,
 +) {
-+    if editor.read_only(cx) {
++    // Not while text is marked: inside a dead-key or IME composition the backtick is not final,
++    // and an edit there would land in the middle of it.
++    if editor.read_only(cx)
++        || editor
++            .text_highlights(editor::HighlightKey::InputComposition, cx)
++            .is_some_and(|(_, ranges)| !ranges.is_empty())
++    {
 +        return;
 +    }
 +    let display_snapshot = editor.display_snapshot(cx);
@@ -251,10 +328,10 @@ index 0000000..e4453ac
 +mod tests;
 diff --git a/crates/agent_ui/src/composer_blocks_tests.rs b/crates/agent_ui/src/composer_blocks_tests.rs
 new file mode 100644
-index 0000000..2b214e4
+index 0000000..9637808
 --- /dev/null
 +++ b/crates/agent_ui/src/composer_blocks_tests.rs
-@@ -0,0 +1,237 @@
+@@ -0,0 +1,352 @@
 +// Zeo next proposal §6.12 (ask 11): code blocks and quotes in the agent composer.
 +// Filter: `composer_blocks`.
 +
@@ -492,11 +569,126 @@ index 0000000..2b214e4
 +    assert_eq!(highlighted::<ComposerQuote>(&editor, cx), vec![0..0]);
 +    assert_eq!(highlighted::<ComposerCodeBlock>(&editor, cx), vec![2..4]);
 +}
++
++// Zeo next §6.56 (ask 80): the fence rules, per CommonMark.
++
++#[test]
++fn a_backtick_in_a_backtick_fences_info_string_is_inline_code_not_a_fence() {
++    // "```text```" used to open a block and flip every later one.
++    let text = "a\n```text```\nb\n```\nc\n```";
++    assert_eq!(scan_composer_blocks(text), rows(&[3..5], &[]));
++    assert!(
++        fence_to_close("```text```\n```", 14),
++        "no block is open above, so a bare fence opens one"
++    );
++}
++
++#[test]
++fn a_closing_fence_must_be_as_long_as_the_opening_one() {
++    assert_eq!(
++        scan_composer_blocks("````\n```\nx\n````"),
++        rows(&[0..3], &[])
++    );
++    assert!(
++        !fence_to_close("````\nx\n```", 10),
++        "inside the four-backtick block"
++    );
++}
++
++#[test]
++fn tilde_fences_open_and_close_only_each_other() {
++    assert_eq!(scan_composer_blocks("~~~\nx\n~~~"), rows(&[0..2], &[]));
++    assert_eq!(scan_composer_blocks("~~~\n```\n~~~"), rows(&[0..2], &[]));
++}
++
++#[gpui::test]
++async fn the_empty_last_row_of_an_open_block_keeps_the_look(cx: &mut TestAppContext) {
++    let (_message_editor, editor, cx) = composer(cx).await;
++    editor.update_in(cx, |editor, window, cx| {
++        editor.set_text("```\n", window, cx)
++    });
++    cx.run_until_parked();
++    editor.update_in(cx, |editor, window, cx| {
++        let rows = editor.highlighted_display_rows(window, cx);
++        // A guard, not a fix: `anchor_after` at the end of the buffer is `Anchor::Max`, which
++        // `highlighted_display_rows_in_range` keeps, so this row was never dropped as data.
++        assert_eq!(
++            rows.keys().map(|row| row.0).collect::<Vec<_>>(),
++            vec![0, 1],
++            "the empty row under the fence, where the cursor goes, is part of the block"
++        );
++    });
++}
++
++#[gpui::test]
++async fn an_edit_outside_a_typed_transaction_refreshes_the_look(cx: &mut TestAppContext) {
++    let (_message_editor, editor, cx) = composer(cx).await;
++    // A multi-buffer edit emits `BufferEdited` but no `Edited`, as the closing fence and
++    // `insert_selections` do.
++    editor.update(cx, |editor, cx| {
++        editor.buffer().update(cx, |buffer, cx| {
++            buffer.edit(
++                [(
++                    multi_buffer::MultiBufferOffset(0)..multi_buffer::MultiBufferOffset(0),
++                    "```\nx\n```",
++                )],
++                None,
++                cx,
++            )
++        })
++    });
++    cx.run_until_parked();
++    assert_eq!(highlighted::<ComposerCodeBlock>(&editor, cx), vec![0..2]);
++}
++
++#[gpui::test]
++async fn no_fence_is_closed_while_text_is_marked(cx: &mut TestAppContext) {
++    let (_message_editor, editor, cx) = composer(cx).await;
++    type_text(&editor, "``", cx);
++    // The third backtick arrives as a dead-key composition, still marked.
++    editor.update_in(cx, |editor, window, cx| {
++        editor.replace_and_mark_text_in_range(None, "`", None, window, cx)
++    });
++    cx.run_until_parked();
++    assert_eq!(
++        text_and_cursor(&editor, cx).0,
++        "```",
++        "nothing is inserted inside the composition"
++    );
++}
++
++#[gpui::test]
++async fn the_look_survives_the_composer_switching_modes(cx: &mut TestAppContext) {
++    let (_message_editor, editor, cx) = composer(cx).await;
++    editor.update_in(cx, |editor, window, cx| {
++        editor.set_text("```\nx\n```", window, cx)
++    });
++    cx.run_until_parked();
++    // The composer runs Full while empty or expanded and AutoHeight after the first message.
++    for mode in [
++        EditorMode::full(),
++        EditorMode::AutoHeight {
++            min_lines: 1,
++            max_lines: None,
++        },
++    ] {
++        editor.update_in(cx, |editor, window, cx| {
++            editor.set_mode(mode.clone());
++            let rows = editor.highlighted_display_rows(window, cx);
++            assert_eq!(rows.len(), 3, "in {mode:?}");
++            assert!(
++                rows.values()
++                    .all(|highlight| highlight.left_border.is_some()),
++                "the rows carry the stripe that AutoHeight paints, in {mode:?}"
++            );
++        });
++    }
++}
 diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message_editor.rs
-index 0f337eb..3b19711 100644
+index 0f337eb..ec9af4a 100644
 --- a/crates/agent_ui/src/message_editor.rs
 +++ b/crates/agent_ui/src/message_editor.rs
-@@ -611,11 +611,22 @@ impl MessageEditor {
+@@ -611,6 +611,22 @@ impl MessageEditor {
                      });
                  }
  
@@ -509,17 +701,17 @@ index 0f337eb..3b19711 100644
 +                    });
 +                }
 +
++                // Zeo next §6.12/§6.56: fenced code and quotes get a block look, recomputed on
++                // every buffer edit. `Edited` alone missed the edits made outside a typed
++                // transaction: the closing fence itself, `insert_selections`.
++                if let EditorEvent::BufferEdited = event {
++                    editor.update(cx, crate::composer_blocks::refresh_composer_blocks);
++                }
++
                  if let EditorEvent::Edited { .. } = event
                      && !editor.read(cx).read_only(cx)
                  {
-                     cx.emit(MessageEditorEvent::Edited);
-                     this.refresh_preview(cx);
-+                    // Zeo next §6.12: fenced code and quotes get a block look.
-+                    editor.update(cx, crate::composer_blocks::refresh_composer_blocks);
-                     editor.update(cx, |editor, cx| {
-                         let snapshot = editor.snapshot(window, cx);
-                         this.mention_set
-@@ -1855,9 +1866,21 @@ impl MessageEditor {
+@@ -1855,9 +1871,21 @@ impl MessageEditor {
              .all(acp_thread::content::can_convert_to_v1)
          {
              self.set_message(source_blocks, window, cx);
@@ -606,7 +798,7 @@ index afaa963..794f248 100644
      pub type_id: Option<TypeId>,
  }
 diff --git a/crates/editor/src/element.rs b/crates/editor/src/element.rs
-index e703822..0ac7aa7 100644
+index e703822..fa52651 100644
 --- a/crates/editor/src/element.rs
 +++ b/crates/editor/src/element.rs
 @@ -5190,6 +5190,16 @@ impl EditorElement {
@@ -626,7 +818,53 @@ index e703822..0ac7aa7 100644
                  };
  
                  let mut current_paint: Option<(LineHighlight, Range<DisplayRow>, Edges<Pixels>)> =
-@@ -8864,6 +8874,7 @@ impl Element for EditorElement {
+@@ -5252,6 +5262,45 @@ impl EditorElement {
+                         color,
+                     ));
+                 }
++            } else {
++                // Zeo: outside Full and Minimap upstream paints no row highlight at all,
++                // so the agent composer after its first message, and every sent message
++                // (both AutoHeight), lost the block look of their code and quotes. Only
++                // highlights that carry a left border (`set_row_highlight_left_border`,
++                // Zeo's own) are painted here; every other one stays unpainted, as upstream.
++                for (rows, highlight) in bordered_row_runs(&layout.highlighted_rows) {
++                    let gutter_width = if highlight.include_gutter {
++                        Pixels::ZERO
++                    } else {
++                        layout.gutter_hitbox.size.width
++                    };
++                    let origin = point(
++                        layout.hitbox.left() + gutter_width,
++                        layout.hitbox.origin.y
++                            + Pixels::from(
++                                (rows.start.as_f64() - scroll_top)
++                                    * ScrollPixelOffset::from(layout.position_map.line_height),
++                            ),
++                    );
++                    let height =
++                        layout.position_map.line_height * rows.end.minus(rows.start) as f32;
++                    window.paint_quad(fill(
++                        Bounds {
++                            origin,
++                            size: size(layout.hitbox.size.width - gutter_width, height),
++                        },
++                        highlight.background,
++                    ));
++                    if let Some(left_border) = highlight.left_border {
++                        window.paint_quad(fill(
++                            Bounds {
++                                origin,
++                                size: size(px(2.), height),
++                            },
++                            left_border,
++                        ));
++                    }
++                }
+             }
+         })
+     }
+@@ -8864,6 +8913,7 @@ impl Element for EditorElement {
                          let hollow_highlight = LineHighlight {
                              background: diff_hunk_colors.hollow_background.into(),
                              border: Some(diff_hunk_colors.hollow_border),
@@ -634,7 +872,7 @@ index e703822..0ac7aa7 100644
                              include_gutter: true,
                              type_id: None,
                          };
-@@ -8871,6 +8882,7 @@ impl Element for EditorElement {
+@@ -8871,6 +8921,7 @@ impl Element for EditorElement {
                          let filled_highlight = LineHighlight {
                              background: solid_background(diff_hunk_colors.filled_background),
                              border: None,
@@ -642,7 +880,7 @@ index e703822..0ac7aa7 100644
                              include_gutter: true,
                              type_id: None,
                          };
-@@ -8897,6 +8909,7 @@ impl Element for EditorElement {
+@@ -8897,6 +8948,7 @@ impl Element for EditorElement {
                          let drag_highlight = LineHighlight {
                              background: solid_background(drag_highlight_color),
                              border: Some(drag_border_color),
@@ -650,3 +888,83 @@ index e703822..0ac7aa7 100644
                              include_gutter: true,
                              type_id: None,
                          };
+@@ -11341,6 +11393,27 @@ fn register_action_erased(
+ 
+ /// Shared between `prepaint` and `compute_auto_height_layout` to ensure
+ /// both full and auto-height editors compute wrap widths consistently.
++/// Zeo: the runs of consecutive rows painted by a highlight that carries a left border, as
++/// `start..end` with `end` exclusive, top to bottom. A run ends where the next row is not the
++/// following one or its highlight differs, as the Full-mode painter groups them.
++fn bordered_row_runs(
++    rows: &BTreeMap<DisplayRow, LineHighlight>,
++) -> Vec<(Range<DisplayRow>, LineHighlight)> {
++    let mut runs: Vec<(Range<DisplayRow>, LineHighlight)> = Vec::new();
++    for (&row, &highlight) in rows {
++        if highlight.left_border.is_none() {
++            continue;
++        }
++        match runs.last_mut() {
++            Some((range, current)) if *current == highlight && range.end == row => {
++                range.end = row.next_row();
++            }
++            _ => runs.push((row..row.next_row(), highlight)),
++        }
++    }
++    runs
++}
++
+ fn calculate_wrap_width(
+     soft_wrap: SoftWrap,
+     editor_width: Pixels,
+@@ -11437,6 +11510,51 @@ mod tests {
+     use text::PointUtf16;
+     use util::test::sample_text;
+ 
++    /// Zeo next §6.56: outside Full and Minimap only highlights with a left border are painted,
++    /// grouped into runs the way the Full-mode painter groups them.
++    #[test]
++    fn bordered_row_runs_keep_only_bordered_highlights_in_runs() {
++        let plain = LineHighlight {
++            background: gpui::red().into(),
++            border: None,
++            left_border: None,
++            include_gutter: false,
++            type_id: None,
++        };
++        let code = LineHighlight {
++            left_border: Some(gpui::blue()),
++            ..plain
++        };
++        let quote = LineHighlight {
++            background: gpui::green().into(),
++            left_border: Some(gpui::black()),
++            ..plain
++        };
++        let rows: BTreeMap<DisplayRow, LineHighlight> = [
++            (DisplayRow(0), code),
++            (DisplayRow(1), code),
++            (DisplayRow(2), plain),
++            (DisplayRow(3), code),
++            (DisplayRow(4), quote),
++            (DisplayRow(6), quote),
++        ]
++        .into_iter()
++        .collect();
++        assert_eq!(
++            bordered_row_runs(&rows)
++                .into_iter()
++                .map(|(range, highlight)| (range.start.0..range.end.0, highlight.left_border))
++                .collect::<Vec<_>>(),
++            vec![
++                (0..2, Some(gpui::blue())),
++                (3..4, Some(gpui::blue())),
++                (4..5, Some(gpui::black())),
++                (6..7, Some(gpui::black())),
++            ],
++            "a plain highlight is left out, and a gap or a different highlight starts a run"
++        );
++    }
++
+     // Regression test for https://github.com/zed-industries/zed/issues/65453.
+     #[gpui::test]
+     fn test_highlight_underlines_are_only_hidden_in_minimap(cx: &mut TestAppContext) {
