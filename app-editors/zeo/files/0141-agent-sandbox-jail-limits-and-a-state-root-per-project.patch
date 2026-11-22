@@ -561,10 +561,10 @@ index 0000000..99d6638
 +    }
 +}
 diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
-index 01c4622..e9c85f8 100644
+index 01c4622..52236e1 100644
 --- a/crates/agent_sandbox/src/launch.rs
 +++ b/crates/agent_sandbox/src/launch.rs
-@@ -101,6 +101,11 @@ pub struct LaunchRecord {
+@@ -101,6 +101,15 @@ pub struct LaunchRecord {
      pub memory_fingerprint: u64,
      /// The `agent_sandbox.projects` key the start used, if any.
      pub settings_key: Option<String>,
@@ -573,10 +573,14 @@ index 01c4622..e9c85f8 100644
 +    pub jail_pid: Option<u32>,
 +    /// Paused by the disk watchdog (Zeo next §6.54) until the operator resumes or stops it.
 +    pub paused: bool,
++    /// The `CLAUDE_CONFIG_DIR` a jailed agent runs with, which is where its login must land. A
++    /// login started from Zeo runs on the host, where the browser's callback can reach it, and
++    /// is pointed here: without it the token went to `~/.claude` and the jail never saw it.
++    pub claude_config_dir: Option<PathBuf>,
  }
  
  pub enum LaunchDecision {
-@@ -191,6 +196,14 @@ pub enum LaunchCause {
+@@ -191,6 +200,14 @@ pub enum LaunchCause {
          error: io::Error,
      },
      InvalidMemoryEndpoint(InvalidMemoryEndpoint),
@@ -591,7 +595,7 @@ index 01c4622..e9c85f8 100644
  }
  
  impl LaunchCause {
-@@ -213,6 +226,8 @@ impl LaunchCause {
+@@ -213,6 +230,8 @@ impl LaunchCause {
              Self::SymlinkedMount { .. } => "symlinked_mount",
              Self::ZedDirCreate { .. } => "zed_dir_create",
              Self::InvalidMemoryEndpoint(_) => "invalid_memory_endpoint",
@@ -600,7 +604,7 @@ index 01c4622..e9c85f8 100644
          }
      }
  }
-@@ -294,6 +309,15 @@ impl fmt::Display for LaunchCause {
+@@ -294,6 +313,15 @@ impl fmt::Display for LaunchCause {
              Self::ZedDirCreate { dir, error } => {
                  write!(f, "Could not create {}: {error}.", dir.display())
              }
@@ -616,7 +620,7 @@ index 01c4622..e9c85f8 100644
              Self::InvalidMemoryEndpoint(error) => write!(f, "{error}"),
          }
      }
-@@ -490,6 +514,10 @@ struct Checked {
+@@ -490,6 +518,10 @@ struct Checked {
      ai_jail: PathBuf,
      version: Version,
      claude_dir: PathBuf,
@@ -627,7 +631,7 @@ index 01c4622..e9c85f8 100644
      rw_maps: Vec<PathBuf>,
      allow_hosts: Vec<String>,
      forward_ports: Vec<u16>,
-@@ -545,6 +573,8 @@ impl LocalLaunch {
+@@ -545,6 +577,8 @@ impl LocalLaunch {
              ai_jail: &checked.ai_jail,
              project_root: &checked.root,
              claude_dir: &checked.claude_dir,
@@ -636,16 +640,17 @@ index 01c4622..e9c85f8 100644
              rw_maps: &checked.rw_maps,
              allow_hosts: &checked.allow_hosts,
              forward_ports: &checked.forward_ports,
-@@ -556,7 +586,7 @@ impl LocalLaunch {
+@@ -556,7 +590,8 @@ impl LocalLaunch {
              jailed = keep_loopback_off_proxy(jailed);
          }
          record.ai_jail_version = Some(checked.version);
 -        record.rw_maps = std::iter::once(checked.claude_dir)
++        record.claude_config_dir = Some(checked.claude_dir.clone());
 +        record.rw_maps = std::iter::once(checked.state_root.unwrap_or(checked.claude_dir))
              .chain(checked.rw_maps)
              .collect();
          record.allow_hosts = checked.allow_hosts;
-@@ -634,15 +664,44 @@ impl LocalLaunch {
+@@ -634,15 +669,44 @@ impl LocalLaunch {
              .map_err(|error| no_version(LaunchCause::VersionUnreadable(error)))?;
          let refuse = |cause| Box::new((cause, Some(binary.version.clone())));
  
@@ -698,7 +703,7 @@ index 01c4622..e9c85f8 100644
          };
  
          let mut rw_maps: Vec<PathBuf> = Vec::with_capacity(policy.rw_maps.len());
-@@ -661,7 +720,8 @@ impl LocalLaunch {
+@@ -661,7 +725,8 @@ impl LocalLaunch {
          }
          validate::check_limits(rw_maps.len(), allow_hosts.len())
              .map_err(|error| refuse(LaunchCause::Limit(error)))?;
@@ -708,7 +713,7 @@ index 01c4622..e9c85f8 100644
  
          let env_names = self.forwarded_env_names().map_err(refuse)?;
  
-@@ -706,6 +766,8 @@ impl LocalLaunch {
+@@ -706,6 +771,8 @@ impl LocalLaunch {
              ai_jail,
              version: binary.version,
              claude_dir,
@@ -717,16 +722,17 @@ index 01c4622..e9c85f8 100644
              rw_maps,
              allow_hosts,
              forward_ports,
-@@ -757,6 +819,8 @@ impl LocalLaunch {
+@@ -757,6 +824,9 @@ impl LocalLaunch {
              settings_fingerprint: settings_fingerprint(&self.sandbox, policy),
              memory_fingerprint: memory_fingerprint(&self.memory),
              settings_key,
 +            jail_pid: None,
 +            paused: false,
++            claude_config_dir: None,
          }
      }
  
-@@ -986,9 +1050,55 @@ fn settings_fingerprint(sandbox: &AgentSandboxSettings, policy: &ProjectPolicy)
+@@ -986,9 +1056,55 @@ fn settings_fingerprint(sandbox: &AgentSandboxSettings, policy: &ProjectPolicy)
      policy.allow_hosts.hash(&mut hasher);
      sandbox.claude_config_dir.hash(&mut hasher);
      sandbox.ai_jail_path.hash(&mut hasher);
@@ -782,7 +788,7 @@ index 01c4622..e9c85f8 100644
  fn memory_fingerprint(memory: &AgentMemorySettings) -> u64 {
      let mut hasher = DefaultHasher::new();
      memory.enabled.hash(&mut hasher);
-@@ -1105,11 +1215,73 @@ impl LaunchRegistry {
+@@ -1105,11 +1221,73 @@ impl LaunchRegistry {
      }
  
      /// Removes this launch only; a later launch of the same agent and root stays.
@@ -859,7 +865,7 @@ index 01c4622..e9c85f8 100644
          }
      }
  
-@@ -1127,3 +1299,79 @@ impl LaunchRegistry {
+@@ -1127,3 +1305,79 @@ impl LaunchRegistry {
              .unwrap_or_default()
      }
  }
@@ -940,7 +946,7 @@ index 01c4622..e9c85f8 100644
 +    .detach();
 +}
 diff --git a/crates/agent_sandbox/src/launch_tests.rs b/crates/agent_sandbox/src/launch_tests.rs
-index cc7ef46..5971b06 100644
+index cc7ef46..a9fcbb4 100644
 --- a/crates/agent_sandbox/src/launch_tests.rs
 +++ b/crates/agent_sandbox/src/launch_tests.rs
 @@ -49,21 +49,21 @@ use settings::{Settings as _, SettingsStore};
@@ -1076,21 +1082,22 @@ index cc7ef46..5971b06 100644
                  "enabled": true,
                  "ai_jail_path": f.ai_jail,
                  "claude_config_dir": claude_dir,
-@@ -917,6 +922,8 @@ mod run_additions {
+@@ -917,6 +922,9 @@ mod run_additions {
              settings_fingerprint: 0,
              memory_fingerprint: 0,
              settings_key: None,
 +            jail_pid: None,
 +            paused: false,
++            claude_config_dir: None,
          };
          cx.update(|cx| {
              let first = LaunchRegistry::register(record("plus", "/w/app", 1), cx);
 diff --git a/crates/agent_sandbox/src/limits_tests.rs b/crates/agent_sandbox/src/limits_tests.rs
 new file mode 100644
-index 0000000..f3a006f
+index 0000000..5dcfcbe
 --- /dev/null
 +++ b/crates/agent_sandbox/src/limits_tests.rs
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,243 @@
 +// Zeo next proposal §6.54 (ask 78): resource limits and the jail's own state root.
 +// Filter: `limits_tests`.
 +
@@ -1267,6 +1274,11 @@ index 0000000..f3a006f
 +        record.rw_maps.first(),
 +        Some(&dir),
 +        "the record names the state folder"
++    );
++    assert_eq!(
++        record.claude_config_dir,
++        Some(claude),
++        "where a login started from Zeo must write"
 +    );
 +}
 +
@@ -1483,7 +1495,7 @@ index 4895ab4..76cb7e8 100644
      );
  }
 diff --git a/crates/agent_sandbox/src/roundtrip_tests.rs b/crates/agent_sandbox/src/roundtrip_tests.rs
-index 3cebda1..ae5f7e5 100644
+index 3cebda1..99bbbc9 100644
 --- a/crates/agent_sandbox/src/roundtrip_tests.rs
 +++ b/crates/agent_sandbox/src/roundtrip_tests.rs
 @@ -72,6 +72,8 @@ async fn roundtrip_page_write_to_launch_to_registry_to_drift(cx: &mut TestAppCon
@@ -1495,21 +1507,23 @@ index 3cebda1..ae5f7e5 100644
              "enabled": false,
              "ai_jail_path": ai_jail,
              "claude_config_dir": claude_dir,
-@@ -232,6 +234,8 @@ fn roundtrip_contract_shapes_carry_every_field_the_consumers_read(cx: &mut TestA
+@@ -232,6 +234,9 @@ fn roundtrip_contract_shapes_carry_every_field_the_consumers_read(cx: &mut TestA
          settings_fingerprint: 1,
          memory_fingerprint: 2,
          settings_key: Some("/work/app".to_string()),
 +        jail_pid: None,
 +        paused: false,
++        claude_config_dir: None,
      };
      cx.update(|cx| {
          LaunchRegistry::register(record.clone(), cx);
-@@ -255,6 +259,8 @@ fn roundtrip_contract_shapes_carry_every_field_the_consumers_read(cx: &mut TestA
+@@ -255,6 +260,9 @@ fn roundtrip_contract_shapes_carry_every_field_the_consumers_read(cx: &mut TestA
              settings_fingerprint: _,
              memory_fingerprint: _,
              settings_key: _,
 +            jail_pid: _,
 +            paused: _,
++            claude_config_dir: _,
          } = &stored;
          assert_eq!(*reason, Reason::On);
          assert_eq!(
@@ -1896,6 +1910,147 @@ index c3c77b0..dc37db3 100644
                  "enabled": true,
                  "ai_jail_path": ai_jail,
                  "claude_config_dir": base.join("claude-jailed"),
+diff --git a/crates/agent_ui/src/agent_jail_login.rs b/crates/agent_ui/src/agent_jail_login.rs
+new file mode 100644
+index 0000000..b8fddc6
+--- /dev/null
++++ b/crates/agent_ui/src/agent_jail_login.rs
+@@ -0,0 +1,47 @@
++//! The login of a jailed agent (Zeo next proposal §6.54).
++//!
++//! A jailed Claude agent reads its login from its own config directory -- one per project since
++//! §6.54 -- but the login Zeo starts runs on the host, in a terminal, because the browser's OAuth
++//! callback lands on a host port the jail cannot receive. So the login is pointed at the jail's
++//! directory with `CLAUDE_CONFIG_DIR`; without it the token went to `~/.claude` and the jailed
++//! agent kept answering "Authentication required".
++
++use std::path::PathBuf;
++
++use gpui::{App, Entity};
++use project::{Project, agent_server_store::AgentId};
++
++/// The config directory the agent's live jailed launch in `project` uses, if it is jailed.
++pub(crate) fn jailed_claude_config_dir(
++    agent_id: &AgentId,
++    project: &Entity<Project>,
++    cx: &App,
++) -> Option<PathBuf> {
++    let root = agent_sandbox::launch::project_root(project, cx)?;
++    agent_sandbox::LaunchRegistry::get(agent_id, &root, cx)?.claude_config_dir
++}
++
++/// Points `login` at a jailed agent's config directory, and says so in the log.
++pub(crate) fn point_login_at_jail(
++    login: &mut task::SpawnInTerminal,
++    agent_id: &AgentId,
++    project: &Entity<Project>,
++    cx: &App,
++) {
++    let Some(dir) = jailed_claude_config_dir(agent_id, project, cx) else {
++        return;
++    };
++    log::info!(
++        "agent_sandbox event=jailed_login agent={} config_dir={}",
++        agent_id.0,
++        dir.display()
++    );
++    login.env.insert(
++        "CLAUDE_CONFIG_DIR".to_string(),
++        dir.to_string_lossy().into_owned(),
++    );
++}
++
++#[cfg(test)]
++#[path = "agent_jail_login_tests.rs"]
++mod agent_jail_login_tests;
+diff --git a/crates/agent_ui/src/agent_jail_login_tests.rs b/crates/agent_ui/src/agent_jail_login_tests.rs
+new file mode 100644
+index 0000000..0c41560
+--- /dev/null
++++ b/crates/agent_ui/src/agent_jail_login_tests.rs
+@@ -0,0 +1,82 @@
++// Zeo next proposal §6.54: the login Zeo starts for a jailed agent writes to the jail's own
++// Claude config directory. Filter: `agent_jail_login`.
++
++use std::path::{Path, PathBuf};
++
++use agent_sandbox::launch::{LaunchRecord, LaunchRegistry, MemoryPort, Reason};
++use fs::{FakeFs, Fs};
++use gpui::TestAppContext;
++use project::Project;
++use project::agent_server_store::AgentId;
++use serde_json::json;
++
++use super::point_login_at_jail;
++
++const ROOT: &str = "/w/app";
++const JAIL_CLAUDE: &str = "/var/tmp/zeo-jail/app-8347daa28034a658/claude";
++
++fn record(agent: &str, claude_config_dir: Option<&str>) -> LaunchRecord {
++    LaunchRecord {
++        agent_id: AgentId::new(agent),
++        project_root: PathBuf::from(ROOT),
++        reason: Reason::On,
++        ai_jail_version: None,
++        ai_jail_path: None,
++        rw_maps: Vec::new(),
++        allow_hosts: Vec::new(),
++        forward_ports: Vec::new(),
++        memory_port: MemoryPort::Off,
++        settings_fingerprint: 0,
++        memory_fingerprint: 0,
++        settings_key: None,
++        jail_pid: None,
++        paused: false,
++        claude_config_dir: claude_config_dir.map(PathBuf::from),
++    }
++}
++
++async fn login_env_with(
++    registered: LaunchRecord,
++    agent: &str,
++    cx: &mut TestAppContext,
++) -> Option<String> {
++    crate::conversation_view::tests::init_test(cx);
++    let fs = FakeFs::new(cx.executor());
++    cx.update(|cx| {
++        <dyn Fs>::set_global(fs.clone(), cx);
++        agent_sandbox::init(cx);
++    });
++    fs.insert_tree(ROOT, json!({ "file.txt": "" })).await;
++    let project = Project::test(fs.clone(), [Path::new(ROOT)], cx).await;
++    cx.update(|cx| {
++        LaunchRegistry::register(registered, cx);
++        let mut login = task::SpawnInTerminal::default();
++        point_login_at_jail(&mut login, &AgentId::new(agent), &project, cx);
++        login.env.get("CLAUDE_CONFIG_DIR").cloned()
++    })
++}
++
++#[gpui::test]
++async fn agent_jail_login_writes_to_the_jails_config_dir(cx: &mut TestAppContext) {
++    let env = login_env_with(record("Plus", Some(JAIL_CLAUDE)), "Plus", cx).await;
++    assert_eq!(
++        env.as_deref(),
++        Some(JAIL_CLAUDE),
++        "the token must land where the jailed agent reads it, not in ~/.claude"
++    );
++}
++
++#[gpui::test]
++async fn agent_jail_login_leaves_an_unjailed_agent_alone(cx: &mut TestAppContext) {
++    let env = login_env_with(record("Plus", None), "Plus", cx).await;
++    assert_eq!(env, None, "an agent outside the jail logs in as before");
++}
++
++#[gpui::test]
++async fn agent_jail_login_reads_only_its_own_agents_launch(cx: &mut TestAppContext) {
++    let env = login_env_with(record("Other", Some(JAIL_CLAUDE)), "Plus", cx).await;
++    assert_eq!(
++        env, None,
++        "another agent's jail says nothing about this login"
++    );
++}
 diff --git a/crates/agent_ui/src/agent_jail_status.rs b/crates/agent_ui/src/agent_jail_status.rs
 index 71ef764..b36d97e 100644
 --- a/crates/agent_ui/src/agent_jail_status.rs
@@ -1965,31 +2120,70 @@ index 71ef764..b36d97e 100644
  #[path = "agent_jail_status_pending_tests.rs"]
  mod pending_tests;
 diff --git a/crates/agent_ui/src/agent_jail_status_pending_tests.rs b/crates/agent_ui/src/agent_jail_status_pending_tests.rs
-index 903b4c1..683ff39 100644
+index 903b4c1..39d3c94 100644
 --- a/crates/agent_ui/src/agent_jail_status_pending_tests.rs
 +++ b/crates/agent_ui/src/agent_jail_status_pending_tests.rs
-@@ -22,6 +22,8 @@ fn record(reason: Reason) -> LaunchRecord {
+@@ -22,6 +22,9 @@ fn record(reason: Reason) -> LaunchRecord {
          settings_fingerprint: 0,
          memory_fingerprint: 0,
          settings_key: None,
 +        jail_pid: None,
 +        paused: false,
++        claude_config_dir: None,
      }
  }
  
 diff --git a/crates/agent_ui/src/agent_jail_status_tests.rs b/crates/agent_ui/src/agent_jail_status_tests.rs
-index 0c6c92d..d405821 100644
+index 0c6c92d..35e5218 100644
 --- a/crates/agent_ui/src/agent_jail_status_tests.rs
 +++ b/crates/agent_ui/src/agent_jail_status_tests.rs
-@@ -77,6 +77,8 @@ fn record(root: &str, reason: Reason, version: Option<&str>) -> LaunchRecord {
+@@ -77,6 +77,9 @@ fn record(root: &str, reason: Reason, version: Option<&str>) -> LaunchRecord {
          settings_fingerprint: 0,
          memory_fingerprint: 0,
          settings_key: None,
 +        jail_pid: None,
 +        paused: false,
++        claude_config_dir: None,
      }
  }
  
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index b3567a8..b18369e 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -1,6 +1,7 @@
+ mod agent_configuration;
+ pub mod agent_connection_store;
+ mod agent_diff;
++mod agent_jail_login;
+ pub mod agent_jail_status;
+ mod agent_panel;
+ mod agent_registry_ui;
+diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
+index d6445ea..a207b42 100644
+--- a/crates/agent_ui/src/conversation_view.rs
++++ b/crates/agent_ui/src/conversation_view.rs
+@@ -2664,6 +2664,7 @@ impl ConversationView {
+         };
+ 
+         let agent_telemetry_id = connection.telemetry_id();
++        let agent_id = connection.agent_id();
+ 
+         if let Some(login_task) = connection.terminal_auth_task(&method, cx) {
+             pending_auth_method.replace(method.clone());
+@@ -2674,8 +2675,11 @@ impl ConversationView {
+             self.auth_task = Some(cx.spawn_in(window, {
+                 async move |this, cx| {
+                     let result = async {
+-                        let login = login_task.await?;
++                        let mut login = login_task.await?;
+                         this.update_in(cx, |_this, window, cx| {
++                            crate::agent_jail_login::point_login_at_jail(
++                                &mut login, &agent_id, &project, cx,
++                            );
+                             Self::spawn_external_agent_login(
+                                 login,
+                                 workspace,
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
 index cf70d67..cddb2ae 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
