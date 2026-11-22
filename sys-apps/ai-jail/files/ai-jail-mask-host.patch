@@ -1,0 +1,2184 @@
+--mask-host for ai-jail 3.5.0: show the sandbox a host sized to its limits.
+Synthetic /proc/cpuinfo (model "Virtual CPU", the host's vendor and feature
+flags kept), /proc/stat, /proc/loadavg, /proc/meminfo (when a memory limit
+applies) and /sys/devices/system/cpu, written at launch to a 0700 temp
+directory and bound over the real ones; a live /proc/uptime (the sandbox's
+own age, rewritten in place once a second, idle = age x its CPU count), so
+`uptime` keeps working; --unshare-cgroup with only the sandbox's own cgroup
+at /sys/fs/cgroup; DMI hidden; /etc/machine-id the sandbox's own, kept in
+DIR/machine-id under --state-root. Sizes come from --cpus, the scope's
+cpu.max (rounded up) and memory.max. Opt-in, Linux only, never saved: a
+launch without the flag behaves as before.
+
+Why: an agent in Zeo's jail read the host's CPU model, RAM, swap, load, uptime,
+board and every sibling cgroup unit (Zeo next proposal §6.63, ask 86). It
+hides, it does not isolate: cpuid, timing, uname(2), sched_getaffinity and
+mount sources stay the host's. Cost: a nested sandbox cannot mount its own
+/proc, which ai-jail's default Landlock and seccomp already refuse.
+
+From the zeo-workspace/ai-jail fork: feat/mask-host (on upstream v3.5.0) and
+its wiring to --cpus and --state-root on zeo/ebuild-350-r2. Applies after
+ai-jail-resource-limits.patch and ai-jail-state-root.patch, in that order.
+Not upstream yet; it goes there as its own PR after local testing.
+
+diff --git a/README.md b/README.md
+index 698734f..8dff7f1 100644
+--- a/README.md
++++ b/README.md
+@@ -858,6 +858,47 @@ counted (`oom_kills`, `memory_peak`, `tasks_refused`, `cpu_usage_usec`). The
+ config fields are `memory_max`, `max_tasks`, `cpu_quota` and `cpus`; a project
+ `.ai-jail` may add or lower a limit, never raise it.
+ 
++## Hiding the host: `--mask-host`
++
++By default the sandbox reads the host's own description of itself: `/sys` and
++`/etc` are bound read-only and the fresh `/proc` still carries system-wide
++files. An agent can read the CPU model and count, the RAM and swap, the host's
++load, the board (DMI), the machine id and every sibling cgroup unit.
++`--mask-host` (Linux) replaces them, at launch, with a view sized to the
++sandbox:
++
++| Path | Inside the sandbox |
++|---|---|
++| `/proc/cpuinfo` | one block per allowed CPU, model `Virtual CPU`; vendor and feature flags stay the host's (software picks code paths by them) |
++| `/proc/stat` | one zeroed line per allowed CPU (static: usage reads idle) |
++| `/proc/loadavg` | `0.00 0.00 0.00 1/1 1` |
++| `/proc/uptime` | the sandbox's own age, rewritten in place once a second, and the idle time of its CPUs (age × CPU count, as nothing in the zeroed `/proc/stat` ran); `uptime` keeps working |
++| `/proc/meminfo` | sized to the memory limit, swap to the swap limit; the host's file when there is no limit |
++| `/sys/devices/system/cpu` | `online`, `possible`, `present` and one `cpuN/` per allowed CPU |
++| `/sys/fs/cgroup` | only the sandbox's own cgroup, read-only, in its own cgroup namespace (`/proc/self/cgroup` reads `0::/`) |
++| `/sys/class/dmi`, `/sys/devices/virtual/dmi` | empty |
++| `/etc/machine-id` | the sandbox's own id: kept in `DIR/machine-id` under `--state-root DIR`, else random per launch |
++
++The allowed CPUs are the `--cpus` set, else the process's affinity
++(`taskset`), trimmed to the cgroup's `cpu.max` rounded up to whole CPUs; the
++memory limit is the smallest `memory.max` from the sandbox's cgroup up to the
++root. With the resource limits above (`ai-jail --memory 8G --cpu-quota 400%
++--mask-host ...`), or inside any limited scope, every tool -- `nproc`,
++`getconf`, `lscpu`, `free` -- reports the same 4 CPUs and 8 GiB.
++The flag is never saved to a profile: pass it on each launch.
++
++**Cost.** A procfs with files mounted over it is no longer "fully visible" to
++the kernel, so a sandbox nested inside this one cannot mount its own `/proc`
++(`Can't mount proc on /proc: Operation not permitted`): bwrap with
++`--unshare-pid`, rootless podman and Claude Code's own Bash sandbox fail.
++ai-jail's default Landlock and seccomp filters already stop nested sandboxes,
++so this changes behaviour only under `--no-landlock --no-seccomp`.
++
++**What it cannot hide.** This hides the easy answers; it does not isolate.
++The `cpuid` instruction, timing, the `uname(2)` kernel release, the CPU
++numbers `sched_getaffinity` and `/proc/self/status` return, and the mount
++sources in `/proc/self/mountinfo` stay the host's. Only a VM changes those.
++
+ ## Browsers
+ 
+ `--browser[=hard|soft]` reuses an isolated browser profile, but browsers still
+@@ -990,6 +1031,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
+                                 session; see Resource limits)
+ --cpus LIST                     pin the sandbox to CPUs, locked by seccomp
+ --state-root DIR                $HOME, /tmp and Claude config on disk under DIR (Linux; not saved)
++--mask-host                     hardware view sized to the sandbox's limits (Linux; not saved; see Hiding the host)
+ --browser[=hard|soft]           isolated browser profile (needs --network --display)
+ --dry-run                       print the backend invocation
+ --init                          write configuration and exit
+diff --git a/docs/CLI_TUI_PARITY.md b/docs/CLI_TUI_PARITY.md
+index 9576b12..a198bf9 100644
+--- a/docs/CLI_TUI_PARITY.md
++++ b/docs/CLI_TUI_PARITY.md
+@@ -90,6 +90,10 @@ or integration rather than saved sandbox authority.
+ - Sandbox state on disk: `--state-root` (a per-run directory chosen by the
+   caller -- typically a wrapper such as an editor -- not saved authority: no
+   configuration key, refused under `--lockdown` and on macOS)
++- Host view: `--mask-host` (a per-run choice made by the caller --
++  typically a wrapper such as an editor -- not saved authority: no
++  configuration key, refused on macOS; it only narrows what the sandbox
++  reads)
+ - Backward-compatible rejected option: `--allow-tcp-port`
+ 
+ ## Release rule
+diff --git a/docs/USER_GUIDE.md b/docs/USER_GUIDE.md
+index 1a744cc..709ce9b 100644
+--- a/docs/USER_GUIDE.md
++++ b/docs/USER_GUIDE.md
+@@ -627,6 +627,30 @@ nothing. The flag is Linux only, refused under `--lockdown` (whose `$HOME` and
+ `/tmp` stay in memory on purpose), and never saved to a profile: pass it on each
+ launch, as a wrapper such as an editor does with a directory per project.
+ 
++## Hiding the host
++
++`--mask-host` gives the sandbox a hardware view sized to its limits instead of
++the host's: `/proc/cpuinfo` (model `Virtual CPU`), `/proc/stat`,
++`/proc/loadavg`, `/proc/meminfo` and `/sys/devices/system/cpu` are generated at
++launch, and `/proc/uptime` counts from the sandbox's start (rewritten once a
++second; idle time is that age times the sandbox's CPU count), so `uptime` keeps
++working; `/sys/fs/cgroup` shows only the sandbox's own cgroup, in its own cgroup
++namespace; DMI is hidden; `/etc/machine-id` is the sandbox's own.
++
++- CPUs: the `--cpus` set when given, else the affinity, trimmed to
++  `--cpu-quota` rounded up to whole CPUs (`--cpu-quota 400%` shows 4).
++- Memory: `--memory`, with swap 0 as the limit pins it; without a memory limit
++  `/proc/meminfo` stays the host's.
++- Machine id: kept in `DIR/machine-id` under `--state-root DIR`, so it stays the
++  same between launches; a fresh one per launch otherwise.
++
++A nested sandbox can no longer mount its own `/proc` under `--mask-host`; with
++ai-jail's default Landlock and seccomp a nested sandbox is refused anyway, so
++this matters only under `--no-landlock --no-seccomp`. The `cpuid` instruction,
++timing, `uname(2)`, the CPU numbers of `sched_getaffinity` and the mount
++sources in `/proc/self/mountinfo` stay the host's. Linux only, never saved to a
++profile: pass it on each launch.
++
+ ## Migration and reapproval
+ 
+ Legacy repository `.ai-jail` files contribute restrictions only. Commands,
+diff --git a/src/cli.rs b/src/cli.rs
+index bad18ad..6946f07 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -204,6 +204,12 @@ OPTIONS:
+     --state-root <DIR>             Keep the sandbox's $HOME, /tmp and Claude config on disk under
+                                    DIR (home/, tmp/, claude/) instead of tmpfs (Linux; created
+                                    0700; never saved to a profile)
++    --mask-host                    Show the sandbox a host sized to its limits: synthetic
++                                   /proc/cpuinfo, meminfo, stat, loadavg, uptime and
++                                   /sys/devices/system/cpu, only its own cgroup, no DMI, its
++                                   own machine-id (Linux; never saved). A nested sandbox can no
++                                   longer mount /proc (bwrap, podman, Claude Code's Bash
++                                   sandbox; already refused unless --no-landlock --no-seccomp)
+     --clean                        Ignore saved and legacy project policy, start fresh
+     --dry-run                      Print the sandbox command without executing
+     --init                         Create/update external per-project config and exit
+@@ -279,6 +285,7 @@ pub struct CliArgs {
+     pub publish_ports: Vec<u16>,
+     pub claude_dir: Option<PathBuf>,
+     pub state_root: Option<PathBuf>,
++    pub mask_host: bool,
+     pub agent_state: Option<bool>,
+     pub harnesses: Vec<String>,
+     pub request_files: Vec<PathBuf>,
+@@ -564,6 +571,9 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
+                 args.state_root =
+                     Some(PathBuf::from(val.to_string_lossy().into_owned()));
+             }
++            Long("mask-host") => {
++                args.mask_host = true;
++            }
+             Long(s @ ("gpu" | "no-gpu")) => {
+                 args.gpu = Some(s == "gpu");
+             }
+@@ -1211,6 +1221,7 @@ const SANDBOX_LONG_FLAGS: &[&str] = &[
+     "--no-browser",
+     "--claude-dir",
+     "--state-root",
++    "--mask-host",
+     "--x11",
+     "--no-x11",
+     "--host-shm",
+@@ -1260,6 +1271,7 @@ const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
+     "cpus_source",
+     "runtime_harnesses",
+     "state_root",
++    "mask_host",
+ ];
+ 
+ /// Names already missing from docs/USER_GUIDE.md at upstream v3.3.0
+@@ -3035,6 +3047,14 @@ mod tests {
+         assert!(error.contains("after command"));
+     }
+ 
++    #[test]
++    fn parse_mask_host() {
++        assert!(!parse_test(&["claude"]).unwrap().mask_host);
++        let args = parse_test(&["--mask-host", "claude"]).unwrap();
++        assert!(args.mask_host);
++        assert_eq!(args.command, vec!["claude"]);
++    }
++
+     #[test]
+     fn parse_claude_dir() {
+         let args = parse_test(&[
+diff --git a/src/config.rs b/src/config.rs
+index 7bd5803..c7572fe 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -187,6 +187,10 @@ pub struct Config {
+     /// Runtime only, like `runtime_harnesses`: a launch flag, never saved.
+     #[serde(default, skip)]
+     pub state_root: Option<std::path::PathBuf>,
++    /// `--mask-host`: a synthetic hardware view sized to the limits.
++    /// Runtime only, like `runtime_harnesses`: a launch flag, never saved.
++    #[serde(default, skip)]
++    pub mask_host: bool,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub command: Vec<String>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+@@ -2647,6 +2651,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
+         config.claude_dir = Some(p);
+     }
+     config.state_root = cli.state_root.clone();
++    config.mask_host = cli.mask_host;
+ 
+     expand_user_paths(&mut config);
+ 
+@@ -4972,6 +4977,7 @@ no_gpu = true
+         let config = Config {
+             runtime_harnesses: Vec::new(),
+             state_root: None,
++            mask_host: false,
+             command: vec!["claude".into()],
+             rw_maps: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
+             ro_maps: vec![PathBuf::from("/opt/data")],
+@@ -8373,6 +8379,7 @@ hide_dotdirs = [".my_secrets"]
+         let config = Config {
+             runtime_harnesses: Vec::new(),
+             state_root: None,
++            mask_host: false,
+             command: vec!["codex".into()],
+             rw_maps: vec![PathBuf::from("/tmp/shared")],
+             ro_maps: vec![],
+diff --git a/src/config_store.rs b/src/config_store.rs
+index 1ead76c..71105eb 100644
+--- a/src/config_store.rs
++++ b/src/config_store.rs
+@@ -1196,6 +1196,8 @@ pub(crate) fn save_project_grants(
+     grants.runtime_harnesses.clear();
+     // `--state-root` is invocation-scoped for the same reason.
+     grants.state_root = None;
++    // `--mask-host` is invocation-scoped for the same reason.
++    grants.mask_host = false;
+     doc.directory_grants = approved_directory_grants.to_vec();
+     doc.grants = grants;
+     doc.approved_env_names = approved_env_names;
+@@ -1518,6 +1520,7 @@ pub(crate) fn config_field_names() -> Vec<&'static str> {
+ const CONFIG_FIELD_POLICY: &[ConfigFieldPolicy] = &[
+     excluded_policy!("runtime_harnesses", Authority),
+     excluded_policy!("state_root", Authority),
++    excluded_policy!("mask_host", Restriction),
+     static_policy!("command", Authority, Command),
+     static_policy!("rw_maps", Authority, RwMaps),
+     static_policy!("ro_maps", Authority, RoMaps),
+@@ -2328,6 +2331,7 @@ mod tests {
+     const EXPECTED_STATIC_POLICY: &[ExpectedStaticPolicy] = &[
+         expected_excluded!("runtime_harnesses", Authority),
+         expected_excluded!("state_root", Authority),
++        expected_excluded!("mask_host", Restriction),
+         expected_authority!("command", Authority, Command, ["command claude"]),
+         expected_authority!(
+             "rw_maps",
+@@ -2443,6 +2447,9 @@ mod tests {
+             "state_root" => {
+                 config.state_root = Some("/var/tmp/zeo-jail/x".into());
+             }
++            "mask_host" => {
++                config.mask_host = true;
++            }
+             "command" => {
+                 config.command =
+                     vec!["claude".into(), "--token=top-secret".into()];
+diff --git a/src/sandbox/bwrap.rs b/src/sandbox/bwrap.rs
+index aca7fea..e78df80 100644
+--- a/src/sandbox/bwrap.rs
++++ b/src/sandbox/bwrap.rs
+@@ -188,6 +188,13 @@ fn mounted_map_args<'a>(
+ struct MountSet {
+     base: Vec<Mount>,
+     sys_masks: Vec<Mount>,
++    /// `--mask-host`: synthetic /proc and /sys files, the jail's own
++    /// cgroup and DMI masks. Right after the base mounts it replaces, and
++    /// before everything a user maps or masks on purpose.
++    host_view: Vec<Mount>,
++    /// `--mask-host` also gives the sandbox its own cgroup namespace, so
++    /// /proc/self/cgroup reads `0::/` and names no host unit.
++    unshare_cgroup: bool,
+     home_dotfiles: Vec<Mount>,
+     devin_env: Vec<(String, String)>,
+     /// Devin state roots are read-write; the installation below its data
+@@ -261,10 +268,11 @@ impl MountSet {
+             .chain(self.extra.iter())
+             .chain(self.extra_inside.iter())
+     }
+-    fn ordered_mounts(&self) -> [&[Mount]; 29] {
++    fn ordered_mounts(&self) -> [&[Mount]; 30] {
+         [
+             &self.base,
+             &self.sys_masks,
++            &self.host_view,
+             &self.gpu,
+             &self.kvm,
+             &self.docker,
+@@ -328,6 +336,10 @@ impl MountSet {
+             args.push("--new-session".into());
+         }
+ 
++        if self.unshare_cgroup {
++            args.push("--unshare-cgroup".into());
++        }
++
+         // Lockdown always isolates the network namespace, even if --network
+         // was also passed: lockdown is the maximum-isolation posture and must
+         // not fail open on kernels without Landlock V4 net enforcement.
+@@ -581,6 +593,9 @@ pub struct SandboxGuard {
+     deny_file_path: PathBuf,
+     /// Mode-000 temp directory used as the source for --deny-path directory overlays.
+     deny_dir_path: PathBuf,
++    /// `--mask-host`'s synthetic files, made on first use and removed
++    /// with the guard, which outlives the sandbox.
++    host_view: std::cell::OnceCell<super::host_view::HostView>,
+ }
+ 
+ impl SandboxGuard {
+@@ -618,6 +633,68 @@ impl SandboxGuard {
+     fn deny_dir_path(&self) -> &Path {
+         &self.deny_dir_path
+     }
++
++    fn host_view(
++        &self,
++        config: &Config,
++        write: bool,
++    ) -> Result<&super::host_view::HostView, String> {
++        if let Some(view) = self.host_view.get() {
++            return Ok(view);
++        }
++        let view = super::host_view::HostView::create(
++            host_view_request(config),
++            write,
++        )?;
++        Ok(self.host_view.get_or_init(|| view))
++    }
++}
++
++/// What the launch adds to the host view beyond the limits ai-jail reads
++/// from its own cgroup and affinity.
++///
++/// `--cpus` is applied inside the sandbox, after these arguments are built,
++/// so the view cannot read it from its own affinity and takes it from the
++/// config. With `--state-root` the machine id lives in `DIR/machine-id`:
++/// the directory is already checked private, and one id per state root keeps
++/// tools that cache it from seeing a new machine on every launch.
++fn host_view_request(config: &Config) -> super::host_view::HostViewRequest {
++    super::host_view::HostViewRequest {
++        cpus: config
++            .cpus
++            .as_deref()
++            .and_then(|list| super::affinity::parse_cpu_list(list).ok()),
++        machine_id_file: config
++            .state_root
++            .as_deref()
++            .map(|root| root.join("machine-id")),
++    }
++}
++
++/// Put `--mask-host`'s view over the base mounts.
++fn apply_host_view(
++    mount_set: &mut MountSet,
++    view: &super::host_view::HostView,
++) {
++    use super::host_view::HostViewMount;
++    mount_set.host_view = view
++        .mounts()
++        .iter()
++        .map(|m| match m {
++            HostViewMount::File { src, dest } => Mount::FileRoBind {
++                src: src.clone(),
++                dest: dest.clone(),
++            },
++            HostViewMount::Dir { src, dest } => Mount::RoBind {
++                src: src.clone(),
++                dest: dest.clone(),
++            },
++            HostViewMount::Tmpfs { dest } => {
++                Mount::Tmpfs { dest: dest.clone() }
++            }
++        })
++        .collect();
++    mount_set.unshare_cgroup = true;
+ }
+ 
+ impl Drop for SandboxGuard {
+@@ -644,6 +721,7 @@ impl SandboxGuard {
+             empty_path: PathBuf::from("/tmp/ai-jail-test-empty"),
+             deny_file_path: PathBuf::from("/tmp/ai-jail-test-deny-file"),
+             deny_dir_path: PathBuf::from("/tmp/ai-jail-test-deny-dir"),
++            host_view: std::cell::OnceCell::new(),
+         }
+     }
+ }
+@@ -1009,6 +1087,7 @@ pub fn prepare() -> Result<SandboxGuard, String> {
+         empty_path,
+         deny_file_path,
+         deny_dir_path,
++        host_view: std::cell::OnceCell::new(),
+     })
+ }
+ 
+@@ -1525,8 +1604,16 @@ pub fn build(
+     bridge_sockets: &super::BridgeSockets,
+ ) -> Result<Command, String> {
+     let sources = MountSources::from_guard(guard);
+-    let mount_set =
++    let mut mount_set =
+         discover_mounts_full(config, project_dir, &sources, verbose)?;
++    if config.mask_host {
++        apply_host_view(&mut mount_set, guard.host_view(config, true)?);
++        if verbose {
++            crate::output::verbose(
++                "Host view: synthetic CPU, memory and load files, own cgroup, no DMI (--mask-host)",
++            );
++        }
++    }
+     let map_args = mounted_map_args(mount_set.landlock_map_mounts());
+     let lockdown = config.lockdown_enabled();
+     let bwrap = bwrap_binary_path()?;
+@@ -1750,6 +1837,11 @@ pub fn dry_run(
+         create_dirs: false,
+         ..MountSources::from_guard(guard)
+     };
++    let host_view = if config.mask_host {
++        Some(guard.host_view(config, false)?)
++    } else {
++        None
++    };
+     let args = build_dry_run_args_forwarded(
+         config,
+         project_dir,
+@@ -1757,6 +1849,7 @@ pub fn dry_run(
+         verbose,
+         proxy_socket,
+         bridge_sockets,
++        host_view,
+     )?;
+     let secret_names = crate::config::env_pass_names(&config.env_pass);
+     Ok(format_dry_run_args_redacting(&args, &secret_names))
+@@ -1790,6 +1883,7 @@ fn build_dry_run_args_full(
+         verbose,
+         proxy_socket,
+         &super::BridgeSockets::default(),
++        None,
+     )
+ }
+ 
+@@ -1800,9 +1894,13 @@ fn build_dry_run_args_forwarded(
+     verbose: bool,
+     proxy_socket: Option<&Path>,
+     bridge_sockets: &super::BridgeSockets,
++    host_view: Option<&super::host_view::HostView>,
+ ) -> Result<Vec<String>, String> {
+-    let mount_set =
++    let mut mount_set =
+         discover_mounts_full(config, project_dir, sources, verbose)?;
++    if let Some(view) = host_view {
++        apply_host_view(&mut mount_set, view);
++    }
+     let map_args = mounted_map_args(mount_set.landlock_map_mounts());
+     let lockdown = config.lockdown_enabled();
+     let launch = super::build_launch_command(config);
+@@ -2156,6 +2254,9 @@ fn discover_mounts_full(
+         mask: mask_mounts,
+         deny: deny_mounts,
+         overlay_hide: overlay_hide_v,
++        // Filled by apply_host_view under --mask-host.
++        host_view: Vec::new(),
++        unshare_cgroup: false,
+     };
+     // --state-root: the sandbox's $HOME and /tmp on disk instead of tmpfs.
+     // Every bind ai-jail layers over $HOME stays where it was; only the
+@@ -5037,6 +5138,7 @@ mod tests {
+                 forward: vec![(49374, sock.clone())],
+                 ..Default::default()
+             },
++            None,
+         )
+         .unwrap();
+ 
+@@ -5094,6 +5196,7 @@ mod tests {
+                 )],
+                 ..Default::default()
+             },
++            None,
+         )
+         .unwrap();
+ 
+@@ -5132,6 +5235,7 @@ mod tests {
+                 forward: vec![(49374, PathBuf::from("/tmp/only-one.sock"))],
+                 ..Default::default()
+             },
++            None,
+         );
+         assert!(result.unwrap_err().contains("--forward-port 8080"));
+     }
+@@ -5156,6 +5260,7 @@ mod tests {
+                 publish: vec![(4096, sock.clone())],
+                 ..Default::default()
+             },
++            None,
+         )
+         .unwrap();
+ 
+@@ -5204,10 +5309,76 @@ mod tests {
+             false,
+             None,
+             &crate::sandbox::BridgeSockets::default(),
++            None,
+         );
+         assert!(result.unwrap_err().contains("--publish-port 4096"));
+     }
+ 
++    #[test]
++    fn mask_host_takes_cpus_and_the_machine_id_store_from_the_stack() {
++        let config = Config {
++            mask_host: true,
++            cpus: Some("28-31".into()),
++            state_root: Some("/var/tmp/zeo-jail/p".into()),
++            ..minimal_test_config()
++        };
++        let request = host_view_request(&config);
++        assert_eq!(request.cpus, Some([28, 29, 30, 31].into_iter().collect()));
++        assert_eq!(
++            request.machine_id_file,
++            Some(PathBuf::from("/var/tmp/zeo-jail/p/machine-id"))
++        );
++        let plain = host_view_request(&minimal_test_config());
++        assert_eq!(plain.cpus, None);
++        assert_eq!(plain.machine_id_file, None);
++    }
++
++    #[test]
++    fn mask_host_binds_its_view_over_proc_and_unshares_the_cgroup() {
++        let guard =
++            SandboxGuard::test_with_hosts(PathBuf::from("/tmp/test-hosts"));
++        let config = Config {
++            mask_host: true,
++            ..minimal_test_config()
++        };
++        let sources = MountSources::from_guard(&guard);
++        let view = guard.host_view(&config, false).unwrap();
++        let args = build_dry_run_args_forwarded(
++            &config,
++            &std::env::temp_dir(),
++            &sources,
++            false,
++            None,
++            &crate::sandbox::BridgeSockets::default(),
++            Some(view),
++        )
++        .unwrap();
++        let proc_at = args
++            .windows(2)
++            .position(|w| w[0] == "--proc" && w[1] == "/proc")
++            .expect("base /proc mount");
++        let cpuinfo_at = args
++            .iter()
++            .position(|a| a == "/proc/cpuinfo")
++            .expect("synthetic cpuinfo bind");
++        assert!(cpuinfo_at > proc_at, "the view must land on top of /proc");
++        assert_eq!(args[cpuinfo_at - 2], "--ro-bind");
++        assert!(args.iter().any(|a| a == "--unshare-cgroup"));
++
++        let plain = build_dry_run_args_forwarded(
++            &minimal_test_config(),
++            &std::env::temp_dir(),
++            &sources,
++            false,
++            None,
++            &crate::sandbox::BridgeSockets::default(),
++            None,
++        )
++        .unwrap();
++        assert!(!plain.iter().any(|a| a == "--unshare-cgroup"));
++        assert!(!plain.iter().any(|a| a == "/proc/cpuinfo"));
++    }
++
+     #[test]
+     fn filtered_lockdown_forces_placeholder_env() {
+         // Under lockdown the env_pass path never runs, so phantom
+diff --git a/src/sandbox/host_view.rs b/src/sandbox/host_view.rs
+new file mode 100644
+index 0000000..17168f2
+--- /dev/null
++++ b/src/sandbox/host_view.rs
+@@ -0,0 +1,423 @@
++//! `--mask-host`: replace the host's system-wide view with one sized to
++//! the jail.
++//!
++//! ai-jail binds `/sys` and `/etc` read-only whole and gives the sandbox a
++//! fresh `/proc`, whose system-wide files still describe the host: its CPU
++//! model and count, its RAM and swap, its load, its board (DMI) and every
++//! sibling cgroup. Under `--mask-host` the launch writes synthetic
++//! `/proc/cpuinfo`, `/proc/stat`, `/proc/loadavg`, a live `/proc/uptime`
++//! counted from the jail's start, `/proc/meminfo` (when a
++//! memory limit applies) and `/sys/devices/system/cpu` into a private temp
++//! directory and binds them over the real ones, shows only the jail's own
++//! cgroup at `/sys/fs/cgroup` (with `--unshare-cgroup`, so
++//! `/proc/self/cgroup` reads `0::/`), hides DMI, and gives `/etc/machine-id`
++//! a per-jail id.
++//!
++//! The sizes come from what the jail really gets when its arguments are
++//! built: the cgroup's `cpu.max` (rounded up to whole CPUs), `memory.max`
++//! and `memory.swap.max` -- the smallest along the path to the root -- and
++//! the process's CPU affinity. Without a limit a file keeps the host's
++//! numbers; the CPU model is generic either way.
++//!
++//! Cost: a procfs with files mounted over it is not "fully visible" to the
++//! kernel (`mnt_already_visible`), so a nested `--proc /proc` mount inside
++//! the jail fails with EPERM: Claude Code's own Bash sandbox, rootless
++//! podman and nested bwrap stop working. That is why this is opt-in.
++//!
++//! It hides, it does not isolate: the `cpuid` instruction, timing,
++//! `uname(2)`, the CPU numbers `sched_getaffinity` returns and the sources
++//! in `/proc/self/mountinfo` stay the host's, short of a VM.
++
++use std::collections::BTreeSet;
++use std::fs::OpenOptions;
++use std::io::{Read, Write};
++use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
++use std::path::{Path, PathBuf};
++use std::time::{SystemTime, UNIX_EPOCH};
++
++use super::host_view_synth as synth;
++use super::host_view_uptime::UptimeTicker;
++
++const CGROUP_ROOT: &str = "/sys/fs/cgroup";
++const SYS_CPU: &str = "/sys/devices/system/cpu";
++/// DMI/SMBIOS: board vendor and model. `class/dmi/id` links into
++/// `devices/virtual/dmi`, so both are hidden.
++const DMI_PATHS: &[&str] = &["/sys/class/dmi", "/sys/devices/virtual/dmi"];
++const MACHINE_ID: &str = "/etc/machine-id";
++
++/// What a launch tells the host view beyond what ai-jail reads from its
++/// own environment.
++#[derive(Debug, Default, Clone)]
++pub(crate) struct HostViewRequest {
++    /// CPUs the sandbox will be pinned to, for a caller that pins it after
++    /// the bwrap arguments are built.
++    pub cpus: Option<BTreeSet<usize>>,
++    /// Where the jail's machine id is kept between launches. `None` gives
++    /// every launch a fresh id.
++    pub machine_id_file: Option<PathBuf>,
++}
++
++/// The host as the jail's limits frame it, read once per launch.
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub(super) struct HostSnapshot {
++    pub host_cpus: BTreeSet<usize>,
++    pub affinity: Option<BTreeSet<usize>>,
++    pub cgroup_dir: Option<PathBuf>,
++    pub quota_cpus: Option<usize>,
++    pub memory_max: Option<u64>,
++    pub memory_current: u64,
++    pub swap_max: Option<u64>,
++    pub cpuinfo: String,
++    pub meminfo: String,
++    pub btime: u64,
++}
++
++impl HostSnapshot {
++    pub fn read() -> Self {
++        let cgroup_dir = own_cgroup_dir();
++        let walk = |file: &str| {
++            cgroup_dir
++                .as_deref()
++                .map(|dir| cgroup_ancestry(dir, file))
++                .unwrap_or_default()
++        };
++        let read = |path: &str| std::fs::read_to_string(path).ok();
++        let host_cpus = read("/sys/devices/system/cpu/online")
++            .and_then(|t| synth::parse_id_list(&t))
++            .unwrap_or_else(|| {
++                let n = std::thread::available_parallelism()
++                    .map_or(1, std::num::NonZeroUsize::get);
++                (0..n).collect()
++            });
++        let affinity = read("/proc/self/status").and_then(|status| {
++            status.lines().find_map(|line| {
++                line.strip_prefix("Cpus_allowed_list:")
++                    .and_then(synth::parse_id_list)
++            })
++        });
++        HostSnapshot {
++            host_cpus,
++            affinity,
++            quota_cpus: walk("cpu.max")
++                .iter()
++                .filter_map(|v| synth::quota_cpus(v))
++                .min(),
++            memory_max: walk("memory.max")
++                .iter()
++                .filter_map(|v| v.trim().parse().ok())
++                .min(),
++            memory_current: cgroup_dir
++                .as_deref()
++                .and_then(|d| {
++                    std::fs::read_to_string(d.join("memory.current")).ok()
++                })
++                .and_then(|v| v.trim().parse().ok())
++                .unwrap_or(0),
++            swap_max: walk("memory.swap.max")
++                .iter()
++                .filter_map(|v| v.trim().parse().ok())
++                .min(),
++            cgroup_dir,
++            cpuinfo: read("/proc/cpuinfo").unwrap_or_default(),
++            meminfo: read("/proc/meminfo").unwrap_or_default(),
++            btime: SystemTime::now()
++                .duration_since(UNIX_EPOCH)
++                .map_or(0, |d| d.as_secs()),
++        }
++    }
++}
++
++/// The cgroup v2 directory of this process: the sandbox's, since bwrap
++/// and its child are forked into the same one.
++fn own_cgroup_dir() -> Option<PathBuf> {
++    let text = std::fs::read_to_string("/proc/self/cgroup").ok()?;
++    let rel = text.lines().find_map(|l| l.strip_prefix("0::"))?;
++    let dir = Path::new(CGROUP_ROOT).join(rel.trim().trim_start_matches('/'));
++    dir.is_dir().then_some(dir)
++}
++
++/// `file` in `dir` and in each parent up to the cgroup root: a limit on
++/// an enclosing slice binds the jail as much as one on its own scope.
++fn cgroup_ancestry(dir: &Path, file: &str) -> Vec<String> {
++    dir.ancestors()
++        .take_while(|d| d.starts_with(CGROUP_ROOT))
++        .filter_map(|d| std::fs::read_to_string(d.join(file)).ok())
++        .collect()
++}
++
++/// One mount of the host view; `bwrap.rs` turns it into arguments.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(super) enum HostViewMount {
++    File { src: PathBuf, dest: PathBuf },
++    Dir { src: PathBuf, dest: PathBuf },
++    Tmpfs { dest: PathBuf },
++}
++
++/// What to write (relative to the view's directory) and what to mount.
++#[derive(Debug, Default, PartialEq, Eq)]
++pub(super) struct HostViewPlan {
++    pub files: Vec<(PathBuf, String)>,
++    pub mounts: Vec<HostViewMount>,
++    /// CPUs the live `/proc/uptime` counts as idle.
++    pub uptime_cpus: usize,
++}
++
++/// Lay out the view for `snap`. Pure: `exists` answers for host paths, so
++/// a mount point the host lacks (no DMI on a VM, no machine-id in a
++/// container) is skipped instead of failing bwrap.
++pub(super) fn plan(
++    snap: &HostSnapshot,
++    request: &HostViewRequest,
++    machine_id: &str,
++    dir: &Path,
++    exists: &dyn Fn(&Path) -> bool,
++) -> HostViewPlan {
++    let base = request
++        .cpus
++        .clone()
++        .or_else(|| snap.affinity.clone())
++        .unwrap_or_else(|| snap.host_cpus.clone());
++    let ids = synth::jail_cpu_ids(&base, snap.quota_cpus);
++    let mut out = HostViewPlan {
++        uptime_cpus: ids.len(),
++        ..HostViewPlan::default()
++    };
++    let mut file = |name: &str, text: String, dest: Option<&str>| {
++        out.files.push((PathBuf::from(name), text));
++        if let Some(dest) = dest {
++            out.mounts.push(HostViewMount::File {
++                src: dir.join(name),
++                dest: dest.into(),
++            });
++        }
++    };
++    file(
++        "cpuinfo",
++        synth::cpuinfo(&ids, &snap.cpuinfo),
++        Some("/proc/cpuinfo"),
++    );
++    file("stat", synth::stat(&ids, snap.btime), Some("/proc/stat"));
++    file("loadavg", synth::loadavg(), Some("/proc/loadavg"));
++    file(
++        "uptime",
++        synth::uptime(0.0, ids.len()),
++        Some("/proc/uptime"),
++    );
++    if let Some(memory) = snap.memory_max {
++        let text = synth::meminfo(
++            memory,
++            snap.memory_current,
++            snap.swap_max,
++            &snap.meminfo,
++        );
++        file("meminfo", text, Some("/proc/meminfo"));
++    }
++    let list = format!("{}\n", synth::format_id_list(&ids));
++    for name in ["online", "possible", "present"] {
++        file(&format!("cpu/{name}"), list.clone(), None);
++    }
++    file("cpu/offline", "\n".into(), None);
++    for id in &ids {
++        file(&format!("cpu/cpu{id}/online"), "1\n".into(), None);
++    }
++    if exists(Path::new(MACHINE_ID)) {
++        file("machine-id", format!("{machine_id}\n"), Some(MACHINE_ID));
++    }
++
++    if exists(Path::new(SYS_CPU)) {
++        out.mounts.push(HostViewMount::Dir {
++            src: dir.join("cpu"),
++            dest: SYS_CPU.into(),
++        });
++    }
++    match &snap.cgroup_dir {
++        Some(own) => out.mounts.push(HostViewMount::Dir {
++            src: own.clone(),
++            dest: CGROUP_ROOT.into(),
++        }),
++        None if exists(Path::new(CGROUP_ROOT)) => {
++            out.mounts.push(HostViewMount::Tmpfs {
++                dest: CGROUP_ROOT.into(),
++            });
++        }
++        None => {}
++    }
++    for path in DMI_PATHS {
++        if exists(Path::new(path)) {
++            out.mounts.push(HostViewMount::Tmpfs { dest: path.into() });
++        }
++    }
++    out
++}
++
++/// The view of one launch: its temp directory (removed on drop) and the
++/// mounts that put it in place.
++#[derive(Debug)]
++pub(crate) struct HostView {
++    dir: PathBuf,
++    written: bool,
++    mounts: Vec<HostViewMount>,
++    /// Keeps `/proc/uptime` live; stopped first when the view is dropped.
++    uptime: Option<UptimeTicker>,
++}
++
++impl HostView {
++    /// Read the host and lay out the view. With `write` false (dry run)
++    /// nothing is created on disk and a persisted machine id is not made.
++    pub fn create(
++        request: HostViewRequest,
++        write: bool,
++    ) -> Result<Self, String> {
++        // The jail's clock starts here, just before bwrap is spawned.
++        let start = std::time::Instant::now();
++        let snap = HostSnapshot::read();
++        let machine_id = machine_id(request.machine_id_file.as_deref(), write)?;
++        let dir = std::env::temp_dir().join(format!(
++            "ai-jail-host.{}.{}",
++            std::process::id(),
++            SystemTime::now()
++                .duration_since(UNIX_EPOCH)
++                .map_or(0, |d| d.as_nanos())
++        ));
++        let exists = |p: &Path| match std::fs::symlink_metadata(p) {
++            // A symlinked machine-id points into /var, which the jail
++            // does not have: binding over the link would follow it.
++            Ok(meta) if p == Path::new(MACHINE_ID) => meta.is_file(),
++            Ok(_) => true,
++            Err(_) => false,
++        };
++        let plan = plan(&snap, &request, &machine_id, &dir, &exists);
++        let mut view = HostView {
++            dir,
++            written: false,
++            mounts: plan.mounts,
++            uptime: None,
++        };
++        if write && let Some(file) = view.write(&plan.files)? {
++            view.uptime =
++                Some(UptimeTicker::start(file, start, plan.uptime_cpus)?);
++        }
++        Ok(view)
++    }
++
++    pub(super) fn mounts(&self) -> &[HostViewMount] {
++        &self.mounts
++    }
++
++    /// Write the files; returns `uptime` still open for writing, since the
++    /// ticker could not reopen it once it is read-only.
++    fn write(
++        &mut self,
++        files: &[(PathBuf, String)],
++    ) -> Result<Option<std::fs::File>, String> {
++        let fail = |what: &Path, e: std::io::Error| {
++            format!("--mask-host: cannot write {}: {e}", what.display())
++        };
++        std::fs::DirBuilder::new()
++            .mode(0o700)
++            .create(&self.dir)
++            .map_err(|e| fail(&self.dir, e))?;
++        self.written = true;
++        let mut uptime = None;
++        for (rel, text) in files {
++            let path = self.dir.join(rel);
++            if let Some(parent) = path.parent() {
++                std::fs::DirBuilder::new()
++                    .recursive(true)
++                    .mode(0o700)
++                    .create(parent)
++                    .map_err(|e| fail(parent, e))?;
++            }
++            let mut f = OpenOptions::new()
++                .create_new(true)
++                .write(true)
++                .mode(0o600)
++                .open(&path)
++                .map_err(|e| fail(&path, e))?;
++            f.write_all(text.as_bytes()).map_err(|e| fail(&path, e))?;
++            // Read-only, like the procfs files it stands in for; the 0700
++            // directory already keeps other host users out.
++            std::fs::set_permissions(
++                &path,
++                std::fs::Permissions::from_mode(0o444),
++            )
++            .map_err(|e| fail(&path, e))?;
++            if rel == Path::new("uptime") {
++                uptime = Some(f);
++            }
++        }
++        Ok(uptime)
++    }
++}
++
++impl Drop for HostView {
++    fn drop(&mut self) {
++        drop(self.uptime.take());
++        if self.written {
++            let _ = std::fs::remove_dir_all(&self.dir);
++        }
++    }
++}
++
++/// A machine id in systemd's format (32 lowercase hex digits).
++pub(super) fn valid_machine_id(text: &str) -> bool {
++    text.len() == 32
++        && text
++            .bytes()
++            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
++        && text.bytes().any(|b| b != b'0')
++}
++
++fn random_machine_id() -> Result<String, String> {
++    let mut bytes = [0u8; 16];
++    std::fs::File::open("/dev/urandom")
++        .and_then(|mut f| f.read_exact(&mut bytes))
++        .map_err(|e| format!("--mask-host: cannot read /dev/urandom: {e}"))?;
++    // UUID v4 bits, as systemd-machine-id-setup writes them.
++    bytes[6] = (bytes[6] & 0x0f) | 0x40;
++    bytes[8] = (bytes[8] & 0x3f) | 0x80;
++    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
++}
++
++/// The jail's machine id: the one kept at `store` when it is valid, else
++/// a new one, saved there (0600) when `write` is set. A symlink or a
++/// non-file at `store` is refused rather than followed.
++pub(super) fn machine_id(
++    store: Option<&Path>,
++    write: bool,
++) -> Result<String, String> {
++    let Some(path) = store else {
++        return random_machine_id();
++    };
++    match std::fs::symlink_metadata(path) {
++        Ok(meta) if !meta.file_type().is_file() => {
++            return Err(format!(
++                "--mask-host: {} is not a regular file",
++                path.display()
++            ));
++        }
++        Ok(_) => {
++            let text = std::fs::read_to_string(path).map_err(|e| {
++                format!("--mask-host: cannot read {}: {e}", path.display())
++            })?;
++            if valid_machine_id(text.trim()) {
++                return Ok(text.trim().to_string());
++            }
++        }
++        Err(_) => {}
++    }
++    let id = random_machine_id()?;
++    if write {
++        crate::fsutil::write_atomic(
++            path,
++            &format!("{id}\n"),
++            false,
++            "machine-id",
++        )?;
++    }
++    Ok(id)
++}
++
++#[cfg(test)]
++#[path = "host_view_tests.rs"]
++mod tests;
+diff --git a/src/sandbox/host_view_synth.rs b/src/sandbox/host_view_synth.rs
+new file mode 100644
+index 0000000..97d97cd
+--- /dev/null
++++ b/src/sandbox/host_view_synth.rs
+@@ -0,0 +1,443 @@
++//! Pure generators for `--mask-host`: the synthetic `/proc` and
++//! `/sys/devices/system/cpu` contents a jail sees instead of the host's.
++//!
++//! Kept free of I/O so every rule can be unit-tested against fixed host
++//! text; `host_view` reads the host and writes these to disk.
++
++use std::collections::BTreeSet;
++
++/// The model name every synthetic CPU reports. The real one (and its
++/// family/model/stepping numbers) is what identifies the host's hardware.
++pub(super) const VIRTUAL_CPU_MODEL: &str = "Virtual CPU";
++
++/// cpuinfo keys copied from the host's first CPU. Feature flags stay real
++/// because software picks code paths by them (`avx2`, `sse4_2`, `neon`):
++/// hiding them breaks builds and runtimes while `cpuid` reveals them anyway.
++/// Everything else -- model, stepping, microcode, frequency, cache size,
++/// `bugs` (the vulnerability list) and the topology -- is replaced or dropped.
++const CPUINFO_COPIED_KEYS: &[&str] = &[
++    "vendor_id",
++    "cpu family",
++    "fpu",
++    "fpu_exception",
++    "cpuid level",
++    "wp",
++    "flags",
++    "clflush size",
++    "cache_alignment",
++    "address sizes",
++    "Features",
++    "CPU architecture",
++];
++
++/// Parse a kernel CPU list (`0-3,8,10-11`) into ids.
++pub(super) fn parse_id_list(text: &str) -> Option<BTreeSet<usize>> {
++    let mut ids = BTreeSet::new();
++    for part in text.trim().split(',') {
++        let (lo, hi): (usize, usize) = match part.split_once('-') {
++            Some((lo, hi)) => {
++                (lo.trim().parse().ok()?, hi.trim().parse().ok()?)
++            }
++            None => {
++                let id = part.trim().parse().ok()?;
++                (id, id)
++            }
++        };
++        if lo > hi {
++            return None;
++        }
++        ids.extend(lo..=hi);
++    }
++    Some(ids)
++}
++
++/// Render ids in the kernel's list syntax (`0-3,8`).
++pub(super) fn format_id_list(ids: &BTreeSet<usize>) -> String {
++    let mut runs: Vec<(usize, usize)> = Vec::new();
++    for &id in ids {
++        match runs.last_mut() {
++            Some((_, hi)) if *hi + 1 == id => *hi = id,
++            _ => runs.push((id, id)),
++        }
++    }
++    runs.iter()
++        .map(|&(lo, hi)| {
++            if lo == hi {
++                lo.to_string()
++            } else {
++                format!("{lo}-{hi}")
++            }
++        })
++        .collect::<Vec<_>>()
++        .join(",")
++}
++
++/// The CPU ids the jail is shown.
++///
++/// `base` is the explicit `--cpus` set when there is one, else the
++/// process's affinity, else every host CPU. A CPU quota smaller than the
++/// base keeps its first `quota_cpus` ids, so a quota-only jail on a
++/// 32-CPU host reads `0-3` rather than `0-31`.
++pub(super) fn jail_cpu_ids(
++    base: &BTreeSet<usize>,
++    quota_cpus: Option<usize>,
++) -> BTreeSet<usize> {
++    match quota_cpus {
++        Some(n) if n < base.len() => base.iter().copied().take(n).collect(),
++        _ => base.clone(),
++    }
++}
++
++/// CPUs a cgroup v2 `cpu.max` line allows, rounded up: `400000 100000`
++/// is 4, `150000 100000` is 2, `max 100000` is no limit.
++pub(super) fn quota_cpus(cpu_max: &str) -> Option<usize> {
++    let mut it = cpu_max.split_whitespace();
++    let quota: u64 = it.next()?.parse().ok()?;
++    let period: u64 = it.next()?.parse().ok()?;
++    if period == 0 {
++        return None;
++    }
++    usize::try_from(quota.div_ceil(period).max(1)).ok()
++}
++
++/// `/proc/cpuinfo` with one generic block per id.
++pub(super) fn cpuinfo(ids: &BTreeSet<usize>, host: &str) -> String {
++    // The host's first block, key text kept verbatim (tabs included) so
++    // the copied lines read exactly as the kernel prints them.
++    let copied: Vec<&str> = host
++        .split("\n\n")
++        .next()
++        .unwrap_or("")
++        .lines()
++        .filter(|line| {
++            line.split_once(':').is_some_and(|(key, _)| {
++                CPUINFO_COPIED_KEYS.contains(&key.trim())
++            })
++        })
++        .collect();
++    let n = ids.len();
++    let mut out = String::new();
++    for (index, id) in ids.iter().enumerate() {
++        out.push_str(&format!("processor\t: {id}\n"));
++        out.push_str(&format!("model name\t: {VIRTUAL_CPU_MODEL}\n"));
++        out.push_str(&format!(
++            "physical id\t: 0\nsiblings\t: {n}\ncore id\t\t: {index}\n\
++             cpu cores\t: {n}\napicid\t\t: {index}\n"
++        ));
++        for line in &copied {
++            out.push_str(line);
++            out.push('\n');
++        }
++        out.push('\n');
++    }
++    out
++}
++
++/// `/proc/meminfo` sized to `memory` bytes, with `used` already taken.
++///
++/// Every key of the host's file is kept, in order, so parsers that expect
++/// one find it; the sizes the jail can know are computed and every other
++/// counter reads 0. Swap follows `swap` when the cgroup caps it (`Some`),
++/// else stays the host's.
++pub(super) fn meminfo(
++    memory: u64,
++    used: u64,
++    swap: Option<u64>,
++    host: &str,
++) -> String {
++    let kib = |bytes: u64| bytes / 1024;
++    let free = kib(memory.saturating_sub(used));
++    let host_value = |key: &str| {
++        host.lines().find_map(|line| {
++            let (k, rest) = line.split_once(':')?;
++            (k == key).then(|| {
++                rest.trim()
++                    .trim_end_matches(" kB")
++                    .trim()
++                    .parse::<u64>()
++                    .ok()
++            })?
++        })
++    };
++    let (swap_total, swap_free) = match swap {
++        Some(bytes) => (kib(bytes), kib(bytes)),
++        None => (
++            host_value("SwapTotal").unwrap_or(0),
++            host_value("SwapFree").unwrap_or(0),
++        ),
++    };
++    let mut keys: Vec<(&str, bool)> = host
++        .lines()
++        .filter_map(|line| {
++            let (key, rest) = line.split_once(':')?;
++            Some((key, rest.trim_end().ends_with("kB")))
++        })
++        .collect();
++    if keys.is_empty() {
++        keys = [
++            "MemTotal",
++            "MemFree",
++            "MemAvailable",
++            "SwapTotal",
++            "SwapFree",
++        ]
++        .iter()
++        .map(|k| (*k, true))
++        .collect();
++    }
++    let mut out = String::new();
++    for (key, in_kb) in keys {
++        let value = match key {
++            "MemTotal" => kib(memory),
++            "MemFree" | "MemAvailable" => free,
++            "SwapTotal" => swap_total,
++            "SwapFree" => swap_free,
++            // The page size of huge pages is the architecture's, not a
++            // measure of the host.
++            "Hugepagesize" => host_value(key).unwrap_or(0),
++            _ => 0,
++        };
++        let label = format!("{key}:");
++        if in_kb {
++            out.push_str(&format!("{label:<16}{value:>8} kB\n"));
++        } else {
++            out.push_str(&format!("{label:<16}{value:>8}\n"));
++        }
++    }
++    out
++}
++
++/// `/proc/stat` with one zeroed line per id: static, so a tool that
++/// computes usage from deltas reads an idle machine, not the host's load.
++pub(super) fn stat(ids: &BTreeSet<usize>, btime: u64) -> String {
++    const ZEROS: &str = "0 0 0 0 0 0 0 0 0 0";
++    let mut out = format!("cpu  {ZEROS}\n");
++    for id in ids {
++        out.push_str(&format!("cpu{id} {ZEROS}\n"));
++    }
++    out.push_str(&format!(
++        "intr 0\nctxt 0\nbtime {btime}\nprocesses 0\nprocs_running 1\n\
++         procs_blocked 0\nsoftirq 0 0 0 0 0 0 0 0 0 0 0\n"
++    ));
++    out
++}
++
++/// Characters per `/proc/uptime` field: 16 holds 31 years of idle time on
++/// 1024 CPUs, so the ticker's rewrites keep one length in practice (and a
++/// longer value only grows the file, never leaves a stale tail).
++const UPTIME_FIELD: usize = 16;
++
++/// Bytes in every `/proc/uptime` this module writes.
++#[cfg(test)]
++pub(super) const UPTIME_LEN: usize = 2 * UPTIME_FIELD + 2;
++
++/// `/proc/uptime` for a jail `elapsed` seconds old: its own age, and the
++/// idle time of `cpus` CPUs that never ran anything -- consistent with the
++/// zeroed `/proc/stat`. Fixed width so the ticker can rewrite it in place
++/// without the length changing under a reader.
++pub(super) fn uptime(elapsed: f64, cpus: usize) -> String {
++    // Precision loss only past 2^52 CPU-seconds.
++    #[allow(clippy::cast_precision_loss)]
++    let idle = elapsed * cpus as f64;
++    let w = UPTIME_FIELD;
++    format!("{elapsed:>w$.2} {idle:>w$.2}\n")
++}
++
++/// `/proc/loadavg` for an idle machine: one running task, the reader.
++pub(super) fn loadavg() -> String {
++    "0.00 0.00 0.00 1/1 1\n".into()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn ids(list: &[usize]) -> BTreeSet<usize> {
++        list.iter().copied().collect()
++    }
++
++    const HOST_CPUINFO: &str = "\
++processor\t: 0
++vendor_id\t: AuthenticAMD
++cpu family\t: 26
++model\t\t: 68
++model name\t: AMD Ryzen 9 9950X 16-Core Processor
++stepping\t: 0
++microcode\t: 0xb404023
++cpu MHz\t\t: 3000.000
++cache size\t: 1024 KB
++physical id\t: 0
++siblings\t: 32
++core id\t\t: 0
++cpu cores\t: 16
++apicid\t\t: 0
++fpu\t\t: yes
++flags\t\t: fpu vme avx2 sse4_2
++bugs\t\t: sysret_ss_attrs spectre_v1
++bogomips\t: 8600.00
++address sizes\t: 48 bits physical, 48 bits virtual
++
++processor\t: 1
++vendor_id\t: AuthenticAMD
++model name\t: AMD Ryzen 9 9950X 16-Core Processor
++flags\t\t: fpu vme avx2 sse4_2
++";
++
++    const HOST_MEMINFO: &str = "\
++MemTotal:       63421728 kB
++MemFree:        12345678 kB
++MemAvailable:   40000000 kB
++Buffers:          123456 kB
++Cached:         20000000 kB
++SwapTotal:      100663288 kB
++SwapFree:       100000000 kB
++HugePages_Total:       0
++Hugepagesize:       2048 kB
++";
++
++    #[test]
++    fn id_lists_round_trip_through_kernel_syntax() {
++        assert_eq!(
++            parse_id_list("0-3,8,10-11\n"),
++            Some(ids(&[0, 1, 2, 3, 8, 10, 11]))
++        );
++        assert_eq!(parse_id_list("5"), Some(ids(&[5])));
++        assert_eq!(parse_id_list(""), None);
++        assert_eq!(parse_id_list("3-1"), None);
++        assert_eq!(parse_id_list("a-b"), None);
++        assert_eq!(
++            format_id_list(&ids(&[0, 1, 2, 3, 8, 10, 11])),
++            "0-3,8,10-11"
++        );
++        assert_eq!(format_id_list(&ids(&[28, 29, 30, 31])), "28-31");
++        assert_eq!(format_id_list(&ids(&[7])), "7");
++    }
++
++    #[test]
++    fn cpu_quota_rounds_up_to_whole_cpus() {
++        assert_eq!(quota_cpus("400000 100000\n"), Some(4));
++        assert_eq!(quota_cpus("150000 100000"), Some(2));
++        assert_eq!(quota_cpus("50000 100000"), Some(1));
++        assert_eq!(quota_cpus("max 100000"), None);
++        assert_eq!(quota_cpus("garbage"), None);
++        assert_eq!(quota_cpus("100000 0"), None);
++    }
++
++    #[test]
++    fn quota_trims_the_base_set_to_its_first_ids() {
++        let host: BTreeSet<usize> = (0..32).collect();
++        assert_eq!(jail_cpu_ids(&host, Some(4)), ids(&[0, 1, 2, 3]));
++        assert_eq!(jail_cpu_ids(&host, None), host);
++        let pinned = ids(&[28, 29, 30, 31]);
++        assert_eq!(jail_cpu_ids(&pinned, Some(2)), ids(&[28, 29]));
++        // A quota larger than the set never invents CPUs.
++        assert_eq!(jail_cpu_ids(&pinned, Some(8)), pinned);
++    }
++
++    #[test]
++    fn cpuinfo_hides_the_model_and_keeps_the_flags() {
++        let text = cpuinfo(&ids(&[0, 1, 2, 3]), HOST_CPUINFO);
++        assert_eq!(text.matches("processor\t: ").count(), 4);
++        assert_eq!(
++            text.matches(&format!("model name\t: {VIRTUAL_CPU_MODEL}"))
++                .count(),
++            4
++        );
++        assert!(text.contains("flags\t\t: fpu vme avx2 sse4_2"));
++        assert!(text.contains("vendor_id\t: AuthenticAMD"));
++        assert!(text.contains("siblings\t: 4"));
++        assert!(text.contains("cpu cores\t: 4"));
++        for leak in [
++            "Ryzen",
++            "microcode",
++            "bugs",
++            "cpu MHz",
++            "cache size",
++            "stepping",
++            "bogomips",
++            "spectre",
++        ] {
++            assert!(!text.contains(leak), "{leak} leaked into:\n{text}");
++        }
++    }
++
++    #[test]
++    fn cpuinfo_numbers_processors_by_their_real_ids() {
++        let text = cpuinfo(&ids(&[28, 29]), HOST_CPUINFO);
++        assert!(text.contains("processor\t: 28\n"));
++        assert!(text.contains("processor\t: 29\n"));
++        assert!(!text.contains("processor\t: 0\n"));
++    }
++
++    #[test]
++    fn meminfo_reports_the_limit_and_zeroes_host_counters() {
++        let gib = 1024 * 1024 * 1024;
++        let text = meminfo(8 * gib, gib, Some(0), HOST_MEMINFO);
++        assert!(text.contains("MemTotal:        8388608 kB\n"), "{text}");
++        assert!(text.contains("MemFree:         7340032 kB\n"), "{text}");
++        assert!(text.contains("MemAvailable:    7340032 kB\n"), "{text}");
++        assert!(text.contains("Buffers:               0 kB\n"), "{text}");
++        assert!(text.contains("Cached:                0 kB\n"), "{text}");
++        assert!(text.contains("SwapTotal:             0 kB\n"), "{text}");
++        assert!(text.contains("SwapFree:              0 kB\n"), "{text}");
++        assert!(text.contains("HugePages_Total:       0\n"), "{text}");
++        assert!(text.contains("Hugepagesize:       2048 kB\n"), "{text}");
++        assert!(!text.contains("63421728"));
++    }
++
++    #[test]
++    fn meminfo_keeps_host_swap_when_the_cgroup_does_not_cap_it() {
++        let gib = 1024 * 1024 * 1024;
++        let text = meminfo(8 * gib, 0, None, HOST_MEMINFO);
++        assert!(text.contains("SwapTotal:      100663288 kB\n"), "{text}");
++        assert!(text.contains("SwapFree:       100000000 kB\n"), "{text}");
++    }
++
++    #[test]
++    fn meminfo_never_reports_more_used_than_total() {
++        let text = meminfo(1024 * 1024, 4 * 1024 * 1024, Some(0), HOST_MEMINFO);
++        assert!(text.contains("MemFree:               0 kB\n"), "{text}");
++    }
++
++    #[test]
++    fn stat_lists_one_zeroed_line_per_cpu() {
++        let text = stat(&ids(&[0, 1, 2, 3]), 1_700_000_000);
++        assert!(text.starts_with("cpu  0 0 0 0 0 0 0 0 0 0\n"), "{text}");
++        for id in 0..4 {
++            assert!(text.contains(&format!("\ncpu{id} 0 0 0 0 0 0 0 0 0 0\n")));
++        }
++        assert!(!text.contains("cpu4 "));
++        assert!(text.contains("\nbtime 1700000000\n"));
++        assert!(text.contains("\nprocs_running 1\n"));
++    }
++
++    #[test]
++    fn uptime_is_the_jails_age_with_every_cpu_idle() {
++        assert_eq!(uptime(0.0, 4), format!("{:>16} {:>16}\n", "0.00", "0.00"));
++        let text = uptime(12.345, 4);
++        let values: Vec<f64> = text
++            .split_whitespace()
++            .map(|v| v.parse().unwrap())
++            .collect();
++        assert_eq!(values.len(), 2);
++        assert!((values[0] - 12.35).abs() < 0.006, "{text}");
++        assert!((values[1] - 49.38).abs() < 0.006, "{text}");
++    }
++
++    #[test]
++    fn uptime_keeps_one_length_as_it_grows() {
++        for (elapsed, cpus) in [(0.0, 1), (99.99, 1), (100.0, 32), (1.0e6, 64)]
++        {
++            assert_eq!(
++                uptime(elapsed, cpus).len(),
++                UPTIME_LEN,
++                "{elapsed} {cpus}"
++            );
++        }
++    }
++
++    #[test]
++    fn loadavg_reads_idle() {
++        assert_eq!(loadavg(), "0.00 0.00 0.00 1/1 1\n");
++    }
++}
+diff --git a/src/sandbox/host_view_tests.rs b/src/sandbox/host_view_tests.rs
+new file mode 100644
+index 0000000..ebc27e1
+--- /dev/null
++++ b/src/sandbox/host_view_tests.rs
+@@ -0,0 +1,312 @@
++use super::*;
++
++fn ids(list: &[usize]) -> BTreeSet<usize> {
++    list.iter().copied().collect()
++}
++
++fn scratch(tag: &str) -> PathBuf {
++    let dir = std::env::temp_dir().join(format!(
++        "ai-jail-host-view-test.{tag}.{}.{}",
++        std::process::id(),
++        SystemTime::now()
++            .duration_since(UNIX_EPOCH)
++            .map_or(0, |d| d.as_nanos())
++    ));
++    std::fs::create_dir_all(&dir).unwrap();
++    dir
++}
++
++/// A 32-CPU host with a 4-CPU / 8 GiB scope, as Zeo's jail runs.
++fn limited_host() -> HostSnapshot {
++    HostSnapshot {
++        host_cpus: (0..32).collect(),
++        affinity: Some((0..32).collect()),
++        cgroup_dir: Some("/sys/fs/cgroup/app.slice/ai-jail-1.scope".into()),
++        quota_cpus: Some(4),
++        memory_max: Some(8 << 30),
++        memory_current: 1 << 30,
++        swap_max: Some(0),
++        cpuinfo: "processor\t: 0\nmodel name\t: Big Host CPU\nflags\t\t: fpu avx2\n".into(),
++        meminfo: "MemTotal:       63421728 kB\nMemFree:        1 kB\nSwapTotal:      2 kB\n".into(),
++        btime: 1_700_000_000,
++    }
++}
++
++fn everything_exists(_: &Path) -> bool {
++    true
++}
++
++fn file<'a>(plan: &'a HostViewPlan, name: &str) -> &'a str {
++    plan.files
++        .iter()
++        .find(|(rel, _)| rel == Path::new(name))
++        .map(|(_, text)| text.as_str())
++        .unwrap_or_else(|| panic!("{name} not planned: {:?}", plan.files))
++}
++
++fn dests(plan: &HostViewPlan) -> Vec<String> {
++    plan.mounts
++        .iter()
++        .map(|m| match m {
++            HostViewMount::File { dest, .. }
++            | HostViewMount::Dir { dest, .. }
++            | HostViewMount::Tmpfs { dest } => dest.display().to_string(),
++        })
++        .collect()
++}
++
++#[test]
++fn plan_sizes_every_file_to_the_cgroup_limits() {
++    let dir = Path::new("/tmp/view");
++    let plan = plan(
++        &limited_host(),
++        &HostViewRequest::default(),
++        "0123456789abcdef0123456789abcdef",
++        dir,
++        &everything_exists,
++    );
++    assert_eq!(file(&plan, "cpu/online"), "0-3\n");
++    assert_eq!(file(&plan, "cpu/possible"), "0-3\n");
++    assert_eq!(file(&plan, "cpu/present"), "0-3\n");
++    assert_eq!(file(&plan, "cpu/cpu3/online"), "1\n");
++    assert!(
++        !plan
++            .files
++            .iter()
++            .any(|(r, _)| r == Path::new("cpu/cpu4/online"))
++    );
++    assert_eq!(file(&plan, "cpuinfo").matches("processor\t: ").count(), 4);
++    assert!(!file(&plan, "cpuinfo").contains("Big Host"));
++    assert!(file(&plan, "meminfo").contains("MemTotal:        8388608 kB"));
++    assert_eq!(
++        file(&plan, "stat")
++            .lines()
++            .filter(|l| l.starts_with("cpu"))
++            .count(),
++        5
++    );
++    assert_eq!(
++        file(&plan, "machine-id"),
++        "0123456789abcdef0123456789abcdef\n"
++    );
++    assert!(plan.mounts.contains(&HostViewMount::File {
++        src: dir.join("cpuinfo"),
++        dest: "/proc/cpuinfo".into(),
++    }));
++    assert!(plan.mounts.contains(&HostViewMount::Dir {
++        src: dir.join("cpu"),
++        dest: "/sys/devices/system/cpu".into(),
++    }));
++    assert!(plan.mounts.contains(&HostViewMount::Dir {
++        src: "/sys/fs/cgroup/app.slice/ai-jail-1.scope".into(),
++        dest: "/sys/fs/cgroup".into(),
++    }));
++    let all = dests(&plan);
++    for dest in [
++        "/proc/cpuinfo",
++        "/proc/meminfo",
++        "/proc/stat",
++        "/proc/loadavg",
++        "/proc/uptime",
++        "/sys/devices/system/cpu",
++        "/sys/fs/cgroup",
++        "/sys/class/dmi",
++        "/sys/devices/virtual/dmi",
++        "/etc/machine-id",
++    ] {
++        assert!(
++            all.contains(&dest.to_string()),
++            "{dest} missing from {all:?}"
++        );
++    }
++    assert_eq!(file(&plan, "uptime"), synth::uptime(0.0, 4));
++    assert_eq!(plan.uptime_cpus, 4);
++}
++
++#[test]
++fn explicit_cpus_win_over_affinity_and_keep_their_numbers() {
++    let pinned = ids(&[28, 29, 30, 31]);
++    let request = HostViewRequest {
++        cpus: Some(pinned),
++        machine_id_file: None,
++    };
++    let plan = plan(
++        &limited_host(),
++        &request,
++        "1",
++        Path::new("/v"),
++        &everything_exists,
++    );
++    assert_eq!(file(&plan, "cpu/online"), "28-31\n");
++    assert!(file(&plan, "cpuinfo").contains("processor\t: 28\n"));
++}
++
++#[test]
++fn affinity_sizes_the_view_when_no_quota_applies() {
++    let snap = HostSnapshot {
++        quota_cpus: None,
++        affinity: Some(ids(&[2, 3])),
++        ..limited_host()
++    };
++    let plan = plan(
++        &snap,
++        &HostViewRequest::default(),
++        "1",
++        Path::new("/v"),
++        &everything_exists,
++    );
++    assert_eq!(file(&plan, "cpu/online"), "2-3\n");
++}
++
++#[test]
++fn without_a_memory_limit_meminfo_stays_the_hosts() {
++    let snap = HostSnapshot {
++        memory_max: None,
++        ..limited_host()
++    };
++    let plan = plan(
++        &snap,
++        &HostViewRequest::default(),
++        "1",
++        Path::new("/v"),
++        &everything_exists,
++    );
++    assert!(!plan.files.iter().any(|(r, _)| r == Path::new("meminfo")));
++    assert!(!dests(&plan).contains(&"/proc/meminfo".to_string()));
++    // The CPU model is generic with or without limits.
++    assert!(!file(&plan, "cpuinfo").contains("Big Host"));
++}
++
++#[test]
++fn no_readable_cgroup_hides_the_tree_with_a_tmpfs() {
++    let snap = HostSnapshot {
++        cgroup_dir: None,
++        ..limited_host()
++    };
++    let plan = plan(
++        &snap,
++        &HostViewRequest::default(),
++        "1",
++        Path::new("/v"),
++        &everything_exists,
++    );
++    assert!(plan.mounts.contains(&HostViewMount::Tmpfs {
++        dest: "/sys/fs/cgroup".into()
++    }));
++}
++
++#[test]
++fn mount_points_the_host_lacks_are_skipped() {
++    let only_proc = |p: &Path| p.starts_with("/proc");
++    let snap = HostSnapshot {
++        cgroup_dir: None,
++        ..limited_host()
++    };
++    let plan = plan(
++        &snap,
++        &HostViewRequest::default(),
++        "1",
++        Path::new("/v"),
++        &only_proc,
++    );
++    let all = dests(&plan);
++    for absent in [
++        "/sys/devices/system/cpu",
++        "/sys/fs/cgroup",
++        "/sys/class/dmi",
++        "/sys/devices/virtual/dmi",
++        "/etc/machine-id",
++    ] {
++        assert!(!all.contains(&absent.to_string()), "{absent} in {all:?}");
++    }
++    assert!(all.contains(&"/proc/cpuinfo".to_string()));
++}
++
++#[test]
++fn machine_ids_are_systemd_shaped() {
++    let id = machine_id(None, false).unwrap();
++    assert!(valid_machine_id(&id), "{id}");
++    assert_ne!(id, machine_id(None, false).unwrap());
++    assert!(!valid_machine_id("0".repeat(32).as_str()));
++    assert!(!valid_machine_id("ABCDEF0123456789abcdef0123456789"));
++    assert!(!valid_machine_id("abc"));
++}
++
++#[test]
++fn a_stored_machine_id_is_created_once_then_reused() {
++    let dir = scratch("store");
++    let store = dir.join("machine-id");
++    let dry = machine_id(Some(&store), false).unwrap();
++    assert!(valid_machine_id(&dry));
++    assert!(!store.exists(), "a dry run must not create the store");
++    let first = machine_id(Some(&store), true).unwrap();
++    let second = machine_id(Some(&store), true).unwrap();
++    assert_eq!(first, second);
++    assert_eq!(
++        std::fs::read_to_string(&store).unwrap(),
++        format!("{first}\n")
++    );
++    let mode = std::fs::metadata(&store).unwrap().permissions().mode() & 0o777;
++    assert_eq!(mode, 0o600);
++    std::fs::write(&store, "not an id\n").unwrap();
++    let third = machine_id(Some(&store), true).unwrap();
++    assert_ne!(third, first);
++    assert!(valid_machine_id(&third));
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn a_symlinked_machine_id_store_is_refused() {
++    let dir = scratch("symlink");
++    let target = dir.join("elsewhere");
++    std::fs::write(&target, "0123456789abcdef0123456789abcdef\n").unwrap();
++    let link = dir.join("machine-id");
++    std::os::unix::fs::symlink(&target, &link).unwrap();
++    let err = machine_id(Some(&link), true).unwrap_err();
++    assert!(err.contains("not a regular file"), "{err}");
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn a_written_view_is_read_only_and_removed_on_drop() {
++    let view = HostView::create(HostViewRequest::default(), true).unwrap();
++    let dir = view.dir.clone();
++    let cpuinfo = dir.join("cpuinfo");
++    let text = std::fs::read_to_string(&cpuinfo).unwrap();
++    assert!(text.contains(synth::VIRTUAL_CPU_MODEL));
++    let mode =
++        std::fs::metadata(&cpuinfo).unwrap().permissions().mode() & 0o777;
++    assert_eq!(mode, 0o444);
++    let dir_mode =
++        std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
++    assert_eq!(dir_mode, 0o700);
++    drop(view);
++    assert!(!dir.exists());
++}
++
++#[test]
++fn a_dry_run_view_writes_nothing() {
++    let view = HostView::create(HostViewRequest::default(), false).unwrap();
++    assert!(!view.dir.exists());
++    assert!(!view.mounts().is_empty());
++}
++
++#[test]
++fn a_written_view_keeps_uptime_live_until_dropped() {
++    let read = |path: &Path| -> f64 {
++        let text = std::fs::read_to_string(path).unwrap();
++        assert_eq!(text.len(), synth::UPTIME_LEN, "{text:?}");
++        text.split_whitespace().next().unwrap().parse().unwrap()
++    };
++    let view = HostView::create(HostViewRequest::default(), true).unwrap();
++    let path = view.dir.join("uptime");
++    let first = read(&path);
++    assert!(first < 1.0, "a new jail is {first}s old");
++    std::thread::sleep(std::time::Duration::from_millis(1500));
++    let second = read(&path);
++    assert!(second >= first + 1.0, "{first} -> {second}");
++    // Dropping stops the ticker promptly, not after its next tick.
++    let started = std::time::Instant::now();
++    drop(view);
++    assert!(started.elapsed() < std::time::Duration::from_millis(500));
++}
+diff --git a/src/sandbox/host_view_uptime.rs b/src/sandbox/host_view_uptime.rs
+new file mode 100644
+index 0000000..60797ea
+--- /dev/null
++++ b/src/sandbox/host_view_uptime.rs
+@@ -0,0 +1,68 @@
++//! The live `/proc/uptime` of `--mask-host`.
++//!
++//! A bind mount pins an inode, so the synthetic file cannot be swapped by
++//! rename; a supervisor thread rewrites it in place once a second instead.
++//! Every write has the same length (`synth::UPTIME_LEN`) and lands at offset
++//! 0 in one `pwrite`, so a reader sees one value or the next, never a file
++//! that shrank or grew. The thread lives exactly as long as the view.
++
++use std::fs::File;
++use std::os::unix::fs::FileExt;
++use std::sync::Arc;
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::thread::JoinHandle;
++use std::time::{Duration, Instant};
++
++use super::host_view_synth as synth;
++
++const TICK: Duration = Duration::from_secs(1);
++
++/// Keeps one `/proc/uptime` file current; stopped and joined on drop.
++#[derive(Debug)]
++pub(super) struct UptimeTicker {
++    stop: Arc<AtomicBool>,
++    thread: Option<JoinHandle<()>>,
++}
++
++impl UptimeTicker {
++    /// Count from `start` (the jail's start) for `cpus` idle CPUs, writing
++    /// through `file`, opened for writing before it was made read-only.
++    pub fn start(
++        file: File,
++        start: Instant,
++        cpus: usize,
++    ) -> Result<Self, String> {
++        let stop = Arc::new(AtomicBool::new(false));
++        let flag = Arc::clone(&stop);
++        let thread = std::thread::Builder::new()
++            .name("ai-jail-uptime".into())
++            .spawn(move || {
++                while !flag.load(Ordering::Acquire) {
++                    std::thread::park_timeout(TICK);
++                    if flag.load(Ordering::Acquire) {
++                        break;
++                    }
++                    let text =
++                        synth::uptime(start.elapsed().as_secs_f64(), cpus);
++                    // A failed write leaves the last value in place; the
++                    // jail keeps running either way.
++                    let _ = file.write_all_at(text.as_bytes(), 0);
++                }
++            })
++            .map_err(|e| format!("--mask-host: cannot start uptime: {e}"))?;
++        Ok(UptimeTicker {
++            stop,
++            thread: Some(thread),
++        })
++    }
++}
++
++impl Drop for UptimeTicker {
++    fn drop(&mut self) {
++        self.stop.store(true, Ordering::Release);
++        if let Some(thread) = self.thread.take() {
++            thread.thread().unpark();
++            let _ = thread.join();
++        }
++    }
++}
+diff --git a/src/sandbox/mod.rs b/src/sandbox/mod.rs
+index 326f77b..34eb3e1 100644
+--- a/src/sandbox/mod.rs
++++ b/src/sandbox/mod.rs
+@@ -62,6 +62,12 @@ fn project_config_dangerous_opt_ins(
+ #[cfg(target_os = "linux")]
+ pub(crate) mod bwrap;
+ #[cfg(target_os = "linux")]
++mod host_view;
++#[cfg(target_os = "linux")]
++mod host_view_synth;
++#[cfg(target_os = "linux")]
++mod host_view_uptime;
++#[cfg(target_os = "linux")]
+ mod landlock;
+ #[cfg(target_os = "macos")]
+ mod seatbelt;
+@@ -1965,6 +1971,9 @@ pub fn build(
+     #[cfg(target_os = "macos")]
+     {
+         let _ = (guard, bridge_sockets);
++        if config.mask_host {
++            return Err("--mask-host is Linux-only".into());
++        }
+         let prepared = prepare_seatbelt_config(config)?;
+         seatbelt::build(
+             &prepared,
+@@ -1998,6 +2007,9 @@ pub fn dry_run(
+     #[cfg(target_os = "macos")]
+     {
+         let _ = (guard, bridge_sockets);
++        if config.mask_host {
++            return Err("--mask-host is Linux-only".into());
++        }
+         let prepared = prepare_seatbelt_config(config)?;
+         seatbelt::dry_run(
+             &prepared,
+diff --git a/tests/mask_host.rs b/tests/mask_host.rs
+new file mode 100644
+index 0000000..be38721
+--- /dev/null
++++ b/tests/mask_host.rs
+@@ -0,0 +1,277 @@
++// `--mask-host` end to end: a real jail must read the synthetic host view.
++//
++// Linux-only and skipped when bwrap cannot create user namespaces (most
++// CI containers). The CPU count is pinned with taskset so the expected
++// value does not depend on the machine running the test.
++#![cfg(target_os = "linux")]
++
++use std::process::{Command, Output};
++
++mod common;
++
++use common::{SANDBOX_RUN_LOCK, ai_jail, bwrap_available};
++
++macro_rules! require_bwrap {
++    () => {
++        if !bwrap_available() {
++            eprintln!("SKIPPED: bwrap cannot create namespaces here");
++            return;
++        }
++    };
++}
++
++fn taskset_available() -> bool {
++    Command::new("taskset")
++        .args(["-c", "0", "true"])
++        .output()
++        .is_ok_and(|o| o.status.success())
++}
++
++/// Run `script` in a jail, pinned to CPU 0 when taskset exists.
++fn jail(mask_host: bool, script: &str) -> Output {
++    let _lock = SANDBOX_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    let mut cmd = if taskset_available() {
++        let mut c = Command::new("taskset");
++        c.args(["-c", "0"]).arg(ai_jail());
++        c
++    } else {
++        Command::new(ai_jail())
++    };
++    cmd.args([
++        "--clean",
++        "--no-save-config",
++        "--no-ssh",
++        "--no-gpu",
++        "--no-docker",
++        "--no-display",
++        "--no-status-bar",
++    ]);
++    if mask_host {
++        cmd.arg("--mask-host");
++    }
++    cmd.args(["sh", "-c", script])
++        .output()
++        .expect("failed to spawn ai-jail")
++}
++
++fn stdout(out: &Output) -> String {
++    assert!(
++        out.status.success(),
++        "jail failed: {}\nstderr: {}",
++        out.status,
++        String::from_utf8_lossy(&out.stderr)
++    );
++    String::from_utf8_lossy(&out.stdout).into_owned()
++}
++
++/// `key=value` lines printed by the probe script.
++fn field<'a>(text: &'a str, key: &str) -> &'a str {
++    text.lines()
++        .find_map(|l| l.strip_prefix(&format!("{key}=")))
++        .unwrap_or_else(|| panic!("{key} missing from probe output:\n{text}"))
++}
++
++const PROBE: &str = r#"
++echo "nproc=$(nproc)"
++echo "processors=$(grep -c '^processor' /proc/cpuinfo)"
++echo "model=$(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"
++echo "online=$(cat /sys/devices/system/cpu/online)"
++echo "statcpus=$(grep -c '^cpu[0-9]' /proc/stat)"
++echo "loadavg=$(cat /proc/loadavg)"
++echo "memtotal=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
++echo "cgroup=$(cat /proc/self/cgroup)"
++echo "cgroupfs=$(ls /sys/fs/cgroup | tr '\n' ' ')"
++echo "dmi=$(ls /sys/class/dmi/id 2>/dev/null | wc -l)"
++echo "machineid=$(cat /etc/machine-id 2>/dev/null)"
++"#;
++
++fn host_model() -> String {
++    std::fs::read_to_string("/proc/cpuinfo")
++        .unwrap_or_default()
++        .lines()
++        .find_map(|l| l.strip_prefix("model name"))
++        .and_then(|rest| rest.split_once(':'))
++        .map(|(_, v)| v.trim().to_string())
++        .unwrap_or_default()
++}
++
++#[test]
++fn mask_host_shows_a_host_sized_to_the_jail() {
++    require_bwrap!();
++    let masked = stdout(&jail(true, PROBE));
++
++    // CPUs: every tool agrees, and the model is generic.
++    let n = field(&masked, "nproc");
++    if taskset_available() {
++        assert_eq!(n, "1", "pinned to CPU 0:\n{masked}");
++        assert_eq!(field(&masked, "online"), "0");
++    }
++    assert_eq!(field(&masked, "processors"), n, "{masked}");
++    assert_eq!(field(&masked, "statcpus"), n, "{masked}");
++    assert_eq!(field(&masked, "model"), "Virtual CPU");
++    let host = host_model();
++    if !host.is_empty() {
++        assert!(!masked.contains(&host), "host CPU model leaked:\n{masked}");
++    }
++    assert_eq!(field(&masked, "loadavg"), "0.00 0.00 0.00 1/1 1");
++
++    // cgroup: its own namespace, and none of the host's units.
++    assert_eq!(field(&masked, "cgroup"), "0::/");
++    let fs = field(&masked, "cgroupfs");
++    for unit in [".slice", ".scope", ".service"] {
++        assert!(!fs.contains(unit), "host cgroup units visible: {fs}");
++    }
++
++    // DMI hidden; machine-id is the jail's, not the host's.
++    assert_eq!(field(&masked, "dmi"), "0");
++    if let Ok(host_id) = std::fs::read_to_string("/etc/machine-id") {
++        let id = field(&masked, "machineid");
++        assert_eq!(id.len(), 32, "{masked}");
++        assert_ne!(id, host_id.trim(), "host machine-id leaked");
++    }
++}
++
++#[test]
++fn without_mask_host_the_jail_reads_the_real_host() {
++    require_bwrap!();
++    let plain = stdout(&jail(false, PROBE));
++    let host = host_model();
++    if !host.is_empty() {
++        assert_eq!(field(&plain, "model"), host);
++    }
++    assert_ne!(field(&plain, "cgroup"), "0::/");
++}
++
++#[test]
++fn mask_host_sizes_meminfo_to_a_memory_limit() {
++    require_bwrap!();
++    // A transient user scope stands in for any memory cap the jail is
++    // launched under; skip where there is no systemd user manager.
++    let probe = Command::new("systemd-run")
++        .args([
++            "--user",
++            "--scope",
++            "--quiet",
++            "-p",
++            "MemoryMax=512M",
++            "true",
++        ])
++        .output();
++    if !probe.is_ok_and(|o| o.status.success()) {
++        eprintln!("SKIPPED: no systemd user scope available");
++        return;
++    }
++    let _lock = SANDBOX_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    let out = Command::new("systemd-run")
++        .args(["--user", "--scope", "--quiet", "-p", "MemoryMax=512M"])
++        .arg(ai_jail())
++        .args([
++            "--clean",
++            "--no-save-config",
++            "--no-ssh",
++            "--no-gpu",
++            "--no-docker",
++            "--no-display",
++            "--no-status-bar",
++            "--mask-host",
++            "sh",
++            "-c",
++            "awk '/^MemTotal:/ {print \"memtotal=\" $2}' /proc/meminfo",
++        ])
++        .output()
++        .expect("failed to spawn ai-jail");
++    let text = stdout(&out);
++    assert_eq!(field(&text, "memtotal"), "524288", "{text}");
++}
++
++#[test]
++fn mask_host_follows_the_stack_limits_and_keeps_the_id_per_state_root() {
++    require_bwrap!();
++    let probe = Command::new("systemd-run")
++        .args([
++            "--user",
++            "--scope",
++            "--quiet",
++            "-p",
++            "MemoryMax=512M",
++            "true",
++        ])
++        .output();
++    if !probe.is_ok_and(|o| o.status.success()) {
++        eprintln!("SKIPPED: no systemd user scope available");
++        return;
++    }
++    if std::thread::available_parallelism().map_or(1, |n| n.get()) < 4 {
++        eprintln!("SKIPPED: needs CPUs 2-3");
++        return;
++    }
++    let root = std::env::temp_dir()
++        .join(format!("ai-jail-mask-host-state.{}", std::process::id()));
++    let run = || {
++        let _lock = SANDBOX_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++        Command::new(ai_jail())
++            .args([
++                "--clean",
++                "--no-save-config",
++                "--no-ssh",
++                "--no-gpu",
++                "--no-docker",
++                "--no-display",
++                "--no-status-bar",
++                "--memory",
++                "512M",
++                "--cpu-quota",
++                "100%",
++                "--cpus",
++                "2-3",
++                "--mask-host",
++                "--state-root",
++            ])
++            .arg(&root)
++            .args(["sh", "-c", PROBE])
++            .output()
++            .expect("failed to spawn ai-jail")
++    };
++    let first = stdout(&run());
++    // --cpus 2-3 trimmed to a 100% quota: one CPU, keeping its number.
++    assert_eq!(field(&first, "online"), "2", "{first}");
++    assert_eq!(field(&first, "processors"), "1", "{first}");
++    assert_eq!(field(&first, "memtotal"), "524288", "{first}");
++    assert_eq!(field(&first, "cgroup"), "0::/");
++    let id = field(&first, "machineid").to_string();
++    assert_eq!(id.len(), 32, "{first}");
++    let second = stdout(&run());
++    assert_eq!(field(&second, "machineid"), id, "one id per state root");
++    let _ = std::fs::remove_dir_all(&root);
++}
++
++/// `/proc/uptime` inside a masked jail: "SECONDS IDLE".
++fn uptime_pair(text: &str) -> (f64, f64) {
++    let mut it = text.split_whitespace().map(|v| v.parse::<f64>().unwrap());
++    (it.next().unwrap(), it.next().unwrap())
++}
++
++#[test]
++fn mask_host_uptime_counts_from_the_jail_start() {
++    require_bwrap!();
++    let host = std::fs::read_to_string("/proc/uptime").unwrap();
++    let (host_up, _) = uptime_pair(&host);
++    let out = stdout(&jail(
++        true,
++        "cat /proc/uptime; sleep 2.2; cat /proc/uptime; uptime >/dev/null && echo uptime_rc=0",
++    ));
++    let lines: Vec<&str> = out.lines().collect();
++    let (first, first_idle) = uptime_pair(lines[0]);
++    let (second, second_idle) = uptime_pair(lines[1]);
++    // The jail's own age, not the host's: a few seconds at most.
++    assert!(first < 10.0, "uptime is the host's ({host_up}):\n{out}");
++    assert!(host_up > 30.0 || first < host_up, "{out}");
++    // Live: it advances while the jail runs.
++    assert!(second >= first + 1.0, "uptime did not advance:\n{out}");
++    // Idle counts every jail CPU as idle (pinned to one CPU here).
++    if taskset_available() {
++        assert!((first_idle - first).abs() < 0.02, "{out}");
++        assert!((second_idle - second).abs() < 0.02, "{out}");
++    }
++    assert_eq!(field(&out, "uptime_rc"), "0");
++}
