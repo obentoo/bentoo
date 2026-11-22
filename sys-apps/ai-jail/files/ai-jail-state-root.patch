@@ -1,0 +1,689 @@
+--state-root DIR: the sandbox's $HOME and /tmp backed by DIR/home and DIR/tmp
+on disk instead of tmpfs, and DIR/claude as CLAUDE_CONFIG_DIR unless
+--claude-dir names one. DIR and its children must be absolute, not symlinks,
+owned by the caller and not group/world writable; missing parts are created
+0700. Linux only, refused under --lockdown, never saved to a profile.
+
+From the zeo-workspace/ai-jail fork, branch feat/state-root (on upstream
+v3.5.0), applied here on top of the resource-limits patch. Zeo's per-project
+jail uses it (Zeo next proposal §6.54).
+
+diff --git a/README.md b/README.md
+index 449fe8e..698734f 100644
+--- a/README.md
++++ b/README.md
+@@ -989,6 +989,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
+                                 cap the whole sandbox (Linux, systemd user
+                                 session; see Resource limits)
+ --cpus LIST                     pin the sandbox to CPUs, locked by seccomp
++--state-root DIR                $HOME, /tmp and Claude config on disk under DIR (Linux; not saved)
+ --browser[=hard|soft]           isolated browser profile (needs --network --display)
+ --dry-run                       print the backend invocation
+ --init                          write configuration and exit
+diff --git a/docs/CLI_TUI_PARITY.md b/docs/CLI_TUI_PARITY.md
+index ea953e1..9576b12 100644
+--- a/docs/CLI_TUI_PARITY.md
++++ b/docs/CLI_TUI_PARITY.md
+@@ -87,6 +87,9 @@ or integration rather than saved sandbox authority.
+ - Run observability: `--egress-log` (a per-run output file, not saved
+   authority: no configuration key, refused outside filtered networking and
+   on macOS)
++- Sandbox state on disk: `--state-root` (a per-run directory chosen by the
++  caller -- typically a wrapper such as an editor -- not saved authority: no
++  configuration key, refused under `--lockdown` and on macOS)
+ - Backward-compatible rejected option: `--allow-tcp-port`
+ 
+ ## Release rule
+diff --git a/docs/USER_GUIDE.md b/docs/USER_GUIDE.md
+index 720aa8f..1a744cc 100644
+--- a/docs/USER_GUIDE.md
++++ b/docs/USER_GUIDE.md
+@@ -609,6 +609,24 @@ prints every effective limit, defaults included. The README section
+ [Resource limits without root](../README.md#resource-limits-without-root---rlimit-and---cpus)
+ covers each limit name and what it does to a process.
+ 
++## Sandbox state on disk
++
++`--state-root DIR` keeps what the sandbox writes to `$HOME` and `/tmp`, and the
++Claude config, on disk under `DIR` instead of in memory:
++
++- `DIR/home` backs the sandbox's `$HOME`. The host dotfiles ai-jail exposes are
++  still mounted on top of it, as they are on the default tmpfs.
++- `DIR/tmp` backs `/tmp`.
++- `DIR/claude` becomes `CLAUDE_CONFIG_DIR`, unless `--claude-dir` names another
++  directory. A login made inside the sandbox lands here.
++
++`DIR` must be an absolute path. Missing parts are created with mode 0700; an
++existing `DIR` or child that is a symlink, is not yours, or is writable by group
++or others refuses the launch instead of being changed. `--dry-run` creates
++nothing. The flag is Linux only, refused under `--lockdown` (whose `$HOME` and
++`/tmp` stay in memory on purpose), and never saved to a profile: pass it on each
++launch, as a wrapper such as an editor does with a directory per project.
++
+ ## Migration and reapproval
+ 
+ Legacy repository `.ai-jail` files contribute restrictions only. Commands,
+diff --git a/src/cli.rs b/src/cli.rs
+index 430d74d..bad18ad 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -201,6 +201,9 @@ OPTIONS:
+                                    127.0.0.1:PORT (Linux; repeatable; cannot combine with
+                                    --network; every host process on loopback can reach it)
+     --claude-dir <PATH>            Use PATH as Claude config dir (sets CLAUDE_CONFIG_DIR)
++    --state-root <DIR>             Keep the sandbox's $HOME, /tmp and Claude config on disk under
++                                   DIR (home/, tmp/, claude/) instead of tmpfs (Linux; created
++                                   0700; never saved to a profile)
+     --clean                        Ignore saved and legacy project policy, start fresh
+     --dry-run                      Print the sandbox command without executing
+     --init                         Create/update external per-project config and exit
+@@ -275,6 +278,7 @@ pub struct CliArgs {
+     pub forward_ports: Vec<u16>,
+     pub publish_ports: Vec<u16>,
+     pub claude_dir: Option<PathBuf>,
++    pub state_root: Option<PathBuf>,
+     pub agent_state: Option<bool>,
+     pub harnesses: Vec<String>,
+     pub request_files: Vec<PathBuf>,
+@@ -555,6 +559,11 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
+                 args.claude_dir =
+                     Some(PathBuf::from(val.to_string_lossy().into_owned()));
+             }
++            Long("state-root") => {
++                let val = parser.value().map_err(|e| e.to_string())?;
++                args.state_root =
++                    Some(PathBuf::from(val.to_string_lossy().into_owned()));
++            }
+             Long(s @ ("gpu" | "no-gpu")) => {
+                 args.gpu = Some(s == "gpu");
+             }
+@@ -1201,6 +1210,7 @@ const SANDBOX_LONG_FLAGS: &[&str] = &[
+     "--browser",
+     "--no-browser",
+     "--claude-dir",
++    "--state-root",
+     "--x11",
+     "--no-x11",
+     "--host-shm",
+@@ -1245,8 +1255,12 @@ const SANDBOX_LONG_FLAGS: &[&str] = &[
+ 
+ /// Config fields that are runtime state, never written by a user.
+ #[cfg(test)]
+-const INTERFACE_INTERNAL_FIELDS: &[&str] =
+-    &["rlimit_source", "cpus_source", "runtime_harnesses"];
++const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
++    "rlimit_source",
++    "cpus_source",
++    "runtime_harnesses",
++    "state_root",
++];
+ 
+ /// Names already missing from docs/USER_GUIDE.md at upstream v3.3.0
+ /// (fe4dfe0). The drift test is a ratchet: it holds every name added
+diff --git a/src/config.rs b/src/config.rs
+index 0859c86..7bd5803 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -183,6 +183,10 @@ pub struct Config {
+     /// only: profiles store approvals, never wrapper invocation metadata.
+     #[serde(default, skip)]
+     pub runtime_harnesses: Vec<String>,
++    /// `--state-root`: the sandbox's home, /tmp and Claude config on disk.
++    /// Runtime only, like `runtime_harnesses`: a launch flag, never saved.
++    #[serde(default, skip)]
++    pub state_root: Option<std::path::PathBuf>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub command: Vec<String>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+@@ -2642,6 +2646,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
+     if let Some(p) = cli.claude_dir.clone() {
+         config.claude_dir = Some(p);
+     }
++    config.state_root = cli.state_root.clone();
+ 
+     expand_user_paths(&mut config);
+ 
+@@ -3863,6 +3868,7 @@ env_pass = ["ANTHROPIC_API_KEY"]
+     fn save_does_not_persist_env_pass() {
+         let config = Config {
+             runtime_harnesses: Vec::new(),
++            state_root: None,
+             command: vec!["claude".into()],
+             env_pass: vec!["ANTHROPIC_API_KEY=sk-secret".into()],
+             trust_project_config: vec![],
+@@ -4965,6 +4971,7 @@ no_gpu = true
+     fn roundtrip_serialize_deserialize() {
+         let config = Config {
+             runtime_harnesses: Vec::new(),
++            state_root: None,
+             command: vec!["claude".into()],
+             rw_maps: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
+             ro_maps: vec![PathBuf::from("/opt/data")],
+@@ -8365,6 +8372,7 @@ hide_dotdirs = [".my_secrets"]
+ 
+         let config = Config {
+             runtime_harnesses: Vec::new(),
++            state_root: None,
+             command: vec!["codex".into()],
+             rw_maps: vec![PathBuf::from("/tmp/shared")],
+             ro_maps: vec![],
+diff --git a/src/config_store.rs b/src/config_store.rs
+index eafc87f..1ead76c 100644
+--- a/src/config_store.rs
++++ b/src/config_store.rs
+@@ -1194,6 +1194,8 @@ pub(crate) fn save_project_grants(
+     // later invocation and would also defeat round-trip verification because
+     // the field is intentionally skipped by serde.
+     grants.runtime_harnesses.clear();
++    // `--state-root` is invocation-scoped for the same reason.
++    grants.state_root = None;
+     doc.directory_grants = approved_directory_grants.to_vec();
+     doc.grants = grants;
+     doc.approved_env_names = approved_env_names;
+@@ -1515,6 +1517,7 @@ pub(crate) fn config_field_names() -> Vec<&'static str> {
+ 
+ const CONFIG_FIELD_POLICY: &[ConfigFieldPolicy] = &[
+     excluded_policy!("runtime_harnesses", Authority),
++    excluded_policy!("state_root", Authority),
+     static_policy!("command", Authority, Command),
+     static_policy!("rw_maps", Authority, RwMaps),
+     static_policy!("ro_maps", Authority, RoMaps),
+@@ -1895,11 +1898,14 @@ fn dropped_capability_requests(
+                         None,
+                     ) => {}
+                     (StaticPolicyClass::Authority, None)
+-                        if *field == "runtime_harnesses" =>
++                        if matches!(
++                            *field,
++                            "runtime_harnesses" | "state_root"
++                        ) =>
+                     {
+-                        // Trusted wrapper identity is supplied by this
+-                        // invocation and is never read from or migrated out
+-                        // of repository policy.
++                        // Trusted wrapper identity and the state root are
++                        // supplied by this invocation and are never read from
++                        // or migrated out of repository policy.
+                     }
+                     _ => unreachable!(
+                         "CONFIG_FIELD_POLICY category/renderer mismatch"
+@@ -2321,6 +2327,7 @@ mod tests {
+ 
+     const EXPECTED_STATIC_POLICY: &[ExpectedStaticPolicy] = &[
+         expected_excluded!("runtime_harnesses", Authority),
++        expected_excluded!("state_root", Authority),
+         expected_authority!("command", Authority, Command, ["command claude"]),
+         expected_authority!(
+             "rw_maps",
+@@ -2433,6 +2440,9 @@ mod tests {
+             "runtime_harnesses" => {
+                 config.runtime_harnesses = vec!["claude".into()];
+             }
++            "state_root" => {
++                config.state_root = Some("/var/tmp/zeo-jail/x".into());
++            }
+             "command" => {
+                 config.command =
+                     vec!["claude".into(), "--token=top-secret".into()];
+diff --git a/src/main.rs b/src/main.rs
+index 91cbbb3..eb5555e 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -24,6 +24,7 @@ mod sandbox;
+ mod secret;
+ mod signals;
+ mod ssh_restricted;
++mod state_root;
+ mod statusbar;
+ 
+ #[cfg(test)]
+@@ -729,12 +730,48 @@ pub(crate) fn finalize_launch_config(
+     finalize_launch_config_with_ssh(config, project, dry_run, None)
+ }
+ 
++/// `--state-root`: refuse it where it cannot apply, validate and create the
++/// directory (not under `--dry-run`), and make its `claude/` the Claude config
++/// directory unless `--claude-dir` named one.
++fn apply_state_root(
++    config: &mut config::Config,
++    dry_run: bool,
++) -> Result<(), String> {
++    apply_state_root_on(config, dry_run, cfg!(target_os = "linux"))
++}
++
++/// `apply_state_root` with the platform as a parameter, so the refusal off
++/// Linux is testable here.
++fn apply_state_root_on(
++    config: &mut config::Config,
++    dry_run: bool,
++    linux: bool,
++) -> Result<(), String> {
++    let Some(root) = config.state_root.clone() else {
++        return Ok(());
++    };
++    if !linux {
++        return Err("--state-root is supported on Linux only".into());
++    }
++    if config.lockdown_enabled() {
++        return Err("--state-root cannot be combined with --lockdown: \
++                    lockdown keeps $HOME and /tmp in memory on purpose"
++            .into());
++    }
++    let layout = state_root::prepare(&root, !dry_run)?;
++    if config.claude_dir.is_none() {
++        config.claude_dir = Some(layout.claude);
++    }
++    Ok(())
++}
++
+ pub(crate) fn finalize_launch_config_with_ssh(
+     mut config: config::Config,
+     project: &std::path::Path,
+     dry_run: bool,
+     restricted_ssh: Option<ssh_restricted::Policy>,
+ ) -> Result<FinalizedLaunch, String> {
++    apply_state_root(&mut config, dry_run)?;
+     if config.lockdown_enabled() {
+         forge_auth::strip_runtime(&mut config);
+     }
+@@ -1851,6 +1888,7 @@ fn run(
+ 
+     // Handle --bootstrap: generate AI tool configs and exit
+     if cli.bootstrap {
++        apply_state_root(&mut config, false)?;
+         bootstrap::run(cli.verbose, config.claude_dir.as_deref())?;
+         return Ok(0);
+     }
+@@ -3678,3 +3716,43 @@ mod tests {
+         assert_eq!(error_exit_code("ordinary configuration error"), 1);
+     }
+ }
++
++#[cfg(test)]
++mod state_root_tests {
++    use super::*;
++
++    #[test]
++    fn state_root_is_refused_off_linux_and_under_lockdown() {
++        let mut config = config::Config {
++            state_root: Some("/var/tmp/zeo-jail/x".into()),
++            ..config::Config::default()
++        };
++        let err = apply_state_root_on(&mut config, true, false).unwrap_err();
++        assert!(err.contains("Linux only"), "{err}");
++        config.lockdown = Some(true);
++        let err = apply_state_root_on(&mut config, true, true).unwrap_err();
++        assert!(err.contains("--lockdown"), "{err}");
++    }
++
++    #[test]
++    fn state_root_names_its_claude_dir_unless_one_is_given() {
++        let root = std::env::temp_dir()
++            .join(format!("ai-jail-main-state-{}", std::process::id()));
++        let mut config = config::Config {
++            state_root: Some(root.clone()),
++            ..config::Config::default()
++        };
++        // Dry run: nothing is created, the layout still decides the dir.
++        apply_state_root_on(&mut config, true, true).unwrap();
++        assert_eq!(config.claude_dir, Some(root.join("claude")));
++        assert!(!root.exists(), "--dry-run writes nothing");
++
++        let mut given = config::Config {
++            state_root: Some(root.clone()),
++            claude_dir: Some("/elsewhere/claude".into()),
++            ..config::Config::default()
++        };
++        apply_state_root_on(&mut given, true, true).unwrap();
++        assert_eq!(given.claude_dir, Some("/elsewhere/claude".into()));
++    }
++}
+diff --git a/src/sandbox/bwrap.rs b/src/sandbox/bwrap.rs
+index 079a52c..aca7fea 100644
+--- a/src/sandbox/bwrap.rs
++++ b/src/sandbox/bwrap.rs
+@@ -2075,7 +2075,7 @@ fn discover_mounts_full(
+     } else {
+         (vec![], vec![])
+     };
+-    let mounts = MountSet {
++    let mut mounts = MountSet {
+         base: discover_base(
+             sources.hosts_mount,
+             sources.resolv_mount,
+@@ -2157,11 +2157,45 @@ fn discover_mounts_full(
+         deny: deny_mounts,
+         overlay_hide: overlay_hide_v,
+     };
++    // --state-root: the sandbox's $HOME and /tmp on disk instead of tmpfs.
++    // Every bind ai-jail layers over $HOME stays where it was; only the
++    // backing changes. main.rs validated and created the directories.
++    if let Some(root) = &config.state_root {
++        let layout = crate::state_root::StateRoot::layout(root);
++        bind_instead_of_tmpfs(
++            &mut mounts.home_dotfiles,
++            &super::home_dir(),
++            &layout.home,
++        );
++        bind_instead_of_tmpfs(&mut mounts.base, Path::new("/tmp"), &layout.tmp);
++        if verbose {
++            output::verbose(&format!("State root: {} rw", root.display()));
++        }
++    }
+     #[cfg(not(test))]
+     mounts.validate_trusted_store_exclusion()?;
+     Ok(mounts)
+ }
+ 
++/// Replace the tmpfs mounted at `dest` with a read-write bind of `src`
++/// (`--state-root`). Returns whether there was a tmpfs to replace.
++fn bind_instead_of_tmpfs(
++    mounts: &mut [Mount],
++    dest: &Path,
++    src: &Path,
++) -> bool {
++    for mount in mounts.iter_mut() {
++        if matches!(mount, Mount::Tmpfs { dest: d } if d.as_path() == dest) {
++            *mount = Mount::Bind {
++                src: src.to_path_buf(),
++                dest: dest.to_path_buf(),
++            };
++            return true;
++        }
++    }
++    false
++}
++
+ /// Split mounts into (outside, inside) the project directory. A mount
+ /// whose destination sits inside the project must be applied after the
+ /// project bind: bwrap gives the later mount precedence, so emitting it
+@@ -4014,6 +4048,53 @@ fn project_mount(project_dir: &Path, readonly: bool) -> Vec<Mount> {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    #[test]
++    fn state_root_binds_home_and_tmp_in_place_of_their_tmpfs() {
++        let home = PathBuf::from("/home/u");
++        let mut home_mounts = vec![
++            Mount::Tmpfs { dest: home.clone() },
++            Mount::RoBind {
++                src: home.join(".gitconfig"),
++                dest: home.join(".gitconfig"),
++            },
++        ];
++        let mut base = vec![
++            Mount::Tmpfs {
++                dest: "/run".into(),
++            },
++            Mount::Tmpfs {
++                dest: "/tmp".into(),
++            },
++        ];
++        let root = crate::state_root::StateRoot::layout(Path::new("/state"));
++        assert!(bind_instead_of_tmpfs(&mut home_mounts, &home, &root.home));
++        assert!(bind_instead_of_tmpfs(
++            &mut base,
++            Path::new("/tmp"),
++            &root.tmp
++        ));
++        assert_eq!(
++            home_mounts[0].to_args(),
++            vec!["--bind", "/state/home", "/home/u"],
++            "the home tmpfs becomes a bind of the state root's home"
++        );
++        assert_eq!(
++            home_mounts[1].to_args(),
++            vec!["--ro-bind", "/home/u/.gitconfig", "/home/u/.gitconfig"],
++            "dotfile binds stay layered on top"
++        );
++        assert_eq!(
++            base[0].to_args(),
++            vec!["--tmpfs", "/run"],
++            "/run stays a tmpfs"
++        );
++        assert_eq!(base[1].to_args(), vec!["--bind", "/state/tmp", "/tmp"]);
++        assert!(
++            !bind_instead_of_tmpfs(&mut base, Path::new("/nope"), &root.tmp),
++            "nothing to replace"
++        );
++    }
+     use crate::sandbox::test_support::linked_worktree_fixture;
+     use crate::test_utils::{ENV_LOCK, EnvVarGuard};
+ 
+diff --git a/src/state_root.rs b/src/state_root.rs
+new file mode 100644
+index 0000000..51fdaba
+--- /dev/null
++++ b/src/state_root.rs
+@@ -0,0 +1,230 @@
++//! `--state-root DIR`: the sandbox's own home, `/tmp` and Claude config on disk.
++//!
++//! Without it the sandbox's `$HOME` and `/tmp` are tmpfs mounts: RAM-backed,
++//! uncapped, and gone when the run ends. A caller that wants them bounded and
++//! kept between runs (Zeo's per-project jail, proposal §6.54) names one
++//! directory instead, and ai-jail binds three children of it:
++//!
++//! - `DIR/home`   as the sandbox's `$HOME` (the host dotfiles ai-jail exposes
++//!   are still mounted on top of it, exactly as on the tmpfs);
++//! - `DIR/tmp`    as the sandbox's `/tmp`;
++//! - `DIR/claude` as `CLAUDE_CONFIG_DIR`, unless `--claude-dir` names another.
++//!
++//! The directory holds credentials (the agent's login lands in `claude/`), so
++//! it is checked the way a private directory must be: an absolute path, never
++//! a symlink, owned by the caller, and writable by nobody else. Missing parts
++//! are created with mode 0700; an existing part that fails a check refuses the
++//! launch rather than being repaired.
++
++use std::path::{Path, PathBuf};
++
++/// The three directories a state root provides.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct StateRoot {
++    pub home: PathBuf,
++    pub tmp: PathBuf,
++    pub claude: PathBuf,
++}
++
++impl StateRoot {
++    /// The layout under `root`, without touching the filesystem.
++    pub fn layout(root: &Path) -> Self {
++        Self {
++            home: root.join("home"),
++            tmp: root.join("tmp"),
++            claude: root.join("claude"),
++        }
++    }
++}
++
++/// Validate `root` and make sure it and its three children exist and are
++/// private. `create` is false for `--dry-run`, which must not write to the
++/// host: missing directories are then reported as what a launch would create.
++#[cfg(unix)]
++pub fn prepare(root: &Path, create: bool) -> Result<StateRoot, String> {
++    if !root.is_absolute() {
++        return Err(format!(
++            "--state-root: {} is not an absolute path",
++            root.display()
++        ));
++    }
++    let layout = StateRoot::layout(root);
++    ensure_private_dir(root, create, true)?;
++    for dir in [&layout.home, &layout.tmp, &layout.claude] {
++        ensure_private_dir(dir, create, false)?;
++    }
++    Ok(layout)
++}
++
++#[cfg(not(unix))]
++pub fn prepare(_root: &Path, _create: bool) -> Result<StateRoot, String> {
++    Err("--state-root is supported on Linux only".into())
++}
++
++/// `path` must be a real directory owned by this user and writable by
++/// nobody else. With `create`, a missing `path` is made with mode 0700 --
++/// and, for the root, so are its missing parents (an existing parent is left
++/// as it is: `/var/tmp` is world-writable by design).
++#[cfg(unix)]
++fn ensure_private_dir(
++    path: &Path,
++    create: bool,
++    parents: bool,
++) -> Result<(), String> {
++    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
++
++    match path.symlink_metadata() {
++        Ok(meta) => {
++            if meta.file_type().is_symlink() {
++                return Err(format!(
++                    "--state-root: {} is a symlink; refusing to follow it",
++                    path.display()
++                ));
++            }
++            if !meta.is_dir() {
++                return Err(format!(
++                    "--state-root: {} exists and is not a directory",
++                    path.display()
++                ));
++            }
++            let uid = nix::unistd::geteuid().as_raw();
++            if meta.uid() != uid {
++                return Err(format!(
++                    "--state-root: {} is owned by uid {}, not by you (uid {uid})",
++                    path.display(),
++                    meta.uid()
++                ));
++            }
++            if meta.mode() & 0o022 != 0 {
++                return Err(format!(
++                    "--state-root: {} is writable by group or others (mode {:o}); \
++                     it holds the sandbox's credentials",
++                    path.display(),
++                    meta.mode() & 0o7777
++                ));
++            }
++            Ok(())
++        }
++        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
++            if !create {
++                return Ok(());
++            }
++            std::fs::DirBuilder::new()
++                .recursive(parents)
++                .mode(0o700)
++                .create(path)
++                .map_err(|e| {
++                    format!(
++                        "--state-root: cannot create {}: {e}",
++                        path.display()
++                    )
++                })?;
++            // Re-check what now exists: a racing symlink must not pass.
++            ensure_private_dir(path, false, false)
++        }
++        Err(e) => Err(format!(
++            "--state-root: cannot inspect {}: {e}",
++            path.display()
++        )),
++    }
++}
++
++#[cfg(all(test, unix))]
++mod tests {
++    use super::*;
++    use std::os::unix::fs::PermissionsExt;
++
++    fn scratch(name: &str) -> PathBuf {
++        let dir = std::env::temp_dir()
++            .join(format!("ai-jail-state-root-{}-{name}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&dir);
++        std::fs::create_dir_all(&dir).unwrap();
++        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
++            .unwrap();
++        dir
++    }
++
++    fn mode(path: &Path) -> u32 {
++        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
++    }
++
++    #[test]
++    fn a_missing_root_and_its_parents_are_created_private() {
++        let base = scratch("create");
++        let root = base.join("zeo-jail/abc123");
++        let layout = prepare(&root, true).unwrap();
++        assert_eq!(layout, StateRoot::layout(&root));
++        for dir in [&root, &layout.home, &layout.tmp, &layout.claude] {
++            assert!(dir.is_dir(), "{}", dir.display());
++            assert_eq!(mode(dir), 0o700, "{}", dir.display());
++        }
++        assert_eq!(mode(&base.join("zeo-jail")), 0o700);
++        let _ = std::fs::remove_dir_all(&base);
++    }
++
++    #[test]
++    fn dry_run_creates_nothing() {
++        let base = scratch("dry");
++        let root = base.join("state");
++        prepare(&root, false).unwrap();
++        assert!(!root.exists(), "--dry-run must not write to the host");
++        let _ = std::fs::remove_dir_all(&base);
++    }
++
++    #[test]
++    fn a_relative_root_is_refused() {
++        let err = prepare(Path::new("state"), true).unwrap_err();
++        assert!(err.contains("not an absolute path"), "{err}");
++    }
++
++    #[test]
++    fn a_symlinked_root_is_refused() {
++        let base = scratch("symlink");
++        let target = base.join("elsewhere");
++        std::fs::create_dir(&target).unwrap();
++        let root = base.join("state");
++        std::os::unix::fs::symlink(&target, &root).unwrap();
++        let err = prepare(&root, true).unwrap_err();
++        assert!(err.contains("symlink"), "{err}");
++        let _ = std::fs::remove_dir_all(&base);
++    }
++
++    #[test]
++    fn a_symlinked_child_is_refused() {
++        let base = scratch("child-symlink");
++        let root = base.join("state");
++        std::fs::create_dir(&root).unwrap();
++        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
++            .unwrap();
++        std::os::unix::fs::symlink("/etc", root.join("home")).unwrap();
++        let err = prepare(&root, true).unwrap_err();
++        assert!(err.contains("symlink"), "{err}");
++        let _ = std::fs::remove_dir_all(&base);
++    }
++
++    #[test]
++    fn a_group_writable_root_is_refused_not_repaired() {
++        let base = scratch("mode");
++        let root = base.join("state");
++        std::fs::create_dir(&root).unwrap();
++        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o770))
++            .unwrap();
++        let err = prepare(&root, true).unwrap_err();
++        assert!(err.contains("writable by group or others"), "{err}");
++        assert_eq!(mode(&root), 0o770, "left as it was");
++        let _ = std::fs::remove_dir_all(&base);
++    }
++
++    #[test]
++    fn a_file_in_place_of_a_child_is_refused() {
++        let base = scratch("file");
++        let root = base.join("state");
++        std::fs::create_dir(&root).unwrap();
++        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
++            .unwrap();
++        std::fs::write(root.join("tmp"), b"").unwrap();
++        let err = prepare(&root, true).unwrap_err();
++        assert!(err.contains("not a directory"), "{err}");
++        let _ = std::fs::remove_dir_all(&base);
++    }
++}

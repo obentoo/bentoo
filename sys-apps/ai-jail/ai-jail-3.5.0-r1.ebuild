@@ -189,6 +189,18 @@ DOCS=( README.md docs )
 # applier renames ebuilds, never files/.
 PATCHES=( "${FILESDIR}"/${PN}-chromium-launcher-caps.patch )
 
+# Zeo's jail (Zeo next proposal §6.54) needs two features the fork carries and
+# upstream has not released: whole-sandbox resource limits (--memory,
+# --max-tasks, --cpu-quota, --cpus, --rlimit) and --state-root (the sandbox's
+# $HOME, /tmp and Claude config on disk). Both are opt-in flags: a launch that
+# names neither behaves as upstream 3.5.0. They go upstream as separate PRs
+# after local testing; drop these when a release carries them. Named without a
+# version for the same reason as the launcher patch.
+PATCHES+=(
+	"${FILESDIR}"/${PN}-resource-limits.patch
+	"${FILESDIR}"/${PN}-state-root.patch
+)
+
 src_prepare() {
 	default
 
