@@ -1,0 +1,673 @@
+From 7850e1bacf85a69b0d239c4e64519ad4f6ed0d3d Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sun, 22 Nov 2026 14:15:16 -0300
+Subject: [PATCH] agent_ui: card icons say the card's state, and the tasks pill
+ says it opens
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo proposal §6.67, asks 90 and 93 (2026-11-22).
+
+Conversation cards. 0125 gave tool, terminal and edit cards three states
+-- collapsed (one line), minimized (the whole command or title) and
+maximized (with the content) -- but kept upstream's single Disclosure:
+ChevronDown while collapsed and while minimized, ChevronUp maximized, so a
+card's state could not be read from its icon, and the same ChevronDown is
+the tasks card's "Move to Bottom". The header now draws the state's own
+buttons, the pinned card's pair (ExpandVertical, and FoldVertical, its
+inside-out) with a chevron for the content between them:
+
+  collapsed   ExpandVertical -> minimized
+  minimized   ChevronDown -> maximized, then FoldVertical -> collapsed
+  maximized   ChevronUp -> minimized, then FoldVertical -> collapsed
+
+The fold sits at the end, where the expand button sat while collapsed. A
+card with nothing to maximize offers only the fold. The rule is
+tool_card_display::header_controls, a pure function, and the steps are no
+longer a ring: maximized goes back to minimized, and collapsing is the
+fold's. It replaces next_display and ThreadView::step_tool_card, which
+only the chevron used; ThreadView::set_tool_card moves a card to the
+button's target, and render_tool_card_controls draws the buttons for both
+the terminal card (TerminalToolHeader::controls takes the place of its
+Disclosure, which stays only for the component preview, now without a
+click handler: on_toggle_expand had no caller left) and the generic and
+edit cards. They show on hover of the card's header, as the chevron did;
+the buttons hide, not their boxes, because a hidden element paints no
+children. Two-state cards (subagent, thinking) keep their chevrons. An
+Execute card without terminal content still has no toggle; out of scope.
+
+Tasks card. Minimized, its pill (0037, 0080, 0092) showed only an icon and
+a count, while its tooltip said "Expand Tasks Card". It now ends in a
+Maximize icon, the inverse of the Minimize that made it; the whole pill
+stays the click target.
+
+Tests:
+- tool_card_display::tests: each_state_shows_its_own_buttons,
+  a_card_without_content_has_no_chevron (new), and the step test, through
+  the primary button's target, is now
+  a_click_steps_up_to_maximized_and_back_to_minimized. Red seen against
+  the old single chevron.
+- conversation_view::tests::tool_card_display_tests: the three-state test
+  steps maximized back to minimized and folds with set_tool_card;
+  the_header_draws_the_buttons_of_its_state (new, by debug bounds). Red
+  seen.
+- tasks_card::pill_expand (new): the icon trails the count inside the
+  pill, and a click on it opens the card. Red seen: "the pill shows an
+  expand icon".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_ui/src/conversation_view/tests/tool_card_display_tests.rs b/crates/agent_ui/src/conversation_view/tests/tool_card_display_tests.rs
+index 573529c..179817c 100644
+--- a/crates/agent_ui/src/conversation_view/tests/tool_card_display_tests.rs
++++ b/crates/agent_ui/src/conversation_view/tests/tool_card_display_tests.rs
+@@ -16,9 +16,24 @@ async fn read_tool_call(
+     Entity<ThreadView>,
+     acp_v2::ToolCallId,
+     &mut VisualTestContext,
++) {
++    read_tool_call_in(false, cx).await
++}
++
++/// [`read_tool_call`], with the view `drawn` in the workspace when its elements are measured.
++async fn read_tool_call_in(
++    drawn: bool,
++    cx: &mut TestAppContext,
++) -> (
++    Entity<ThreadView>,
++    acp_v2::ToolCallId,
++    &mut VisualTestContext,
+ ) {
+     let (conversation_view, cx) =
+         setup_conversation_view(StubAgentServer::default_response(), cx).await;
++    if drawn {
++        add_to_workspace_with_size(conversation_view.clone(), true, cx);
++    }
+     let thread_view = active_thread(&conversation_view, cx);
+     let thread = thread_view.read_with(cx, |view, _| view.thread.clone());
+     let read: acp_v2::ToolCallUpdate = serde_json::from_value(json!({
+@@ -47,12 +62,17 @@ fn display_of(
+ 
+ fn step(view: &Entity<ThreadView>, id: &acp_v2::ToolCallId, cx: &mut VisualTestContext) {
+     view.update_in(cx, |view, window, cx| {
+-        view.step_tool_card(id, ToolCardKind::Tool, true, 0, window, cx)
++        let display = view.tool_card_display(id, ToolCardKind::Tool, cx);
++        let next = crate::tool_card_display::header_controls(display, true)
++            .0
++            .target;
++        view.set_tool_card(id, next, 0, window, cx)
+     });
+     cx.run_until_parked();
+ }
+ 
+-/// Upstream's look: a tool's title on one line, and a click steps through the three states.
++/// Upstream's look: a tool's title on one line; the chevron opens it up to maximized and back
++/// to minimized (§6.67, ask 90), and the fold button collapses it to one line.
+ #[gpui::test]
+ async fn a_tool_card_starts_collapsed_and_steps_through_three_states(cx: &mut TestAppContext) {
+     init_test(cx);
+@@ -70,9 +90,45 @@ async fn a_tool_card_starts_collapsed_and_steps_through_three_states(cx: &mut Te
+         );
+     });
+     step(&view, &id, cx);
++    assert_eq!(display_of(&view, &id, ToolCardKind::Tool, cx), Minimized);
++    view.update_in(cx, |view, window, cx| {
++        view.set_tool_card(&id, Collapsed, 0, window, cx)
++    });
++    cx.run_until_parked();
+     assert_eq!(display_of(&view, &id, ToolCardKind::Tool, cx), Collapsed);
+ }
+ 
++/// §6.67 (ask 90): the header draws the state's buttons -- one while collapsed, the chevron and
++/// the fold while minimized.
++#[gpui::test]
++async fn the_header_draws_the_buttons_of_its_state(cx: &mut TestAppContext) {
++    init_test(cx);
++    let (view, id, cx) = read_tool_call_in(true, cx).await;
++    let primary = "tool-card-control-primary-read-long";
++    let collapse = "tool-card-control-collapse-read-long";
++    let redraw = |cx: &mut VisualTestContext| {
++        cx.update(|window, _| window.refresh());
++        cx.run_until_parked();
++    };
++    redraw(cx);
++    assert!(
++        cx.debug_bounds(primary).is_some(),
++        "a collapsed card has its expand button"
++    );
++    assert!(cx.debug_bounds(collapse).is_none(), "and nothing to fold");
++
++    step(&view, &id, cx);
++    redraw(cx);
++    let chevron = cx
++        .debug_bounds(primary)
++        .expect("a minimized card has its chevron");
++    let fold = cx.debug_bounds(collapse).expect("and its fold button");
++    assert!(
++        fold.left() >= chevron.right(),
++        "the fold sits at the end, where the expand was"
++    );
++}
++
+ /// The kind's setting is the default of a card nobody has stepped.
+ #[gpui::test]
+ async fn the_tool_kinds_setting_is_its_default(cx: &mut TestAppContext) {
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 5aed90a..3ac77f6 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -11135,6 +11135,15 @@ impl ThreadView {
+         let is_standalone = layout == ToolCallLayout::Standalone;
+         let has_content_below = (is_expanded && terminal_view.is_some()) || needs_confirmation;
+ 
++        // Zeo §6.67 (ask 90): the state's own buttons instead of one chevron.
++        let controls = self.render_tool_card_controls(
++            &tool_call.id,
++            card_display,
++            true,
++            entry_ix,
++            header_group.clone(),
++            cx,
++        );
+         let header = TerminalToolHeader::new(
+             terminal.entity_id().to_string(),
+             header_group,
+@@ -11144,19 +11153,7 @@ impl ThreadView {
+         .rounded_corners(is_standalone, is_standalone && !has_content_below)
+         .elapsed(time_elapsed)
+         .running(!command_finished && !needs_confirmation)
+-        .on_toggle_expand(cx.listener({
+-            let id = tool_call.id.clone();
+-            move |this, _event, window, cx| {
+-                this.step_tool_card(
+-                    &id,
+-                    crate::tool_card_display::ToolCardKind::Terminal,
+-                    true,
+-                    entry_ix,
+-                    window,
+-                    cx,
+-                );
+-            }
+-        }))
++        .controls(controls)
+         .when(terminal_data.is_process_backed(), |header| {
+             header.on_stop({
+                 let terminal = terminal.clone();
+@@ -11763,32 +11760,17 @@ impl ThreadView {
+                                             h_flex()
+                                                 .pr_0p5()
+                                                 .gap_1()
++                                                // Zeo §6.67 (ask 90): the state's own
++                                                // buttons instead of one chevron.
+                                                 .when(is_collapsible, |this| {
+-                                                    this.child(
+-                                                        Disclosure::new(
+-                                                            ("expand-output", entry_ix),
+-                                                            is_open,
+-                                                        )
+-                                                        .opened_icon(IconName::ChevronUp)
+-                                                        .closed_icon(IconName::ChevronDown)
+-                                                        .visible_on_hover(&card_header_id)
+-                                                        .on_click(cx.listener({
+-                                                            let id = tool_call.id.clone();
+-                                                            move |this: &mut Self,
+-                                                                  _,
+-                                                                  window,
+-                                                                  cx: &mut Context<Self>| {
+-                                                                this.step_tool_card(
+-                                                                    &id,
+-                                                                    card_kind,
+-                                                                    has_content,
+-                                                                    entry_ix,
+-                                                                    window,
+-                                                                    cx,
+-                                                                );
+-                                                            }
+-                                                        })),
+-                                                    )
++                                                    this.child(self.render_tool_card_controls(
++                                                        &tool_call.id,
++                                                        card_display,
++                                                        has_content,
++                                                        entry_ix,
++                                                        card_header_id.clone(),
++                                                        cx,
++                                                    ))
+                                                 })
+                                                 .when(failed_or_canceled, |this| {
+                                                     if is_cancelled_edit && !has_diff_changes {
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/tool_card_state.rs b/crates/agent_ui/src/conversation_view/thread_view/tool_card_state.rs
+index 8334698..c631d12 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/tool_card_state.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/tool_card_state.rs
+@@ -6,10 +6,10 @@ use agent_client_protocol::v2::schema as acp_v2;
+ use agent_settings::AgentSettings;
+ use gpui::{App, Context, SharedString, Window};
+ use settings::{Settings as _, ToolCardDisplay};
+-use ui::{CopyButton, Label, LabelCommon, LabelSize, prelude::*};
++use ui::{CopyButton, Label, LabelCommon, LabelSize, Tooltip, prelude::*};
+ 
+ use super::ThreadView;
+-use crate::tool_card_display::{ToolCardKind, default_display, next_display};
++use crate::tool_card_display::{HeaderControl, ToolCardKind, default_display, header_controls};
+ 
+ /// The one line a collapsed terminal card shows: the command's first line, with `…` after it
+ /// when more lines follow. The label cuts what does not fit the card with `…` too, so the stored
+@@ -49,26 +49,65 @@ impl ThreadView {
+             .unwrap_or_else(|| default_display(kind, AgentSettings::get_global(cx)))
+     }
+ 
+-    /// A click on the card's header or chevron: the next state, with the card's views made when
+-    /// it opens to show its content.
+-    pub(crate) fn step_tool_card(
++    /// Moves `tool_call_id`'s card to `target`, with the card's views made when it opens to show
++    /// its content.
++    pub(crate) fn set_tool_card(
+         &mut self,
+         tool_call_id: &acp_v2::ToolCallId,
+-        kind: ToolCardKind,
+-        has_content: bool,
++        target: ToolCardDisplay,
+         entry_ix: usize,
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
+-        let next = next_display(self.tool_card_display(tool_call_id, kind, cx), has_content);
+         self.entry_view_state.update(cx, |state, _cx| {
+-            state.set_tool_card_display(tool_call_id.clone(), next);
++            state.set_tool_card_display(tool_call_id.clone(), target);
+         });
+         self.materialize_tool_call_views(entry_ix, window, cx);
+         self.refresh_thread_search(window, cx);
+         cx.notify();
+     }
+ 
++    /// The header's buttons for a card in `display` (§6.67, ask 90): the primary one, then the
++    /// fold to one line where there is something to fold, at the end where the expand button sat
++    /// while collapsed. They show on hover of `hover_group`, as the single chevron did.
++    pub(crate) fn render_tool_card_controls(
++        &self,
++        tool_call_id: &acp_v2::ToolCallId,
++        display: ToolCardDisplay,
++        has_content: bool,
++        entry_ix: usize,
++        hover_group: SharedString,
++        cx: &Context<Self>,
++    ) -> Div {
++        let (primary, collapse) = header_controls(display, has_content);
++        // The buttons hide until hover, not their boxes: a hidden element paints no children,
++        // and the boxes keep their place in the header either way.
++        let button = |slot: &'static str, control: HeaderControl| {
++            let id = tool_call_id.clone();
++            let name = format!("tool-card-control-{slot}-{}", tool_call_id.0);
++            div()
++                .debug_selector({
++                    let name = name.clone();
++                    move || name
++                })
++                .child(
++                    IconButton::new(SharedString::from(name), control.icon)
++                        .icon_size(IconSize::Small)
++                        .icon_color(Color::Muted)
++                        .tooltip(Tooltip::text(control.tooltip))
++                        .visible_on_hover(hover_group.clone())
++                        .on_click(cx.listener(move |this, _, window, cx| {
++                            cx.stop_propagation();
++                            this.set_tool_card(&id, control.target, entry_ix, window, cx);
++                        })),
++                )
++        };
++        h_flex()
++            .gap_0p5()
++            .child(button("primary", primary))
++            .children(collapse.map(|control| button("collapse", control)))
++    }
++
+     /// A collapsed terminal card's command: one line, cut with `…` where the card ends, beside the
+     /// same copy button the whole command has.
+     pub(crate) fn render_collapsed_command(
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index 6d07f57..ce9c567 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -79,6 +79,10 @@ mod panel_close;
+ #[path = "tasks_card/render_tests.rs"]
+ mod render;
+ 
++#[cfg(test)]
++#[path = "tasks_card/pill_expand_tests.rs"]
++mod pill_expand;
++
+ #[cfg(test)]
+ #[path = "tasks_card/placement_tests.rs"]
+ mod placement;
+@@ -2243,7 +2247,18 @@ impl TasksCard {
+                         h_flex()
+                             .gap_1()
+                             .child(icon)
+-                            .child(Label::new(count.to_string()).size(LabelSize::Small)),
++                            .child(Label::new(count.to_string()).size(LabelSize::Small))
++                            // §6.67 (ask 93): the inverse of the Minimize that made the pill, so
++                            // the pill says a click opens it. The whole pill stays the target.
++                            .child(
++                                div()
++                                    .debug_selector(|| "tasks-card-pill-expand".into())
++                                    .child(
++                                        Icon::new(IconName::Maximize)
++                                            .size(IconSize::XSmall)
++                                            .color(Color::Muted),
++                                    ),
++                            ),
+                     )
+                     .aria_label(row_aria_label(format!("Expand the tasks card: {label}")))
+                     .tooltip(card_tooltip(
+diff --git a/crates/agent_ui/src/tasks_card/pill_expand_tests.rs b/crates/agent_ui/src/tasks_card/pill_expand_tests.rs
+new file mode 100644
+index 0000000..d721cd3
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/pill_expand_tests.rs
+@@ -0,0 +1,54 @@
++// Zeo proposal §6.67 (ask 93): the minimized tasks card ends in a Maximize icon -- the inverse of
++// the Minimize that made it -- after its count. The pill was icon and count only, so nothing on
++// screen said that a click opens it. Filter: `tasks_card::pill_expand`.
++
++use gpui::{Modifiers, TestAppContext, VisualTestContext};
++
++use super::test_helpers::*;
++
++fn draw(cx: &mut VisualTestContext) {
++    cx.update(|window, _| window.refresh());
++    cx.run_until_parked();
++}
++
++#[gpui::test]
++async fn the_pill_ends_in_an_expand_icon_and_still_opens_the_card(cx: &mut TestAppContext) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    let connection = TaskActionsConnection::new();
++    let a = open_titled_thread(&panel, &connection, "A", &mut cx);
++    send_tasks(&a, vec![wire_task("t1", "running", true, 1_000)], &mut cx);
++    draw(&mut cx);
++    assert!(
++        cx.debug_bounds("tasks-card-pill-expand").is_none(),
++        "the expanded card shows no pill icon"
++    );
++
++    let card = card(&panel, &cx);
++    card.update(&mut cx, |card, cx| card.toggle_minimized(cx));
++    draw(&mut cx);
++    let pill = cx
++        .debug_bounds("tasks-card-pill")
++        .expect("the pill is painted");
++    let expand = cx
++        .debug_bounds("tasks-card-pill-expand")
++        .expect("the pill shows an expand icon");
++    let spinner = cx
++        .debug_bounds("tasks-card-pill-spinner")
++        .expect("a running task spins in the pill");
++    assert!(
++        expand.left() > spinner.right(),
++        "the expand icon {expand:?} trails the spinner and the count {spinner:?}"
++    );
++    assert!(
++        pill.left() <= expand.left() && expand.right() <= pill.right(),
++        "the icon {expand:?} sits inside the pill {pill:?}"
++    );
++
++    // The whole pill is still the click target: a click on the icon opens the card.
++    cx.simulate_click(expand.center(), Modifiers::none());
++    draw(&mut cx);
++    assert!(
++        cx.debug_bounds("tasks-card").is_some(),
++        "clicking the expand icon opens the card"
++    );
++}
+diff --git a/crates/agent_ui/src/tool_card_display.rs b/crates/agent_ui/src/tool_card_display.rs
+index b8610d2..4a8d9a2 100644
+--- a/crates/agent_ui/src/tool_card_display.rs
++++ b/crates/agent_ui/src/tool_card_display.rs
+@@ -1,7 +1,7 @@
+ //! Tool, terminal and edit cards in three states (Zeo next proposal §6.44, ask 68): collapsed (one
+ //! line of the command or title, cut with `…`), minimized (the whole command or title) and
+-//! maximized (the command or title and the card's content). A click on the card's header or its
+-//! chevron steps through them.
++//! maximized (the command or title and the card's content). The header's buttons move between
++//! them (§6.67, ask 90).
+ //!
+ //! Each kind has a default of its own, chosen in the agent menu (which replaces §6.17's
+ //! "Terminals Minimized by Default" toggle). Until one is chosen, each kind keeps the look it had:
+@@ -10,6 +10,7 @@
+ 
+ use agent_settings::AgentSettings;
+ use settings::{SettingsContent, ToolCardDisplay};
++use ui::IconName;
+ 
+ /// The three kinds of card, each with its own default.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -80,13 +81,56 @@ pub(crate) fn default_display(kind: ToolCardKind, settings: &AgentSettings) -> T
+     })
+ }
+ 
+-/// The state a click on the header steps to: collapsed, minimized, maximized, and round again. A
+-/// card with no content has nothing to maximize, so it steps between the first two.
+-pub(crate) fn next_display(current: ToolCardDisplay, has_content: bool) -> ToolCardDisplay {
++/// One button in a card's header: its icon, its tooltip and the state it moves the card to.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct HeaderControl {
++    pub icon: IconName,
++    pub tooltip: &'static str,
++    pub target: ToolCardDisplay,
++}
++
++/// The header's buttons for a card in `current` (§6.67, ask 90): the primary one, and the
++/// fold-to-one-line one where there is something to fold. The primary one opens a card one
++/// step, and from maximized goes back to minimized; collapsing is the fold's, so the steps are
++/// no longer a ring. A card with no content has nothing to maximize: minimized, it only folds. The icons are the pinned message's
++/// pair, `ExpandVertical` and its inside-out `FoldVertical`, with a chevron between them for the
++/// content: before, collapsed and minimized showed the same `ChevronDown`, which is also the tasks
++/// card's "Move to Bottom", so a card's state could not be read from its icon.
++pub(crate) fn header_controls(
++    current: ToolCardDisplay,
++    has_content: bool,
++) -> (HeaderControl, Option<HeaderControl>) {
++    let fold = HeaderControl {
++        icon: IconName::FoldVertical,
++        tooltip: "Collapse to One Line",
++        target: ToolCardDisplay::Collapsed,
++    };
+     match current {
+-        ToolCardDisplay::Collapsed => ToolCardDisplay::Minimized,
+-        ToolCardDisplay::Minimized if has_content => ToolCardDisplay::Maximized,
+-        ToolCardDisplay::Minimized | ToolCardDisplay::Maximized => ToolCardDisplay::Collapsed,
++        ToolCardDisplay::Collapsed => (
++            HeaderControl {
++                icon: IconName::ExpandVertical,
++                tooltip: "Show in Full",
++                target: ToolCardDisplay::Minimized,
++            },
++            None,
++        ),
++        ToolCardDisplay::Minimized if has_content => (
++            HeaderControl {
++                icon: IconName::ChevronDown,
++                tooltip: "Show Output",
++                target: ToolCardDisplay::Maximized,
++            },
++            Some(fold),
++        ),
++        ToolCardDisplay::Minimized => (fold, None),
++        ToolCardDisplay::Maximized => (
++            HeaderControl {
++                icon: IconName::ChevronUp,
++                tooltip: "Hide Output",
++                target: ToolCardDisplay::Minimized,
++            },
++            Some(fold),
++        ),
+     }
+ }
+ 
+diff --git a/crates/agent_ui/src/tool_card_display_tests.rs b/crates/agent_ui/src/tool_card_display_tests.rs
+index 4bde368..9f387c0 100644
+--- a/crates/agent_ui/src/tool_card_display_tests.rs
++++ b/crates/agent_ui/src/tool_card_display_tests.rs
+@@ -29,6 +29,11 @@ fn with_settings(
+ 
+ use ToolCardDisplay::{Collapsed, Maximized, Minimized};
+ 
++/// Where the primary button moves a card.
++fn next_display(current: ToolCardDisplay, has_content: bool) -> ToolCardDisplay {
++    header_controls(current, has_content).0.target
++}
++
+ /// Nothing chosen: every kind keeps the look it had — upstream expands terminals and edits, and a
+ /// tool's title is one line.
+ #[gpui::test]
+@@ -61,11 +66,13 @@ fn a_kinds_own_choice_wins(cx: &mut TestAppContext) {
+     assert_eq!(defaults, [Collapsed, Minimized, Maximized]);
+ }
+ 
++/// §6.67 (ask 90): the primary button opens a card one step, and from maximized it goes back to
++/// minimized; collapsing is the second button's, so it is no longer the end of a ring.
+ #[test]
+-fn a_click_steps_through_the_three_states_and_round() {
++fn a_click_steps_up_to_maximized_and_back_to_minimized() {
+     assert_eq!(next_display(Collapsed, true), Minimized);
+     assert_eq!(next_display(Minimized, true), Maximized);
+-    assert_eq!(next_display(Maximized, true), Collapsed);
++    assert_eq!(next_display(Maximized, true), Minimized);
+ }
+ 
+ #[test]
+@@ -88,3 +95,58 @@ fn the_menu_writes_the_kind_and_keeps_expand_in_step() {
+     assert_eq!(agent.expand_edit_card, Some(true));
+     assert_eq!(agent.tool_card_default, Some(Minimized));
+ }
++
++/// §6.67 (ask 90): each state names its buttons. Collapsed and minimized showed the same
++/// `ChevronDown` before, so a card's state could not be read from its icon.
++#[test]
++fn each_state_shows_its_own_buttons() {
++    use ui::IconName;
++    let (primary, collapse) = header_controls(Collapsed, true);
++    assert_eq!(
++        (primary.icon, primary.target),
++        (IconName::ExpandVertical, Minimized)
++    );
++    assert_eq!(collapse, None, "a collapsed card has nothing to fold");
++
++    let (primary, collapse) = header_controls(Minimized, true);
++    assert_eq!(
++        (primary.icon, primary.target),
++        (IconName::ChevronDown, Maximized)
++    );
++    let collapse = collapse.expect("a minimized card folds back to one line");
++    assert_eq!(
++        (collapse.icon, collapse.target),
++        (IconName::FoldVertical, Collapsed)
++    );
++
++    let (primary, collapse) = header_controls(Maximized, true);
++    assert_eq!(
++        (primary.icon, primary.target),
++        (IconName::ChevronUp, Minimized)
++    );
++    let collapse = collapse.expect("a maximized card folds back to one line");
++    assert_eq!(
++        (collapse.icon, collapse.target),
++        (IconName::FoldVertical, Collapsed)
++    );
++}
++
++/// Hostile: a card with nothing to maximize offers no chevron, only the fold.
++#[test]
++fn a_card_without_content_has_no_chevron() {
++    use ui::IconName;
++    let (primary, collapse) = header_controls(Minimized, false);
++    assert_eq!(
++        (primary.icon, primary.target),
++        (IconName::FoldVertical, Collapsed)
++    );
++    assert_eq!(collapse, None);
++    for display in DISPLAYS {
++        let (primary, collapse) = header_controls(display, false);
++        assert_ne!(
++            primary.target, Maximized,
++            "{display:?} offers to maximize nothing"
++        );
++        assert!(collapse.is_none_or(|control| control.target != Maximized));
++    }
++}
+diff --git a/crates/agent_ui/src/ui/terminal_tool_header.rs b/crates/agent_ui/src/ui/terminal_tool_header.rs
+index c44ba01..c018161 100644
+--- a/crates/agent_ui/src/ui/terminal_tool_header.rs
++++ b/crates/agent_ui/src/ui/terminal_tool_header.rs
+@@ -26,7 +26,8 @@ pub struct TerminalToolHeader {
+     failed: bool,
+     exit_code: Option<i64>,
+     sandbox_warning: Option<TerminalSandboxWarning>,
+-    on_toggle_expand: Option<ClickHandler>,
++    /// Zeo §6.67 (ask 90): the card's own state buttons, drawn where the single chevron was.
++    controls: Option<AnyElement>,
+     on_stop: Option<ClickHandler>,
+     stop_description: SharedString,
+     command_slot: Option<AnyElement>,
+@@ -54,7 +55,7 @@ impl TerminalToolHeader {
+             failed: false,
+             exit_code: None,
+             sandbox_warning: None,
+-            on_toggle_expand: None,
++            controls: None,
+             on_stop: None,
+             stop_description: "Also possible by placing your cursor inside the terminal and using regular terminal bindings.".into(),
+             command_slot: None,
+@@ -96,11 +97,10 @@ impl TerminalToolHeader {
+         self
+     }
+ 
+-    pub fn on_toggle_expand(
+-        mut self,
+-        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+-    ) -> Self {
+-        self.on_toggle_expand = Some(Box::new(handler));
++    /// Zeo §6.67 (ask 90): buttons that take the chevron's place, one per state the card can move
++    /// to, so collapsed, minimized and maximized each read from their icons.
++    pub fn controls(mut self, controls: impl IntoElement) -> Self {
++        self.controls = Some(controls.into_any_element());
+         self
+     }
+ 
+@@ -148,7 +148,7 @@ impl RenderOnce for TerminalToolHeader {
+             failed,
+             exit_code,
+             sandbox_warning,
+-            on_toggle_expand,
++            controls,
+             on_stop,
+             stop_description,
+             command_slot,
+@@ -205,13 +205,16 @@ impl RenderOnce for TerminalToolHeader {
+                         ),
+                 ),
+             })
+-            .child(
+-                Disclosure::new(child_id("disclosure"), is_expanded)
+-                    .opened_icon(IconName::ChevronUp)
+-                    .closed_icon(IconName::ChevronDown)
+-                    .visible_on_hover(&hover_group)
+-                    .when_some(on_toggle_expand, |this, handler| this.on_click(handler)),
+-            )
++            .map(|row| match controls {
++                Some(controls) => row.child(controls),
++                None => row.child(
++                    // Without the card's buttons (the component preview), the state's chevron.
++                    Disclosure::new(child_id("disclosure"), is_expanded)
++                        .opened_icon(IconName::ChevronUp)
++                        .closed_icon(IconName::ChevronDown)
++                        .visible_on_hover(&hover_group),
++                ),
++            })
+             .when(show_elapsed, |header| {
+                 let elapsed = elapsed.unwrap_or_default();
+                 header.child(

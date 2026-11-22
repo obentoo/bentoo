@@ -25,6 +25,23 @@ thread-pinned-user-message-avatar, which is what the tests measure.
 Tests (thread_view::tests::pinned_avatar_tests, new): the avatar's
 centre is within 1px of the card's on a one-line message, and on a
 two-line message, where the toggle is shown.
+
+Amended for Zeo proposal §6.66 (ask 89, 2026-11-22): the avatar still
+moved. Minimized the row centred it beside the 22 px toggle, expanded it
+kept to the top, so the 14 px icon jumped up about 4 px on every expand
+(measured: 41 px -> 37 px in the test below). The row now keeps to the
+top in both states, and the avatar sits in a box as tall as the toggle,
+so it is centred on the minimized line and stays beside the first line
+when the card opens. The body gets the same minimum height, centred only
+while minimized, so the line does not shift by its own pixels either.
+The height is one constant, PINNED_ROW_HEIGHT, which is also the
+toggle's button size, so the three cannot drift apart.
+
+Test (thread_view::tests::pinned_avatar_tests, added):
+the_avatar_stays_put_when_the_card_expands -- the avatar's top moves by
+at most 0.5 px across an expand. Red seen: "the avatar moved 4px".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
@@ -41,28 +58,31 @@ index b005b52..ec96668 100644
  
      mod account_refresh_line_tests;
 diff --git a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
-index 6ec0796..235fc2b 100644
+index 6ec0796..66acc01 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
-@@ -170,7 +170,16 @@ impl ThreadView {
+@@ -23,6 +23,10 @@ use super::content_column::content_column;
+ /// The most an expanded pinned message shows before it scrolls.
+ const PINNED_EXPANDED_MAX_HEIGHT: f32 = 160.;
+ 
++/// The minimized row's height: the toggle's button size, which the avatar's box and the body's
++/// minimum height follow, so the three cannot drift apart.
++const PINNED_ROW_HEIGHT: ButtonSize = ButtonSize::Default;
++
+ /// The user message to pin for a viewport whose top sits at `scroll_top`: the last one above
+ /// the entry at the top, while that entry is not a user message itself. `None` when the message
+ /// is on screen, or before the first one.
+@@ -170,6 +174,9 @@ impl ThreadView {
              .gap_1p5()
              .px_2()
              .py_1()
--            .items_start()
-+            // Minimized, the avatar, the line and the toggle share one row and centre on
-+            // it; the avatar sat at the top of the taller toggle button before. Expanded,
-+            // they keep to the top, where the message starts.
-+            .map(|header| {
-+                if expanded {
-+                    header.items_start()
-+                } else {
-+                    header.items_center()
-+                }
-+            })
++            // The row keeps to the top in both states, and the avatar sits in a box as tall as
++            // the toggle: minimized it is centred on the line, expanded it stays beside the
++            // first line instead of jumping up (§6.66, ask 89).
+             .items_start()
              .rounded_md()
              .border_1()
-             .border_color(cx.theme().colors().border)
-@@ -186,9 +195,13 @@ impl ThreadView {
+@@ -186,9 +193,19 @@ impl ThreadView {
                  cx.notify();
              }))
              .child(
@@ -70,21 +90,46 @@ index 6ec0796..235fc2b 100644
 -                    .size(IconSize::Small)
 -                    .color(Color::Muted),
 +                div()
-+                    .debug_selector(|| "thread-pinned-user-message-avatar".to_string())
++                    .h(PINNED_ROW_HEIGHT.rems())
++                    .flex()
++                    .items_center()
 +                    .child(
-+                        Icon::new(IconName::Person)
-+                            .size(IconSize::Small)
-+                            .color(Color::Muted),
++                        div()
++                            .debug_selector(|| "thread-pinned-user-message-avatar".to_string())
++                            .child(
++                                Icon::new(IconName::Person)
++                                    .size(IconSize::Small)
++                                    .color(Color::Muted),
++                            ),
 +                    ),
              )
              // §6.46 (ask 70, which corrects ask 54): the dark background is an inner area, as an
              // editor's text sits on its own surface; the card and its border keep their colours.
+@@ -197,6 +214,10 @@ impl ThreadView {
+                     .debug_selector(|| "thread-pinned-user-message-body".to_string())
+                     .flex_1()
+                     .min_w_0()
++                    // As tall as the toggle, so the minimized line is centred on the same row as
++                    // the avatar and does not shift when the card opens.
++                    .min_h(PINNED_ROW_HEIGHT.rems())
++                    .when(!expanded, |body| body.flex().items_center())
+                     .px_1p5()
+                     .py_0p5()
+                     .rounded_sm()
+@@ -209,6 +230,7 @@ impl ThreadView {
+                         .debug_selector(|| "thread-pinned-user-message-toggle".to_string())
+                         .child(
+                             IconButton::new("thread-pinned-user-message-toggle", toggle_icon)
++                                .size(PINNED_ROW_HEIGHT)
+                                 .icon_size(IconSize::Small)
+                                 .tooltip(Tooltip::text(toggle_tooltip))
+                                 .on_click(cx.listener(move |this, _, _, cx| {
 diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/pinned_avatar_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/pinned_avatar_tests.rs
 new file mode 100644
-index 0000000..59bb2b4
+index 0000000..9a8c776
 --- /dev/null
 +++ b/crates/agent_ui/src/conversation_view/thread_view/tests/pinned_avatar_tests.rs
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,116 @@
 +//! Zeo: the pinned user message's avatar is centred on the minimized card's row -- it sat
 +//! at the top of the row, which the expand toggle makes taller than the icon. Filter:
 +//! `pinned_avatar_tests`.
@@ -169,4 +214,35 @@ index 0000000..59bb2b4
 +        "a two-line message shows the toggle"
 +    );
 +    assert_avatar_centred(&mut cx);
++}
++
++/// §6.66 (ask 89): expanding the card does not move the avatar. Minimized the row centred it
++/// beside the 22 px toggle and expanded it kept to the top, so the icon jumped about 4 px up on
++/// every expand.
++#[gpui::test]
++async fn the_avatar_stays_put_when_the_card_expands(cx: &mut gpui::TestAppContext) {
++    let (view, thread, mut cx) = setup(cx).await;
++    pin_a_message(
++        "fix the build\nand then run the tests",
++        &view,
++        &thread,
++        &mut cx,
++    );
++    let minimized = cx
++        .debug_bounds("thread-pinned-user-message-avatar")
++        .expect("the avatar is painted");
++    view.update(&mut cx, |view, cx| {
++        view.pinned_message_expanded = Some(0);
++        cx.notify();
++    });
++    settle(&mut cx);
++    draw(&mut cx);
++    let expanded = cx
++        .debug_bounds("thread-pinned-user-message-avatar")
++        .expect("the avatar is painted on the expanded card");
++    let moved = (expanded.top() - minimized.top()).abs();
++    assert!(
++        moved <= px(0.5),
++        "the avatar moved {moved:?} on expand: {minimized:?} -> {expanded:?}"
++    );
 +}

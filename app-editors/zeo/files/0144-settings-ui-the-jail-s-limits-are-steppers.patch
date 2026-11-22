@@ -1,0 +1,794 @@
+From a94183694f345c6d24671570d72bf8a15eaab77a Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sun, 22 Nov 2026 14:15:16 -0300
+Subject: [PATCH] settings_ui: the jail's limits are steppers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo proposal §6.62, ask 85 (2026-11-22). 0141's limit rows on the Agent
+Sandbox page were free-text inputs. They are now Zed's own NumberField
+steppers (settings_ui::components::number_field): − / +, Shift steps
+further, Alt finer, and a click on the value still takes typing.
+
+Memory and disk growth are one size type each, stored in MiB and shown in
+their largest whole unit (4G, 1536M, 1T), accepting K, M, G and T and a
+bare number as MiB. What a stepper shows is what it writes, always with a
+suffix: ai-jail reads a bare number as bytes and refuses a size under
+1 MiB or with a B suffix. Steps: memory 1 GiB (Shift 4 GiB, Alt 256 MiB),
+disk 5 GiB (20 GiB, 1 GiB), CPU 100 % -- one CPU (400 %, 10 %), capped at
+this machine's CPUs -- and processes 256 (1024, 16). Every change still
+goes through LimitField::parse, the limit's own rule, before it is queued.
+
+The reset button stays: "unset, use the default" differs from 0, which
+turns a limit off. A click would rewrite the settings file each time, so
+the page writes once, 400 ms after the last click, and shows the pending
+value meanwhile, so the next click counts from it; a reset cancels a
+waiting click. "No limit" shows beside the title while none is in force.
+The types and the debounce live in a new file, agent_jail_steppers.rs,
+beside agent_jail_limits.rs (agent_jail_page.rs is past 1800 lines).
+
+Tests (pages::agent_jail_page::agent_jail_limits::steppers::
+agent_jail_steppers_tests, new): display in the largest unit, K/M/G/T
+parsing and what ai-jail refuses, every value a stepper can show passes
+the limit's rule and round-trips, the steps, the start from the setting
+(bytes rounded up to MiB), and clicks in a row writing once, after the
+last one, with the last value. Red seen against stubs with the old
+free-text behaviour (write at once, no units); the round-trip property
+holds on the stub by construction.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/settings_ui/src/pages/agent_jail_limits.rs b/crates/settings_ui/src/pages/agent_jail_limits.rs
+index 60dbbcd..23a4143 100644
+--- a/crates/settings_ui/src/pages/agent_jail_limits.rs
++++ b/crates/settings_ui/src/pages/agent_jail_limits.rs
+@@ -15,10 +15,9 @@ use settings::{AgentSandboxLimitsContent, SettingsStore};
+ use ui::{Tooltip, prelude::*};
+ 
+ use super::{JailPageState, first_line, reveal};
+-use crate::components::SettingsInputField;
+ 
+ /// One of `agent_sandbox.limits`' fields.
+-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+ pub(crate) enum LimitField {
+     Memory,
+     CpuQuota,
+@@ -50,7 +49,7 @@ impl LimitField {
+         }
+     }
+ 
+-    fn title(self) -> &'static str {
++    pub(crate) fn title(self) -> &'static str {
+         match self {
+             LimitField::Memory => "Memory",
+             LimitField::CpuQuota => "CPU",
+@@ -59,25 +58,16 @@ impl LimitField {
+         }
+     }
+ 
+-    fn placeholder(self) -> &'static str {
+-        match self {
+-            LimitField::Memory => "Memory for this project (e.g. 4G, 0 for none)…",
+-            LimitField::CpuQuota => "Percent of one CPU (e.g. 200, 0 for none)…",
+-            LimitField::MaxTasks => "Processes and threads (e.g. 2048, 0 for none)…",
+-            LimitField::DiskQuota => "Disk growth before a pause (e.g. 20G, 0 for none)…",
+-        }
+-    }
+-
+-    /// The value in force, as the page shows it.
+-    fn shown(self, limits: &SandboxLimits) -> String {
++    /// "No limit" beside the title while none is in force; the stepper shows the value otherwise.
++    fn off_note(self, limits: &SandboxLimits) -> Option<&'static str> {
+         let on = limits.effective();
+-        let text = match self {
+-            LimitField::Memory => on.memory,
+-            LimitField::CpuQuota => on.cpu_quota.map(|quota| format!("{quota} %")),
+-            LimitField::MaxTasks => on.max_tasks.map(|tasks| tasks.to_string()),
+-            LimitField::DiskQuota => on.disk_quota,
++        let set = match self {
++            LimitField::Memory => on.memory.is_some(),
++            LimitField::CpuQuota => on.cpu_quota.is_some(),
++            LimitField::MaxTasks => on.max_tasks.is_some(),
++            LimitField::DiskQuota => on.disk_quota.is_some(),
+         };
+-        text.unwrap_or_else(|| "No limit".to_string())
++        (!set).then_some("No limit")
+     }
+ 
+     /// Whether the project's own entry sets this limit.
+@@ -229,6 +219,7 @@ pub(crate) fn render_limits(
+     error: Option<(LimitField, String)>,
+     state: &Entity<JailPageState>,
+     scroll_handle: &ScrollHandle,
++    window: &mut Window,
+     cx: &mut App,
+ ) -> AnyElement {
+     let mut rows = Vec::with_capacity(LimitField::ALL.len());
+@@ -255,26 +246,9 @@ pub(crate) fn render_limits(
+                 .color(Color::Muted)
+                 .into_any_element()
+         };
+-        let input_id = format!("agent-jail-limit-{}-new", field.field());
+-        let input = SettingsInputField::new(SharedString::from(input_id.clone()))
+-            .with_placeholder(field.placeholder())
+-            .aria_label(format!("{} limit for this project", field.title()))
+-            .tab_index(0)
+-            .with_buffer_font()
+-            .display_confirm_button()
+-            .clear_on_confirm()
+-            .on_confirm({
+-                let state = state.clone();
+-                move |raw, _window, cx| {
+-                    let Some(raw) = raw.filter(|raw| !raw.trim().is_empty()) else {
+-                        return;
+-                    };
+-                    state.update(cx, |state, cx| match field.parse(&raw) {
+-                        Ok(value) => state.set_limit(field, Some(value), cx),
+-                        Err(rule) => state.show_limit_error(field, rule, cx),
+-                    });
+-                }
+-            });
++        let stepper_id = format!("agent-jail-limit-{}-stepper", field.field());
++        let pending = state.read(cx).pending_limit(field).cloned();
++        let stepper = steppers::render_stepper(field, limits, pending, state, window, cx);
+         rows.push(
+             v_flex()
+                 .gap_1()
+@@ -286,15 +260,19 @@ pub(crate) fn render_limits(
+                             h_flex()
+                                 .gap_2()
+                                 .child(Label::new(field.title()).size(LabelSize::Small))
+-                                .child(
+-                                    Label::new(field.shown(limits))
+-                                        .size(LabelSize::Small)
+-                                        .buffer_font(cx),
+-                                ),
++                                .when_some(field.off_note(limits), |this, note| {
++                                    this.child(
++                                        Label::new(note).size(LabelSize::Small).color(Color::Muted),
++                                    )
++                                }),
+                         )
+-                        .child(action),
++                        .child(
++                            h_flex()
++                                .gap_2()
++                                .child(reveal(state, stepper_id, scroll_handle, stepper, cx))
++                                .child(action),
++                        ),
+                 )
+-                .child(reveal(state, input_id, scroll_handle, input, cx))
+                 .when_some(
+                     error.as_ref().filter(|(at, _)| *at == field),
+                     |this, (_, error)| {
+@@ -312,7 +290,7 @@ pub(crate) fn render_limits(
+         .child(Label::new("Resource Limits"))
+         .child(
+             Label::new(
+-                "Applied by ai-jail to the whole jail. Past the disk growth the agent is paused, not stopped. 0 turns a limit off for this project.",
++                "Applied by ai-jail to the whole jail. Past the disk growth the agent is paused, not stopped. 0 turns a limit off for this project. Shift steps further, Alt finer; click a value to type one.",
+             )
+             .size(LabelSize::Small)
+             .color(Color::Muted),
+@@ -350,6 +328,9 @@ pub(crate) fn render_limits(
+         .into_any_element()
+ }
+ 
++#[path = "agent_jail_steppers.rs"]
++mod steppers;
++
+ #[cfg(test)]
+ #[path = "agent_jail_limits_tests.rs"]
+ mod agent_jail_limits_tests;
+diff --git a/crates/settings_ui/src/pages/agent_jail_page.rs b/crates/settings_ui/src/pages/agent_jail_page.rs
+index 969be4a..ed5c064 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page.rs
+@@ -633,6 +633,10 @@ struct JailPageState {
+     host_error: Option<String>,
+     /// The last limit refused or not saved, and which (§6.54): shown under that limit's input.
+     limit_error: Option<(agent_jail_limits::LimitField, String)>,
++    /// A stepper's value shown while its debounced write waits or runs (§6.62).
++    pending_limits: HashMap<agent_jail_limits::LimitField, agent_jail_limits::LimitValue>,
++    /// Each stepper's waiting write; replacing it cancels the one before (§6.62).
++    limit_debounce: HashMap<agent_jail_limits::LimitField, Task<()>>,
+     /// This project's state folder, when the installed ai-jail has `--state-root` (§6.54).
+     state_dir: Option<PathBuf>,
+     controls: RevealOnFocus,
+@@ -651,6 +655,8 @@ impl JailPageState {
+             rw_map_error: None,
+             host_error: None,
+             limit_error: None,
++            pending_limits: HashMap::default(),
++            limit_debounce: HashMap::default(),
+             state_dir: None,
+             controls: RevealOnFocus::default(),
+             refresh_task: Task::ready(()),
+@@ -740,6 +746,7 @@ impl JailPageState {
+         let Some(root) = self.root.clone() else {
+             return;
+         };
++        self.cancel_pending_limit(field);
+         let task =
+             agent_jail_limits::write_limit(&root, self.resolved_key.clone(), field, value, cx);
+         self.limit_error = None;
+@@ -897,6 +904,7 @@ pub(crate) fn render_agent_jail_page(
+                 limit_error,
+                 &state,
+                 scroll_handle,
++                window,
+                 cx,
+             );
+             // The R7.3 note is shown once, beside the Memory switch.
+diff --git a/crates/settings_ui/src/pages/agent_jail_page_tests.rs b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+index f34419c..a078c42 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+@@ -802,7 +802,9 @@ mod page {
+         );
+ 
+         let mut reached: Vec<&'static str> = Vec::new();
+-        for _ in 0..(TAB_ORDER.len() * 2 + 4) {
++        // Each limit is a stepper (§6.62): three Tab stops (−, the value, +) between the lists and
++        // the memory section.
++        for _ in 0..(TAB_ORDER.len() * 2 + 4 + 4 * 3) {
+             if let Some(control) = super::super::focused_control()
+                 .and_then(|focused| TAB_ORDER.into_iter().find(|name| *name == focused.as_ref()))
+             {
+diff --git a/crates/settings_ui/src/pages/agent_jail_steppers.rs b/crates/settings_ui/src/pages/agent_jail_steppers.rs
+new file mode 100644
+index 0000000..b43c93c
+--- /dev/null
++++ b/crates/settings_ui/src/pages/agent_jail_steppers.rs
+@@ -0,0 +1,366 @@
++//! The Agent Sandbox page's limits as − / + steppers (Zeo proposal §6.62, ask 85), on Zed's own
++//! `NumberField`: Shift and Alt change the step, and a click on the value still takes typing.
++//!
++//! Memory and disk growth are one size type each, stored in MiB and shown in their largest whole
++//! unit (`4G`, `1536M`). What a stepper shows is what it writes, and always with a suffix: ai-jail
++//! reads a bare number as bytes and refuses anything under 1 MiB or with a `B` suffix. CPU steps
++//! by one CPU (100 %), processes by 256. A click would rewrite the settings file each time, so the
++//! page writes once, `LIMIT_WRITE_DEBOUNCE` after the last click, and shows the pending value
++//! meanwhile so the next click counts from it.
++
++use std::{fmt, str::FromStr, time::Duration};
++
++use agent_sandbox::SandboxLimits;
++use agent_sandbox::disk_watch::parse_size;
++use gpui::{Context, Entity};
++use ui::prelude::*;
++
++use super::super::JailPageState;
++use super::{LimitField, LimitValue};
++use crate::components::{NumberField, NumberFieldMode, NumberFieldType};
++
++/// How long the page waits after the last click before it writes the limit.
++pub(crate) const LIMIT_WRITE_DEBOUNCE: Duration = Duration::from_millis(400);
++
++const MIB_PER_GIB: u64 = 1024;
++const MIB_PER_TIB: u64 = 1024 * 1024;
++
++/// `mib` in its largest whole unit; 0 stays `0`, which turns the limit off.
++fn format_mib(mib: u64) -> String {
++    if mib == 0 {
++        "0".to_string()
++    } else if mib.is_multiple_of(MIB_PER_TIB) {
++        format!("{}T", mib / MIB_PER_TIB)
++    } else if mib.is_multiple_of(MIB_PER_GIB) {
++        format!("{}G", mib / MIB_PER_GIB)
++    } else {
++        format!("{mib}M")
++    }
++}
++
++/// What a user types into a size stepper: a whole number with an optional K, M, G or T. A bare
++/// number is MiB, the unit the field steps in; a K value must be whole MiB.
++fn parse_mib(text: &str) -> Result<u64, String> {
++    let text = text.trim();
++    let refuse = || format!("{text:?} is not a size: a whole number with K, M, G or T (8G)");
++    let (digits, unit) = match text.chars().last() {
++        Some(last) if last.is_ascii_alphabetic() => {
++            (&text[..text.len() - 1], last.to_ascii_uppercase())
++        }
++        _ => (text, 'M'),
++    };
++    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
++        return Err(refuse());
++    }
++    let value: u64 = digits.parse().map_err(|_| refuse())?;
++    match unit {
++        'K' if value.is_multiple_of(1024) => Ok(value / 1024),
++        'M' => Ok(value),
++        'G' => value.checked_mul(MIB_PER_GIB).ok_or_else(refuse),
++        'T' => value.checked_mul(MIB_PER_TIB).ok_or_else(refuse),
++        _ => Err(refuse()),
++    }
++}
++
++/// The largest size a stepper holds: 1024 TiB, far past any machine, and small enough that
++/// adding a step never overflows.
++const MAX_MIB: u64 = 1024 * MIB_PER_TIB;
++
++macro_rules! size_stepper {
++    ($(#[$meta:meta])* $name:ident, $step:expr, $large:expr, $small:expr) => {
++        $(#[$meta])*
++        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
++        pub(crate) struct $name(pub u64);
++
++        impl $name {
++            /// The stepper's start from a setting as the settings file holds it: any size the
++            /// limit accepts there (a bare number is bytes, as ai-jail reads it), rounded up to
++            /// whole MiB. Unset or unreadable reads as 0, no limit.
++            pub(crate) fn from_setting(text: Option<&str>) -> Self {
++                let bytes = text.and_then(parse_size).unwrap_or(0);
++                $name(bytes.div_ceil(1 << 20).min(MAX_MIB))
++            }
++        }
++
++        impl fmt::Display for $name {
++            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++                f.write_str(&format_mib(self.0))
++            }
++        }
++
++        impl FromStr for $name {
++            type Err = String;
++
++            fn from_str(text: &str) -> Result<Self, String> {
++                parse_mib(text).map(|mib| $name(mib.min(MAX_MIB)))
++            }
++        }
++
++        impl NumberFieldType for $name {
++            fn default_step() -> Self {
++                $name($step)
++            }
++            fn large_step() -> Self {
++                $name($large)
++            }
++            fn small_step() -> Self {
++                $name($small)
++            }
++            fn min_value() -> Self {
++                $name(0)
++            }
++            fn max_value() -> Self {
++                $name(MAX_MIB)
++            }
++            fn saturating_add(self, rhs: Self) -> Self {
++                $name(self.0.saturating_add(rhs.0).min(MAX_MIB))
++            }
++            fn saturating_sub(self, rhs: Self) -> Self {
++                $name(self.0.saturating_sub(rhs.0))
++            }
++        }
++    };
++}
++
++size_stepper!(
++    /// The memory limit: a GiB a click, 4 GiB with Shift, 256 MiB with Alt.
++    MemoryMib,
++    MIB_PER_GIB,
++    4 * MIB_PER_GIB,
++    256
++);
++size_stepper!(
++    /// The disk growth before a pause: 5 GiB a click, 20 GiB with Shift, 1 GiB with Alt.
++    DiskMib,
++    5 * MIB_PER_GIB,
++    20 * MIB_PER_GIB,
++    MIB_PER_GIB
++);
++
++/// The CPU quota, in percent of one CPU: one CPU a click, four with Shift, a tenth with Alt.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
++pub(crate) struct CpuPercent(pub u32);
++
++impl fmt::Display for CpuPercent {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "{} %", self.0)
++    }
++}
++
++impl FromStr for CpuPercent {
++    type Err = String;
++
++    fn from_str(text: &str) -> Result<Self, String> {
++        let digits = text.trim().trim_end_matches('%').trim_end();
++        digits
++            .parse()
++            .map(CpuPercent)
++            .map_err(|_| format!("{text:?} is not a percentage of one CPU"))
++    }
++}
++
++/// The process and thread cap: 256 a click, 1024 with Shift, 16 with Alt.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
++pub(crate) struct TaskCount(pub u64);
++
++impl fmt::Display for TaskCount {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "{}", self.0)
++    }
++}
++
++impl FromStr for TaskCount {
++    type Err = String;
++
++    fn from_str(text: &str) -> Result<Self, String> {
++        text.trim()
++            .parse()
++            .map(TaskCount)
++            .map_err(|_| format!("{text:?} is not a number of processes"))
++    }
++}
++
++macro_rules! count_stepper {
++    ($name:ident, $inner:ty, $step:expr, $large:expr, $small:expr) => {
++        impl NumberFieldType for $name {
++            fn default_step() -> Self {
++                $name($step)
++            }
++            fn large_step() -> Self {
++                $name($large)
++            }
++            fn small_step() -> Self {
++                $name($small)
++            }
++            fn min_value() -> Self {
++                $name(0)
++            }
++            fn max_value() -> Self {
++                $name(<$inner>::MAX)
++            }
++            fn saturating_add(self, rhs: Self) -> Self {
++                $name(self.0.saturating_add(rhs.0))
++            }
++            fn saturating_sub(self, rhs: Self) -> Self {
++                $name(self.0.saturating_sub(rhs.0))
++            }
++        }
++    };
++}
++
++count_stepper!(CpuPercent, u32, 100, 400, 10);
++count_stepper!(TaskCount, u64, 256, 1024, 16);
++
++/// The stepper for `field`: it starts at the value pending a write, else the value in force, else
++/// 0 (no limit), and every change goes through the limit's own rule before it is queued.
++pub(crate) fn render_stepper(
++    field: LimitField,
++    limits: &SandboxLimits,
++    pending: Option<LimitValue>,
++    state: &Entity<JailPageState>,
++    window: &mut Window,
++    cx: &mut App,
++) -> AnyElement {
++    let on = limits.effective();
++    let pending_text = pending.map(|value| match value {
++        LimitValue::Size(text) => text,
++        LimitValue::Count(count) => count.to_string(),
++    });
++    let id = format!("agent-jail-limit-{}-stepper", field.field());
++    let label = format!("{} limit for this project", field.title());
++    match field {
++        LimitField::Memory => {
++            let value = MemoryMib::from_setting(pending_text.as_deref().or(on.memory.as_deref()));
++            stepper(field, id, label, value, None, state, window, cx)
++        }
++        LimitField::DiskQuota => {
++            let value = DiskMib::from_setting(pending_text.as_deref().or(on.disk_quota.as_deref()));
++            stepper(field, id, label, value, None, state, window, cx)
++        }
++        LimitField::CpuQuota => {
++            let value = pending_text
++                .and_then(|text| text.parse().ok())
++                .or(on.cpu_quota)
++                .unwrap_or(0);
++            // Past every CPU of this machine a quota changes nothing.
++            let max = std::thread::available_parallelism()
++                .map(|cpus| u32::try_from(cpus.get()).unwrap_or(u32::MAX / 100) * 100)
++                .ok();
++            stepper(
++                field,
++                id,
++                label,
++                CpuPercent(value),
++                max.map(CpuPercent),
++                state,
++                window,
++                cx,
++            )
++        }
++        LimitField::MaxTasks => {
++            let value = pending_text
++                .and_then(|text| text.parse().ok())
++                .or(on.max_tasks)
++                .unwrap_or(0);
++            stepper(field, id, label, TaskCount(value), None, state, window, cx)
++        }
++    }
++}
++
++#[allow(clippy::too_many_arguments)]
++fn stepper<T: NumberFieldType + Send + Sync>(
++    field: LimitField,
++    id: String,
++    label: String,
++    value: T,
++    max: Option<T>,
++    state: &Entity<JailPageState>,
++    window: &mut Window,
++    cx: &mut App,
++) -> AnyElement {
++    let number = NumberField::new(SharedString::from(id), value, window, cx)
++        .mode(NumberFieldMode::Edit, cx)
++        .tab_index(0)
++        .aria_label(label)
++        .on_change({
++            let state = state.clone();
++            move |changed: &T, _window, cx| {
++                // Leaving the field reports its value even when nothing changed.
++                if *changed == value {
++                    return;
++                }
++                let text = changed.to_string();
++                state.update(cx, |state, cx| match field.parse(&text) {
++                    Ok(limit) => state.queue_limit(field, limit, cx),
++                    Err(rule) => state.show_limit_error(field, rule, cx),
++                });
++            }
++        });
++    match max {
++        Some(max) => number.max(max).into_any_element(),
++        None => number.into_any_element(),
++    }
++}
++
++impl JailPageState {
++    /// A stepper's click: shown at once, written once the clicks stop.
++    pub(crate) fn queue_limit(
++        &mut self,
++        field: LimitField,
++        value: LimitValue,
++        cx: &mut Context<Self>,
++    ) {
++        self.pending_limits.insert(field, value);
++        let task = cx.spawn(async move |this, cx| {
++            cx.background_executor().timer(LIMIT_WRITE_DEBOUNCE).await;
++            this.update(cx, |this, cx| this.flush_limit(field, cx)).ok();
++        });
++        self.limit_debounce.insert(field, task);
++        cx.notify();
++    }
++
++    /// The value a stepper shows while its write waits or runs.
++    pub(crate) fn pending_limit(&self, field: LimitField) -> Option<&LimitValue> {
++        self.pending_limits.get(&field)
++    }
++
++    /// Forgets a waiting click, for a reset that writes the default back instead.
++    pub(crate) fn cancel_pending_limit(&mut self, field: LimitField) {
++        self.pending_limits.remove(&field);
++        self.limit_debounce.remove(&field);
++    }
++
++    fn flush_limit(&mut self, field: LimitField, cx: &mut Context<Self>) {
++        let Some(value) = self.pending_limits.get(&field).cloned() else {
++            return;
++        };
++        let Some(root) = self.root.clone() else {
++            return;
++        };
++        let task = super::write_limit(
++            &root,
++            self.resolved_key.clone(),
++            field,
++            Some(value.clone()),
++            cx,
++        );
++        self.limit_error = None;
++        cx.spawn(async move |this, cx| {
++            let result = task.await;
++            this.update(cx, |this, cx| {
++                // A later click keeps its own pending value; only the one written settles.
++                if this.pending_limits.get(&field) == Some(&value) {
++                    this.pending_limits.remove(&field);
++                }
++                this.limit_error = result.err().map(|error| (field, error));
++                cx.notify();
++            })
++            .ok();
++        })
++        .detach();
++    }
++}
++
++#[cfg(test)]
++#[path = "agent_jail_steppers_tests.rs"]
++mod agent_jail_steppers_tests;
+diff --git a/crates/settings_ui/src/pages/agent_jail_steppers_tests.rs b/crates/settings_ui/src/pages/agent_jail_steppers_tests.rs
+new file mode 100644
+index 0000000..b1edd63
+--- /dev/null
++++ b/crates/settings_ui/src/pages/agent_jail_steppers_tests.rs
+@@ -0,0 +1,176 @@
++// Zeo proposal §6.62 (ask 85): the limits as − / + steppers. Filter: `agent_jail_steppers`.
++
++use std::path::Path;
++use std::sync::Arc;
++use std::time::Duration;
++
++use fs::{FakeFs, Fs};
++use gpui::{TestAppContext, UpdateGlobal as _};
++use serde_json::{Value, json};
++use settings::SettingsStore;
++
++use super::super::super::JailPageState;
++use super::super::{LimitField, LimitValue};
++use super::*;
++use crate::components::NumberFieldType;
++
++#[test]
++fn agent_jail_steppers_show_a_size_in_its_largest_whole_unit() {
++    assert_eq!(MemoryMib(0).to_string(), "0", "0 turns the limit off");
++    assert_eq!(MemoryMib(4096).to_string(), "4G");
++    assert_eq!(MemoryMib(1536).to_string(), "1536M");
++    assert_eq!(MemoryMib(1 << 20).to_string(), "1T");
++    assert_eq!(DiskMib(20 * 1024).to_string(), "20G");
++}
++
++#[test]
++fn agent_jail_steppers_read_k_m_g_t_and_refuse_what_ai_jail_refuses() {
++    assert_eq!("4G".parse::<MemoryMib>(), Ok(MemoryMib(4096)));
++    assert_eq!("1536m".parse::<MemoryMib>(), Ok(MemoryMib(1536)));
++    assert_eq!("1t".parse::<MemoryMib>(), Ok(MemoryMib(1 << 20)));
++    assert_eq!("2048K".parse::<MemoryMib>(), Ok(MemoryMib(2)));
++    assert_eq!(" 0 ".parse::<MemoryMib>(), Ok(MemoryMib(0)));
++    // A bare number is the unit the field steps in.
++    assert_eq!("512".parse::<MemoryMib>(), Ok(MemoryMib(512)));
++    // ai-jail's --memory refuses a `B` suffix, and a size under 1 MiB cannot be shown in MiB.
++    for bad in ["8GB", "8GiB", "512K", "lots", "", "G", "-1", "1.5G"] {
++        assert!(bad.parse::<MemoryMib>().is_err(), "{bad:?} was accepted");
++    }
++}
++
++/// Every value a stepper can show is one the limit's own rule accepts, so a click never writes
++/// something the next jailed start refuses.
++#[test]
++fn agent_jail_steppers_write_only_what_the_limit_accepts() {
++    for mib in [0, 1, 256, 1024, 1536, 4096, 1 << 20, 3 << 20] {
++        let text = MemoryMib(mib).to_string();
++        assert!(LimitField::Memory.parse(&text).is_ok(), "{text}");
++        assert_eq!(text.parse::<MemoryMib>(), Ok(MemoryMib(mib)), "{text}");
++        let text = DiskMib(mib).to_string();
++        assert!(LimitField::DiskQuota.parse(&text).is_ok(), "{text}");
++    }
++}
++
++#[test]
++fn agent_jail_steppers_step_by_a_gigabyte_a_cpu_and_256_processes() {
++    assert_eq!(MemoryMib::default_step(), MemoryMib(1024));
++    assert_eq!(DiskMib::default_step(), DiskMib(5 * 1024));
++    assert_eq!(CpuPercent::default_step(), CpuPercent(100), "one CPU");
++    assert_eq!(TaskCount::default_step(), TaskCount(256));
++    assert_eq!(
++        MemoryMib(0).saturating_sub(MemoryMib::default_step()),
++        MemoryMib(0),
++        "− stops at 0, which is no limit"
++    );
++    assert_eq!(
++        CpuPercent(300).saturating_add(CpuPercent(100)),
++        CpuPercent(400)
++    );
++}
++
++#[test]
++fn agent_jail_steppers_read_cpu_with_or_without_the_percent_sign() {
++    assert_eq!(CpuPercent(200).to_string(), "200 %");
++    for text in ["200", "200 %", "200%"] {
++        assert_eq!(text.parse::<CpuPercent>(), Ok(CpuPercent(200)), "{text}");
++    }
++    assert!("two".parse::<CpuPercent>().is_err());
++    assert_eq!("2048".parse::<TaskCount>(), Ok(TaskCount(2048)));
++}
++
++/// The value in force, as written in the settings file, is where a stepper starts.
++#[test]
++fn agent_jail_steppers_start_from_the_setting() {
++    assert_eq!(MemoryMib::from_setting(Some("8G")), MemoryMib(8192));
++    assert_eq!(MemoryMib::from_setting(Some("1073741824")), MemoryMib(1024));
++    assert_eq!(MemoryMib::from_setting(Some("0")), MemoryMib(0));
++    assert_eq!(
++        MemoryMib::from_setting(None),
++        MemoryMib(0),
++        "unset reads as no limit"
++    );
++    assert_eq!(DiskMib::from_setting(Some("20GiB")), DiskMib(20 * 1024));
++}
++
++const ROOT: &str = "/w/app";
++
++async fn init(user: Value, cx: &mut TestAppContext) -> Arc<FakeFs> {
++    let fs = FakeFs::new(cx.executor());
++    cx.update(|cx| {
++        let store = SettingsStore::test(cx);
++        cx.set_global(store);
++        <dyn Fs>::set_global(fs.clone(), cx);
++        agent_sandbox::init(cx);
++    });
++    fs.create_dir(paths::config_dir())
++        .await
++        .expect("the config dir");
++    fs.insert_file(paths::settings_file(), user.to_string().into_bytes())
++        .await;
++    cx.update(|cx| {
++        SettingsStore::update_global(cx, |store, cx| {
++            store
++                .set_user_settings(&user.to_string(), cx)
++                .result()
++                .expect("settings");
++        })
++    });
++    cx.run_until_parked();
++    fs
++}
++
++async fn written_memory(fs: &Arc<FakeFs>) -> Value {
++    let text = fs
++        .load(paths::settings_file())
++        .await
++        .expect("settings file");
++    let written: Value = serde_json_lenient::from_str(&text).expect("json");
++    written["agent_sandbox"]["projects"][ROOT]["limits"]["memory"].clone()
++}
++
++/// Hostile: clicks in a row write once, after the last one, with the last value -- and the
++/// stepper shows that value meanwhile, so the next click counts from it.
++#[gpui::test]
++async fn agent_jail_steppers_write_once_after_the_last_click(cx: &mut TestAppContext) {
++    // A path that is not there: the page's probe then runs no `ai-jail --version`, whose real
++    // process the test scheduler refuses.
++    let fs = init(
++        json!({ "agent_sandbox": {
++            "ai_jail_path": "/nonexistent/ai-jail",
++            "projects": { ROOT: { "enabled": true } }
++        } }),
++        cx,
++    )
++    .await;
++    let state = cx.new(|cx| JailPageState::new(Some(Path::new(ROOT).to_path_buf()), cx));
++    cx.run_until_parked();
++    for size in ["5G", "6G"] {
++        state.update(cx, |state, cx| {
++            state.queue_limit(LimitField::Memory, LimitValue::Size(size.into()), cx)
++        });
++        cx.executor().advance_clock(Duration::from_millis(100));
++        cx.run_until_parked();
++    }
++    assert_eq!(
++        written_memory(&fs).await,
++        Value::Null,
++        "nothing is written while the clicks go on"
++    );
++    state.read_with(cx, |state, _| {
++        assert_eq!(
++            state.pending_limit(LimitField::Memory),
++            Some(&LimitValue::Size("6G".into())),
++            "the stepper shows the last click"
++        );
++    });
++    cx.executor().advance_clock(LIMIT_WRITE_DEBOUNCE);
++    cx.run_until_parked();
++    assert_eq!(written_memory(&fs).await, json!("6G"));
++    state.read_with(cx, |state, _| {
++        assert_eq!(
++            state.pending_limit(LimitField::Memory),
++            None,
++            "written, so settled"
++        );
++    });
++}

@@ -1,0 +1,394 @@
+From 8030fabf82c8c307337cfcfae48c3f9fbbe5ebd9 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sun, 22 Nov 2026 15:13:42 -0300
+Subject: [PATCH] agent_servers: Zeo's skills reach Claude Agent (Plus) as
+ plugins
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo proposal §6.69 step 2 (operator, 2026-11-22). Zeo's skills live in
+~/.agents/skills and <project>/.agents/skills, which only the native Zed
+agent reads: the Claude CLI does not (the plus lane measured it on CLI
+2.1.325: the path occurs only in its Cursor importer, and a probe's
+supportedCommands() did not list skills placed there). The SDK's `skills`
+option only filters what is loaded; its `plugins` option loads a local
+directory, and a manifest-less directory whose `skills` is a symlink loads
+that folder's skills under the directory's name (measured by the same probe).
+
+So Zeo keeps one such directory per source under its data dir
+(agent-skill-plugins/zeo-agents-skills -> ~/.agents/skills, and
+agent-skill-plugins/projects/<fnv of the root>/zeo-project-skills ->
+<root>/.agents/skills), made or re-pointed when a session starts and only
+for a folder that exists, and sends them in session/new, session/load and
+session/resume as _meta.claudeCode.options.plugins = [{type: "local",
+path}], which Plus spreads into the SDK options (acp-agent.ts, unchanged
+keys). Only Zeo's two Claude adapters get it (Plus; the TUI adapter, which
+may ignore it). Nothing is copied. Skills then show as
+zeo-agents-skills:<name> and zeo-project-skills:<name>. Not on Windows: the
+plugin directory is a symlink.
+
+Code: agent_servers::zeo_skills_plugin (new); acp::session_meta::
+new_session_meta wraps session_request_meta; the five request sites in
+acp/v1.rs and acp/v2.rs call it (one line each). agent_servers gains
+`paths` as a normal dependency (it was a dev-dependency; Cargo.lock
+unchanged). A jailed agent sees the project; the plugin root and
+~/.agents/skills are mapped read-only by the agent sandbox (0146).
+
+Tests zeo_skills_plugin::zeo_skills_plugin_tests (new): both folders linked
+and reached through the plugin, the same directories next time, missing
+folders give no plugin, a stale link re-pointed, the meta is the SDK's local
+plugin list, only Zeo's Claude adapters. Red seen with the functions
+neutralized.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_servers/Cargo.toml b/crates/agent_servers/Cargo.toml
+index d091060..20d5c9e 100644
+--- a/crates/agent_servers/Cargo.toml
++++ b/crates/agent_servers/Cargo.toml
+@@ -47,6 +47,7 @@ http_client.workspace = true
+ indoc = { workspace = true, optional = true }
+ language_model.workspace = true
+ log.workspace = true
++paths.workspace = true
+ project.workspace = true
+ release_channel.workspace = true
+ remote.workspace = true
+diff --git a/crates/agent_servers/src/acp/session_meta.rs b/crates/agent_servers/src/acp/session_meta.rs
+index 4920c64..d17869d 100644
+--- a/crates/agent_servers/src/acp/session_meta.rs
++++ b/crates/agent_servers/src/acp/session_meta.rs
+@@ -24,6 +24,34 @@ pub(crate) fn session_request_meta(cx: &App) -> Option<Map<String, Value>> {
+     session_request_meta_for(ask_questions_in_cards)
+ }
+ 
++/// [`session_request_meta`] for a session of `agent_id` in `project` (new, loaded or resumed),
++/// plus Zeo's skills as plugins for Zeo's Claude adapters (§6.69 step 2,
++/// `crate::zeo_skills_plugin`): each request starts the CLI, which loads plugins then.
++pub(crate) fn new_session_meta(
++    agent_id: &project::AgentId,
++    project: &gpui::Entity<project::Project>,
++    cx: &App,
++) -> Option<Map<String, Value>> {
++    let mut meta = session_request_meta(cx);
++    if crate::zeo_skills_plugin::reads_claude_code_options(agent_id.0.as_ref()) {
++        let root = project
++            .read(cx)
++            .visible_worktrees(cx)
++            .next()
++            .map(|worktree| worktree.read(cx).abs_path().to_path_buf());
++        let dirs = crate::zeo_skills_plugin::skill_plugin_dirs(
++            root.as_deref(),
++            paths::home_dir(),
++            &paths::data_dir().join(crate::zeo_skills_plugin::SKILL_PLUGINS_DIR),
++        );
++        if let Some(claude_code) = crate::zeo_skills_plugin::plugins_meta(&dirs) {
++            meta.get_or_insert_default()
++                .insert("claudeCode".to_string(), claude_code);
++        }
++    }
++    meta
++}
++
+ fn session_request_meta_for(ask_questions_in_cards: bool) -> Option<Map<String, Value>> {
+     (!ask_questions_in_cards).then(|| {
+         Map::from_iter([(
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index d4cd525..191b9b4 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -2303,7 +2303,7 @@ impl AgentConnection for AcpConnection {
+         };
+         let mcp_servers = mcp_servers_for_project(&project, cx);
+         let sends_initial_config_options = self.agent_supports_initial_config_options(cx);
+-        let session_meta = super::session_meta::session_request_meta(cx);
++        let session_meta = super::session_meta::new_session_meta(&self.id, &project, cx);
+ 
+         cx.spawn(async move |cx| {
+             let (response_sender, response_received) = futures::channel::oneshot::channel();
+@@ -2575,7 +2575,7 @@ impl AgentConnection for AcpConnection {
+         }
+ 
+         let mcp_servers = mcp_servers_for_project(&project, cx);
+-        let session_meta = super::session_meta::session_request_meta(cx);
++        let session_meta = super::session_meta::new_session_meta(&self.id, &project, cx);
+         self.open_or_create_session(
+             session_id,
+             project,
+@@ -2622,7 +2622,7 @@ impl AgentConnection for AcpConnection {
+         }
+ 
+         let mcp_servers = mcp_servers_for_project(&project, cx);
+-        let session_meta = super::session_meta::session_request_meta(cx);
++        let session_meta = super::session_meta::new_session_meta(&self.id, &project, cx);
+         self.open_or_create_session(
+             session_id,
+             project,
+diff --git a/crates/agent_servers/src/acp/v2.rs b/crates/agent_servers/src/acp/v2.rs
+index a5a1d27..8527034 100644
+--- a/crates/agent_servers/src/acp/v2.rs
++++ b/crates/agent_servers/src/acp/v2.rs
+@@ -1093,7 +1093,9 @@ impl AcpV2Connection {
+         let mut request = acp::ResumeSessionRequest::new(session_id.clone(), context.cwd.clone())
+             .additional_directories(context.additional_directories.clone())
+             .mcp_servers(context.mcp_servers.clone())
+-            .meta(super::session_meta::session_request_meta(cx));
++            .meta(super::session_meta::new_session_meta(
++                &self.id, &project, cx,
++            ));
+         if replay_history {
+             request = request.replay_from(acp::ReplayFrom::Start(acp::ReplayFromStart::new()));
+         }
+@@ -1391,7 +1393,9 @@ impl AgentConnection for AcpV2Connection {
+         let mut request = acp::NewSessionRequest::new(context.cwd.clone())
+             .additional_directories(context.additional_directories.clone())
+             .mcp_servers(context.mcp_servers.clone())
+-            .meta(super::session_meta::session_request_meta(cx));
++            .meta(super::session_meta::new_session_meta(
++                &self.id, &project, cx,
++            ));
+         if self.supports_initial_config_options(cx) {
+             // `apply_new_session_defaults` still runs after creation, so defaults the agent
+             // ignored here (for example, ones that depend on another option) get another chance.
+diff --git a/crates/agent_servers/src/agent_servers.rs b/crates/agent_servers/src/agent_servers.rs
+index 1dfc726..e4fe705 100644
+--- a/crates/agent_servers/src/agent_servers.rs
++++ b/crates/agent_servers/src/agent_servers.rs
+@@ -3,6 +3,7 @@ mod custom;
+ #[cfg(test)]
+ mod test_log_capture;
+ pub mod thread_config_store;
++pub mod zeo_skills_plugin;
+ 
+ #[cfg(any(test, feature = "test-support"))]
+ pub mod e2e_tests;
+diff --git a/crates/agent_servers/src/zeo_skills_plugin.rs b/crates/agent_servers/src/zeo_skills_plugin.rs
+new file mode 100644
+index 0000000..a6f9da0
+--- /dev/null
++++ b/crates/agent_servers/src/zeo_skills_plugin.rs
+@@ -0,0 +1,123 @@
++//! Zeo's skills reach Claude Agent (Plus) as a plugin (Zeo proposal §6.69 step 2, 2026-11-22).
++//!
++//! Zeo's skills live in `~/.agents/skills` and `<project>/.agents/skills`, which only the native
++//! Zed agent reads: the Claude CLI does not (measured by the plus lane, 2026-11-22 -- the path
++//! occurs only in its Cursor importer). The SDK's `skills` option only filters what is already
++//! loaded, but its `plugins` option loads a local directory, and a manifest-less one whose
++//! `skills` is a symlink loads that folder's skills under the directory's name (measured: a
++//! `plugin-bare` dir with `skills -> ~/.agents/skills` loaded `plugin-bare:<skill>`). So Zeo keeps
++//! one such directory per source under its data dir and hands them to Plus (and the TUI adapter)
++//! in `session/new` as `_meta.claudeCode.options.plugins`, which Plus spreads into the SDK
++//! options. Nothing is copied: the skills stay where the user keeps them.
++//!
++//! A jailed agent sees the project, so its `.agents/skills` works there as it is; the plugin
++//! root and `~/.agents/skills` are mapped read-only into the jail by the agent sandbox (0148).
++
++use std::path::{Path, PathBuf};
++
++use serde_json::{Value, json};
++
++/// The folder under Zeo's data dir that holds the plugin directories. The agent sandbox maps the
++/// same folder into a jail by this name.
++pub const SKILL_PLUGINS_DIR: &str = "agent-skill-plugins";
++
++/// The plugin of `~/.agents/skills`; its skills load as `zeo-agents-skills:<name>`.
++const GLOBAL_PLUGIN: &str = "zeo-agents-skills";
++
++/// The plugin of a project's `.agents/skills`; its skills load as `zeo-project-skills:<name>`.
++const PROJECT_PLUGIN: &str = "zeo-project-skills";
++
++/// The agents that read `_meta.claudeCode.options`: Zeo's two Claude adapters.
++pub fn reads_claude_code_options(agent_id: &str) -> bool {
++    agent_id == project::agent_registry_store::ZEO_PLUS_AGENT_ID
++        || agent_id == project::agent_registry_store::ZEO_TUI_AGENT_ID
++}
++
++/// The plugin directories for a session in `project_root`, made (or repaired) under
++/// `plugin_root`: one for `~/.agents/skills` under `home`, one for the project's own, each only
++/// when its skills folder exists. A directory that cannot be made is left out and logged.
++pub fn skill_plugin_dirs(
++    project_root: Option<&Path>,
++    home: &Path,
++    plugin_root: &Path,
++) -> Vec<PathBuf> {
++    let mut dirs = Vec::new();
++    let global = home.join(".agents/skills");
++    if global.is_dir() {
++        dirs.extend(ensure_plugin(&plugin_root.join(GLOBAL_PLUGIN), &global));
++    }
++    if let Some(root) = project_root {
++        let own = root.join(".agents/skills");
++        if own.is_dir() {
++            let dir = plugin_root
++                .join("projects")
++                .join(format!(
++                    "{:016x}",
++                    fnv1a(root.as_os_str().as_encoded_bytes())
++                ))
++                .join(PROJECT_PLUGIN);
++            dirs.extend(ensure_plugin(&dir, &own));
++        }
++    }
++    dirs
++}
++
++/// The `_meta` entry that hands `dirs` to the agent, `None` when there are none.
++pub fn plugins_meta(dirs: &[PathBuf]) -> Option<Value> {
++    (!dirs.is_empty()).then(|| {
++        let plugins: Vec<Value> = dirs
++            .iter()
++            .map(|dir| json!({ "type": "local", "path": dir.to_string_lossy() }))
++            .collect();
++        json!({ "options": { "plugins": plugins } })
++    })
++}
++
++/// `dir` with a `skills` symlink to `target`: made when missing, re-pointed when it points
++/// elsewhere. The plugin directory is the symlink's only content.
++fn ensure_plugin(dir: &Path, target: &Path) -> Option<PathBuf> {
++    let link = dir.join("skills");
++    if std::fs::read_link(&link).is_ok_and(|current| current == target) {
++        return Some(dir.to_path_buf());
++    }
++    let made = std::fs::create_dir_all(dir).and_then(|()| {
++        if link.symlink_metadata().is_ok() {
++            std::fs::remove_file(&link)?;
++        }
++        symlink(target, &link)
++    });
++    match made {
++        Ok(()) => Some(dir.to_path_buf()),
++        Err(error) => {
++            log::warn!(
++                "zeo_skills event=plugin_dir_failed error={:?}",
++                error.to_string()
++            );
++            None
++        }
++    }
++}
++
++#[cfg(unix)]
++fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
++    std::os::unix::fs::symlink(target, link)
++}
++
++#[cfg(not(unix))]
++fn symlink(_target: &Path, _link: &Path) -> std::io::Result<()> {
++    Err(std::io::Error::new(
++        std::io::ErrorKind::Unsupported,
++        "skills plugins need symlinks",
++    ))
++}
++
++/// FNV-1a: a project's folder name must not change with the toolchain, as `DefaultHasher` may.
++fn fnv1a(bytes: &[u8]) -> u64 {
++    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
++        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
++    })
++}
++
++#[cfg(test)]
++#[path = "zeo_skills_plugin_tests.rs"]
++mod zeo_skills_plugin_tests;
+diff --git a/crates/agent_servers/src/zeo_skills_plugin_tests.rs b/crates/agent_servers/src/zeo_skills_plugin_tests.rs
+new file mode 100644
+index 0000000..e25dbc0
+--- /dev/null
++++ b/crates/agent_servers/src/zeo_skills_plugin_tests.rs
+@@ -0,0 +1,93 @@
++// Zeo proposal §6.69 step 2: Zeo's skills reach Plus as plugin directories. Filter:
++// `zeo_skills_plugin`.
++
++use std::path::Path;
++
++use super::*;
++
++fn mkdirs(path: &Path) {
++    std::fs::create_dir_all(path).expect("mkdir");
++}
++
++#[test]
++fn zeo_skills_plugin_links_both_skill_folders() {
++    let tmp = tempfile::tempdir().expect("tempdir");
++    let home = tmp.path().join("home");
++    let root = tmp.path().join("app");
++    let plugins = tmp.path().join("data/agent-skill-plugins");
++    mkdirs(&home.join(".agents/skills/deploy"));
++    mkdirs(&root.join(".agents/skills/review"));
++
++    let dirs = skill_plugin_dirs(Some(&root), &home, &plugins);
++    assert_eq!(dirs.len(), 2, "{dirs:?}");
++    assert_eq!(dirs[0], plugins.join("zeo-agents-skills"));
++    assert_eq!(
++        std::fs::read_link(dirs[0].join("skills")).expect("a symlink"),
++        home.join(".agents/skills")
++    );
++    assert!(
++        dirs[0].join("skills/deploy").is_dir(),
++        "the skill is reached through it"
++    );
++    assert!(dirs[1].ends_with("zeo-project-skills"));
++    assert_eq!(
++        std::fs::read_link(dirs[1].join("skills")).expect("a symlink"),
++        root.join(".agents/skills")
++    );
++    assert_eq!(
++        skill_plugin_dirs(Some(&root), &home, &plugins),
++        dirs,
++        "the same directories next time"
++    );
++}
++
++/// Hostile: no skills folder, no plugin -- an empty plugin would still be loaded.
++#[test]
++fn zeo_skills_plugin_skips_missing_folders() {
++    let tmp = tempfile::tempdir().expect("tempdir");
++    let dirs = skill_plugin_dirs(
++        Some(&tmp.path().join("app")),
++        &tmp.path().join("home"),
++        &tmp.path().join("plugins"),
++    );
++    assert!(dirs.is_empty(), "{dirs:?}");
++    assert_eq!(plugins_meta(&dirs), None);
++}
++
++#[test]
++fn zeo_skills_plugin_repoints_a_stale_link() {
++    let tmp = tempfile::tempdir().expect("tempdir");
++    let home = tmp.path().join("home");
++    let plugins = tmp.path().join("plugins");
++    mkdirs(&home.join(".agents/skills"));
++    mkdirs(&plugins.join("zeo-agents-skills"));
++    std::os::unix::fs::symlink(
++        tmp.path().join("elsewhere"),
++        plugins.join("zeo-agents-skills/skills"),
++    )
++    .expect("stale link");
++    let dirs = skill_plugin_dirs(None, &home, &plugins);
++    assert_eq!(
++        std::fs::read_link(dirs[0].join("skills")).expect("a symlink"),
++        home.join(".agents/skills")
++    );
++}
++
++#[test]
++fn zeo_skills_plugin_meta_is_the_sdks_local_plugin_list() {
++    let meta = plugins_meta(&[std::path::PathBuf::from("/d/zeo-agents-skills")]).expect("meta");
++    assert_eq!(
++        meta,
++        serde_json::json!({ "options": { "plugins": [
++            { "type": "local", "path": "/d/zeo-agents-skills" }
++        ]}})
++    );
++}
++
++#[test]
++fn zeo_skills_plugin_is_for_zeos_claude_adapters_only() {
++    assert!(reads_claude_code_options("claude-agent-acp-plus"));
++    assert!(reads_claude_code_options("claude-agent-tui"));
++    assert!(!reads_claude_code_options("claude-acp"));
++    assert!(!reads_claude_code_options("gemini"));
++}

@@ -1,0 +1,427 @@
+From 7308e33293c2312a4dddf4b1846cb7b63e3cd043 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sun, 22 Nov 2026 14:15:16 -0300
+Subject: [PATCH] agent_ui: the pinned message opens with a transition, and the
+ composer has a scrollbar
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo proposal §6.66, asks 91 and 96 (2026-11-22). Two changes to the two
+places a user message is read while it is long.
+
+The pinned card (0102, 0109, 0134) swapped its body instantly when the
+toggle expanded it. It now fades in while its body grows from the
+minimized row to its 160 px cap, over 150 ms with an ease-out, so a short
+message reaches its natural height early in the curve and stops growing.
+§6.52 ruled height animations out because the conversation list would lay
+out again on every frame; that holds for list items, not here: the pinned
+card is an absolute overlay outside the list, and the only thing that
+follows its height is the tasks card, which already reads
+`top_overlay_bottom` every prepaint. GPUI's `with_animation` draws a
+one-shot animation at its end state under reduce motion, so the setting is
+honoured without code of ours. Collapsing stays instant. The animation's
+element id carries the entry index; a collapsed card renders no expanded
+body, so its state is dropped and the next expand starts again from the
+row.
+
+The composer had no scrollbar at all, normal or expanded: `Editor::new`
+turns scrollbars on only for a full-mode editor, once, and the composer is
+built in auto-height mode (`set_mode` never revisits it); and its
+EditorStyle left `scrollbar_width` at 0, which makes the editor lay out no
+scrollbar. MessageEditor::new now turns the vertical scrollbar on, and the
+style sets ui::EDITOR_SCROLLBAR_WIDTH -- only while the draft has more rows
+than the composer shows (composer_scrollbar_width). The Xvfb proof found
+why: with the width always set, every composer and every sent message (they
+share MessageEditor) drew an empty track and a cursor marker on the right.
+Visibility then follows the user's `scrollbar.show`, as in any editor.
+Known limit, upstream's: an auto-height editor computes its wrap width
+without the scrollbar's margin (compute_auto_height_layout), so in the
+normal composer the scrollbar may overlay the last column; the expanded
+(full-mode) composer reserves the margin.
+
+Tests:
+- thread_view::tests::pinned_expand_tests (new; pin_a_message is shared
+  from pinned_avatar_tests): expanding_grows_from_the_minimized_row (the
+  first frame is no taller than the minimized body plus 4 px, the card is
+  open after 400 ms -- Red seen: "the first expanded frame is 163px, the
+  minimized body 20px"), reduce_motion_expands_at_once and
+  collapsing_is_instant (guards: they hold before and after).
+- message_editor::scrollbar_tests (new):
+  the_composer_reserves_a_vertical_scrollbar -- in the full-mode composer a
+  600-word paragraph wraps into more rows with `scrollbar.show = always`
+  than with `never`. Red seen with the style width at 0 (rows equal).
+  a_draft_that_fits_gets_no_scrollbar: no width for a draft that fits or
+  is not laid out yet. Red seen with the width always set.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 0dff8e5..5aed90a 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -16633,6 +16633,8 @@ mod tests {
+ 
+     mod pinned_avatar_tests;
+ 
++    mod pinned_expand_tests;
++
+     mod message_time_tests;
+ 
+     mod account_refresh_line_tests;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
+index 66acc01..e25cc34 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/pinned_message.rs
+@@ -11,7 +11,12 @@
+ //! on an inner area with the editor's background, while the card keeps its default surface.
+ 
+ use acp_thread::AgentThreadEntry;
+-use gpui::{AnyElement, Context, ListOffset, Pixels, canvas, px};
++use std::time::Duration;
++
++use gpui::{
++    Animation, AnimationExt as _, AnyElement, Context, ListOffset, Pixels, canvas, ease_out_quint,
++    px,
++};
+ use ui::{
+     IconButton, IconName, IconSize, Label, LabelSize, ScrollAxes, Scrollbars, TextSize, Tooltip,
+     WithScrollbar, prelude::*,
+@@ -23,6 +28,9 @@ use super::content_column::content_column;
+ /// The most an expanded pinned message shows before it scrolls.
+ const PINNED_EXPANDED_MAX_HEIGHT: f32 = 160.;
+ 
++/// How long the expanded body takes to fade in and grow to its cap (§6.66, ask 91).
++const PINNED_OPEN_DURATION: Duration = Duration::from_millis(150);
++
+ /// The minimized row's height: the toggle's button size, which the avatar's box and the body's
+ /// minimum height follow, so the three cannot drift apart.
+ const PINNED_ROW_HEIGHT: ButtonSize = ButtonSize::Default;
+@@ -106,7 +114,16 @@ impl ThreadView {
+         };
+         let line = first_line(&text).to_string();
+         let body = if expanded {
+-            div()
++            // §6.66 (ask 91): the body fades in while it grows from the minimized row to its cap.
++            // §6.52 kept height animations out of the conversation because its list would lay out
++            // again on every frame; this card is an overlay outside that list, and only the tasks
++            // card follows it, through `top_overlay_bottom`. Under reduce motion GPUI draws the
++            // end state at once. Collapsing stays instant.
++            let rem_size = window.rem_size();
++            let start =
++                PINNED_ROW_HEIGHT.rems().to_pixels(rem_size) - rems(0.25).to_pixels(rem_size);
++            let end = px(PINNED_EXPANDED_MAX_HEIGHT);
++            let open = div()
+                 .flex_1()
+                 .min_w_0()
+                 .max_h(px(PINNED_EXPANDED_MAX_HEIGHT))
+@@ -124,6 +141,19 @@ impl ThreadView {
+                         .tracked_scroll_handle(&self.pinned_message_scroll),
+                     window,
+                     cx,
++                );
++            div()
++                .flex_1()
++                .min_w_0()
++                .overflow_hidden()
++                .child(open)
++                .with_animation(
++                    ("thread-pinned-user-message-open", ix),
++                    Animation::new(PINNED_OPEN_DURATION).with_easing(ease_out_quint()),
++                    move |body, delta| {
++                        body.opacity(delta.clamp(0., 1.))
++                            .max_h(start + (end - start) * delta.clamp(0., 1.))
++                    },
+                 )
+                 .into_any_element()
+         } else {
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/pinned_avatar_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/pinned_avatar_tests.rs
+index 9a8c776..804bad6 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/tests/pinned_avatar_tests.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/tests/pinned_avatar_tests.rs
+@@ -13,7 +13,7 @@ use super::elicitation_decline_harness::*;
+ 
+ /// Sends `message`, streams a reply long enough to scroll, and scrolls past the message so
+ /// it is pinned at the top.
+-fn pin_a_message(
++pub(super) fn pin_a_message(
+     message: &str,
+     view: &Entity<ThreadView>,
+     thread: &Entity<AcpThread>,
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/pinned_expand_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/pinned_expand_tests.rs
+new file mode 100644
+index 0000000..05d9e6e
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/tests/pinned_expand_tests.rs
+@@ -0,0 +1,94 @@
++//! Zeo: the pinned user message opens with a short transition -- a fade while its body grows
++//! from the minimized row to its 160 px cap -- and opens at once under reduce motion; collapsing
++//! stays instant (proposal §6.66, ask 91). Filter: `pinned_expand_tests`.
++//!
++//! §6.52 ruled height animations out because the conversation list would lay out again on every
++//! frame. The pinned card is an overlay outside that list, so the objection does not hold here.
++//!
++//! Resolves to `crates/agent_ui/src/conversation_view/thread_view/tests/pinned_expand_tests.rs`.
++
++use std::time::Duration;
++
++use gpui::{Pixels, VisualTestContext, px};
++
++use super::elicitation_decline_harness::*;
++use super::pinned_avatar_tests::pin_a_message;
++
++/// Twenty lines: the expanded body reaches its cap and scrolls.
++fn long_message() -> String {
++    (0..20)
++        .map(|ix| format!("step {ix} of a long request"))
++        .collect::<Vec<_>>()
++        .join("\n")
++}
++
++fn body_height(cx: &mut VisualTestContext) -> Pixels {
++    cx.debug_bounds("thread-pinned-user-message-body")
++        .expect("the pinned message's body is painted")
++        .size
++        .height
++}
++
++fn expand(view: &gpui::Entity<super::super::ThreadView>, cx: &mut VisualTestContext) {
++    view.update(cx, |view, cx| {
++        view.pinned_message_expanded = Some(0);
++        cx.notify();
++    });
++    draw(cx);
++}
++
++#[gpui::test]
++async fn expanding_grows_from_the_minimized_row(cx: &mut gpui::TestAppContext) {
++    let (view, thread, mut cx) = setup(cx).await;
++    pin_a_message(&long_message(), &view, &thread, &mut cx);
++    let minimized = body_height(&mut cx);
++    expand(&view, &mut cx);
++    let first_frame = body_height(&mut cx);
++    assert!(
++        first_frame <= minimized + px(4.),
++        "the first expanded frame is {first_frame:?}, the minimized body {minimized:?}: \
++         the card opened at once"
++    );
++    cx.executor().advance_clock(Duration::from_millis(400));
++    draw(&mut cx);
++    let opened = body_height(&mut cx);
++    assert!(
++        opened >= px(150.),
++        "after the transition the body is {opened:?}, short of its 160 px cap"
++    );
++}
++
++/// Under reduce motion GPUI draws a one-shot animation at its end state: no transition at all.
++#[gpui::test]
++async fn reduce_motion_expands_at_once(cx: &mut gpui::TestAppContext) {
++    let (view, thread, mut cx) = setup(cx).await;
++    cx.update(|_, cx| cx.set_reduce_motion(true));
++    pin_a_message(&long_message(), &view, &thread, &mut cx);
++    expand(&view, &mut cx);
++    let first_frame = body_height(&mut cx);
++    assert!(
++        first_frame >= px(150.),
++        "with reduce motion the first frame is {first_frame:?}, not the open card"
++    );
++}
++
++/// Collapsing is instant: the minimized line comes back on the next frame.
++#[gpui::test]
++async fn collapsing_is_instant(cx: &mut gpui::TestAppContext) {
++    let (view, thread, mut cx) = setup(cx).await;
++    pin_a_message(&long_message(), &view, &thread, &mut cx);
++    let minimized = body_height(&mut cx);
++    expand(&view, &mut cx);
++    cx.executor().advance_clock(Duration::from_millis(400));
++    draw(&mut cx);
++    view.update(&mut cx, |view, cx| {
++        view.pinned_message_expanded = None;
++        cx.notify();
++    });
++    draw(&mut cx);
++    let collapsed = body_height(&mut cx);
++    assert!(
++        (collapsed - minimized).abs() <= px(0.5),
++        "collapsed to {collapsed:?}, the minimized body was {minimized:?}"
++    );
++}
+diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message_editor.rs
+index ec9af4a..fa848c1 100644
+--- a/crates/agent_ui/src/message_editor.rs
++++ b/crates/agent_ui/src/message_editor.rs
+@@ -534,6 +534,10 @@ impl MessageEditor {
+             editor.set_show_wrap_guides(false, cx);
+             editor.set_show_completions_on_input(Some(true));
+             editor.set_soft_wrap();
++            // Zeo §6.66 (ask 96): a draft that outgrows the composer scrolls with a scrollbar,
++            // normal or expanded. `Editor::new` turns scrollbars on only for a full-mode editor,
++            // once, and the composer starts in auto-height mode.
++            editor.set_show_vertical_scrollbar(true, cx);
+             editor.disable_mouse_wheel_zoom();
+             editor.set_use_modal_editing(true);
+             editor.set_context_menu_options(ContextMenuOptions {
+@@ -2304,8 +2308,23 @@ fn preview_toggle_affordance(showing: bool) -> (IconName, &'static str) {
+     }
+ }
+ 
++/// The composer's scrollbar width for a draft of `rows` display rows in a composer that shows
++/// `visible` of them (Zeo §6.66, ask 96): the editor's own width once the draft is taller than
++/// the composer, else none. With a width the editor reserves a track on the right and draws its
++/// markers there, even for a one-line draft or a sent message, which never scroll.
++pub(crate) fn composer_scrollbar_width(rows: u32, visible: Option<f64>) -> Pixels {
++    match visible {
++        Some(visible) if f64::from(rows) > visible.round() => ui::EDITOR_SCROLLBAR_WIDTH,
++        _ => Pixels::ZERO,
++    }
++}
++
+ impl Render for MessageEditor {
+     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++        let scrollbar_width = self.editor.update(cx, |editor, cx| {
++            let rows = editor.max_point(cx).row().0 + 1;
++            composer_scrollbar_width(rows, editor.visible_line_count())
++        });
+         v_flex()
+             .key_context("MessageEditor")
+             .on_action(cx.listener(Self::chat))
+@@ -2352,6 +2371,8 @@ impl Render for MessageEditor {
+                         text: text_style,
+                         syntax: cx.theme().syntax().clone(),
+                         inlay_hints_style: editor::make_inlay_hints_style(cx),
++                        // Zeo §6.66 (ask 96): the default width is 0, which draws no scrollbar.
++                        scrollbar_width,
+                         ..Default::default()
+                     },
+                 )
+@@ -2566,6 +2587,10 @@ fn find_matching_bracket(text: &str, open: char, close: char) -> Option<usize> {
+     None
+ }
+ 
++#[cfg(test)]
++#[path = "message_editor_scrollbar_tests.rs"]
++mod scrollbar_tests;
++
+ #[cfg(test)]
+ mod tests {
+     use std::{ops::Range, path::Path, path::PathBuf, rc::Rc, sync::Arc};
+diff --git a/crates/agent_ui/src/message_editor_scrollbar_tests.rs b/crates/agent_ui/src/message_editor_scrollbar_tests.rs
+new file mode 100644
+index 0000000..96527f2
+--- /dev/null
++++ b/crates/agent_ui/src/message_editor_scrollbar_tests.rs
+@@ -0,0 +1,111 @@
++//! Zeo: the composer reserves a vertical scrollbar (proposal §6.66, ask 96). Its editor was built
++//! in auto-height mode with scrollbars off, and its style left the scrollbar width at zero, so a
++//! draft that outgrew the composer -- normal or expanded -- scrolled with no scrollbar at all.
++//! Filter: `message_editor::scrollbar_tests`.
++//!
++//! The editor reserves the scrollbar's width on the right whenever it may show one, so the
++//! effect is measured where it lands: in the expanded (full-mode) composer a long paragraph wraps
++//! into more rows with the scrollbar than with `scrollbar.show = never`. An auto-height editor
++//! wraps without that margin (`compute_auto_height_layout`), so the normal composer's scrollbar
++//! is proven on Xvfb instead.
++
++use std::path::Path;
++
++use editor::EditorMode;
++use fs::FakeFs;
++use gpui::{
++    AppContext as _, TestAppContext, UpdateGlobal as _, VisualTestContext, point, px, size,
++};
++use project::Project;
++use serde_json::json;
++use settings::{SettingsStore, ShowScrollbar};
++use ui::{IntoElement as _, ParentElement as _, Styled as _, div};
++use util::path;
++use workspace::MultiWorkspace;
++
++use crate::conversation_view::tests::init_test;
++use crate::message_editor::MessageEditor;
++
++#[gpui::test]
++async fn the_composer_reserves_a_vertical_scrollbar(cx: &mut TestAppContext) {
++    init_test(cx);
++    let fs = FakeFs::new(cx.executor());
++    fs.insert_tree("/project", json!({"file": ""})).await;
++    let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
++    let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
++    let message_editor = cx.update(|window, cx| {
++        cx.new(|cx| {
++            MessageEditor::new(
++                workspace.downgrade(),
++                project.downgrade(),
++                None,
++                Default::default(),
++                "Test Agent".into(),
++                "Test",
++                EditorMode::full(),
++                window,
++                cx,
++            )
++        })
++    });
++    let editor = message_editor.update(cx, |message_editor, _| message_editor.editor.clone());
++    let paragraph = vec!["a"; 600].join(" ");
++    editor.update_in(cx, |editor, window, cx| {
++        editor.set_text(paragraph, window, cx)
++    });
++
++    let rows = |show: ShowScrollbar, cx: &mut VisualTestContext| {
++        cx.update(|_, cx| {
++            SettingsStore::update_global(cx, |store, cx| {
++                store.update_user_settings(cx, |settings| {
++                    settings.editor.scrollbar.get_or_insert_default().show = Some(show);
++                });
++            });
++        });
++        cx.run_until_parked();
++        for _ in 0..2 {
++            // A box of the panel's size: as a bare root the composer's flex children get no
++            // width, and every word wraps alone.
++            cx.draw(point(px(0.), px(0.)), size(px(400.), px(200.)), |_, _| {
++                div()
++                    .flex()
++                    .size_full()
++                    .child(message_editor.clone())
++                    .into_any_element()
++            });
++            cx.run_until_parked();
++        }
++        editor.update(cx, |editor, cx| editor.max_point(cx).row().0)
++    };
++    let without = rows(ShowScrollbar::Never, cx);
++    let with = rows(ShowScrollbar::Always, cx);
++    assert!(
++        with > without,
++        "the paragraph wraps into {with} rows with the scrollbar and {without} without: \
++         the composer reserves no room for one"
++    );
++}
++
++/// Hostile: a draft that fits -- and a sent message, which grows instead of scrolling -- gets no
++/// scrollbar, so no empty track or cursor marker sits beside a short message.
++#[test]
++fn a_draft_that_fits_gets_no_scrollbar() {
++    use super::composer_scrollbar_width;
++    assert_eq!(composer_scrollbar_width(1, Some(8.)), px(0.));
++    assert_eq!(
++        composer_scrollbar_width(8, Some(8.)),
++        px(0.),
++        "exactly full"
++    );
++    assert_eq!(
++        composer_scrollbar_width(3, None),
++        px(0.),
++        "not laid out yet"
++    );
++    assert!(
++        composer_scrollbar_width(9, Some(8.)) > px(0.),
++        "one row past the composer"
++    );
++}

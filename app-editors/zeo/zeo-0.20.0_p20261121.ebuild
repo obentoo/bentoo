@@ -2299,6 +2299,15 @@ src_prepare() {
 			"${FILESDIR}/0139-agent-ui-the-collapsed-terminal-card-is-one-row.patch"
 			# 0140: "Open Recent File" on the Welcome page, after "Open Project".
 			"${FILESDIR}/0140-workspace-open-recent-file-on-the-welcome-page.patch"
+			# 0142: the pinned message opens with a fade and a growing height; the composer
+			# gets a scrollbar once a draft outgrows it.
+			"${FILESDIR}/0142-agent-ui-pinned-message-transition-and-composer-scrollbar.patch"
+			# 0143: card buttons say the state; the minimized tasks card ends in Maximize.
+			"${FILESDIR}/0143-agent-ui-card-icons-say-the-state-and-the-tasks-pill-opens.patch"
+			# 0145: a running task after the turn shows the background spinner; Plus has Claude's icon.
+			"${FILESDIR}/0145-sidebar-a-running-task-after-the-turn-shows-the-background-spinner.patch"
+			# 0147: Zeo's skills reach Plus as local plugin directories.
+			"${FILESDIR}/0147-agent-servers-zeo-skills-reach-plus-as-plugins.patch"
 		)
 	fi
 
@@ -2323,6 +2332,15 @@ src_prepare() {
 		# 0141 (proposal §6.54): jail limits, a state folder and login per project, the
 		# disk-quota pause and the Stop button. Needs ai-jail >= 3.5.0-r1 (RDEPEND).
 		PATCHES+=( "${FILESDIR}/0141-agent-sandbox-jail-limits-and-a-state-root-per-project.patch" )
+		# 0144 (§6.62): the limits as - / + steppers. 0146 (§6.63, §6.64, §6.69): host
+		# masks, opt-in CPU reservation, agent_sandbox.mask_host (probe-gated: --mask-host
+		# comes with ai-jail 3.5.0-r2, and an ai-jail without it refuses only that setting,
+		# so the RDEPEND stays at -r1), connectors off in jails, unreachable MCP servers
+		# left out, skills mapped read-only.
+		PATCHES+=(
+			"${FILESDIR}/0144-settings-ui-the-jail-s-limits-are-steppers.patch"
+			"${FILESDIR}/0146-agent-sandbox-hide-the-host-pin-cpus-drop-unreachable-mcp-servers.patch"
+		)
 	fi
 
 	# 0058 (story 045): the browser sidebar -- zeo-browser reads and drives the
