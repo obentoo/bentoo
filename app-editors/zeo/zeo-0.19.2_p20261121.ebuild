@@ -1664,9 +1664,11 @@ KEYWORDS="~amd64"
 # sandbox for AI coding agents. Since story 043 it also applies patch 0057, the
 # Agent Sandbox: a per-project switch in Settings -> AI -> Agent Sandbox
 # (ai-jail) that starts the Claude adapters through ai-jail with a generated
-# command, a jail icon in the agent panel and an ai-memory section. It stays
-# off by default: the jail needs a one-time login in its own config directory,
-# and the portable build leaves the group out (series `# @default: off`).
+# command, a jail icon in the agent panel and an ai-memory section. On by default
+# since 0.19.2 (operator, 2026-11-22), as in the Linux prebuilt builds: compiling it
+# in turns nothing on -- agent_sandbox.enabled stays false until a project's lock
+# is switched on, and without ai-jail installed the lock is disabled and says
+# what to install. Windows leaves the group out (series `# @platform: linux`).
 #
 # inspector is the GPUI UI inspector.
 #
@@ -1677,7 +1679,7 @@ KEYWORDS="~amd64"
 # Each installs a binary under a name app-editors/zed uses -- collab,
 # zed-extension, zed-remote-server -- and renaming Zed's server infrastructure is
 # not what a rebrand of the editor is for.
-IUSE="+X ai-jail +browser-extension +claude-agent-acp-plus +claude-agent-acp-tui
+IUSE="+X +ai-jail +browser-extension +claude-agent-acp-plus +claude-agent-acp-tui
 	+claude-code-ide +devtools-bridge +devtools-panel +epic inspector +mimalloc
 	neovim screen-capture test tracy +voice +wayland"
 # BENTOO-DIVERGENCE: REQUIRED_USE - the || ( X wayland ) clause, which follows

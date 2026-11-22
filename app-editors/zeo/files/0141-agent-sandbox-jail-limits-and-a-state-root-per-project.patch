@@ -561,10 +561,10 @@ index 0000000..99d6638
 +    }
 +}
 diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
-index 01c4622..52236e1 100644
+index 01c4622..3612630 100644
 --- a/crates/agent_sandbox/src/launch.rs
 +++ b/crates/agent_sandbox/src/launch.rs
-@@ -101,6 +101,15 @@ pub struct LaunchRecord {
+@@ -101,6 +101,18 @@ pub struct LaunchRecord {
      pub memory_fingerprint: u64,
      /// The `agent_sandbox.projects` key the start used, if any.
      pub settings_key: Option<String>,
@@ -577,10 +577,13 @@ index 01c4622..52236e1 100644
 +    /// login started from Zeo runs on the host, where the browser's callback can reach it, and
 +    /// is pointed here: without it the token went to `~/.claude` and the jail never saw it.
 +    pub claude_config_dir: Option<PathBuf>,
++    /// A start with the jail off found no ai-jail to turn it on with: the thread's lock is shown
++    /// disabled, saying what to install (operator, 2026-11-22). Checked at launch, not at render.
++    pub ai_jail_missing: bool,
  }
  
  pub enum LaunchDecision {
-@@ -191,6 +200,14 @@ pub enum LaunchCause {
+@@ -191,6 +203,14 @@ pub enum LaunchCause {
          error: io::Error,
      },
      InvalidMemoryEndpoint(InvalidMemoryEndpoint),
@@ -595,7 +598,7 @@ index 01c4622..52236e1 100644
  }
  
  impl LaunchCause {
-@@ -213,6 +230,8 @@ impl LaunchCause {
+@@ -213,6 +233,8 @@ impl LaunchCause {
              Self::SymlinkedMount { .. } => "symlinked_mount",
              Self::ZedDirCreate { .. } => "zed_dir_create",
              Self::InvalidMemoryEndpoint(_) => "invalid_memory_endpoint",
@@ -604,7 +607,7 @@ index 01c4622..52236e1 100644
          }
      }
  }
-@@ -294,6 +313,15 @@ impl fmt::Display for LaunchCause {
+@@ -294,6 +316,15 @@ impl fmt::Display for LaunchCause {
              Self::ZedDirCreate { dir, error } => {
                  write!(f, "Could not create {}: {error}.", dir.display())
              }
@@ -620,7 +623,7 @@ index 01c4622..52236e1 100644
              Self::InvalidMemoryEndpoint(error) => write!(f, "{error}"),
          }
      }
-@@ -490,6 +518,10 @@ struct Checked {
+@@ -490,6 +521,10 @@ struct Checked {
      ai_jail: PathBuf,
      version: Version,
      claude_dir: PathBuf,
@@ -631,7 +634,24 @@ index 01c4622..52236e1 100644
      rw_maps: Vec<PathBuf>,
      allow_hosts: Vec<String>,
      forward_ports: Vec<u16>,
-@@ -545,6 +577,8 @@ impl LocalLaunch {
+@@ -519,12 +554,10 @@ impl LocalLaunch {
+         let key = resolve_project_key(self.sandbox.project_keys(), &root).map(str::to_string);
+         let policy = self.sandbox.policy_for_key(key.as_deref());
+         if !policy.enabled {
+-            return LaunchPlan::without_spawn(LaunchDecision::Unchanged(self.record(
+-                root,
+-                Reason::Off,
+-                &policy,
+-                key,
+-            )));
++            let mut record = self.record(root, Reason::Off, &policy, key);
++            record.ai_jail_missing = probe::locate(self.sandbox.ai_jail_path.as_deref())
++                .is_none_or(|path| !path.is_file());
++            return LaunchPlan::without_spawn(LaunchDecision::Unchanged(record));
+         }
+         let checked = match self.check(&root, &policy).await {
+             Ok(checked) => checked,
+@@ -545,6 +578,8 @@ impl LocalLaunch {
              ai_jail: &checked.ai_jail,
              project_root: &checked.root,
              claude_dir: &checked.claude_dir,
@@ -640,7 +660,7 @@ index 01c4622..52236e1 100644
              rw_maps: &checked.rw_maps,
              allow_hosts: &checked.allow_hosts,
              forward_ports: &checked.forward_ports,
-@@ -556,7 +590,8 @@ impl LocalLaunch {
+@@ -556,7 +591,8 @@ impl LocalLaunch {
              jailed = keep_loopback_off_proxy(jailed);
          }
          record.ai_jail_version = Some(checked.version);
@@ -650,7 +670,7 @@ index 01c4622..52236e1 100644
              .chain(checked.rw_maps)
              .collect();
          record.allow_hosts = checked.allow_hosts;
-@@ -634,15 +669,44 @@ impl LocalLaunch {
+@@ -634,15 +670,44 @@ impl LocalLaunch {
              .map_err(|error| no_version(LaunchCause::VersionUnreadable(error)))?;
          let refuse = |cause| Box::new((cause, Some(binary.version.clone())));
  
@@ -703,7 +723,7 @@ index 01c4622..52236e1 100644
          };
  
          let mut rw_maps: Vec<PathBuf> = Vec::with_capacity(policy.rw_maps.len());
-@@ -661,7 +725,8 @@ impl LocalLaunch {
+@@ -661,7 +726,8 @@ impl LocalLaunch {
          }
          validate::check_limits(rw_maps.len(), allow_hosts.len())
              .map_err(|error| refuse(LaunchCause::Limit(error)))?;
@@ -713,7 +733,7 @@ index 01c4622..52236e1 100644
  
          let env_names = self.forwarded_env_names().map_err(refuse)?;
  
-@@ -706,6 +771,8 @@ impl LocalLaunch {
+@@ -706,6 +772,8 @@ impl LocalLaunch {
              ai_jail,
              version: binary.version,
              claude_dir,
@@ -722,17 +742,18 @@ index 01c4622..52236e1 100644
              rw_maps,
              allow_hosts,
              forward_ports,
-@@ -757,6 +824,9 @@ impl LocalLaunch {
+@@ -757,6 +825,10 @@ impl LocalLaunch {
              settings_fingerprint: settings_fingerprint(&self.sandbox, policy),
              memory_fingerprint: memory_fingerprint(&self.memory),
              settings_key,
 +            jail_pid: None,
 +            paused: false,
 +            claude_config_dir: None,
++            ai_jail_missing: false,
          }
      }
  
-@@ -986,9 +1056,55 @@ fn settings_fingerprint(sandbox: &AgentSandboxSettings, policy: &ProjectPolicy)
+@@ -986,9 +1058,55 @@ fn settings_fingerprint(sandbox: &AgentSandboxSettings, policy: &ProjectPolicy)
      policy.allow_hosts.hash(&mut hasher);
      sandbox.claude_config_dir.hash(&mut hasher);
      sandbox.ai_jail_path.hash(&mut hasher);
@@ -788,7 +809,7 @@ index 01c4622..52236e1 100644
  fn memory_fingerprint(memory: &AgentMemorySettings) -> u64 {
      let mut hasher = DefaultHasher::new();
      memory.enabled.hash(&mut hasher);
-@@ -1105,11 +1221,73 @@ impl LaunchRegistry {
+@@ -1105,11 +1223,73 @@ impl LaunchRegistry {
      }
  
      /// Removes this launch only; a later launch of the same agent and root stays.
@@ -865,7 +886,7 @@ index 01c4622..52236e1 100644
          }
      }
  
-@@ -1127,3 +1305,79 @@ impl LaunchRegistry {
+@@ -1127,3 +1307,79 @@ impl LaunchRegistry {
              .unwrap_or_default()
      }
  }
@@ -946,7 +967,7 @@ index 01c4622..52236e1 100644
 +    .detach();
 +}
 diff --git a/crates/agent_sandbox/src/launch_tests.rs b/crates/agent_sandbox/src/launch_tests.rs
-index cc7ef46..a9fcbb4 100644
+index cc7ef46..f7e6dde 100644
 --- a/crates/agent_sandbox/src/launch_tests.rs
 +++ b/crates/agent_sandbox/src/launch_tests.rs
 @@ -49,21 +49,21 @@ use settings::{Settings as _, SettingsStore};
@@ -1082,22 +1103,23 @@ index cc7ef46..a9fcbb4 100644
                  "enabled": true,
                  "ai_jail_path": f.ai_jail,
                  "claude_config_dir": claude_dir,
-@@ -917,6 +922,9 @@ mod run_additions {
+@@ -917,6 +922,10 @@ mod run_additions {
              settings_fingerprint: 0,
              memory_fingerprint: 0,
              settings_key: None,
 +            jail_pid: None,
 +            paused: false,
 +            claude_config_dir: None,
++            ai_jail_missing: false,
          };
          cx.update(|cx| {
              let first = LaunchRegistry::register(record("plus", "/w/app", 1), cx);
 diff --git a/crates/agent_sandbox/src/limits_tests.rs b/crates/agent_sandbox/src/limits_tests.rs
 new file mode 100644
-index 0000000..5dcfcbe
+index 0000000..3b6b531
 --- /dev/null
 +++ b/crates/agent_sandbox/src/limits_tests.rs
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,270 @@
 +// Zeo next proposal §6.54 (ask 78): resource limits and the jail's own state root.
 +// Filter: `limits_tests`.
 +
@@ -1341,6 +1363,33 @@ index 0000000..5dcfcbe
 +        "ends with the launch"
 +    );
 +}
++
++fn unchanged(decision: crate::launch::LaunchDecision) -> crate::launch::LaunchRecord {
++    match decision {
++        crate::launch::LaunchDecision::Unchanged(record) => record,
++        _ => panic!("expected an unjailed start"),
++    }
++}
++
++#[gpui::test]
++async fn a_start_with_the_jail_off_records_whether_ai_jail_is_installed(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    set_user_settings(sandbox(&f, false, Value::Null, memory_off()), cx);
++    let project = project(&f, cx).await;
++    let record = unchanged(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    assert!(
++        !record.ai_jail_missing,
++        "ai-jail is there: the lock can turn it on"
++    );
++
++    std::fs::remove_file(&f.ai_jail).unwrap();
++    let record = unchanged(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    assert!(
++        record.ai_jail_missing,
++        "no ai-jail: the thread's lock is disabled and says what to install"
++    );
++}
 diff --git a/crates/agent_sandbox/src/probe.rs b/crates/agent_sandbox/src/probe.rs
 index 4895ab4..76cb7e8 100644
 --- a/crates/agent_sandbox/src/probe.rs
@@ -1495,7 +1544,7 @@ index 4895ab4..76cb7e8 100644
      );
  }
 diff --git a/crates/agent_sandbox/src/roundtrip_tests.rs b/crates/agent_sandbox/src/roundtrip_tests.rs
-index 3cebda1..99bbbc9 100644
+index 3cebda1..877eaad 100644
 --- a/crates/agent_sandbox/src/roundtrip_tests.rs
 +++ b/crates/agent_sandbox/src/roundtrip_tests.rs
 @@ -72,6 +72,8 @@ async fn roundtrip_page_write_to_launch_to_registry_to_drift(cx: &mut TestAppCon
@@ -1507,23 +1556,25 @@ index 3cebda1..99bbbc9 100644
              "enabled": false,
              "ai_jail_path": ai_jail,
              "claude_config_dir": claude_dir,
-@@ -232,6 +234,9 @@ fn roundtrip_contract_shapes_carry_every_field_the_consumers_read(cx: &mut TestA
+@@ -232,6 +234,10 @@ fn roundtrip_contract_shapes_carry_every_field_the_consumers_read(cx: &mut TestA
          settings_fingerprint: 1,
          memory_fingerprint: 2,
          settings_key: Some("/work/app".to_string()),
 +        jail_pid: None,
 +        paused: false,
 +        claude_config_dir: None,
++        ai_jail_missing: false,
      };
      cx.update(|cx| {
          LaunchRegistry::register(record.clone(), cx);
-@@ -255,6 +260,9 @@ fn roundtrip_contract_shapes_carry_every_field_the_consumers_read(cx: &mut TestA
+@@ -255,6 +261,10 @@ fn roundtrip_contract_shapes_carry_every_field_the_consumers_read(cx: &mut TestA
              settings_fingerprint: _,
              memory_fingerprint: _,
              settings_key: _,
 +            jail_pid: _,
 +            paused: _,
 +            claude_config_dir: _,
++            ai_jail_missing: _,
          } = &stored;
          assert_eq!(*reason, Reason::On);
          assert_eq!(
@@ -1965,10 +2016,10 @@ index 0000000..b8fddc6
 +mod agent_jail_login_tests;
 diff --git a/crates/agent_ui/src/agent_jail_login_tests.rs b/crates/agent_ui/src/agent_jail_login_tests.rs
 new file mode 100644
-index 0000000..0c41560
+index 0000000..6362710
 --- /dev/null
 +++ b/crates/agent_ui/src/agent_jail_login_tests.rs
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,83 @@
 +// Zeo next proposal §6.54: the login Zeo starts for a jailed agent writes to the jail's own
 +// Claude config directory. Filter: `agent_jail_login`.
 +
@@ -2003,6 +2054,7 @@ index 0000000..0c41560
 +        jail_pid: None,
 +        paused: false,
 +        claude_config_dir: claude_config_dir.map(PathBuf::from),
++        ai_jail_missing: false,
 +    }
 +}
 +
@@ -2051,11 +2103,351 @@ index 0000000..0c41560
 +        "another agent's jail says nothing about this login"
 +    );
 +}
+diff --git a/crates/agent_ui/src/agent_jail_restart.rs b/crates/agent_ui/src/agent_jail_restart.rs
+new file mode 100644
+index 0000000..6665a19
+--- /dev/null
++++ b/crates/agent_ui/src/agent_jail_restart.rs
+@@ -0,0 +1,177 @@
++//! Restarting an agent because its jail was turned on or off (Zeo next proposal §6.50, §6.54).
++//!
++//! The restart resumes the thread's session, and Claude keeps a session's transcript under its
++//! config directory: `<config>/projects/<cwd with every non-alphanumeric as '-'>/<id>.jsonl`.
++//! Since §6.54 a jailed agent has a config directory of its own per project, so the restarted
++//! agent looked for the transcript in a directory that never had it and answered "Resource not
++//! found" (operator, 2026-11-22). The transcript is carried across first; and a session with no
++//! transcript anywhere (no message yet, or only turns that failed before Claude wrote one) has
++//! nothing to resume, so the restart starts a new session instead.
++
++use std::io;
++use std::path::{Path, PathBuf};
++
++use agent_sandbox::launch::project_state_dir;
++use agent_sandbox::validate::expand_tilde;
++use agent_sandbox::{AgentSandboxSettings, LaunchRegistry};
++use gpui::{App, Entity, Task};
++use project::{Project, agent_server_store::AgentId};
++use settings::Settings as _;
++
++/// The project folder name Claude gives a working directory: every character that is not an
++/// ASCII letter or digit becomes `-` (`/home/u/app` → `-home-u-app`).
++pub(crate) fn transcript_folder(cwd: &Path) -> String {
++    cwd.to_string_lossy()
++        .chars()
++        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
++        .collect()
++}
++
++/// The config directory an agent outside the jail uses: Zeo's own `CLAUDE_CONFIG_DIR`, or
++/// `~/.claude`.
++pub(crate) fn host_config_dir(env_config_dir: Option<PathBuf>, home: &Path) -> PathBuf {
++    env_config_dir.unwrap_or_else(|| home.join(".claude"))
++}
++
++/// The config directory the agent will use once restarted under the settings of now: the
++/// project's own state folder when the jail is on, the host's otherwise.
++pub(crate) fn next_config_dir(
++    sandbox: &AgentSandboxSettings,
++    root: &Path,
++    canonical_root: &Path,
++    host: &Path,
++    home: &Path,
++) -> PathBuf {
++    if sandbox.effective_enabled(root) {
++        project_state_dir(&expand_tilde(&sandbox.state_root, home), canonical_root).join("claude")
++    } else {
++        host.to_path_buf()
++    }
++}
++
++/// The copy a restart for the jail needs before it resumes `session_id`: from the directory the
++/// running agent uses to the one the restarted agent will. Resolves to whether the restarted
++/// agent will find the session's transcript, which decides between resuming it and starting a
++/// new one. `None` when there is no project root.
++pub(crate) fn plan_carry(
++    agent_id: &AgentId,
++    project: &Entity<Project>,
++    session_id: String,
++    cx: &App,
++) -> Option<Task<bool>> {
++    let root = agent_sandbox::launch::project_root(project, cx)?;
++    let home = paths::home_dir().clone();
++    let host = host_config_dir(
++        std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
++        &home,
++    );
++    let from = LaunchRegistry::get(agent_id, &root, cx)
++        .and_then(|record| record.claude_config_dir)
++        .unwrap_or_else(|| host.clone());
++    let sandbox = AgentSandboxSettings::get_global(cx).clone();
++    Some(cx.background_executor().spawn(async move {
++        // The jail runs in the canonical root; an agent outside it, in the folder as opened.
++        let canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
++        let to = next_config_dir(&sandbox, &root, &canonical, &host, &home);
++        let cwds = [canonical, root];
++        let carried = carry_transcript(&from, &to, &cwds, &session_id);
++        let resumable = has_transcript(&to, &cwds, &session_id);
++        match carried {
++            Ok(copied) => log::info!(
++                "agent_sandbox event=transcript_carry session={session_id} copied={copied} to={}",
++                to.display()
++            ),
++            Err(error) => log::error!(
++                "agent_sandbox event=transcript_carry_failed session={session_id} to={} error={error}",
++                to.display()
++            ),
++        }
++        resumable
++    }))
++}
++
++/// Whether `config` holds session `session_id`'s transcript under one of `cwds`.
++pub(crate) fn has_transcript(config: &Path, cwds: &[PathBuf], session_id: &str) -> bool {
++    cwds.iter().any(|cwd| {
++        config
++            .join("projects")
++            .join(transcript_folder(cwd))
++            .join(format!("{session_id}.jsonl"))
++            .is_file()
++    })
++}
++
++/// Copies session `session_id`'s transcript (and its folder of sub-agent transcripts, when
++/// there is one) from `from` to `to`, under the first of `cwds` that holds it. Nothing is
++/// overwritten. `Ok(true)` when something was copied.
++pub(crate) fn carry_transcript(
++    from: &Path,
++    to: &Path,
++    cwds: &[PathBuf],
++    session_id: &str,
++) -> io::Result<bool> {
++    if from == to {
++        return Ok(false);
++    }
++    for cwd in cwds {
++        let folder = transcript_folder(cwd);
++        let source = from.join("projects").join(&folder);
++        let file = source.join(format!("{session_id}.jsonl"));
++        if !file.is_file() {
++            continue;
++        }
++        let target = to.join("projects").join(&folder);
++        create_private_dirs(&target)?;
++        let mut copied = copy_new(&file, &target.join(format!("{session_id}.jsonl")))?;
++        let sub_agents = source.join(session_id);
++        if sub_agents.is_dir() {
++            copied |= copy_tree_new(&sub_agents, &target.join(session_id))?;
++        }
++        return Ok(copied);
++    }
++    Ok(false)
++}
++
++fn copy_new(from: &Path, to: &Path) -> io::Result<bool> {
++    if to.symlink_metadata().is_ok() {
++        return Ok(false);
++    }
++    std::fs::copy(from, to)?;
++    Ok(true)
++}
++
++fn copy_tree_new(from: &Path, to: &Path) -> io::Result<bool> {
++    create_private_dirs(to)?;
++    let mut copied = false;
++    for entry in std::fs::read_dir(from)? {
++        let entry = entry?;
++        let kind = entry.file_type()?;
++        let target = to.join(entry.file_name());
++        if kind.is_dir() {
++            copied |= copy_tree_new(&entry.path(), &target)?;
++        } else if kind.is_file() {
++            copied |= copy_new(&entry.path(), &target)?;
++        }
++    }
++    Ok(copied)
++}
++
++/// The transcripts hold the conversation: they stay readable by their owner only.
++fn create_private_dirs(path: &Path) -> io::Result<()> {
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::DirBuilderExt as _;
++        std::fs::DirBuilder::new()
++            .recursive(true)
++            .mode(0o700)
++            .create(path)
++    }
++    #[cfg(not(unix))]
++    {
++        std::fs::create_dir_all(path)
++    }
++}
++
++#[cfg(test)]
++#[path = "agent_jail_restart_tests.rs"]
++mod agent_jail_restart_tests;
+diff --git a/crates/agent_ui/src/agent_jail_restart_tests.rs b/crates/agent_ui/src/agent_jail_restart_tests.rs
+new file mode 100644
+index 0000000..60a11a5
+--- /dev/null
++++ b/crates/agent_ui/src/agent_jail_restart_tests.rs
+@@ -0,0 +1,114 @@
++// Zeo next proposal §6.50/§6.54: a restart for the jail keeps the session. Filter:
++// `agent_jail_restart`.
++
++use std::path::{Path, PathBuf};
++
++use super::{carry_transcript, host_config_dir, transcript_folder};
++
++const SESSION: &str = "3e9d0351-0ad9-4a35-9fd9-73b132034533";
++
++#[test]
++fn agent_jail_restart_names_the_folder_as_claude_does() {
++    assert_eq!(
++        transcript_folder(Path::new("/home/otaku/Desktop/test")),
++        "-home-otaku-Desktop-test",
++        "the folder seen in a real state directory"
++    );
++    assert_eq!(transcript_folder(Path::new("/w/my app.v2")), "-w-my-app-v2");
++}
++
++#[test]
++fn agent_jail_restart_host_dir_honours_claude_config_dir() {
++    let home = Path::new("/home/u");
++    assert_eq!(
++        host_config_dir(None, home),
++        PathBuf::from("/home/u/.claude")
++    );
++    assert_eq!(
++        host_config_dir(Some(PathBuf::from("/c")), home),
++        PathBuf::from("/c")
++    );
++}
++
++#[test]
++fn agent_jail_restart_carries_the_transcript_into_the_jail() {
++    let base = tempfile::tempdir().unwrap();
++    let host = base.path().join("host");
++    let jail = base.path().join("jail/claude");
++    let cwd = PathBuf::from("/home/u/app");
++    let folder = host.join("projects").join(transcript_folder(&cwd));
++    std::fs::create_dir_all(folder.join(SESSION).join("subagents")).unwrap();
++    std::fs::write(folder.join(format!("{SESSION}.jsonl")), "{\"turn\":1}\n").unwrap();
++    std::fs::write(folder.join(SESSION).join("subagents/a.jsonl"), "{}\n").unwrap();
++
++    assert!(carry_transcript(&host, &jail, std::slice::from_ref(&cwd), SESSION).unwrap());
++    let target = jail.join("projects").join(transcript_folder(&cwd));
++    assert_eq!(
++        std::fs::read_to_string(target.join(format!("{SESSION}.jsonl"))).unwrap(),
++        "{\"turn\":1}\n",
++        "the restarted agent finds the session it resumes"
++    );
++    assert!(target.join(SESSION).join("subagents/a.jsonl").is_file());
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::PermissionsExt as _;
++        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
++        assert_eq!(mode, 0o700, "a conversation stays private");
++    }
++    assert!(
++        !carry_transcript(&host, &jail, &[cwd], SESSION).unwrap(),
++        "a second restart copies nothing and overwrites nothing"
++    );
++}
++
++#[test]
++fn agent_jail_restart_finds_the_transcript_under_either_root() {
++    let base = tempfile::tempdir().unwrap();
++    let host = base.path().join("host");
++    let jail = base.path().join("jail");
++    let link = PathBuf::from("/home/u/link-to-app");
++    let canonical = PathBuf::from("/srv/app");
++    let folder = host.join("projects").join(transcript_folder(&link));
++    std::fs::create_dir_all(&folder).unwrap();
++    std::fs::write(folder.join(format!("{SESSION}.jsonl")), "x").unwrap();
++    assert!(
++        carry_transcript(&host, &jail, &[canonical, link.clone()], SESSION).unwrap(),
++        "an agent outside the jail ran in the folder as opened, not canonicalized"
++    );
++    assert!(
++        jail.join("projects")
++            .join(transcript_folder(&link))
++            .join(format!("{SESSION}.jsonl"))
++            .is_file()
++    );
++}
++
++#[test]
++fn agent_jail_restart_without_a_transcript_copies_nothing() {
++    let base = tempfile::tempdir().unwrap();
++    assert!(
++        !carry_transcript(
++            &base.path().join("host"),
++            &base.path().join("jail"),
++            &[PathBuf::from("/w/app")],
++            SESSION
++        )
++        .unwrap(),
++        "an empty thread has no transcript: it starts a new session instead"
++    );
++}
++
++#[test]
++fn agent_jail_restart_resumes_only_a_session_it_will_find() {
++    let base = tempfile::tempdir().unwrap();
++    let jail = base.path().join("jail");
++    let cwd = PathBuf::from("/w/app");
++    assert!(
++        !super::has_transcript(&jail, std::slice::from_ref(&cwd), SESSION),
++        "nothing to resume: a new session, not \"Resource not found\""
++    );
++    let folder = jail.join("projects").join(transcript_folder(&cwd));
++    std::fs::create_dir_all(&folder).unwrap();
++    std::fs::write(folder.join(format!("{SESSION}.jsonl")), "x").unwrap();
++    assert!(super::has_transcript(&jail, &[cwd], SESSION));
++}
 diff --git a/crates/agent_ui/src/agent_jail_status.rs b/crates/agent_ui/src/agent_jail_status.rs
-index 71ef764..b36d97e 100644
+index 71ef764..850e12e 100644
 --- a/crates/agent_ui/src/agent_jail_status.rs
 +++ b/crates/agent_ui/src/agent_jail_status.rs
-@@ -163,6 +163,7 @@ fn list_line(label: &str, items: impl Iterator<Item = String>) -> SharedString {
+@@ -21,6 +21,8 @@ pub struct JailStatusSummary {
+     pub lines: Vec<SharedString>,
+     /// A sandbox setting the running agent does not have yet (§6.50).
+     pub pending: Option<JailPending>,
++    /// No ai-jail is installed: the lock is disabled, its tooltip says what to install.
++    pub unavailable: bool,
+ }
+ 
+ /// The sandbox setting changed since the running agent started, and a restart applies it
+@@ -71,6 +73,9 @@ impl JailStatusSummary {
+ 
+ /// The icon's presentation for `record`; `drifted` is whether the settings of now differ from
+ /// those the agent was started with (R5.4).
++/// The tooltip of a disabled lock: the sandbox needs ai-jail (operator, 2026-11-22).
++pub const AI_JAIL_MISSING: &str = "The agent sandbox needs ai-jail, which is not installed. Install sys-apps/ai-jail 3.5.0-r1 or later, then start a new thread to turn the sandbox on.";
++
+ pub fn jail_status_summary(record: &LaunchRecord, drifted: bool) -> JailStatusSummary {
+     let mut lines: Vec<SharedString> = Vec::new();
+     let icon = match record.reason {
+@@ -106,6 +111,9 @@ pub fn jail_status_summary(record: &LaunchRecord, drifted: bool) -> JailStatusSu
+         }
+         Reason::Off => {
+             lines.push("Started without the agent sandbox.".into());
++            if record.ai_jail_missing {
++                lines.push(AI_JAIL_MISSING.into());
++            }
+             IconName::LockOff
+         }
+         Reason::Remote => {
+@@ -144,6 +152,7 @@ pub fn jail_status_summary(record: &LaunchRecord, drifted: bool) -> JailStatusSu
+         color,
+         lines,
+         pending: None,
++        unavailable: record.reason == Reason::Off && record.ai_jail_missing,
+     }
+ }
+ 
+@@ -163,12 +172,14 @@ fn list_line(label: &str, items: impl Iterator<Item = String>) -> SharedString {
  pub fn render_jail_status_button(
      summary: JailStatusSummary,
      on_restart: Option<Box<dyn Fn(&mut Window, &mut App)>>,
@@ -2063,7 +2455,22 @@ index 71ef764..b36d97e 100644
  ) -> AnyElement {
      let JailStatusSummary {
          icon,
-@@ -203,10 +204,55 @@ pub fn render_jail_status_button(
+         color,
+         lines,
+         pending,
++        unavailable,
+     } = summary;
+     let on_restart = pending.and(on_restart);
+     h_flex()
+@@ -176,6 +187,7 @@ pub fn render_jail_status_button(
+         .child(
+             IconButton::new("agent-jail-status", icon)
+                 .icon_size(IconSize::Small)
++                .disabled(unavailable)
+                 .icon_color(color)
+                 .tooltip(Tooltip::element(move |_window, _cx| {
+                     v_flex()
+@@ -203,10 +215,55 @@ pub fn render_jail_status_button(
                      );
                  }),
          )
@@ -2120,50 +2527,131 @@ index 71ef764..b36d97e 100644
  #[path = "agent_jail_status_pending_tests.rs"]
  mod pending_tests;
 diff --git a/crates/agent_ui/src/agent_jail_status_pending_tests.rs b/crates/agent_ui/src/agent_jail_status_pending_tests.rs
-index 903b4c1..39d3c94 100644
+index 903b4c1..2f2c412 100644
 --- a/crates/agent_ui/src/agent_jail_status_pending_tests.rs
 +++ b/crates/agent_ui/src/agent_jail_status_pending_tests.rs
-@@ -22,6 +22,9 @@ fn record(reason: Reason) -> LaunchRecord {
+@@ -22,6 +22,10 @@ fn record(reason: Reason) -> LaunchRecord {
          settings_fingerprint: 0,
          memory_fingerprint: 0,
          settings_key: None,
 +        jail_pid: None,
 +        paused: false,
 +        claude_config_dir: None,
++        ai_jail_missing: false,
      }
  }
  
 diff --git a/crates/agent_ui/src/agent_jail_status_tests.rs b/crates/agent_ui/src/agent_jail_status_tests.rs
-index 0c6c92d..35e5218 100644
+index 0c6c92d..22b18aa 100644
 --- a/crates/agent_ui/src/agent_jail_status_tests.rs
 +++ b/crates/agent_ui/src/agent_jail_status_tests.rs
-@@ -77,6 +77,9 @@ fn record(root: &str, reason: Reason, version: Option<&str>) -> LaunchRecord {
+@@ -77,6 +77,10 @@ fn record(root: &str, reason: Reason, version: Option<&str>) -> LaunchRecord {
          settings_fingerprint: 0,
          memory_fingerprint: 0,
          settings_key: None,
 +        jail_pid: None,
 +        paused: false,
 +        claude_config_dir: None,
++        ai_jail_missing: false,
      }
  }
  
+@@ -597,3 +601,20 @@ mod agent_sandbox_actions {
+         assert_eq!(projects[&real_key]["rw_maps"], json!(["/data/cache"]));
+     }
+ }
++
++// Operator, 2026-11-22: without ai-jail the lock is disabled and its tooltip says what to install.
++#[test]
++fn agent_jail_status_a_missing_ai_jail_disables_the_lock() {
++    let mut off = record("/w/app", Reason::Off, None);
++    off.ai_jail_missing = true;
++    let summary = jail_status_summary(&off, false);
++    assert!(summary.unavailable, "nothing to turn on");
++    assert!(
++        has(&summary.lines, "sys-apps/ai-jail 3.5.0-r1"),
++        "the tooltip says what to install: {:?}",
++        summary.lines
++    );
++    let installed = jail_status_summary(&record("/w/app", Reason::Off, None), false);
++    assert!(!installed.unavailable, "with ai-jail the lock stays usable");
++    assert!(!has(&installed.lines, "needs ai-jail"));
++}
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index b3567a8..b18369e 100644
+index b3567a8..f4cdfed 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,8 @@
  mod agent_configuration;
  pub mod agent_connection_store;
  mod agent_diff;
 +mod agent_jail_login;
++mod agent_jail_restart;
  pub mod agent_jail_status;
  mod agent_panel;
  mod agent_registry_ui;
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index d6445ea..a207b42 100644
+index d6445ea..e421ac0 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
-@@ -2664,6 +2664,7 @@ impl ConversationView {
+@@ -1352,7 +1352,44 @@ impl ConversationView {
+         self.reset(window, cx);
+     }
+ 
++    /// Restarts the agent so a jail turned on or off applies (Zeo next §6.50, §6.54). The
++    /// thread's session is carried into the config directory the restarted agent will use; a
++    /// session with no transcript there has nothing to resume and is replaced by a new one.
++    pub(crate) fn restart_for_jail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        let session_id = self
++            .root_thread_view()
++            .map(|view| view.read(cx).thread.read(cx).session_id().clone());
++        let carry = session_id.and_then(|session_id| {
++            crate::agent_jail_restart::plan_carry(
++                &self.agent.agent_id(),
++                &self.project,
++                session_id.0.to_string(),
++                cx,
++            )
++        });
++        cx.spawn_in(window, async move |this, cx| {
++            let resumable = match carry {
++                Some(carry) => carry.await,
++                None => false,
++            };
++            log::info!("agent_sandbox event=restart_for_jail resume={resumable}");
++            this.update_in(cx, |this, window, cx| {
++                this.connection_store.update(cx, |store, cx| {
++                    store.restart_connection(this.connection_key.clone(), this.agent.clone(), cx);
++                });
++                this.reset_with(resumable, window, cx);
++            })
++            .log_err();
++        })
++        .detach();
++    }
++
+     fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        self.reset_with(true, window, cx);
++    }
++
++    /// `resume`: false starts a new session even though the thread has one (§6.54).
++    fn reset_with(&mut self, resume: bool, window: &mut Window, cx: &mut Context<Self>) {
+         let (resume_session_id, work_dirs, title) = self
+             .root_thread_view()
+             .map(|thread_view| {
+@@ -1385,6 +1422,11 @@ impl ConversationView {
+                     .unwrap_or((None, None));
+                 (session_id, work_dirs, title)
+             });
++        let (resume_session_id, title) = if resume {
++            (resume_session_id, title)
++        } else {
++            (None, None)
++        };
+ 
+         self.clear_resolved_request_elicitations(cx);
+         self.loading_status = None;
+@@ -2664,6 +2706,7 @@ impl ConversationView {
          };
  
          let agent_telemetry_id = connection.telemetry_id();
@@ -2171,7 +2659,7 @@ index d6445ea..a207b42 100644
  
          if let Some(login_task) = connection.terminal_auth_task(&method, cx) {
              pending_auth_method.replace(method.clone());
-@@ -2674,8 +2675,11 @@ impl ConversationView {
+@@ -2674,8 +2717,11 @@ impl ConversationView {
              self.auth_task = Some(cx.spawn_in(window, {
                  async move |this, cx| {
                      let result = async {
@@ -2185,7 +2673,7 @@ index d6445ea..a207b42 100644
                                  login,
                                  workspace,
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index cf70d67..cddb2ae 100644
+index cf70d67..641cc8e 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -6958,10 +6958,55 @@ impl ThreadView {
@@ -2246,6 +2734,24 @@ index cf70d67..cddb2ae 100644
      }
  
      /// Restarts the agent so a changed sandbox setting applies (§6.50). The thread is resumed
+@@ -6974,7 +7019,7 @@ impl ThreadView {
+             log::info!("agent_sandbox event=restart_for_jail generating={generating}");
+             if !generating {
+                 server_view
+-                    .update(cx, |view, cx| view.retry_connection(window, cx))
++                    .update(cx, |view, cx| view.restart_for_jail(window, cx))
+                     .log_err();
+                 return;
+             }
+@@ -6990,7 +7035,7 @@ impl ThreadView {
+                 .spawn(cx, async move |cx| {
+                     if answer.await == Ok(0) {
+                         server_view
+-                            .update_in(cx, |view, window, cx| view.retry_connection(window, cx))
++                            .update_in(cx, |view, window, cx| view.restart_for_jail(window, cx))
+                             .log_err();
+                     }
+                 })
 diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
 index fe8b5c8..d5239c8 100644
 --- a/crates/settings_content/src/settings_content.rs
@@ -2773,7 +3279,7 @@ index 0000000..53f82d4
 +    assert!(!plain.contains("--state-root"), "{plain}");
 +}
 diff --git a/crates/settings_ui/src/pages/agent_jail_page.rs b/crates/settings_ui/src/pages/agent_jail_page.rs
-index b2f17d0..5ce94c6 100644
+index b2f17d0..969be4a 100644
 --- a/crates/settings_ui/src/pages/agent_jail_page.rs
 +++ b/crates/settings_ui/src/pages/agent_jail_page.rs
 @@ -200,6 +200,14 @@ pub(crate) fn page_key<'a>(
@@ -2949,7 +3455,7 @@ index b2f17d0..5ce94c6 100644
          let page = state.read(cx);
          (
              page.jail.clone(),
-@@ -743,6 +846,8 @@ pub(crate) fn render_agent_jail_page(
+@@ -743,8 +846,12 @@ pub(crate) fn render_agent_jail_page(
              page.ai_jail_file,
              page.rw_map_error.clone(),
              page.host_error.clone(),
@@ -2957,8 +3463,12 @@ index b2f17d0..5ce94c6 100644
 +            page.state_dir.clone(),
          )
      };
++    // Operator, 2026-11-22: without ai-jail the switches cannot turn the jail on.
++    let jail_missing = matches!(jail, JailProbe::Missing { .. });
  
-@@ -757,12 +862,22 @@ pub(crate) fn render_agent_jail_page(
+     let project_section = match root.as_deref() {
+         Some(root) => {
+@@ -757,12 +864,22 @@ pub(crate) fn render_agent_jail_page(
              let drifted = LaunchRegistry::for_root(root, cx)
                  .iter()
                  .any(|record| launch::drifted_now(record, cx));
@@ -2987,7 +3497,7 @@ index b2f17d0..5ce94c6 100644
              };
              let preview = preview_command(
                  &policy,
-@@ -771,6 +886,16 @@ pub(crate) fn render_agent_jail_page(
+@@ -771,6 +888,16 @@ pub(crate) fn render_agent_jail_page(
                  ai_jail_path,
                  &memory,
                  supports_forward_port.unwrap_or(false),
@@ -3004,7 +3514,16 @@ index b2f17d0..5ce94c6 100644
              );
              // The R7.3 note is shown once, beside the Memory switch.
              let memory_notices: Vec<String> = supports_forward_port
-@@ -879,6 +1004,7 @@ pub(crate) fn render_agent_jail_page(
+@@ -837,6 +964,8 @@ pub(crate) fn render_agent_jail_page(
+                     }
+                 },
+             )
++            // No ai-jail: nothing to turn on, but a jail already on can still be turned off.
++            .disabled(jail_missing && !policy.enabled)
+             .tab_index(0);
+             let project_switch = reveal(
+                 &state,
+@@ -879,6 +1008,7 @@ pub(crate) fn render_agent_jail_page(
                      )
                  })
                  .children(lists)
@@ -3012,7 +3531,16 @@ index b2f17d0..5ce94c6 100644
                  .child(preview)
                  .into_any_element()
          }
-@@ -1057,6 +1183,24 @@ fn render_list(
+@@ -887,7 +1017,7 @@ pub(crate) fn render_agent_jail_page(
+             .into_any_element(),
+     };
+ 
+-    let defaults = render_defaults(&sandbox, &state, scroll_handle, cx);
++    let defaults = render_defaults(&sandbox, jail_missing, &state, scroll_handle, cx);
+     v_flex()
+         .id("agent-jail-page")
+         .debug_selector(|| "agent-jail-page".into())
+@@ -1057,6 +1187,24 @@ fn render_list(
              }
          });
      let input = reveal(state, input_id, scroll_handle, input, cx);
@@ -3037,7 +3565,23 @@ index b2f17d0..5ce94c6 100644
      v_flex()
          .gap_0p5()
          .child(Label::new(text.title))
-@@ -1667,6 +1811,9 @@ pub(crate) fn render_agent_memory_page(
+@@ -1139,6 +1287,7 @@ fn render_preview(
+ /// The default switch and the lists every project gets (R3.2, R3.3).
+ fn render_defaults(
+     sandbox: &AgentSandboxSettings,
++    jail_missing: bool,
+     state: &Entity<JailPageState>,
+     scroll_handle: &ScrollHandle,
+     cx: &mut App,
+@@ -1152,6 +1301,7 @@ fn render_defaults(
+             confirm::set_default_enabled(*toggle == ToggleState::Selected, window, cx).detach();
+         },
+     )
++    .disabled(jail_missing && !sandbox.enabled)
+     .tab_index(0);
+     let default_switch = reveal(
+         state,
+@@ -1667,6 +1817,9 @@ pub(crate) fn render_agent_memory_page(
          .into_any_element()
  }
  
@@ -3048,7 +3592,7 @@ index b2f17d0..5ce94c6 100644
  #[path = "agent_jail_page_tests.rs"]
  mod agent_jail_page_tests;
 diff --git a/crates/settings_ui/src/pages/agent_jail_page_tests.rs b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
-index 8fac6d8..da9e8f7 100644
+index 8fac6d8..f34419c 100644
 --- a/crates/settings_ui/src/pages/agent_jail_page_tests.rs
 +++ b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
 @@ -250,8 +250,8 @@ mod page {
@@ -3119,3 +3663,15 @@ index 8fac6d8..da9e8f7 100644
              },
          );
          let link = Path::new("/home/u/link");
+@@ -691,8 +699,11 @@ mod page {
+             workspace::AppState::set_global(app_state.clone(), cx);
+             app_state
+         });
++        // Both switches on: without ai-jail an off switch is disabled (operator, 2026-11-22) and
++        // leaves the Tab order, while an on one can still be turned off.
+         let user = json!({
+             "agent_sandbox": {
++                "enabled": true,
+                 "ai_jail_path": "/nonexistent/ai-jail",
+                 "projects": { "/project": { "enabled": true } }
+             },
