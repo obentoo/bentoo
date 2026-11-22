@@ -1,0 +1,2927 @@
+From a332e2628c587001e3cfeb985d5c2b4977d39348 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sat, 21 Nov 2026 21:20:56 -0300
+Subject: [PATCH] agent_sandbox: jail limits and a state root per project
+
+Zeo next proposal §6.54 (ask 78), the Zeo half; the ai-jail half is
+sys-apps/ai-jail-3.5.0-r1 (the fork's resource limits and --state-root as
+patches on upstream 3.5.0).
+
+- agent_sandbox.limits { memory, cpu_quota, max_tasks, disk_quota }, also
+  per project, each replacing the default it names. Defaults are the
+  operator's values (8G, 400 %, 4096 processes; no disk quota). 0 turns a
+  limit off: an unset value inherits, so zero is how a setting drops one.
+  They become ai-jail's --memory, --cpu-quota and --max-tasks; a disk quota
+  alone brings --max-tasks 4096, because the watchdog that enforces it
+  pauses the jail by freezing ai-jail's systemd scope, which exists only
+  for a limit (operator, 2026-11-21).
+- A limit the installed ai-jail cannot apply (its --help lists no --memory)
+  refuses the start: fail closed, cause limits_unsupported, naming the
+  package to install.
+- agent_sandbox.state_root (default /var/tmp/zeo-jail): each project gets
+  <base>/<folder name>-<FNV-1a of the canonical root>, passed as
+  --state-root -- its own home, /tmp and Claude config, and so a login per
+  project (operator, 2026-11-21). FNV, not DefaultHasher: the folder must
+  survive a Zeo update. Zeo creates its claude/ (0700, parents too) before
+  the start, so CLAUDE_CONFIG_DIR=<dir>/claude claude can log in first. It
+  replaces --claude-dir and the claude --rw-map; the nesting check guards
+  it as it guarded the shared config dir. An ai-jail without --state-root
+  keeps claude_config_dir, as before.
+- probe reads --state-root and --memory from --help with --forward-port,
+  one generic option parser, cached per binary identity as before.
+- Limits and the state root join the settings fingerprint, so changing
+  them marks a running jail "on but not applied" (§6.50).
+
+- The kill switch (§6.53): the spawned ai-jail's pid now reaches the
+  launch registry (StdioLaunch carries a shared cell the v1 and v2 spawns
+  fill; a v2 attempt that falls back to v1 spawns twice, the last wins), and
+  a Stop button beside the lock of a running jail sends it SIGTERM, which
+  ends everything inside (measured, §6.55). control::stop_jail refuses pid
+  0 and 1.
+- The disk watchdog (§6.54, the operator's design): with a disk quota,
+  watch_disk measures the jail's state folder and the project every 5 s
+  (allocated blocks, symlinks never followed); past the quota of growth it
+  freezes ai-jail's systemd scope through cgroup.freeze -- found from
+  /proc/<pid>/cgroup and accepted only if it is an ai-jail-*.scope, so
+  Zeo's own cgroup is never frozen -- and the thread shows "Paused: disk
+  quota" with Resume (thaw; the quota counts again from there) and Stop
+  (thaw, then SIGTERM: a frozen process acts on a signal only once it
+  runs). A soft limit: a burst between two measurements can overshoot.
+
+Not yet: directory pickers and the limit fields on the Agent Sandbox page.
+
+Tests: control (kill switch on a real process, scope found from a pid,
+never outside an ai-jail scope, the freeze file), disk_watch (sizes,
+usage without following symlinks, quota and resume), limits_tests (8): limit flags and zero; a disk quota alone; field-
+wise project override; the defaults; a stable, distinct state folder per
+project; refusal without --memory; --state-root and the limit flags in the
+command with claude/ created 0700; the legacy path without --state-root.
+Red seen with the refusal and the state root disabled. agent_sandbox joins
+test.sh's CRATES: 0057's own tests had never run there. Fixtures that
+predate the limits turn them off with 0. agent_sandbox, settings_ui,
+settings_content, agent_servers: 638/638 on bentoo-lab; with agent_ui,
+2287/2287.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 198c67f..aed0913 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -383,6 +383,7 @@ dependencies = [
+  "futures 0.3.34",
+  "gpui",
+  "http_client",
++ "libc",
+  "log",
+  "parking_lot",
+  "paths",
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index d5e3b19..101c156 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -3164,6 +3164,21 @@
+     "rw_maps": [],
+     // Hosts every jailed project may reach, before its own.
+     "allow_hosts": ["anthropic.com", "platform.claude.com"],
++    // Where each jailed project keeps its own home, /tmp and Claude config (its own
++    // login): a directory per project under this one. Needs an ai-jail with --state-root;
++    // without one, the jail uses `claude_config_dir`.
++    "state_root": "/var/tmp/zeo-jail",
++    // Resource limits for every jailed project; a project's own replace them one by one,
++    // and 0 (or "0") turns one off. A limit the installed ai-jail cannot apply keeps the
++    // agent from starting.
++    "limits": {
++      "memory": "8G",
++      "cpu_quota": 400,
++      "max_tasks": 4096,
++      // Disk the jail's state and the project may grow by, such as "20G"; past it the
++      // agent is paused. `null` measures nothing.
++      "disk_quota": null
++    },
+     // Per-project overrides, keyed by the project's absolute root path:
+     // "/home/me/src/app": { "enabled": true, "rw_maps": [], "allow_hosts": [] }
+     "projects": {},
+diff --git a/crates/agent_sandbox/Cargo.toml b/crates/agent_sandbox/Cargo.toml
+index c5608cd..de5d8f1 100644
+--- a/crates/agent_sandbox/Cargo.toml
++++ b/crates/agent_sandbox/Cargo.toml
+@@ -19,6 +19,7 @@ context_server.workspace = true
+ futures.workspace = true
+ gpui.workspace = true
+ http_client.workspace = true
++libc.workspace = true
+ log.workspace = true
+ paths.workspace = true
+ project.workspace = true
+diff --git a/crates/agent_sandbox/src/agent_sandbox.rs b/crates/agent_sandbox/src/agent_sandbox.rs
+index 834a01d..43c26c2 100644
+--- a/crates/agent_sandbox/src/agent_sandbox.rs
++++ b/crates/agent_sandbox/src/agent_sandbox.rs
+@@ -7,6 +7,8 @@
+ 
+ pub mod command;
+ pub mod confirm;
++pub mod control;
++pub mod disk_watch;
+ pub mod launch;
+ pub mod memory;
+ pub mod probe;
+@@ -17,7 +19,7 @@ pub mod validate;
+ pub use crate::launch::LaunchRegistry;
+ pub use crate::settings::{
+     AgentMemorySettings, AgentSandboxProjectSettings, AgentSandboxSettings, ProjectPolicy,
+-    lexical_match, resolve_project_key,
++    SandboxLimits, lexical_match, resolve_project_key,
+ };
+ 
+ use gpui::App;
+@@ -27,6 +29,11 @@ use gpui::App;
+ /// Both settings register themselves through `RegisterSetting`.
+ pub fn init(cx: &mut App) {
+     cx.set_global(LaunchRegistry::default());
++    cx.on_app_quit(|cx| {
++        LaunchRegistry::thaw_all(cx);
++        async {}
++    })
++    .detach();
+     project_keys::init(cx);
+ }
+ 
+@@ -37,6 +44,8 @@ mod confirm_tests;
+ #[cfg(test)]
+ mod launch_tests;
+ #[cfg(test)]
++mod limits_tests;
++#[cfg(test)]
+ mod memory_tests;
+ #[cfg(test)]
+ mod probe_tests;
+diff --git a/crates/agent_sandbox/src/command.rs b/crates/agent_sandbox/src/command.rs
+index acb776d..eae3015 100644
+--- a/crates/agent_sandbox/src/command.rs
++++ b/crates/agent_sandbox/src/command.rs
+@@ -16,8 +16,15 @@ pub struct JailInputs<'a> {
+     /// so this must be the spawn's working directory; `.git` and `.zed` are mapped read-only from
+     /// it by absolute path, which survives a shell `cd` before ai-jail starts.
+     pub project_root: &'a Path,
+-    /// The dedicated Claude config directory; validated and known to exist.
++    /// The dedicated Claude config directory; validated and known to exist. Unused when
++    /// `state_root` is set: ai-jail then keeps the config in the state root's `claude/`.
+     pub claude_dir: &'a Path,
++    /// This project's own state directory (`--state-root`, Zeo next §6.54): the jail's home,
++    /// /tmp and Claude config, and so a login per project. `None` when ai-jail lacks the option.
++    pub state_root: Option<&'a Path>,
++    /// The resource-limit options (`SandboxLimits::jail_args`), already checked against what the
++    /// installed ai-jail offers.
++    pub limit_args: &'a [String],
+     /// Writable folders: defaults united with the project's entries, deduplicated, order kept.
+     pub rw_maps: &'a [PathBuf],
+     /// Hosts the jail may reach.
+@@ -52,8 +59,14 @@ pub fn generate(agent: AgentServerCommand, inputs: &JailInputs) -> AgentServerCo
+         args.push("--map".into());
+         args.push(path_arg(&inputs.project_root.join(read_only)));
+     }
+-    args.extend(["--claude-dir".into(), claude_dir.clone()]);
+-    args.extend(["--rw-map".into(), claude_dir]);
++    match inputs.state_root {
++        Some(root) => args.extend(["--state-root".into(), path_arg(root)]),
++        None => {
++            args.extend(["--claude-dir".into(), claude_dir.clone()]);
++            args.extend(["--rw-map".into(), claude_dir]);
++        }
++    }
++    args.extend(inputs.limit_args.iter().cloned());
+     for map in inputs.rw_maps {
+         args.extend(["--rw-map".into(), path_arg(map)]);
+     }
+diff --git a/crates/agent_sandbox/src/command_tests.rs b/crates/agent_sandbox/src/command_tests.rs
+index 66e0dd9..3cff628 100644
+--- a/crates/agent_sandbox/src/command_tests.rs
++++ b/crates/agent_sandbox/src/command_tests.rs
+@@ -61,6 +61,8 @@ fn command_never_puts_env_values_on_argv() {
+         ("WEIRD", "--rw-map=/"),
+     ]);
+     let inputs = JailInputs {
++        state_root: None,
++        limit_args: &[],
+         ai_jail: Path::new("/usr/bin/ai-jail"),
+         project_root: Path::new("/w/app"),
+         claude_dir: Path::new("/h/.claude-jailed"),
+@@ -109,6 +111,8 @@ fn command_keeps_agent_args_that_look_like_jail_flags_after_the_agent() {
+     let rw: [PathBuf; 0] = [];
+     let hosts: [String; 0] = [];
+     let inputs = JailInputs {
++        state_root: None,
++        limit_args: &[],
+         ai_jail: Path::new("/usr/bin/ai-jail"),
+         project_root: Path::new("/w/app"),
+         claude_dir: Path::new("/h/.claude-jailed"),
+@@ -156,6 +160,8 @@ fn command_exact_argv_shape() {
+     ];
+     let agent_env = env(&[("A_NAME", "1"), ("B_NAME", "2")]);
+     let inputs = JailInputs {
++        state_root: None,
++        limit_args: &[],
+         ai_jail: Path::new("/usr/bin/ai-jail"),
+         project_root: Path::new("/w/app"),
+         claude_dir: Path::new("/h/.claude-jailed"),
+@@ -213,6 +219,8 @@ fn command_without_memory_ports_or_env_adds_neither() {
+     let rw: [PathBuf; 0] = [];
+     let hosts = ["anthropic.com".to_string()];
+     let inputs = JailInputs {
++        state_root: None,
++        limit_args: &[],
+         ai_jail: Path::new("/usr/bin/ai-jail"),
+         project_root: Path::new("/w/app"),
+         claude_dir: Path::new("/h/.claude-jailed"),
+@@ -246,6 +254,8 @@ fn command_preview_round_trips_hostile_arguments() {
+     let rw = [PathBuf::from("/h/my cache")];
+     let hosts: [String; 0] = [];
+     let inputs = JailInputs {
++        state_root: None,
++        limit_args: &[],
+         ai_jail: Path::new("/usr/bin/ai-jail"),
+         project_root: Path::new("/w/app"),
+         claude_dir: Path::new("/h/.claude-jailed"),
+@@ -275,6 +285,8 @@ fn command_keep_loopback_off_proxy_wraps_the_agent_once() {
+     let rw: [PathBuf; 0] = [];
+     let hosts = ["anthropic.com".to_string()];
+     let inputs = JailInputs {
++        state_root: None,
++        limit_args: &[],
+         ai_jail: Path::new("/usr/bin/ai-jail"),
+         project_root: Path::new("/w/app"),
+         claude_dir: Path::new("/h/.claude-jailed"),
+diff --git a/crates/agent_sandbox/src/control.rs b/crates/agent_sandbox/src/control.rs
+new file mode 100644
+index 0000000..5b50b11
+--- /dev/null
++++ b/crates/agent_sandbox/src/control.rs
+@@ -0,0 +1,166 @@
++//! Acting on a running jail (Zeo next §6.53 kill switch, §6.54 disk watchdog): stopping it, and
++//! pausing and resuming it through ai-jail's systemd scope.
++
++use std::io;
++
++/// Stops the jail whose ai-jail process is `pid`: a SIGTERM to ai-jail ends everything inside
++/// it (measured, §6.55), the agent and every command it started. Logged as one event.
++#[cfg(unix)]
++pub fn stop_jail(pid: u32) -> io::Result<()> {
++    let pid = libc::pid_t::try_from(pid)
++        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "pid out of range"))?;
++    if pid <= 1 {
++        return Err(io::Error::new(
++            io::ErrorKind::InvalidInput,
++            "refusing to signal pid 0 or 1",
++        ));
++    }
++    // SAFETY: kill(2) with a positive pid and a valid signal touches no memory of ours.
++    let result = unsafe { libc::kill(pid, libc::SIGTERM) };
++    if result == 0 {
++        log::info!("agent_sandbox event=kill_switch pid={pid} outcome=signalled");
++        Ok(())
++    } else {
++        let error = io::Error::last_os_error();
++        log::warn!("agent_sandbox event=kill_switch pid={pid} outcome=failed error={error}");
++        Err(error)
++    }
++}
++
++#[cfg(not(unix))]
++pub fn stop_jail(_pid: u32) -> io::Result<()> {
++    Err(io::Error::new(
++        io::ErrorKind::Unsupported,
++        "the agent sandbox runs on Linux only",
++    ))
++}
++
++/// The cgroup v2 directory of ai-jail's systemd scope for the process `pid`, under the
++/// filesystem roots given (`/proc` and `/sys/fs/cgroup` outside tests). Only a scope named
++/// `ai-jail-*.scope` is returned: pausing anything else -- Zeo's own cgroup, when no limit made
++/// ai-jail create a scope -- would freeze the editor.
++pub fn jail_scope_dir_in(
++    proc_root: &std::path::Path,
++    cgroup_root: &std::path::Path,
++    pid: u32,
++) -> io::Result<std::path::PathBuf> {
++    let text = std::fs::read_to_string(proc_root.join(pid.to_string()).join("cgroup"))?;
++    let relative = text
++        .lines()
++        .find_map(|line| line.strip_prefix("0::"))
++        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no cgroup v2 entry"))?;
++    let dir = cgroup_root.join(relative.trim_start_matches('/'));
++    let is_jail_scope = dir.file_name().is_some_and(|name| {
++        let name = name.to_string_lossy();
++        name.starts_with("ai-jail-") && name.ends_with(".scope")
++    });
++    if !is_jail_scope {
++        return Err(io::Error::new(
++            io::ErrorKind::NotFound,
++            format!("{} is not an ai-jail scope", dir.display()),
++        ));
++    }
++    Ok(dir)
++}
++
++/// [`jail_scope_dir_in`] on the real filesystems.
++pub fn jail_scope_dir(pid: u32) -> io::Result<std::path::PathBuf> {
++    jail_scope_dir_in(
++        std::path::Path::new("/proc"),
++        std::path::Path::new("/sys/fs/cgroup"),
++        pid,
++    )
++}
++
++/// Pauses (`true`) or resumes the scope at `scope_dir` through `cgroup.freeze`, which works
++/// without root on a scope the user's systemd delegates (measured, §6.54). Logged.
++pub fn set_frozen(scope_dir: &std::path::Path, frozen: bool) -> io::Result<()> {
++    let result = std::fs::write(
++        scope_dir.join("cgroup.freeze"),
++        if frozen { "1" } else { "0" },
++    );
++    let outcome = if result.is_ok() { "ok" } else { "failed" };
++    log::info!(
++        "agent_sandbox event=jail_freeze frozen={frozen} scope={} outcome={outcome}",
++        scope_dir.display()
++    );
++    result
++}
++
++#[cfg(all(test, unix))]
++mod tests {
++    use super::*;
++
++    #[test]
++    #[allow(
++        clippy::disallowed_methods,
++        reason = "the signal must reach a real child, outside any executor"
++    )]
++    fn stopping_a_jail_terminates_its_process() {
++        let mut child = std::process::Command::new("sleep")
++            .arg("30")
++            .spawn()
++            .expect("spawn sleep");
++        stop_jail(child.id()).expect("signalled");
++        let status = child.wait().expect("waited");
++        use std::os::unix::process::ExitStatusExt as _;
++        assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
++    }
++
++    fn fake_proc(pid: u32, cgroup_line: &str) -> tempfile::TempDir {
++        let root = tempfile::tempdir().unwrap();
++        let dir = root.path().join("proc").join(pid.to_string());
++        std::fs::create_dir_all(&dir).unwrap();
++        std::fs::write(dir.join("cgroup"), format!("{cgroup_line}\n")).unwrap();
++        root
++    }
++
++    #[test]
++    fn the_scope_of_a_jail_is_found_from_its_pid() {
++        let root = fake_proc(
++            42,
++            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/ai-jail-42.scope",
++        );
++        let cgroup = root.path().join("cgroup");
++        let dir = jail_scope_dir_in(&root.path().join("proc"), &cgroup, 42).unwrap();
++        assert_eq!(
++            dir,
++            cgroup.join("user.slice/user-1000.slice/user@1000.service/app.slice/ai-jail-42.scope")
++        );
++    }
++
++    #[test]
++    fn a_process_outside_an_ai_jail_scope_is_never_frozen() {
++        let root = fake_proc(
++            42,
++            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/zeo.scope",
++        );
++        let err = jail_scope_dir_in(&root.path().join("proc"), &root.path().join("cgroup"), 42)
++            .unwrap_err();
++        assert!(err.to_string().contains("not an ai-jail scope"), "{err}");
++    }
++
++    #[test]
++    fn freezing_writes_the_scope_freeze_file() {
++        let scope = tempfile::tempdir().unwrap();
++        set_frozen(scope.path(), true).unwrap();
++        assert_eq!(
++            std::fs::read_to_string(scope.path().join("cgroup.freeze")).unwrap(),
++            "1"
++        );
++        set_frozen(scope.path(), false).unwrap();
++        assert_eq!(
++            std::fs::read_to_string(scope.path().join("cgroup.freeze")).unwrap(),
++            "0"
++        );
++    }
++
++    #[test]
++    fn pid_zero_and_one_are_never_signalled() {
++        assert!(
++            stop_jail(0).is_err(),
++            "pid 0 is the caller's whole process group"
++        );
++        assert!(stop_jail(1).is_err(), "pid 1 is init");
++    }
++}
+diff --git a/crates/agent_sandbox/src/disk_watch.rs b/crates/agent_sandbox/src/disk_watch.rs
+new file mode 100644
+index 0000000..99d6638
+--- /dev/null
++++ b/crates/agent_sandbox/src/disk_watch.rs
+@@ -0,0 +1,128 @@
++//! The jail's disk quota (Zeo next §6.54, the operator's design): Zeo measures how much the jail's
++//! own state folder and the project have grown since the agent started, every few seconds, and
++//! past the quota pauses the jail -- freezing its systemd scope, which loses no work -- until the
++//! operator resumes or stops it. A soft limit: a burst between two measurements can overshoot.
++
++use std::path::Path;
++
++/// How often the watchdog measures.
++pub const INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
++
++/// `text` as a byte count: a number with an optional K, M, G or T suffix (powers of 1024, `B`
++/// and `iB` accepted), as `agent_sandbox.limits.disk_quota` is written. `None` for anything
++/// else, and for zero, which turns the quota off.
++pub fn parse_size(text: &str) -> Option<u64> {
++    let text = text.trim();
++    let upper = text.to_ascii_uppercase();
++    let unit = upper.trim_end_matches("IB").trim_end_matches('B');
++    let (number, shift) = match unit.chars().last()? {
++        'K' => (&unit[..unit.len() - 1], 10),
++        'M' => (&unit[..unit.len() - 1], 20),
++        'G' => (&unit[..unit.len() - 1], 30),
++        'T' => (&unit[..unit.len() - 1], 40),
++        c if c.is_ascii_digit() => (unit, 0),
++        _ => return None,
++    };
++    let value: u64 = number.trim().parse().ok()?;
++    value
++        .checked_shl(shift)
++        .filter(|bytes| *bytes > 0 && bytes >> shift == value)
++}
++
++/// The space `path` takes on disk, in bytes: allocated blocks, never following a symlink, so a
++/// link to `/` costs nothing. An unreadable entry is skipped: the watchdog measures, it does not
++/// fail.
++pub fn disk_usage(path: &Path) -> u64 {
++    #[cfg(unix)]
++    use std::os::unix::fs::MetadataExt as _;
++    let Ok(meta) = path.symlink_metadata() else {
++        return 0;
++    };
++    #[cfg(unix)]
++    let own = meta.blocks() * 512;
++    #[cfg(not(unix))]
++    let own = meta.len();
++    if !meta.is_dir() {
++        return own;
++    }
++    let Ok(entries) = std::fs::read_dir(path) else {
++        return own;
++    };
++    entries
++        .flatten()
++        .map(|entry| disk_usage(&entry.path()))
++        .fold(own, u64::saturating_add)
++}
++
++/// One jail's quota: the usage it started from, and how far it may grow.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct DiskWatch {
++    pub baseline: u64,
++    pub quota: u64,
++}
++
++impl DiskWatch {
++    /// Whether `usage` is past the quota.
++    pub fn over(&self, usage: u64) -> bool {
++        usage.saturating_sub(self.baseline) > self.quota
++    }
++
++    /// The watch after a Resume at `usage`: the operator saw the pause and let the jail go on, so
++    /// it may grow by a whole quota again from here.
++    pub fn resumed_at(self, usage: u64) -> Self {
++        Self {
++            baseline: usage,
++            ..self
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn sizes_parse_with_binary_units() {
++        assert_eq!(parse_size("20G"), Some(20 << 30));
++        assert_eq!(parse_size("512M"), Some(512 << 20));
++        assert_eq!(parse_size("1GiB"), Some(1 << 30));
++        assert_eq!(parse_size(" 3 GB "), Some(3 << 30));
++        assert_eq!(parse_size("4096"), Some(4096));
++        assert_eq!(parse_size("0"), None, "zero turns the quota off");
++        assert_eq!(parse_size("lots"), None);
++        assert_eq!(
++            parse_size("99999999999T"),
++            None,
++            "overflow is refused, not wrapped"
++        );
++    }
++
++    #[test]
++    fn usage_counts_files_and_never_follows_a_symlink() {
++        let dir = tempfile::tempdir().unwrap();
++        let empty = disk_usage(dir.path());
++        std::fs::write(dir.path().join("data"), vec![7u8; 64 * 1024]).unwrap();
++        #[cfg(unix)]
++        std::os::unix::fs::symlink("/", dir.path().join("root-link")).unwrap();
++        let used = disk_usage(dir.path());
++        assert!(used >= empty + 64 * 1024, "{used} after a 64 KiB file");
++        assert!(
++            used < empty + 1024 * 1024,
++            "the link to / is not followed: {used}"
++        );
++    }
++
++    #[test]
++    fn the_quota_counts_growth_and_a_resume_grants_it_again() {
++        let watch = DiskWatch {
++            baseline: 1000,
++            quota: 500,
++        };
++        assert!(!watch.over(1500), "exactly the quota is still allowed");
++        assert!(watch.over(1501));
++        assert!(!watch.over(10), "shrinking is never over");
++        let resumed = watch.resumed_at(1600);
++        assert!(!resumed.over(2000));
++        assert!(resumed.over(2101));
++    }
++}
+diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
+index 01c4622..e9c85f8 100644
+--- a/crates/agent_sandbox/src/launch.rs
++++ b/crates/agent_sandbox/src/launch.rs
+@@ -101,6 +101,11 @@ pub struct LaunchRecord {
+     pub memory_fingerprint: u64,
+     /// The `agent_sandbox.projects` key the start used, if any.
+     pub settings_key: Option<String>,
++    /// The ai-jail process of a jailed start, once it runs (Zeo next §6.54): what the kill switch
++    /// signals and whose systemd scope the disk watchdog freezes.
++    pub jail_pid: Option<u32>,
++    /// Paused by the disk watchdog (Zeo next §6.54) until the operator resumes or stops it.
++    pub paused: bool,
+ }
+ 
+ pub enum LaunchDecision {
+@@ -191,6 +196,14 @@ pub enum LaunchCause {
+         error: io::Error,
+     },
+     InvalidMemoryEndpoint(InvalidMemoryEndpoint),
++    /// A limit is set and the installed ai-jail has no `--memory` (Zeo next §6.54): the agent
++    /// does not start rather than run unlimited.
++    LimitsUnsupported,
++    /// The project's state directory could not be created.
++    StateRootCreate {
++        dir: PathBuf,
++        error: io::Error,
++    },
+ }
+ 
+ impl LaunchCause {
+@@ -213,6 +226,8 @@ impl LaunchCause {
+             Self::SymlinkedMount { .. } => "symlinked_mount",
+             Self::ZedDirCreate { .. } => "zed_dir_create",
+             Self::InvalidMemoryEndpoint(_) => "invalid_memory_endpoint",
++            Self::LimitsUnsupported => "limits_unsupported",
++            Self::StateRootCreate { .. } => "state_root_create",
+         }
+     }
+ }
+@@ -294,6 +309,15 @@ impl fmt::Display for LaunchCause {
+             Self::ZedDirCreate { dir, error } => {
+                 write!(f, "Could not create {}: {error}.", dir.display())
+             }
++            Self::LimitsUnsupported => write!(
++                f,
++                "Resource limits are set for this project, and the installed ai-jail cannot apply them (it has no --memory). Install sys-apps/ai-jail 3.5.0-r1 or later, or clear agent_sandbox.limits."
++            ),
++            Self::StateRootCreate { dir, error } => write!(
++                f,
++                "The project's jail state folder {} could not be created: {error}.",
++                dir.display()
++            ),
+             Self::InvalidMemoryEndpoint(error) => write!(f, "{error}"),
+         }
+     }
+@@ -490,6 +514,10 @@ struct Checked {
+     ai_jail: PathBuf,
+     version: Version,
+     claude_dir: PathBuf,
++    /// The project's own state directory (`--state-root`), when ai-jail offers it.
++    state_root: Option<PathBuf>,
++    /// The resource-limit options, checked against what ai-jail offers.
++    limit_args: Vec<String>,
+     rw_maps: Vec<PathBuf>,
+     allow_hosts: Vec<String>,
+     forward_ports: Vec<u16>,
+@@ -545,6 +573,8 @@ impl LocalLaunch {
+             ai_jail: &checked.ai_jail,
+             project_root: &checked.root,
+             claude_dir: &checked.claude_dir,
++            state_root: checked.state_root.as_deref(),
++            limit_args: &checked.limit_args,
+             rw_maps: &checked.rw_maps,
+             allow_hosts: &checked.allow_hosts,
+             forward_ports: &checked.forward_ports,
+@@ -556,7 +586,7 @@ impl LocalLaunch {
+             jailed = keep_loopback_off_proxy(jailed);
+         }
+         record.ai_jail_version = Some(checked.version);
+-        record.rw_maps = std::iter::once(checked.claude_dir)
++        record.rw_maps = std::iter::once(checked.state_root.unwrap_or(checked.claude_dir))
+             .chain(checked.rw_maps)
+             .collect();
+         record.allow_hosts = checked.allow_hosts;
+@@ -634,15 +664,44 @@ impl LocalLaunch {
+             .map_err(|error| no_version(LaunchCause::VersionUnreadable(error)))?;
+         let refuse = |cause| Box::new((cause, Some(binary.version.clone())));
+ 
+-        let claude_raw = self.sandbox.claude_config_dir.as_str();
+-        let claude_dir = match validate::validate_rw_map_with(claude_raw, &set) {
+-            Ok(dir) => dir,
+-            Err(RwMapError::Missing { .. }) => {
+-                return Err(refuse(LaunchCause::ClaudeDirMissing {
+-                    dir: expand_tilde(claude_raw, &self.env.home),
+-                }));
++        // Zeo next §6.54: a limit ai-jail cannot apply refuses the start (fail closed).
++        if policy.limits.any() && !binary.supports_limits {
++            return Err(refuse(LaunchCause::LimitsUnsupported));
++        }
++        let limit_args = policy.limits.jail_args();
++
++        // Zeo next §6.54: each project keeps its own home, /tmp and Claude config -- its own
++        // login (operator, 2026-11-21) -- when ai-jail offers `--state-root`; otherwise the
++        // shared `claude_config_dir`, as before.
++        let state_root = if binary.supports_state_root {
++            let base = expand_tilde(&self.sandbox.state_root, &self.env.home);
++            let dir = project_state_dir(&base, &canonical_root);
++            // ai-jail creates it too; Zeo makes `claude/` first so a login can run before the
++            // first start (`CLAUDE_CONFIG_DIR=<dir>/claude claude`).
++            create_private_dir(&dir.join("claude")).map_err(|error| {
++                refuse(LaunchCause::StateRootCreate {
++                    dir: dir.clone(),
++                    error,
++                })
++            })?;
++            Some(dir)
++        } else {
++            None
++        };
++        let claude_dir = match &state_root {
++            Some(dir) => dir.join("claude"),
++            None => {
++                let claude_raw = self.sandbox.claude_config_dir.as_str();
++                match validate::validate_rw_map_with(claude_raw, &set) {
++                    Ok(dir) => dir,
++                    Err(RwMapError::Missing { .. }) => {
++                        return Err(refuse(LaunchCause::ClaudeDirMissing {
++                            dir: expand_tilde(claude_raw, &self.env.home),
++                        }));
++                    }
++                    Err(error) => return Err(refuse(LaunchCause::ClaudeDirInvalid(error))),
++                }
+             }
+-            Err(error) => return Err(refuse(LaunchCause::ClaudeDirInvalid(error))),
+         };
+ 
+         let mut rw_maps: Vec<PathBuf> = Vec::with_capacity(policy.rw_maps.len());
+@@ -661,7 +720,8 @@ impl LocalLaunch {
+         }
+         validate::check_limits(rw_maps.len(), allow_hosts.len())
+             .map_err(|error| refuse(LaunchCause::Limit(error)))?;
+-        check_nesting(&canonical_root, &claude_dir, &rw_maps).map_err(refuse)?;
++        let private_state = state_root.as_deref().unwrap_or(&claude_dir);
++        check_nesting(&canonical_root, private_state, &rw_maps).map_err(refuse)?;
+ 
+         let env_names = self.forwarded_env_names().map_err(refuse)?;
+ 
+@@ -706,6 +766,8 @@ impl LocalLaunch {
+             ai_jail,
+             version: binary.version,
+             claude_dir,
++            state_root,
++            limit_args,
+             rw_maps,
+             allow_hosts,
+             forward_ports,
+@@ -757,6 +819,8 @@ impl LocalLaunch {
+             settings_fingerprint: settings_fingerprint(&self.sandbox, policy),
+             memory_fingerprint: memory_fingerprint(&self.memory),
+             settings_key,
++            jail_pid: None,
++            paused: false,
+         }
+     }
+ 
+@@ -986,9 +1050,55 @@ fn settings_fingerprint(sandbox: &AgentSandboxSettings, policy: &ProjectPolicy)
+     policy.allow_hosts.hash(&mut hasher);
+     sandbox.claude_config_dir.hash(&mut hasher);
+     sandbox.ai_jail_path.hash(&mut hasher);
++    policy.limits.hash(&mut hasher);
++    sandbox.state_root.hash(&mut hasher);
+     hasher.finish()
+ }
+ 
++/// The project's own state directory under `base` (Zeo next §6.54): the root's folder name, for a
++/// person reading `/var/tmp/zeo-jail`, then a hash of the whole canonical root, so two projects
++/// named alike never share a jail. FNV-1a, not `DefaultHasher`: the name must survive a Zeo
++/// update, or every project would lose its login.
++pub fn project_state_dir(base: &Path, root: &Path) -> PathBuf {
++    let name: String = root
++        .file_name()
++        .map(|name| name.to_string_lossy())
++        .unwrap_or_default()
++        .chars()
++        .map(|c| {
++            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
++                c
++            } else {
++                '_'
++            }
++        })
++        .take(40)
++        .collect();
++    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
++    for byte in root.as_os_str().as_encoded_bytes() {
++        hash ^= u64::from(*byte);
++        hash = hash.wrapping_mul(0x0100_0000_01b3);
++    }
++    let name = if name.is_empty() {
++        "project".to_string()
++    } else {
++        name
++    };
++    base.join(format!("{name}-{hash:016x}"))
++}
++
++/// Creates `path` and its missing parents with mode 0700: the folder holds a login.
++fn create_private_dir(path: &Path) -> io::Result<()> {
++    let mut builder = std::fs::DirBuilder::new();
++    builder.recursive(true);
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::DirBuilderExt as _;
++        builder.mode(0o700);
++    }
++    builder.create(path)
++}
++
+ fn memory_fingerprint(memory: &AgentMemorySettings) -> u64 {
+     let mut hasher = DefaultHasher::new();
+     memory.enabled.hash(&mut hasher);
+@@ -1105,11 +1215,73 @@ impl LaunchRegistry {
+     }
+ 
+     /// Removes this launch only; a later launch of the same agent and root stays.
++    /// The live launch `id`, if it still runs.
++    pub fn launch(id: LaunchId, cx: &App) -> Option<LaunchRecord> {
++        cx.try_global::<Self>()?
++            .launches
++            .iter()
++            .find(|(launch, _)| *launch == id)
++            .map(|(_, record)| record.clone())
++    }
++
++    /// The live launch of `agent_id` in `root` and its id, for the watchdog's Resume.
++    pub fn get_with_id(
++        agent_id: &AgentId,
++        root: &Path,
++        cx: &App,
++    ) -> Option<(LaunchId, LaunchRecord)> {
++        cx.try_global::<Self>()?
++            .launches
++            .iter()
++            .rev()
++            .find(|(_, record)| record.agent_id == *agent_id && record.project_root == root)
++            .cloned()
++    }
++
++    /// Marks launch `id` paused or running again (Zeo next §6.54).
++    pub fn set_paused(id: LaunchId, paused: bool, cx: &mut App) {
++        if cx.has_global::<Self>()
++            && let Some((_, record)) = cx
++                .global_mut::<Self>()
++                .launches
++                .iter_mut()
++                .find(|(launch, _)| *launch == id)
++        {
++            record.paused = paused;
++        }
++    }
++
++    /// Records the ai-jail process of launch `id` (Zeo next §6.54).
++    pub fn set_jail_pid(id: LaunchId, pid: u32, cx: &mut App) {
++        if cx.has_global::<Self>()
++            && let Some((_, record)) = cx
++                .global_mut::<Self>()
++                .launches
++                .iter_mut()
++                .find(|(launch, _)| *launch == id)
++        {
++            record.jail_pid = Some(pid);
++        }
++    }
++
+     pub fn remove_launch(id: LaunchId, cx: &mut App) {
+         if cx.has_global::<Self>() {
+-            cx.global_mut::<Self>()
+-                .launches
+-                .retain(|(launch, _)| *launch != id);
++            let registry = cx.global_mut::<Self>();
++            for (_, record) in registry.launches.iter().filter(|(launch, _)| *launch == id) {
++                thaw_if_paused(record);
++            }
++            registry.launches.retain(|(launch, _)| *launch != id);
++        }
++    }
++
++    /// Thaws every paused jail. Run as Zeo quits: a frozen process never acts on the signal
++    /// that ends it, so a jail paused at exit would stay frozen, holding its memory, until
++    /// someone thawed its scope by hand (seen in the §6.54 Xvfb proof).
++    pub fn thaw_all(cx: &mut App) {
++        if let Some(registry) = cx.try_global::<Self>() {
++            for (_, record) in &registry.launches {
++                thaw_if_paused(record);
++            }
+         }
+     }
+ 
+@@ -1127,3 +1299,79 @@ impl LaunchRegistry {
+             .unwrap_or_default()
+     }
+ }
++
++/// The disk watchdog of launch `id` (Zeo next §6.54): every [`crate::disk_watch::INTERVAL`] it
++/// measures `dirs` (the jail's state folder and the project) and, once they have grown past
++/// `quota` bytes since the start, pauses the jail by freezing ai-jail's systemd scope. While the
++/// launch is paused it only waits; after a Resume it counts the quota again from that moment. It
++/// ends with the launch.
++/// Thaws `record`'s jail if the watchdog paused it, so whatever ends it next takes effect.
++fn thaw_if_paused(record: &LaunchRecord) {
++    let (true, Some(pid)) = (record.paused, record.jail_pid) else {
++        return;
++    };
++    if let Err(error) = crate::control::jail_scope_dir(pid)
++        .and_then(|scope| crate::control::set_frozen(&scope, false))
++    {
++        log::error!("agent_sandbox event=jail_thaw_failed pid={pid} error={error}");
++    }
++}
++
++pub fn watch_disk(id: LaunchId, quota: u64, dirs: Vec<PathBuf>, cx: &mut App) {
++    let executor = cx.background_executor().clone();
++    let measure = move |dirs: Vec<PathBuf>| {
++        executor.spawn(async move {
++            dirs.iter()
++                .map(|dir| crate::disk_watch::disk_usage(dir))
++                .fold(0u64, u64::saturating_add)
++        })
++    };
++    cx.spawn(async move |cx| {
++        let start = measure(dirs.clone()).await;
++        let mut watch = crate::disk_watch::DiskWatch {
++            baseline: start,
++            quota,
++        };
++        let mut was_paused = false;
++        log::info!("agent_sandbox event=disk_watch_start quota={quota} baseline={start}");
++        loop {
++            cx.background_executor()
++                .timer(crate::disk_watch::INTERVAL)
++                .await;
++            let Some(record) = cx.update(|cx| LaunchRegistry::launch(id, cx)) else {
++                break;
++            };
++            if record.paused {
++                was_paused = true;
++                continue;
++            }
++            let usage = measure(dirs.clone()).await;
++            if was_paused {
++                watch = watch.resumed_at(usage);
++                was_paused = false;
++                continue;
++            }
++            if !watch.over(usage) {
++                continue;
++            }
++            let Some(pid) = record.jail_pid else {
++                continue;
++            };
++            match crate::control::jail_scope_dir(pid)
++                .and_then(|scope| crate::control::set_frozen(&scope, true))
++            {
++                Ok(()) => {
++                    log::warn!(
++                        "agent_sandbox event=disk_quota_paused pid={pid} usage={usage} baseline={} quota={quota}",
++                        watch.baseline
++                    );
++                    cx.update(|cx| LaunchRegistry::set_paused(id, true, cx));
++                }
++                Err(error) => log::error!(
++                    "agent_sandbox event=disk_quota_pause_failed pid={pid} error={error}"
++                ),
++            }
++        }
++    })
++    .detach();
++}
+diff --git a/crates/agent_sandbox/src/launch_tests.rs b/crates/agent_sandbox/src/launch_tests.rs
+index cc7ef46..5971b06 100644
+--- a/crates/agent_sandbox/src/launch_tests.rs
++++ b/crates/agent_sandbox/src/launch_tests.rs
+@@ -49,21 +49,21 @@ use settings::{Settings as _, SettingsStore};
+ use crate::AgentSandboxSettings;
+ use crate::launch::{LaunchDecision, LaunchRecord, Reason, decide, drifted};
+ 
+-struct Fixture {
+-    _tmp: tempfile::TempDir,
+-    base: PathBuf,
+-    root: PathBuf,
+-    ai_jail: PathBuf,
+-    claude_dir: PathBuf,
++pub(crate) struct Fixture {
++    pub(crate) _tmp: tempfile::TempDir,
++    pub(crate) base: PathBuf,
++    pub(crate) root: PathBuf,
++    pub(crate) ai_jail: PathBuf,
++    pub(crate) claude_dir: PathBuf,
+ }
+ 
+-fn write_script(path: &Path, body: &str) {
++pub(crate) fn write_script(path: &Path, body: &str) {
+     std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+     std::fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write script");
+     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+ }
+ 
+-fn fixture(version_line: &str) -> Fixture {
++pub(crate) fn fixture(version_line: &str) -> Fixture {
+     let tmp = tempfile::tempdir().expect("tempdir");
+     let base = tmp.path().canonicalize().expect("canonical");
+     let root = base.join("app");
+@@ -82,7 +82,7 @@ fn fixture(version_line: &str) -> Fixture {
+     }
+ }
+ 
+-fn init(cx: &mut TestAppContext) {
++pub(crate) fn init(cx: &mut TestAppContext) {
+     cx.executor().allow_parking();
+     cx.update(|cx| {
+         let store = SettingsStore::test(cx);
+@@ -92,7 +92,7 @@ fn init(cx: &mut TestAppContext) {
+     });
+ }
+ 
+-fn set_user_settings(value: Value, cx: &mut TestAppContext) {
++pub(crate) fn set_user_settings(value: Value, cx: &mut TestAppContext) {
+     cx.update(|cx| {
+         SettingsStore::update_global(cx, |store, cx| {
+             store
+@@ -105,7 +105,7 @@ fn set_user_settings(value: Value, cx: &mut TestAppContext) {
+ }
+ 
+ /// Sandbox settings for `f`, project entry merged from `project`, memory off unless overridden.
+-fn sandbox(f: &Fixture, default_on: bool, project: Value, memory: Value) -> Value {
++pub(crate) fn sandbox(f: &Fixture, default_on: bool, project: Value, memory: Value) -> Value {
+     let mut projects = serde_json::Map::new();
+     if !project.is_null() {
+         projects.insert(f.root.display().to_string(), project);
+@@ -117,24 +117,27 @@ fn sandbox(f: &Fixture, default_on: bool, project: Value, memory: Value) -> Valu
+             "claude_config_dir": f.claude_dir,
+             "rw_maps": [],
+             "allow_hosts": ["anthropic.com", "platform.claude.com"],
++            // Zeo next §6.54: these fixtures predate the limits, which are on by default; `0`
++            // turns each off. limits_tests turns them on.
++            "limits": { "memory": "0", "cpu_quota": 0, "max_tasks": 0 },
+             "projects": projects,
+         },
+         "agent_memory": memory,
+     })
+ }
+ 
+-fn memory_off() -> Value {
++pub(crate) fn memory_off() -> Value {
+     json!({ "enabled": false })
+ }
+ 
+-async fn project(f: &Fixture, cx: &mut TestAppContext) -> Entity<Project> {
++pub(crate) async fn project(f: &Fixture, cx: &mut TestAppContext) -> Entity<Project> {
+     let fs = RealFs::new(None, cx.executor());
+     let project = Project::test(fs, [f.root.as_path()], cx).await;
+     cx.run_until_parked();
+     project
+ }
+ 
+-fn agent_cmd(path: &str) -> AgentServerCommand {
++pub(crate) fn agent_cmd(path: &str) -> AgentServerCommand {
+     AgentServerCommand {
+         path: PathBuf::from(path),
+         args: vec!["--acp".into()],
+@@ -148,7 +151,7 @@ fn agent_cmd(path: &str) -> AgentServerCommand {
+     }
+ }
+ 
+-async fn run(
++pub(crate) async fn run(
+     project: &Entity<Project>,
+     cmd: AgentServerCommand,
+     cx: &mut TestAppContext,
+@@ -170,7 +173,7 @@ fn configured_env(cmd: &AgentServerCommand) -> std::collections::HashSet<String>
+     cmd.env.iter().flat_map(|env| env.keys().cloned()).collect()
+ }
+ 
+-fn jailed(decision: LaunchDecision) -> (LaunchRecord, AgentServerCommand) {
++pub(crate) fn jailed(decision: LaunchDecision) -> (LaunchRecord, AgentServerCommand) {
+     match decision {
+         LaunchDecision::Jailed(record, cmd) => (record, cmd),
+         LaunchDecision::Unchanged(_) => panic!("expected Jailed, got Unchanged"),
+@@ -186,7 +189,7 @@ fn unchanged(decision: LaunchDecision) -> LaunchRecord {
+     }
+ }
+ 
+-fn refused(decision: LaunchDecision) -> String {
++pub(crate) fn refused(decision: LaunchDecision) -> String {
+     match decision {
+         LaunchDecision::Refused(error) => {
+             let text = format!("{error:#}");
+@@ -204,7 +207,7 @@ fn refused(decision: LaunchDecision) -> String {
+     }
+ }
+ 
+-fn count(args: &[String], flag: &str, value: &str) -> usize {
++pub(crate) fn count(args: &[String], flag: &str, value: &str) -> usize {
+     args.windows(2)
+         .filter(|pair| pair[0] == flag && pair[1] == value)
+         .count()
+@@ -742,6 +745,8 @@ mod run_additions {
+     fn home_settings(f: &Fixture, claude_dir: &str) -> Value {
+         json!({
+             "agent_sandbox": {
++                // Zeo next §6.54: a fixture that predates the limits (on by default); 0 turns each off.
++                "limits": { "memory": "0", "cpu_quota": 0, "max_tasks": 0 },
+                 "enabled": true,
+                 "ai_jail_path": f.ai_jail,
+                 "claude_config_dir": claude_dir,
+@@ -917,6 +922,8 @@ mod run_additions {
+             settings_fingerprint: 0,
+             memory_fingerprint: 0,
+             settings_key: None,
++            jail_pid: None,
++            paused: false,
+         };
+         cx.update(|cx| {
+             let first = LaunchRegistry::register(record("plus", "/w/app", 1), cx);
+diff --git a/crates/agent_sandbox/src/limits_tests.rs b/crates/agent_sandbox/src/limits_tests.rs
+new file mode 100644
+index 0000000..f3a006f
+--- /dev/null
++++ b/crates/agent_sandbox/src/limits_tests.rs
+@@ -0,0 +1,238 @@
++// Zeo next proposal §6.54 (ask 78): resource limits and the jail's own state root.
++// Filter: `limits_tests`.
++
++use std::os::unix::fs::PermissionsExt as _;
++use std::path::Path;
++
++use gpui::TestAppContext;
++use serde_json::{Value, json};
++use settings::Settings as _;
++
++use crate::AgentSandboxSettings;
++use crate::launch::project_state_dir;
++use crate::launch_tests::*;
++use crate::settings::{DISK_QUOTA_MAX_TASKS, SandboxLimits};
++
++/// An ai-jail whose --help lists the options the fork's 3.5.0-r1 adds.
++const HELP_WITH_LIMITS_AND_STATE_ROOT: &str = "case \"$1\" in --help) printf '    --memory <SIZE>  Cap memory\\n    --state-root <DIR>  State on disk\\n' ;; *) echo 'ai-jail 3.5.0' ;; esac";
++
++fn limits(memory: &str, cpu: u32, tasks: u64, disk: Option<&str>) -> SandboxLimits {
++    SandboxLimits {
++        memory: Some(memory.to_string()),
++        cpu_quota: Some(cpu),
++        max_tasks: Some(tasks),
++        disk_quota: disk.map(str::to_string),
++    }
++}
++
++#[test]
++fn limits_become_jail_options_and_zero_turns_one_off() {
++    assert_eq!(
++        limits("8G", 400, 4096, None).jail_args(),
++        [
++            "--memory",
++            "8G",
++            "--cpu-quota",
++            "400",
++            "--max-tasks",
++            "4096"
++        ]
++    );
++    let off = limits("0", 0, 0, None);
++    assert!(off.jail_args().is_empty());
++    assert!(!off.any(), "all zero is no limit at all");
++}
++
++#[test]
++fn a_disk_quota_alone_brings_the_task_cap_its_watchdog_needs() {
++    let disk_only = limits("0", 0, 0, Some("20G"));
++    assert!(disk_only.any());
++    assert_eq!(
++        disk_only.jail_args(),
++        ["--max-tasks".to_string(), DISK_QUOTA_MAX_TASKS.to_string()],
++        "ai-jail creates the scope the watchdog freezes only for a limit"
++    );
++}
++
++#[test]
++fn a_project_replaces_the_defaults_it_names_one_by_one() {
++    let defaults = limits("8G", 400, 4096, None);
++    let project = SandboxLimits {
++        memory: Some("2G".into()),
++        cpu_quota: Some(0),
++        ..SandboxLimits::default()
++    };
++    let merged = defaults.overridden_by(&project);
++    assert_eq!(
++        merged.jail_args(),
++        ["--memory", "2G", "--max-tasks", "4096"],
++        "its memory replaces the default, its 0 turns the CPU quota off, the task cap stays"
++    );
++}
++
++#[gpui::test]
++async fn the_defaults_are_the_operators_values_and_a_state_root(cx: &mut TestAppContext) {
++    init(cx);
++    let settings = cx.update(|cx| AgentSandboxSettings::get_global(cx).clone());
++    assert_eq!(
++        settings.limits,
++        limits("8G", 400, 4096, None),
++        "8 GB, 400 %, 4096 processes (operator, 2026-11-17); no disk quota"
++    );
++    assert_eq!(settings.state_root, "/var/tmp/zeo-jail");
++}
++
++#[test]
++fn each_project_has_its_own_stable_state_folder() {
++    let base = Path::new("/var/tmp/zeo-jail");
++    let app = project_state_dir(base, Path::new("/home/u/src/app"));
++    assert_eq!(
++        app,
++        project_state_dir(base, Path::new("/home/u/src/app")),
++        "the same root always maps to the same folder"
++    );
++    let other = project_state_dir(base, Path::new("/home/u/old/app"));
++    assert_ne!(app, other, "two projects named alike never share a jail");
++    let name = app.file_name().unwrap().to_string_lossy().into_owned();
++    assert!(name.starts_with("app-"), "readable: {name}");
++    // FNV-1a of the path, so a Zeo update cannot move a project's login.
++    assert_eq!(name, "app-8347daa28034a658");
++    assert_eq!(
++        project_state_dir(base, Path::new("/srv/a b:c"))
++            .file_name()
++            .unwrap()
++            .to_string_lossy()[..6],
++        *"a_b_c-",
++        "unsafe characters are replaced"
++    );
++}
++
++fn with_limits_on(f: &Fixture, state_root: &Path) -> Value {
++    let mut value = sandbox(f, true, Value::Null, memory_off());
++    value["agent_sandbox"]["limits"] =
++        json!({ "memory": "8G", "cpu_quota": 400, "max_tasks": 4096 });
++    value["agent_sandbox"]["state_root"] = json!(state_root);
++    value
++}
++
++#[gpui::test]
++async fn a_limit_the_installed_ai_jail_cannot_apply_refuses_the_start(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    set_user_settings(with_limits_on(&f, &f.base.join("state")), cx);
++    let project = project(&f, cx).await;
++    let text = refused(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    assert!(text.contains("cannot apply them"), "{text}");
++    assert!(text.contains("3.5.0-r1"), "says what to install: {text}");
++}
++
++#[gpui::test]
++async fn limits_and_the_project_state_root_reach_the_command(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, HELP_WITH_LIMITS_AND_STATE_ROOT);
++    let base = f.base.join("state");
++    set_user_settings(with_limits_on(&f, &base), cx);
++    let project = project(&f, cx).await;
++    let (record, cmd) =
++        jailed(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++
++    let dir = project_state_dir(&base, &f.root);
++    let dir_text = dir.display().to_string();
++    assert_eq!(
++        count(&cmd.args, "--state-root", &dir_text),
++        1,
++        "{:?}",
++        cmd.args
++    );
++    assert!(
++        !cmd.args.iter().any(|arg| arg == "--claude-dir"),
++        "the state root's claude/ replaces the shared config dir: {:?}",
++        cmd.args
++    );
++    let separator = cmd.args.iter().position(|arg| arg == "--").unwrap();
++    for (flag, value) in [
++        ("--memory", "8G"),
++        ("--cpu-quota", "400"),
++        ("--max-tasks", "4096"),
++    ] {
++        let at = cmd
++            .args
++            .windows(2)
++            .position(|pair| pair[0] == flag && pair[1] == value)
++            .unwrap_or_else(|| panic!("{flag} {value} in {:?}", cmd.args));
++        assert!(at < separator, "{flag} is ai-jail's, before `--`");
++    }
++    let claude = dir.join("claude");
++    assert!(
++        claude.is_dir(),
++        "created before the start, so a login can run first"
++    );
++    let mode = std::fs::metadata(&claude).unwrap().permissions().mode() & 0o777;
++    assert_eq!(mode, 0o700, "it holds a login");
++    assert_eq!(
++        record.rw_maps.first(),
++        Some(&dir),
++        "the record names the state folder"
++    );
++}
++
++#[gpui::test]
++async fn without_state_root_support_the_shared_config_dir_stays(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(
++        &f.ai_jail,
++        "case \"$1\" in --help) printf '    --memory <SIZE>  Cap memory\\n' ;; *) echo 'ai-jail 3.5.0' ;; esac",
++    );
++    set_user_settings(with_limits_on(&f, &f.base.join("state")), cx);
++    let project = project(&f, cx).await;
++    let (_, cmd) = jailed(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    let claude = f.claude_dir.display().to_string();
++    assert_eq!(
++        count(&cmd.args, "--claude-dir", &claude),
++        1,
++        "{:?}",
++        cmd.args
++    );
++    assert!(!cmd.args.iter().any(|arg| arg == "--state-root"));
++    assert!(
++        !f.base.join("state").exists(),
++        "nothing created for a jail that cannot use it"
++    );
++}
++
++#[gpui::test]
++async fn the_registry_keeps_a_launchs_pid_and_pause(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, HELP_WITH_LIMITS_AND_STATE_ROOT);
++    set_user_settings(with_limits_on(&f, &f.base.join("state")), cx);
++    let project = project(&f, cx).await;
++    let (record, _) = jailed(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    let agent = record.agent_id.clone();
++    let root = record.project_root.clone();
++    let id = cx.update(|cx| crate::LaunchRegistry::register(record, cx));
++    cx.update(|cx| {
++        crate::LaunchRegistry::set_jail_pid(id, 4242, cx);
++        crate::LaunchRegistry::set_paused(id, true, cx);
++    });
++    let (found, record) = cx
++        .update(|cx| crate::LaunchRegistry::get_with_id(&agent, &root, cx))
++        .expect("registered");
++    assert_eq!(found, id);
++    assert_eq!(record.jail_pid, Some(4242), "the kill switch's target");
++    assert!(record.paused, "the watchdog's pause shows");
++    cx.update(|cx| crate::LaunchRegistry::set_paused(id, false, cx));
++    assert!(
++        !cx.update(|cx| crate::LaunchRegistry::launch(id, cx))
++            .unwrap()
++            .paused
++    );
++    cx.update(|cx| crate::LaunchRegistry::remove_launch(id, cx));
++    assert!(
++        cx.update(|cx| crate::LaunchRegistry::launch(id, cx))
++            .is_none(),
++        "ends with the launch"
++    );
++}
+diff --git a/crates/agent_sandbox/src/probe.rs b/crates/agent_sandbox/src/probe.rs
+index 4895ab4..76cb7e8 100644
+--- a/crates/agent_sandbox/src/probe.rs
++++ b/crates/agent_sandbox/src/probe.rs
+@@ -1,4 +1,5 @@
+-//! Locating ai-jail, reading its version and whether it offers `--forward-port`.
++//! Locating ai-jail, reading its version and which options its `--help` lists: `--forward-port`,
++//! and since Zeo next §6.54 `--state-root` and the whole-sandbox limits (`--memory`).
+ //!
+ //! The answer is cached per binary identity, so an agent start costs one `stat` once warm.
+ 
+@@ -30,6 +31,38 @@ const BUSY_BACKOFF: Duration = Duration::from_millis(10);
+ pub struct JailBinary {
+     pub version: Version,
+     pub supports_forward_port: bool,
++    /// `--state-root` (§6.54): the jail's home, /tmp and Claude config on disk.
++    pub supports_state_root: bool,
++    /// `--memory`, `--cpu-quota`, `--max-tasks` (§6.54): one flag stands for the three, which
++    /// ship together.
++    pub supports_limits: bool,
++}
++
++/// What `--help` listed, cached with the version.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++struct HelpFlags {
++    forward_port: bool,
++    state_root: bool,
++    limits: bool,
++}
++
++impl HelpFlags {
++    fn read(help: &str) -> Self {
++        Self {
++            forward_port: help_lists_option(help, "--forward-port"),
++            state_root: help_lists_option(help, "--state-root"),
++            limits: help_lists_option(help, "--memory"),
++        }
++    }
++
++    fn binary(self, version: Version) -> JailBinary {
++        JailBinary {
++            version,
++            supports_forward_port: self.forward_port,
++            supports_state_root: self.state_root,
++            supports_limits: self.limits,
++        }
++    }
+ }
+ 
+ #[derive(Debug)]
+@@ -130,39 +163,36 @@ pub async fn probe(path: &Path, executor: &BackgroundExecutor) -> Result<JailBin
+         .and_then(|(key, identity)| cached(key, identity));
+     if let Some(CacheEntry {
+         version,
+-        supports_forward_port: Some(supports_forward_port),
++        help: Some(help),
+         ..
+     }) = cached_entry
+     {
+-        return Ok(JailBinary {
+-            version,
+-            supports_forward_port,
+-        });
++        return Ok(help.binary(version));
+     }
+     let program = identity.as_ref().map_or(path, |(key, _)| key.as_path());
+     let version = match cached_entry {
+         Some(entry) => entry.version,
+         None => read_version(path, program, executor).await?,
+     };
+-    let supports_forward_port = match run(program, "--help", executor).await {
++    let help = match run(program, "--help", executor).await {
+         Ok(Output {
+             success: true,
+             stdout,
+             ..
+-        }) => help_lists_forward_port(&String::from_utf8_lossy(&stdout)),
+-        Ok(_) | Err(_) => false,
++        }) => HelpFlags::read(&String::from_utf8_lossy(&stdout)),
++        Ok(_) | Err(_) => HelpFlags::default(),
+     };
+     log::debug!(
+-        "agent_sandbox event=probe path={} version={version} forward_port={supports_forward_port}",
+-        path.display()
++        "agent_sandbox event=probe path={} version={version} forward_port={} state_root={} limits={}",
++        path.display(),
++        help.forward_port,
++        help.state_root,
++        help.limits
+     );
+     if let Some((key, identity)) = identity {
+-        store(key, identity, version.clone(), Some(supports_forward_port));
++        store(key, identity, version.clone(), Some(help));
+     }
+-    Ok(JailBinary {
+-        version,
+-        supports_forward_port,
+-    })
++    Ok(help.binary(version))
+ }
+ 
+ async fn read_version(
+@@ -212,7 +242,9 @@ fn truncate(line: &str) -> String {
+ /// The option column is the indentation of the first line that starts with `-`. Wrapped
+ /// descriptions sit deeper and may themselves start with a flag (2.8.1's `--env` entry wraps
+ /// onto a line beginning with `--env-from-file`), so deeper lines are never options.
+-fn help_lists_forward_port(help: &str) -> bool {
++/// Whether `help` lists `option` at the options' indentation (a continuation line that merely
++/// mentions it does not count).
++fn help_lists_option(help: &str, option_name: &str) -> bool {
+     let indentation = |line: &str| line.len() - line.trim_start().len();
+     let Some(option_column) = help
+         .lines()
+@@ -227,7 +259,7 @@ fn help_lists_forward_port(help: &str) -> bool {
+         }
+         let option = strip_short_flag(line.trim_start());
+         option
+-            .strip_prefix("--forward-port")
++            .strip_prefix(option_name)
+             .is_some_and(|rest| match rest.chars().next() {
+                 None => true,
+                 Some(next) => next.is_whitespace() || matches!(next, '<' | '=' | '['),
+@@ -340,7 +372,7 @@ struct BinaryIdentity {
+ struct CacheEntry {
+     identity: BinaryIdentity,
+     version: Version,
+-    supports_forward_port: Option<bool>,
++    help: Option<HelpFlags>,
+ }
+ 
+ static CACHE: LazyLock<Mutex<HashMap<PathBuf, CacheEntry>>> =
+@@ -390,19 +422,14 @@ fn cached(key: &Path, identity: &BinaryIdentity) -> Option<CacheEntry> {
+         .cloned()
+ }
+ 
+-fn store(
+-    key: PathBuf,
+-    identity: BinaryIdentity,
+-    version: Version,
+-    supports_forward_port: Option<bool>,
+-) {
++fn store(key: PathBuf, identity: BinaryIdentity, version: Version, help: Option<HelpFlags>) {
+     let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+     cache.insert(
+         key,
+         CacheEntry {
+             identity,
+             version,
+-            supports_forward_port,
++            help,
+         },
+     );
+ }
+diff --git a/crates/agent_sandbox/src/roundtrip_tests.rs b/crates/agent_sandbox/src/roundtrip_tests.rs
+index 3cebda1..ae5f7e5 100644
+--- a/crates/agent_sandbox/src/roundtrip_tests.rs
++++ b/crates/agent_sandbox/src/roundtrip_tests.rs
+@@ -72,6 +72,8 @@ async fn roundtrip_page_write_to_launch_to_registry_to_drift(cx: &mut TestAppCon
+     // The user file before the page touches it: sandbox off, a project host already listed.
+     let user = json!({
+         "agent_sandbox": {
++            // Zeo next §6.54: a fixture that predates the limits (on by default); 0 turns each off.
++            "limits": { "memory": "0", "cpu_quota": 0, "max_tasks": 0 },
+             "enabled": false,
+             "ai_jail_path": ai_jail,
+             "claude_config_dir": claude_dir,
+@@ -232,6 +234,8 @@ fn roundtrip_contract_shapes_carry_every_field_the_consumers_read(cx: &mut TestA
+         settings_fingerprint: 1,
+         memory_fingerprint: 2,
+         settings_key: Some("/work/app".to_string()),
++        jail_pid: None,
++        paused: false,
+     };
+     cx.update(|cx| {
+         LaunchRegistry::register(record.clone(), cx);
+@@ -255,6 +259,8 @@ fn roundtrip_contract_shapes_carry_every_field_the_consumers_read(cx: &mut TestA
+             settings_fingerprint: _,
+             memory_fingerprint: _,
+             settings_key: _,
++            jail_pid: _,
++            paused: _,
+         } = &stored;
+         assert_eq!(*reason, Reason::On);
+         assert_eq!(
+diff --git a/crates/agent_sandbox/src/settings.rs b/crates/agent_sandbox/src/settings.rs
+index 31dc0ef..1d37cd4 100644
+--- a/crates/agent_sandbox/src/settings.rs
++++ b/crates/agent_sandbox/src/settings.rs
+@@ -11,6 +11,15 @@ use crate::validate::expand_tilde;
+ const DEFAULT_CLAUDE_CONFIG_DIR: &str = "~/.claude-jailed";
+ /// `agent_sandbox.allow_hosts` when the defaults lack it: the measured login minimum.
+ const DEFAULT_ALLOW_HOSTS: [&str; 2] = ["anthropic.com", "platform.claude.com"];
++/// `agent_sandbox.state_root` when the defaults lack it; `default.json` says the same.
++const DEFAULT_STATE_ROOT: &str = "/var/tmp/zeo-jail";
++/// `agent_sandbox.limits` when the defaults lack them (the operator's values, 2026-11-17).
++const DEFAULT_MEMORY: &str = "8G";
++const DEFAULT_CPU_QUOTA: u32 = 400;
++const DEFAULT_MAX_TASKS: u64 = 4096;
++/// The task cap a disk quota alone brings: the watchdog pauses the jail by freezing its systemd
++/// scope, and ai-jail creates that scope only for a limit (operator, 2026-11-21).
++pub const DISK_QUOTA_MAX_TASKS: u64 = 4096;
+ /// `agent_memory.endpoint` when the defaults lack it.
+ const DEFAULT_MEMORY_ENDPOINT: &str = "http://127.0.0.1:49374/mcp";
+ 
+@@ -27,10 +36,86 @@ pub struct AgentSandboxSettings {
+     pub rw_maps: Vec<String>,
+     /// Hosts every jailed project may reach, as written.
+     pub allow_hosts: Vec<String>,
++    /// The directory each project's own state directory lives under, as written (§6.54).
++    pub state_root: String,
++    /// Limits for every jailed project (§6.54).
++    pub limits: SandboxLimits,
+     /// Per-project overrides, keyed by the absolute root path as written.
+     pub projects: BTreeMap<String, AgentSandboxProjectSettings>,
+ }
+ 
++/// Resource limits for one jail (Zeo next §6.54). `None` leaves a limit off.
++#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
++pub struct SandboxLimits {
++    /// Memory for the whole jail, as written ("8G").
++    pub memory: Option<String>,
++    /// Percent of one CPU.
++    pub cpu_quota: Option<u32>,
++    /// Processes and threads together.
++    pub max_tasks: Option<u64>,
++    /// Growth allowed to the jail's state and the project, as written ("20G").
++    pub disk_quota: Option<String>,
++}
++
++impl SandboxLimits {
++    /// These limits with each one `over` names put in its place.
++    pub fn overridden_by(&self, over: &SandboxLimits) -> Self {
++        Self {
++            memory: over.memory.clone().or_else(|| self.memory.clone()),
++            cpu_quota: over.cpu_quota.or(self.cpu_quota),
++            max_tasks: over.max_tasks.or(self.max_tasks),
++            disk_quota: over.disk_quota.clone().or_else(|| self.disk_quota.clone()),
++        }
++    }
++
++    /// These limits with every one set to zero (`0`, `"0"` or `""`) turned off: a zero is how a
++    /// setting turns a default limit off, since an unset value inherits it.
++    pub fn effective(&self) -> Self {
++        let size = |value: &Option<String>| {
++            value
++                .as_ref()
++                .filter(|text| !matches!(text.trim(), "" | "0"))
++                .cloned()
++        };
++        Self {
++            memory: size(&self.memory),
++            cpu_quota: self.cpu_quota.filter(|quota| *quota > 0),
++            max_tasks: self.max_tasks.filter(|tasks| *tasks > 0),
++            disk_quota: size(&self.disk_quota),
++        }
++    }
++
++    /// Whether any limit is on, and so needs ai-jail's systemd scope: every one does, the disk
++    /// quota through the task cap it brings.
++    pub fn any(&self) -> bool {
++        let on = self.effective();
++        on.memory.is_some()
++            || on.cpu_quota.is_some()
++            || on.max_tasks.is_some()
++            || on.disk_quota.is_some()
++    }
++
++    /// The ai-jail options that apply these limits. A disk quota is Zeo's own watchdog, not an
++    /// ai-jail option; alone, it still brings `--max-tasks` so the jail gets a scope to freeze.
++    pub fn jail_args(&self) -> Vec<String> {
++        let on = self.effective();
++        let mut args = Vec::new();
++        if let Some(memory) = &on.memory {
++            args.extend(["--memory".to_string(), memory.clone()]);
++        }
++        if let Some(quota) = on.cpu_quota {
++            args.extend(["--cpu-quota".to_string(), quota.to_string()]);
++        }
++        let tasks = on
++            .max_tasks
++            .or(on.disk_quota.as_ref().map(|_| DISK_QUOTA_MAX_TASKS));
++        if let Some(tasks) = tasks {
++            args.extend(["--max-tasks".to_string(), tasks.to_string()]);
++        }
++        args
++    }
++}
++
+ /// One project's entry in `agent_sandbox.projects`.
+ #[derive(Clone, Debug, Default, PartialEq, Eq)]
+ pub struct AgentSandboxProjectSettings {
+@@ -38,6 +123,8 @@ pub struct AgentSandboxProjectSettings {
+     pub enabled: Option<bool>,
+     pub rw_maps: Vec<String>,
+     pub allow_hosts: Vec<String>,
++    /// Limits replacing the defaults they name.
++    pub limits: SandboxLimits,
+ }
+ 
+ /// The defaults merged with one project's entry, unvalidated.
+@@ -48,6 +135,8 @@ pub struct ProjectPolicy {
+     pub rw_maps: Vec<String>,
+     /// The default hosts, then the project's own, each once, in the configured order.
+     pub allow_hosts: Vec<String>,
++    /// The default limits with the project's own in their place.
++    pub limits: SandboxLimits,
+ }
+ 
+ impl AgentSandboxSettings {
+@@ -66,12 +155,14 @@ impl AgentSandboxSettings {
+                 enabled: self.enabled,
+                 rw_maps: dedup_in_order(&self.rw_maps, &[]),
+                 allow_hosts: dedup_in_order(&self.allow_hosts, &[]),
++                limits: self.limits.clone(),
+             };
+         };
+         ProjectPolicy {
+             enabled: entry.enabled.unwrap_or(self.enabled),
+             rw_maps: dedup_in_order(&self.rw_maps, &entry.rw_maps),
+             allow_hosts: dedup_in_order(&self.allow_hosts, &entry.allow_hosts),
++            limits: self.limits.overridden_by(&entry.limits),
+         }
+     }
+ 
+@@ -166,6 +257,18 @@ impl Settings for AgentSandboxSettings {
+             allow_hosts: sandbox
+                 .allow_hosts
+                 .unwrap_or_else(|| DEFAULT_ALLOW_HOSTS.map(str::to_string).to_vec()),
++            state_root: sandbox
++                .state_root
++                .unwrap_or_else(|| DEFAULT_STATE_ROOT.to_string()),
++            limits: {
++                let limits = sandbox.limits.unwrap_or_default();
++                SandboxLimits {
++                    memory: limits.memory.or_else(|| Some(DEFAULT_MEMORY.to_string())),
++                    cpu_quota: limits.cpu_quota.or(Some(DEFAULT_CPU_QUOTA)),
++                    max_tasks: limits.max_tasks.or(Some(DEFAULT_MAX_TASKS)),
++                    disk_quota: limits.disk_quota,
++                }
++            },
+             projects: sandbox
+                 .projects
+                 .unwrap_or_default()
+@@ -175,6 +278,15 @@ impl Settings for AgentSandboxSettings {
+                         enabled: project.enabled,
+                         rw_maps: project.rw_maps.unwrap_or_default(),
+                         allow_hosts: project.allow_hosts.unwrap_or_default(),
++                        limits: project
++                            .limits
++                            .map(|limits| SandboxLimits {
++                                memory: limits.memory,
++                                cpu_quota: limits.cpu_quota,
++                                max_tasks: limits.max_tasks,
++                                disk_quota: limits.disk_quota,
++                            })
++                            .unwrap_or_default(),
+                     };
+                     (root, project)
+                 })
+diff --git a/crates/agent_sandbox/tests/real_ai_jail.rs b/crates/agent_sandbox/tests/real_ai_jail.rs
+index f3c1221..6df1746 100644
+--- a/crates/agent_sandbox/tests/real_ai_jail.rs
++++ b/crates/agent_sandbox/tests/real_ai_jail.rs
+@@ -130,6 +130,8 @@ fn jailed(
+     let mut cmd = generate(
+         agent,
+         &JailInputs {
++            state_root: None,
++            limit_args: &[],
+             ai_jail: bin,
+             project_root: &p.root,
+             claude_dir: &p.claude_dir,
+diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
+index 9e35dee..2faa34f 100644
+--- a/crates/agent_servers/src/acp.rs
++++ b/crates/agent_servers/src/acp.rs
+@@ -144,7 +144,11 @@ pub(crate) async fn connect(
+     launch: StdioLaunch,
+     cx: &mut AsyncApp,
+ ) -> Result<Rc<dyn acp_thread::AgentConnection>> {
+-    let StdioLaunch { cwd, io_ended } = launch;
++    let StdioLaunch {
++        cwd,
++        io_ended,
++        jail_pid,
++    } = launch;
+     // Both attempts start the command the same way: a jailed command runs in the root its launch
+     // decision checked, with only its own env, never through a login shell (story 043).
+     let (io_ended, negotiation_error) = if cx.update(|cx| cx.has_flag::<AcpBetaFeatureFlag>()) {
+@@ -160,6 +164,7 @@ pub(crate) async fn connect(
+             StdioLaunch {
+                 cwd: cwd.clone(),
+                 io_ended: Some(v2_io_ended),
++                jail_pid: jail_pid.clone(),
+             },
+             cx,
+         )
+@@ -189,7 +194,11 @@ pub(crate) async fn connect(
+         agent_server_store,
+         default_mode,
+         default_config_options,
+-        StdioLaunch { cwd, io_ended },
++        StdioLaunch {
++            cwd,
++            io_ended,
++            jail_pid,
++        },
+         cx,
+     )
+     .await
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index 7cb4b9c..447da6a 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -664,6 +664,9 @@ pub(crate) struct StdioLaunch {
+     /// Held by the connection's IO task and dropped when it ends — the agent exited or the
+     /// connection was dropped — so the receiver learns that the launch is over.
+     pub io_ended: Option<futures::channel::oneshot::Sender<()>>,
++    /// Set to the spawned process's id, for the agent sandbox's kill switch and disk watchdog
++    /// (Zeo next §6.54). A v2 attempt that falls back to v1 spawns twice; the last one wins.
++    pub jail_pid: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
+ }
+ 
+ pub(crate) async fn connect(
+@@ -1010,7 +1013,11 @@ impl AcpConnection {
+         launch: StdioLaunch,
+         cx: &mut AsyncApp,
+     ) -> Result<Self> {
+-        let StdioLaunch { cwd, io_ended } = launch;
++        let StdioLaunch {
++            cwd,
++            io_ended,
++            jail_pid,
++        } = launch;
+         let ResolvedAgentServerCommand {
+             command,
+             installation_lease,
+@@ -1023,6 +1030,9 @@ impl AcpConnection {
+             stderr,
+             debug_log,
+         } = transport::spawn_stdio(&project, command, cwd.as_deref(), cx)?;
++        if let Some(cell) = &jail_pid {
++            cell.store(child.id(), std::sync::atomic::Ordering::SeqCst);
++        }
+         let mut child = transport::OwnedChild(child);
+         let sessions = Rc::new(RefCell::new(HashMap::default()));
+ 
+diff --git a/crates/agent_servers/src/acp/v2.rs b/crates/agent_servers/src/acp/v2.rs
+index 732ff45..d45be0a 100644
+--- a/crates/agent_servers/src/acp/v2.rs
++++ b/crates/agent_servers/src/acp/v2.rs
+@@ -258,7 +258,11 @@ impl AcpV2Connection {
+         launch: StdioLaunch,
+         cx: &mut AsyncApp,
+     ) -> Result<Self> {
+-        let StdioLaunch { cwd, io_ended } = launch;
++        let StdioLaunch {
++            cwd,
++            io_ended,
++            jail_pid,
++        } = launch;
+         let ResolvedAgentServerCommand {
+             command,
+             installation_lease,
+@@ -270,6 +274,9 @@ impl AcpV2Connection {
+             stderr,
+             debug_log,
+         } = transport::spawn_stdio(&project, command, cwd.as_deref(), cx)?;
++        if let Some(cell) = &jail_pid {
++            cell.store(child.id(), std::sync::atomic::Ordering::SeqCst);
++        }
+         let mut child = transport::OwnedChild(child);
+         let status = child.exit_status(installation_lease);
+         let stderr_task = cx
+diff --git a/crates/agent_servers/src/custom.rs b/crates/agent_servers/src/custom.rs
+index acbe88e..d00efe2 100644
+--- a/crates/agent_servers/src/custom.rs
++++ b/crates/agent_servers/src/custom.rs
+@@ -320,6 +320,10 @@ impl AgentServer for CustomAgentServer {
+             };
+             log_launch(&record, jailed);
+             let launch_id = cx.update(|cx| LaunchRegistry::register(record, cx));
++            // Zeo next §6.54: the process the connection spawns, for the kill switch and the
++            // disk watchdog; filled in by the spawn, read once the connection stands.
++            let jail_pid =
++                jailed.then(|| std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)));
+             let (io_ended, launch_ended) = futures::channel::oneshot::channel::<()>();
+             cx.spawn(async move |cx| {
+                 // Fires when the connection's IO task ends or the start fails: the sender is
+@@ -341,10 +345,38 @@ impl AgentServer for CustomAgentServer {
+                 StdioLaunch {
+                     cwd,
+                     io_ended: Some(io_ended),
++                    jail_pid: jail_pid.clone(),
+                 },
+                 cx,
+             )
+             .await?;
++            if let Some(pid) = jail_pid
++                .map(|cell| cell.load(std::sync::atomic::Ordering::SeqCst))
++                .filter(|pid| *pid != 0)
++            {
++                cx.update(|cx| {
++                    LaunchRegistry::set_jail_pid(launch_id, pid, cx);
++                    // Zeo next §6.54: a disk quota is watched by Zeo itself.
++                    if let Some(record) = LaunchRegistry::launch(launch_id, cx) {
++                        let sandbox =
++                            <agent_sandbox::AgentSandboxSettings as settings::Settings>::get_global(
++                                cx,
++                            );
++                        let quota = sandbox
++                            .policy_for_key(record.settings_key.as_deref())
++                            .limits
++                            .effective()
++                            .disk_quota
++                            .as_deref()
++                            .and_then(agent_sandbox::disk_watch::parse_size);
++                        if let Some(quota) = quota {
++                            let mut dirs = vec![record.project_root.clone()];
++                            dirs.extend(record.rw_maps.first().cloned());
++                            agent_sandbox::launch::watch_disk(launch_id, quota, dirs, cx);
++                        }
++                    }
++                });
++            }
+             Ok(connection)
+         })
+     }
+diff --git a/crates/agent_servers/src/sandbox_hook_lifecycle_tests.rs b/crates/agent_servers/src/sandbox_hook_lifecycle_tests.rs
+index fa327d2..3cd510d 100644
+--- a/crates/agent_servers/src/sandbox_hook_lifecycle_tests.rs
++++ b/crates/agent_servers/src/sandbox_hook_lifecycle_tests.rs
+@@ -72,6 +72,8 @@ exec cat >/dev/null
+                 AGENT: { "type": "custom", "command": self.agent, "args": [] }
+             },
+             "agent_sandbox": {
++                // Zeo next §6.54: a fixture that predates the limits (on by default); 0 turns each off.
++                "limits": { "memory": "0", "cpu_quota": 0, "max_tasks": 0 },
+                 "enabled": sandbox_on,
+                 "ai_jail_path": ai_jail_path,
+                 "claude_config_dir": self.base.join("claude-jailed"),
+diff --git a/crates/agent_servers/src/sandbox_hook_tests.rs b/crates/agent_servers/src/sandbox_hook_tests.rs
+index be411ce..29da47c 100644
+--- a/crates/agent_servers/src/sandbox_hook_tests.rs
++++ b/crates/agent_servers/src/sandbox_hook_tests.rs
+@@ -184,6 +184,8 @@ impl Fixture {
+                 }
+             },
+             "agent_sandbox": {
++                // Zeo next §6.54: a fixture that predates the limits (on by default); 0 turns each off.
++                "limits": { "memory": "0", "cpu_quota": 0, "max_tasks": 0 },
+                 "enabled": sandbox_on,
+                 "ai_jail_path": ai_jail_path,
+                 "claude_config_dir": self.claude_dir,
+diff --git a/crates/agent_servers/src/sandbox_hook_v2_tests.rs b/crates/agent_servers/src/sandbox_hook_v2_tests.rs
+index c3c77b0..dc37db3 100644
+--- a/crates/agent_servers/src/sandbox_hook_v2_tests.rs
++++ b/crates/agent_servers/src/sandbox_hook_v2_tests.rs
+@@ -100,6 +100,8 @@ done
+                 }
+             },
+             "agent_sandbox": {
++                // Zeo next §6.54: a fixture that predates the limits (on by default); 0 turns each off.
++                "limits": { "memory": "0", "cpu_quota": 0, "max_tasks": 0 },
+                 "enabled": true,
+                 "ai_jail_path": ai_jail,
+                 "claude_config_dir": base.join("claude-jailed"),
+diff --git a/crates/agent_ui/src/agent_jail_status.rs b/crates/agent_ui/src/agent_jail_status.rs
+index 71ef764..b36d97e 100644
+--- a/crates/agent_ui/src/agent_jail_status.rs
++++ b/crates/agent_ui/src/agent_jail_status.rs
+@@ -163,6 +163,7 @@ fn list_line(label: &str, items: impl Iterator<Item = String>) -> SharedString {
+ pub fn render_jail_status_button(
+     summary: JailStatusSummary,
+     on_restart: Option<Box<dyn Fn(&mut Window, &mut App)>>,
++    on_stop: Option<Box<dyn Fn(&mut Window, &mut App)>>,
+ ) -> AnyElement {
+     let JailStatusSummary {
+         icon,
+@@ -203,10 +204,55 @@ pub fn render_jail_status_button(
+                     );
+                 }),
+         )
++        // Zeo next §6.53/§6.54: the kill switch, beside the lock of a running jail.
++        .when_some(on_stop, |this, on_stop| {
++            this.child(
++                IconButton::new("agent-jail-stop", IconName::Stop)
++                    .icon_size(IconSize::Small)
++                    .icon_color(Color::Error)
++                    .tooltip(Tooltip::text(
++                        "Stop Agent: end the jail and everything running in it",
++                    ))
++                    .on_click(move |_, window, cx| on_stop(window, cx)),
++            )
++        })
+         .child(Divider::vertical())
+         .into_any_element()
+ }
+ 
++/// Zeo next §6.54: a jail the disk watchdog paused -- its processes frozen, no work lost -- with
++/// what the operator can do about it.
++pub const PAUSED_LABEL: &str = "Paused: disk quota";
++
++/// The paused state beside the lock: the label, Resume and Stop.
++pub fn render_jail_paused(
++    on_resume: Box<dyn Fn(&mut Window, &mut App)>,
++    on_stop: Box<dyn Fn(&mut Window, &mut App)>,
++) -> AnyElement {
++    h_flex()
++        .gap_1()
++        .child(
++            Label::new(PAUSED_LABEL)
++                .size(LabelSize::Small)
++                .color(Color::Warning),
++        )
++        .child(
++            Button::new("agent-jail-resume", "Resume")
++                .label_size(LabelSize::Small)
++                .tooltip(Tooltip::text(
++                    "Let the agent go on; it may grow by the quota again from here",
++                ))
++                .on_click(move |_, window, cx| on_resume(window, cx)),
++        )
++        .child(
++            Button::new("agent-jail-paused-stop", "Stop")
++                .label_size(LabelSize::Small)
++                .tooltip(Tooltip::text("End the jail and everything running in it"))
++                .on_click(move |_, window, cx| on_stop(window, cx)),
++        )
++        .into_any_element()
++}
++
+ #[cfg(test)]
+ #[path = "agent_jail_status_pending_tests.rs"]
+ mod pending_tests;
+diff --git a/crates/agent_ui/src/agent_jail_status_pending_tests.rs b/crates/agent_ui/src/agent_jail_status_pending_tests.rs
+index 903b4c1..683ff39 100644
+--- a/crates/agent_ui/src/agent_jail_status_pending_tests.rs
++++ b/crates/agent_ui/src/agent_jail_status_pending_tests.rs
+@@ -22,6 +22,8 @@ fn record(reason: Reason) -> LaunchRecord {
+         settings_fingerprint: 0,
+         memory_fingerprint: 0,
+         settings_key: None,
++        jail_pid: None,
++        paused: false,
+     }
+ }
+ 
+diff --git a/crates/agent_ui/src/agent_jail_status_tests.rs b/crates/agent_ui/src/agent_jail_status_tests.rs
+index 0c6c92d..d405821 100644
+--- a/crates/agent_ui/src/agent_jail_status_tests.rs
++++ b/crates/agent_ui/src/agent_jail_status_tests.rs
+@@ -77,6 +77,8 @@ fn record(root: &str, reason: Reason, version: Option<&str>) -> LaunchRecord {
+         settings_fingerprint: 0,
+         memory_fingerprint: 0,
+         settings_key: None,
++        jail_pid: None,
++        paused: false,
+     }
+ }
+ 
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index cf70d67..cddb2ae 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -6958,10 +6958,55 @@ impl ThreadView {
+         );
+         let summary =
+             crate::agent_jail_status::jail_status_summary(&record, drifted).with_pending(pending);
+-        Some(crate::agent_jail_status::render_jail_status_button(
++        // Zeo next §6.53/§6.54: the kill switch, for a jail whose process runs. A paused jail is
++        // thawed first: a frozen process only acts on the signal once it runs again.
++        let stop = move |pid: u32, paused: bool| {
++            if paused {
++                agent_sandbox::control::jail_scope_dir(pid)
++                    .and_then(|scope| agent_sandbox::control::set_frozen(&scope, false))
++                    .log_err();
++            }
++            agent_sandbox::control::stop_jail(pid).log_err();
++        };
++        let paused = record.paused;
++        let on_stop = record
++            .jail_pid
++            .map(|pid| -> Box<dyn Fn(&mut Window, &mut App)> {
++                Box::new(move |_window, _cx| stop(pid, paused))
++            });
++        let button = crate::agent_jail_status::render_jail_status_button(
+             summary,
+             Some(self.restart_agent_for_jail()),
+-        ))
++            on_stop,
++        );
++        // §6.54: the disk watchdog paused the jail; Resume thaws it and lets the watch count the
++        // quota again from now.
++        let paused_controls = match (record.paused, record.jail_pid) {
++            (true, Some(pid)) => agent_sandbox::LaunchRegistry::get_with_id(
++                &self.agent_id,
++                &root,
++                cx,
++            )
++            .map(|(launch_id, _)| {
++                crate::agent_jail_status::render_jail_paused(
++                    Box::new(move |_window, cx| {
++                        agent_sandbox::control::jail_scope_dir(pid)
++                            .and_then(|scope| agent_sandbox::control::set_frozen(&scope, false))
++                            .log_err();
++                        agent_sandbox::LaunchRegistry::set_paused(launch_id, false, cx);
++                    }),
++                    Box::new(move |_window, _cx| stop(pid, true)),
++                )
++            }),
++            _ => None,
++        };
++        Some(
++            h_flex()
++                .gap_1()
++                .children(paused_controls)
++                .child(button)
++                .into_any_element(),
++        )
+     }
+ 
+     /// Restarts the agent so a changed sandbox setting applies (§6.50). The thread is resumed
+diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
+index fe8b5c8..d5239c8 100644
+--- a/crates/settings_content/src/settings_content.rs
++++ b/crates/settings_content/src/settings_content.rs
+@@ -378,12 +378,44 @@ pub struct AgentSandboxSettingsContent {
+     ///
+     /// Default: ["anthropic.com", "platform.claude.com"]
+     pub allow_hosts: Option<Vec<String>>,
++    /// Where each jailed project keeps its own home, /tmp and Claude config (and so its own
++    /// login): a directory per project under this one. Used when the installed ai-jail offers
++    /// `--state-root`; otherwise the jail uses `claude_config_dir`.
++    ///
++    /// Default: "/var/tmp/zeo-jail"
++    pub state_root: Option<String>,
++    /// Resource limits for every jailed project.
++    pub limits: Option<AgentSandboxLimitsContent>,
+     /// Per-project overrides, keyed by the project's absolute root path.
+     ///
+     /// Default: {}
+     pub projects: Option<BTreeMap<String, AgentSandboxProjectSettingsContent>>,
+ }
+ 
++/// Resource limits for a jailed agent. A limit the installed ai-jail cannot apply keeps the
++/// agent from starting. `0` (or `"0"`) turns a limit off, here or for one project.
++#[with_fallible_options]
++#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
++pub struct AgentSandboxLimitsContent {
++    /// Memory for the whole jail, such as "8G" or "512M". Swap is not used.
++    ///
++    /// Default: "8G"
++    pub memory: Option<String>,
++    /// CPU time, in percent of one CPU (400 = four full CPUs).
++    ///
++    /// Default: 400
++    pub cpu_quota: Option<u32>,
++    /// Processes and threads together.
++    ///
++    /// Default: 4096
++    pub max_tasks: Option<u64>,
++    /// Disk the jail's state and the project may grow by, such as "20G". Past it the agent is
++    /// paused, not stopped.
++    ///
++    /// Default: null
++    pub disk_quota: Option<String>,
++}
++
+ /// The sandbox settings of one project, keyed by its absolute root path.
+ #[with_fallible_options]
+ #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+@@ -394,6 +426,8 @@ pub struct AgentSandboxProjectSettingsContent {
+     pub rw_maps: Option<Vec<String>>,
+     /// Allowed hosts added after the defaults.
+     pub allow_hosts: Option<Vec<String>>,
++    /// Limits for this project, each replacing the default it names.
++    pub limits: Option<AgentSandboxLimitsContent>,
+ }
+ 
+ /// Configuration for the ai-memory server the agents talk to.
+diff --git a/crates/settings_ui/src/pages/agent_jail_limits.rs b/crates/settings_ui/src/pages/agent_jail_limits.rs
+new file mode 100644
+index 0000000..60dbbcd
+--- /dev/null
++++ b/crates/settings_ui/src/pages/agent_jail_limits.rs
+@@ -0,0 +1,355 @@
++//! The Agent Sandbox page's resource limits and state folder (Zeo next proposal §6.54, ask 78):
++//! the four limits a jailed start applies, each settable for this project, and the folder that
++//! keeps the project's own jail home, /tmp and Claude login.
++
++use std::path::{Path, PathBuf};
++use std::sync::{Arc, OnceLock};
++
++use agent_sandbox::SandboxLimits;
++use agent_sandbox::confirm::{non_utf8_root_message, target_project_key};
++use agent_sandbox::disk_watch::parse_size;
++use fs::Fs;
++use futures::channel::oneshot;
++use gpui::{AnyElement, App, AsyncApp, Entity, ScrollHandle, SharedString, Task};
++use settings::{AgentSandboxLimitsContent, SettingsStore};
++use ui::{Tooltip, prelude::*};
++
++use super::{JailPageState, first_line, reveal};
++use crate::components::SettingsInputField;
++
++/// One of `agent_sandbox.limits`' fields.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum LimitField {
++    Memory,
++    CpuQuota,
++    MaxTasks,
++    DiskQuota,
++}
++
++/// A limit as it is written to the settings file.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub(crate) enum LimitValue {
++    Size(String),
++    Count(u64),
++}
++
++impl LimitField {
++    pub(crate) const ALL: [LimitField; 4] = [
++        LimitField::Memory,
++        LimitField::CpuQuota,
++        LimitField::MaxTasks,
++        LimitField::DiskQuota,
++    ];
++
++    pub(crate) fn field(self) -> &'static str {
++        match self {
++            LimitField::Memory => "memory",
++            LimitField::CpuQuota => "cpu_quota",
++            LimitField::MaxTasks => "max_tasks",
++            LimitField::DiskQuota => "disk_quota",
++        }
++    }
++
++    fn title(self) -> &'static str {
++        match self {
++            LimitField::Memory => "Memory",
++            LimitField::CpuQuota => "CPU",
++            LimitField::MaxTasks => "Processes",
++            LimitField::DiskQuota => "Disk Growth",
++        }
++    }
++
++    fn placeholder(self) -> &'static str {
++        match self {
++            LimitField::Memory => "Memory for this project (e.g. 4G, 0 for none)…",
++            LimitField::CpuQuota => "Percent of one CPU (e.g. 200, 0 for none)…",
++            LimitField::MaxTasks => "Processes and threads (e.g. 2048, 0 for none)…",
++            LimitField::DiskQuota => "Disk growth before a pause (e.g. 20G, 0 for none)…",
++        }
++    }
++
++    /// The value in force, as the page shows it.
++    fn shown(self, limits: &SandboxLimits) -> String {
++        let on = limits.effective();
++        let text = match self {
++            LimitField::Memory => on.memory,
++            LimitField::CpuQuota => on.cpu_quota.map(|quota| format!("{quota} %")),
++            LimitField::MaxTasks => on.max_tasks.map(|tasks| tasks.to_string()),
++            LimitField::DiskQuota => on.disk_quota,
++        };
++        text.unwrap_or_else(|| "No limit".to_string())
++    }
++
++    /// Whether the project's own entry sets this limit.
++    fn is_set(self, own: &SandboxLimits) -> bool {
++        match self {
++            LimitField::Memory => own.memory.is_some(),
++            LimitField::CpuQuota => own.cpu_quota.is_some(),
++            LimitField::MaxTasks => own.max_tasks.is_some(),
++            LimitField::DiskQuota => own.disk_quota.is_some(),
++        }
++    }
++
++    /// `raw` as this limit, or the rule it breaks. The memory rule is ai-jail's own (a whole
++    /// number with an optional K, M, G or T), so nothing the page saves is refused at the start;
++    /// the disk quota is read by Zeo's watchdog, which also takes `B` and `iB`.
++    pub(crate) fn parse(self, raw: &str) -> Result<LimitValue, String> {
++        let raw = raw.trim();
++        match self {
++            LimitField::Memory => {
++                let digits = raw.strip_suffix(['K', 'M', 'G', 'T', 'k', 'm', 'g', 't']);
++                let digits = digits.unwrap_or(raw);
++                if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
++                    Ok(LimitValue::Size(raw.to_string()))
++                } else {
++                    Err(format!(
++                        "{raw:?} is not a memory size: a whole number with an optional K, M, G or T (8G), or 0 for none."
++                    ))
++                }
++            }
++            LimitField::DiskQuota => {
++                if raw == "0" || parse_size(raw).is_some() {
++                    Ok(LimitValue::Size(raw.to_string()))
++                } else {
++                    Err(format!(
++                        "{raw:?} is not a disk size: a whole number with an optional K, M, G or T (20G), or 0 for none."
++                    ))
++                }
++            }
++            LimitField::CpuQuota => raw
++                .parse::<u32>()
++                .map(|quota| LimitValue::Count(quota.into()))
++                .map_err(|_| {
++                    format!(
++                        "{raw:?} is not a percentage of one CPU (400 is four CPUs), or 0 for none."
++                    )
++                }),
++            LimitField::MaxTasks => raw
++                .parse::<u64>()
++                .map(LimitValue::Count)
++                .map_err(|_| format!("{raw:?} is not a number of processes, or 0 for none.")),
++        }
++    }
++
++    /// Writes `value` into `limits`; `None` removes the project's own value, so the default is
++    /// back in force.
++    pub(crate) fn apply(self, limits: &mut AgentSandboxLimitsContent, value: Option<LimitValue>) {
++        let size = |value: &Option<LimitValue>| match value {
++            Some(LimitValue::Size(text)) => Some(text.clone()),
++            Some(LimitValue::Count(count)) => Some(count.to_string()),
++            None => None,
++        };
++        let count = |value: &Option<LimitValue>| match value {
++            Some(LimitValue::Count(count)) => Some(*count),
++            Some(LimitValue::Size(text)) => text.parse().ok(),
++            None => None,
++        };
++        match self {
++            LimitField::Memory => limits.memory = size(&value),
++            LimitField::DiskQuota => limits.disk_quota = size(&value),
++            LimitField::CpuQuota => {
++                limits.cpu_quota = count(&value).and_then(|quota| u32::try_from(quota).ok())
++            }
++            LimitField::MaxTasks => limits.max_tasks = count(&value),
++        }
++    }
++}
++
++/// Sets (or, with `None`, clears) the project's own `field`. `resolved` is the key the root
++/// resolves to through a symlink, as for the lists.
++pub(crate) fn write_limit(
++    root: &Path,
++    resolved: Option<String>,
++    field: LimitField,
++    value: Option<LimitValue>,
++    cx: &mut App,
++) -> Task<Result<(), String>> {
++    let Some(root_text) = root.to_str().map(str::to_string) else {
++        return Task::ready(Err(non_utf8_root_message(root)));
++    };
++    cx.spawn(async move |cx| write_limit_async(root_text, resolved, field, value, cx).await)
++}
++
++async fn write_limit_async(
++    root_text: String,
++    resolved: Option<String>,
++    field: LimitField,
++    value: Option<LimitValue>,
++    cx: &mut AsyncApp,
++) -> Result<(), String> {
++    let written_key = Arc::new(OnceLock::new());
++    let receiver = cx.update(|cx| {
++        let written_key = written_key.clone();
++        cx.global::<SettingsStore>()
++            .update_settings_file_with_completion(<dyn Fs>::global(cx), move |content, _| {
++                let projects = content
++                    .agent_sandbox
++                    .get_or_insert_default()
++                    .projects
++                    .get_or_insert_default();
++                let key = target_project_key(
++                    projects.keys(),
++                    &root_text,
++                    resolved.as_deref().map(Path::new),
++                );
++                written_key
++                    .set(format!(
++                        "agent_sandbox.projects[{key}].limits.{}",
++                        field.field()
++                    ))
++                    .ok();
++                let entry = projects.entry(key).or_default();
++                let limits = entry.limits.get_or_insert_default();
++                field.apply(limits, value);
++                if *limits == AgentSandboxLimitsContent::default() {
++                    entry.limits = None;
++                }
++            })
++    });
++    let error = match receiver.await {
++        Ok(Ok(())) => return Ok(()),
++        Ok(Err(error)) => error,
++        Err(oneshot::Canceled) => anyhow::anyhow!("the settings writer stopped before saving"),
++    };
++    let key = written_key
++        .get()
++        .cloned()
++        .unwrap_or_else(|| format!("agent_sandbox.projects.limits.{}", field.field()));
++    let error = first_line(&error);
++    log::error!("agent_sandbox event=settings_write_failed key={key:?} error={error:?}");
++    Err(format!("Could not save the agent sandbox setting: {error}"))
++}
++
++/// The limits block: each limit in force, a reset on the ones this project sets, an input to set
++/// one, and the state folder with how to log in to it.
++pub(crate) fn render_limits(
++    limits: &SandboxLimits,
++    own: &SandboxLimits,
++    state_dir: Option<&PathBuf>,
++    error: Option<(LimitField, String)>,
++    state: &Entity<JailPageState>,
++    scroll_handle: &ScrollHandle,
++    cx: &mut App,
++) -> AnyElement {
++    let mut rows = Vec::with_capacity(LimitField::ALL.len());
++    for field in LimitField::ALL {
++        let action = if field.is_set(own) {
++            let label = format!("Use the default {}", field.title().to_lowercase());
++            let id = format!("agent-jail-limit-{}-reset", field.field());
++            let button = IconButton::new(SharedString::from(id.clone()), IconName::RotateCcw)
++                .icon_size(IconSize::Small)
++                .icon_color(Color::Muted)
++                .tab_index(0_isize)
++                .aria_label(label.clone())
++                .tooltip(Tooltip::text(label))
++                .on_click({
++                    let state = state.clone();
++                    move |_, _, cx| {
++                        state.update(cx, |state, cx| state.set_limit(field, None, cx));
++                    }
++                });
++            reveal(state, id, scroll_handle, button, cx)
++        } else {
++            Label::new("Default for every project")
++                .size(LabelSize::Small)
++                .color(Color::Muted)
++                .into_any_element()
++        };
++        let input_id = format!("agent-jail-limit-{}-new", field.field());
++        let input = SettingsInputField::new(SharedString::from(input_id.clone()))
++            .with_placeholder(field.placeholder())
++            .aria_label(format!("{} limit for this project", field.title()))
++            .tab_index(0)
++            .with_buffer_font()
++            .display_confirm_button()
++            .clear_on_confirm()
++            .on_confirm({
++                let state = state.clone();
++                move |raw, _window, cx| {
++                    let Some(raw) = raw.filter(|raw| !raw.trim().is_empty()) else {
++                        return;
++                    };
++                    state.update(cx, |state, cx| match field.parse(&raw) {
++                        Ok(value) => state.set_limit(field, Some(value), cx),
++                        Err(rule) => state.show_limit_error(field, rule, cx),
++                    });
++                }
++            });
++        rows.push(
++            v_flex()
++                .gap_1()
++                .child(
++                    h_flex()
++                        .gap_2()
++                        .justify_between()
++                        .child(
++                            h_flex()
++                                .gap_2()
++                                .child(Label::new(field.title()).size(LabelSize::Small))
++                                .child(
++                                    Label::new(field.shown(limits))
++                                        .size(LabelSize::Small)
++                                        .buffer_font(cx),
++                                ),
++                        )
++                        .child(action),
++                )
++                .child(reveal(state, input_id, scroll_handle, input, cx))
++                .when_some(
++                    error.as_ref().filter(|(at, _)| *at == field),
++                    |this, (_, error)| {
++                        this.child(
++                            Label::new(error.clone())
++                                .size(LabelSize::Small)
++                                .color(Color::Error),
++                        )
++                    },
++                ),
++        );
++    }
++    v_flex()
++        .gap_0p5()
++        .child(Label::new("Resource Limits"))
++        .child(
++            Label::new(
++                "Applied by ai-jail to the whole jail. Past the disk growth the agent is paused, not stopped. 0 turns a limit off for this project.",
++            )
++            .size(LabelSize::Small)
++            .color(Color::Muted),
++        )
++        .child(v_flex().mt_2().gap_2().children(rows))
++        .when_some(state_dir, |this, dir| {
++            let claude = dir.join("claude");
++            this.child(
++                v_flex()
++                    .mt_3()
++                    .gap_0p5()
++                    .child(Label::new("State Folder"))
++                    .child(
++                        Label::new("This project's jail keeps its home, /tmp and Claude login in:")
++                            .size(LabelSize::Small)
++                            .color(Color::Muted),
++                    )
++                    .child(
++                        Label::new(dir.display().to_string())
++                            .size(LabelSize::Small)
++                            .buffer_font(cx),
++                    )
++                    .child(
++                        Label::new("To log in before the first start, run:")
++                            .size(LabelSize::Small)
++                            .color(Color::Muted),
++                    )
++                    .child(
++                        Label::new(format!("CLAUDE_CONFIG_DIR={} claude", claude.display()))
++                            .size(LabelSize::Small)
++                            .buffer_font(cx),
++                    ),
++            )
++        })
++        .into_any_element()
++}
++
++#[cfg(test)]
++#[path = "agent_jail_limits_tests.rs"]
++mod agent_jail_limits_tests;
+diff --git a/crates/settings_ui/src/pages/agent_jail_limits_tests.rs b/crates/settings_ui/src/pages/agent_jail_limits_tests.rs
+new file mode 100644
+index 0000000..53f82d4
+--- /dev/null
++++ b/crates/settings_ui/src/pages/agent_jail_limits_tests.rs
+@@ -0,0 +1,101 @@
++// Zeo next proposal §6.54 (ask 78): the page's limits and state folder. Filter: `agent_jail_limits`.
++
++use std::path::{Path, PathBuf};
++
++use settings::AgentSandboxLimitsContent;
++
++use super::super::{PreviewExtras, preview_command};
++use super::{LimitField, LimitValue};
++
++#[test]
++fn agent_jail_limits_accept_only_what_ai_jail_and_the_watchdog_read() {
++    for ok in ["8G", "512m", "0", "1024"] {
++        assert!(LimitField::Memory.parse(ok).is_ok(), "{ok}");
++    }
++    // ai-jail's own --memory parser refuses a `B` suffix, so the page must too.
++    for bad in ["8GB", "lots", "", "G", "-1"] {
++        assert!(LimitField::Memory.parse(bad).is_err(), "{bad}");
++    }
++    for ok in ["20G", "20GiB", "0"] {
++        assert!(LimitField::DiskQuota.parse(ok).is_ok(), "{ok}");
++    }
++    assert!(LimitField::DiskQuota.parse("big").is_err());
++    assert_eq!(
++        LimitField::CpuQuota.parse("200"),
++        Ok(LimitValue::Count(200))
++    );
++    assert!(LimitField::CpuQuota.parse("50%").is_err());
++    assert!(LimitField::MaxTasks.parse("many").is_err());
++    let rule = LimitField::Memory.parse("8GB").unwrap_err();
++    assert!(
++        rule.contains("0 for none"),
++        "the refusal says how to turn it off: {rule}"
++    );
++}
++
++#[test]
++fn agent_jail_limits_set_one_field_and_a_reset_removes_it() {
++    let mut limits = AgentSandboxLimitsContent::default();
++    LimitField::Memory.apply(&mut limits, Some(LimitValue::Size("4G".into())));
++    LimitField::CpuQuota.apply(&mut limits, Some(LimitValue::Count(0)));
++    assert_eq!(limits.memory.as_deref(), Some("4G"));
++    assert_eq!(
++        limits.cpu_quota,
++        Some(0),
++        "0 is written: it turns the default off"
++    );
++    assert_eq!(
++        limits.max_tasks, None,
++        "a field not named keeps the default"
++    );
++    LimitField::Memory.apply(&mut limits, None);
++    assert_eq!(limits.memory, None, "reset brings the default back");
++}
++
++#[test]
++fn agent_jail_limits_preview_shows_the_state_folder_and_the_limits() {
++    let policy = agent_sandbox::ProjectPolicy {
++        enabled: true,
++        rw_maps: Vec::new(),
++        allow_hosts: Vec::new(),
++        limits: Default::default(),
++    };
++    let memory = agent_sandbox::AgentMemorySettings {
++        enabled: false,
++        endpoint: String::new(),
++    };
++    let dir = PathBuf::from("/var/tmp/zeo-jail/app-8347daa28034a658");
++    let extras = PreviewExtras {
++        state_dir: Some(dir.clone()),
++        limit_args: vec!["--memory".into(), "8G".into()],
++    };
++    let preview = preview_command(
++        &policy,
++        Path::new("/w/app"),
++        "/home/u/.claude-jailed",
++        Some(Path::new("/usr/bin/ai-jail")),
++        &memory,
++        false,
++        &extras,
++    );
++    assert!(
++        preview.contains(&format!("--state-root {}", dir.display())),
++        "{preview}"
++    );
++    assert!(preview.contains("--memory 8G"), "{preview}");
++    assert!(!preview.contains("--claude-dir"), "{preview}");
++    let plain = preview_command(
++        &policy,
++        Path::new("/w/app"),
++        "/home/u/.claude-jailed",
++        Some(Path::new("/usr/bin/ai-jail")),
++        &memory,
++        false,
++        &PreviewExtras::default(),
++    );
++    assert!(
++        plain.contains("--claude-dir /home/u/.claude-jailed"),
++        "{plain}"
++    );
++    assert!(!plain.contains("--state-root"), "{plain}");
++}
+diff --git a/crates/settings_ui/src/pages/agent_jail_page.rs b/crates/settings_ui/src/pages/agent_jail_page.rs
+index b2f17d0..5ce94c6 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page.rs
+@@ -200,6 +200,14 @@ pub(crate) fn page_key<'a>(
+     })
+ }
+ 
++/// What a start adds to the preview once the installed ai-jail offers it (§6.54): the project's
++/// state folder and the limit options.
++#[derive(Clone, Debug, Default)]
++pub(crate) struct PreviewExtras {
++    pub state_dir: Option<PathBuf>,
++    pub limit_args: Vec<String>,
++}
++
+ /// The command a jailed start of the project would run, from [`command::generate`]. Reads no file
+ /// system: folders are shown as written with `~` expanded, while a start canonicalizes them.
+ /// `--forward-port` appears only when [`launch::memory_port`] forwards one, and then the agent runs
+@@ -211,9 +219,13 @@ pub(crate) fn preview_command(
+     ai_jail: Option<&Path>,
+     memory: &AgentMemorySettings,
+     supports_forward_port: bool,
++    extras: &PreviewExtras,
+ ) -> String {
+     let home = paths::home_dir();
+-    let claude_dir = expand_tilde(claude_config_dir, home);
++    let claude_dir = match &extras.state_dir {
++        Some(dir) => dir.join("claude"),
++        None => expand_tilde(claude_config_dir, home),
++    };
+     let mut rw_maps: Vec<PathBuf> = Vec::with_capacity(policy.rw_maps.len());
+     for raw in &policy.rw_maps {
+         let map = expand_tilde(raw, home);
+@@ -228,6 +240,8 @@ pub(crate) fn preview_command(
+         }
+     };
+     let inputs = JailInputs {
++        state_root: extras.state_dir.as_deref(),
++        limit_args: &extras.limit_args,
+         ai_jail: ai_jail.unwrap_or(Path::new("ai-jail")),
+         project_root: root,
+         claude_dir: &claude_dir,
+@@ -617,6 +631,10 @@ struct JailPageState {
+     ai_jail_file: Option<&'static str>,
+     rw_map_error: Option<String>,
+     host_error: Option<String>,
++    /// The last limit refused or not saved, and which (§6.54): shown under that limit's input.
++    limit_error: Option<(agent_jail_limits::LimitField, String)>,
++    /// This project's state folder, when the installed ai-jail has `--state-root` (§6.54).
++    state_dir: Option<PathBuf>,
+     controls: RevealOnFocus,
+     refresh_task: Task<()>,
+     _settings_subscription: Subscription,
+@@ -632,6 +650,8 @@ impl JailPageState {
+             ai_jail_file: None,
+             rw_map_error: None,
+             host_error: None,
++            limit_error: None,
++            state_dir: None,
+             controls: RevealOnFocus::default(),
+             refresh_task: Task::ready(()),
+             _settings_subscription: settings_subscription,
+@@ -643,6 +663,8 @@ impl JailPageState {
+     fn refresh(&mut self, cx: &mut Context<Self>) {
+         let sandbox = AgentSandboxSettings::get_global(cx).clone();
+         let root = self.root.clone();
++        let self_root = root.clone();
++        let state_root = sandbox.state_root.clone();
+         let fs = <dyn Fs>::global(cx);
+         let executor = cx.background_executor().clone();
+         self.refresh_task = cx.spawn(async move |this, cx| {
+@@ -661,7 +683,22 @@ impl JailPageState {
+                 None => (None, None),
+             };
+             let jail = jail.await;
++            let state_dir = match (&jail, &self_root) {
++                (JailProbe::Found { binary, .. }, Some(root)) if binary.supports_state_root => {
++                    let base = expand_tilde(&state_root, paths::home_dir());
++                    let root = root.clone();
++                    // The start keys the folder by the canonical root; so does the page.
++                    let canonical = cx
++                        .background_spawn(
++                            async move { std::fs::canonicalize(&root).unwrap_or(root) },
++                        )
++                        .await;
++                    Some(launch::project_state_dir(&base, &canonical))
++                }
++                _ => None,
++            };
+             this.update(cx, |this, cx| {
++                this.state_dir = state_dir;
+                 this.jail = jail;
+                 this.resolved_key = resolved_key;
+                 this.ai_jail_file = ai_jail_file;
+@@ -694,6 +731,72 @@ impl JailPageState {
+         self.show_outcome(kind, task, cx);
+     }
+ 
++    fn set_limit(
++        &mut self,
++        field: agent_jail_limits::LimitField,
++        value: Option<agent_jail_limits::LimitValue>,
++        cx: &mut Context<Self>,
++    ) {
++        let Some(root) = self.root.clone() else {
++            return;
++        };
++        let task =
++            agent_jail_limits::write_limit(&root, self.resolved_key.clone(), field, value, cx);
++        self.limit_error = None;
++        cx.notify();
++        cx.spawn(async move |this, cx| {
++            let result = task.await;
++            this.update(cx, |this, cx| {
++                this.limit_error = result.err().map(|error| (field, error));
++                cx.notify();
++            })
++            .log_err();
++        })
++        .detach();
++    }
++
++    fn show_limit_error(
++        &mut self,
++        field: agent_jail_limits::LimitField,
++        rule: String,
++        cx: &mut Context<Self>,
++    ) {
++        self.limit_error = Some((field, rule));
++        cx.notify();
++    }
++
++    /// Asks for a folder and adds it to the project's writable folders, through the same checks
++    /// as a typed one (§6.54).
++    fn choose_rw_map(&mut self, cx: &mut Context<Self>) {
++        let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
++            files: false,
++            directories: true,
++            multiple: false,
++            prompt: Some("Add Writable Folder".into()),
++        });
++        cx.spawn(async move |this, cx| {
++            let paths = match paths.await {
++                Ok(Ok(Some(paths))) => paths,
++                Ok(Ok(None)) => return,
++                // No file chooser (no desktop portal, e.g. under Xvfb): say so in the log, where
++                // the operator can see why the button did nothing.
++                Ok(Err(error)) => {
++                    log::error!("agent_sandbox event=folder_prompt_failed error={error:#}");
++                    return;
++                }
++                Err(oneshot::Canceled) => return,
++            };
++            let Some(path) = paths.into_iter().next() else {
++                return;
++            };
++            this.update(cx, |this, cx| {
++                this.add(EntryKind::RwMap, path.to_string_lossy().into_owned(), cx)
++            })
++            .log_err();
++        })
++        .detach();
++    }
++
+     /// Shows the edit's error under its list's input, or clears it on success.
+     fn show_outcome(
+         &mut self,
+@@ -735,7 +838,7 @@ pub(crate) fn render_agent_jail_page(
+     let memory_section = memory_section(root.clone(), scroll_handle, window, cx);
+     let sandbox = AgentSandboxSettings::get_global(cx).clone();
+     let memory = AgentMemorySettings::get_global(cx).clone();
+-    let (jail, resolved_key, ai_jail_file, rw_map_error, host_error) = {
++    let (jail, resolved_key, ai_jail_file, rw_map_error, host_error, limit_error, state_dir) = {
+         let page = state.read(cx);
+         (
+             page.jail.clone(),
+@@ -743,6 +846,8 @@ pub(crate) fn render_agent_jail_page(
+             page.ai_jail_file,
+             page.rw_map_error.clone(),
+             page.host_error.clone(),
++            page.limit_error.clone(),
++            page.state_dir.clone(),
+         )
+     };
+ 
+@@ -757,12 +862,22 @@ pub(crate) fn render_agent_jail_page(
+             let drifted = LaunchRegistry::for_root(root, cx)
+                 .iter()
+                 .any(|record| launch::drifted_now(record, cx));
+-            let (ai_jail_path, supports_forward_port) = match &jail {
+-                JailProbe::Found { path, binary } => {
+-                    (Some(path.as_path()), Some(binary.supports_forward_port))
+-                }
+-                JailProbe::Unreadable { path, .. } => (Some(path.as_path()), None),
+-                JailProbe::Pending | JailProbe::Missing { .. } => (None, None),
++            let (ai_jail_path, supports_forward_port, supports_limits) = match &jail {
++                JailProbe::Found { path, binary } => (
++                    Some(path.as_path()),
++                    Some(binary.supports_forward_port),
++                    binary.supports_limits,
++                ),
++                JailProbe::Unreadable { path, .. } => (Some(path.as_path()), None, false),
++                JailProbe::Pending | JailProbe::Missing { .. } => (None, None, false),
++            };
++            let extras = PreviewExtras {
++                state_dir: state_dir.clone(),
++                limit_args: if supports_limits {
++                    policy.limits.jail_args()
++                } else {
++                    Vec::new()
++                },
+             };
+             let preview = preview_command(
+                 &policy,
+@@ -771,6 +886,16 @@ pub(crate) fn render_agent_jail_page(
+                 ai_jail_path,
+                 &memory,
+                 supports_forward_port.unwrap_or(false),
++                &extras,
++            );
++            let limits = agent_jail_limits::render_limits(
++                &policy.limits,
++                &own.limits,
++                state_dir.as_ref(),
++                limit_error,
++                &state,
++                scroll_handle,
++                cx,
+             );
+             // The R7.3 note is shown once, beside the Memory switch.
+             let memory_notices: Vec<String> = supports_forward_port
+@@ -879,6 +1004,7 @@ pub(crate) fn render_agent_jail_page(
+                     )
+                 })
+                 .children(lists)
++                .child(limits)
+                 .child(preview)
+                 .into_any_element()
+         }
+@@ -1057,6 +1183,24 @@ fn render_list(
+             }
+         });
+     let input = reveal(state, input_id, scroll_handle, input, cx);
++    let input = if kind == EntryKind::RwMap {
++        let choose_id = "agent-jail-rw-map-choose";
++        let choose = Button::new(choose_id, "Choose Folder…")
++            .start_icon(Icon::new(IconName::FolderOpen).size(IconSize::Small))
++            .label_size(LabelSize::Small)
++            .tab_index(0_isize)
++            .on_click({
++                let state = state.clone();
++                move |_, _, cx| state.update(cx, |state, cx| state.choose_rw_map(cx))
++            });
++        h_flex()
++            .gap_2()
++            .child(div().flex_1().child(input))
++            .child(reveal(state, choose_id, scroll_handle, choose, cx))
++            .into_any_element()
++    } else {
++        input
++    };
+     v_flex()
+         .gap_0p5()
+         .child(Label::new(text.title))
+@@ -1667,6 +1811,9 @@ pub(crate) fn render_agent_memory_page(
+         .into_any_element()
+ }
+ 
++#[path = "agent_jail_limits.rs"]
++mod agent_jail_limits;
++
+ #[cfg(test)]
+ #[path = "agent_jail_page_tests.rs"]
+ mod agent_jail_page_tests;
+diff --git a/crates/settings_ui/src/pages/agent_jail_page_tests.rs b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+index 8fac6d8..da9e8f7 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+@@ -250,8 +250,8 @@ mod page {
+     use agent_sandbox::{AgentMemorySettings, AgentSandboxProjectSettings, AgentSandboxSettings};
+ 
+     use super::super::{
+-        EntryEnv, add_entry_in, ai_jail_file_notice, forward_port_notice, memory_endpoint_note,
+-        page_key, preview_command, preview_off_notice,
++        EntryEnv, PreviewExtras, add_entry_in, ai_jail_file_notice, forward_port_notice,
++        memory_endpoint_note, page_key, preview_command, preview_off_notice,
+     };
+ 
+     const LOOPBACK: &str = "http://127.0.0.1:49374/mcp";
+@@ -376,6 +376,7 @@ mod page {
+             enabled: true,
+             rw_maps: vec!["/data/shared".to_string()],
+             allow_hosts: vec!["anthropic.com".to_string()],
++            limits: Default::default(),
+         };
+         let jail = Path::new("/usr/bin/ai-jail");
+         let forwarded = preview_command(
+@@ -385,6 +386,7 @@ mod page {
+             Some(jail),
+             &memory(true, LOOPBACK),
+             true,
++            &PreviewExtras::default(),
+         );
+         for needle in [
+             "/usr/bin/ai-jail --exec",
+@@ -412,6 +414,7 @@ mod page {
+                 Some(jail),
+                 &memory,
+                 supports,
++                &PreviewExtras::default(),
+             );
+             assert!(!preview.contains("--forward-port"), "{preview}");
+         }
+@@ -425,6 +428,7 @@ mod page {
+             enabled: true,
+             rw_maps: Vec::new(),
+             allow_hosts: vec!["anthropic.com".to_string()],
++            limits: Default::default(),
+         };
+         let jail = Path::new("/usr/bin/ai-jail");
+         let preview = |memory: &AgentMemorySettings, supports: bool| {
+@@ -435,6 +439,7 @@ mod page {
+                 Some(jail),
+                 memory,
+                 supports,
++                &PreviewExtras::default(),
+             )
+         };
+         let forwarded = preview(&memory(true, LOOPBACK), true);
+@@ -607,6 +612,8 @@ mod page {
+             claude_config_dir: "~/.claude-jailed".to_string(),
+             rw_maps: Vec::new(),
+             allow_hosts: Vec::new(),
++            state_root: "/var/tmp/zeo-jail".to_string(),
++            limits: Default::default(),
+             projects: Default::default(),
+         };
+         sandbox.projects.insert(
+@@ -615,6 +622,7 @@ mod page {
+                 enabled: Some(true),
+                 rw_maps: Vec::new(),
+                 allow_hosts: vec!["registry.npmjs.org".to_string()],
++                limits: Default::default(),
+             },
+         );
+         let link = Path::new("/home/u/link");

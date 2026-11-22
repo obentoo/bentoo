@@ -1762,12 +1762,15 @@ DEPEND="
 # (2026-10-01) rather than by a file collision with zed or zed-bin: zeo owns
 # /usr/bin/zeo, /usr/libexec/zeo-editor and dev.zeo.Zeo.*, which neither
 # installs. zeo-bin installs those same paths, so that one is a real collision.
+# ai-jail: 0141 (§6.54) passes --memory/--cpu-quota/--max-tasks and --state-root, which
+# ai-jail 3.5.0-r1 adds as patches on upstream; ai-jail-bin is upstream's build and has
+# neither, so with it every jailed start would be refused (the limits default on).
 RDEPEND="
 	${DEPEND}
 	!app-editors/zed
 	!app-editors/zed-bin
 	!app-editors/zeo-bin
-	ai-jail? ( || ( sys-apps/ai-jail sys-apps/ai-jail-bin ) )
+	ai-jail? ( >=sys-apps/ai-jail-3.5.0-r1 )
 	browser-extension? ( www-plugins/zeo-browser )
 	claude-agent-acp-plus? ( >=dev-util/claude-agent-acp-plus-0.26.0 )
 	claude-agent-acp-tui? ( dev-util/claude-agent-acp-tui )
@@ -2315,6 +2318,9 @@ src_prepare() {
 	# top of it unchanged.
 	if use ai-jail; then
 		PATCHES+=( "${FILESDIR}/0057-agent-sandbox-settings.patch" )
+		# 0141 (proposal §6.54): jail limits, a state folder and login per project, the
+		# disk-quota pause and the Stop button. Needs ai-jail >= 3.5.0-r1 (RDEPEND).
+		PATCHES+=( "${FILESDIR}/0141-agent-sandbox-jail-limits-and-a-state-root-per-project.patch" )
 	fi
 
 	# 0058 (story 045): the browser sidebar -- zeo-browser reads and drives the
