@@ -1,0 +1,125 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sun, 22 Nov 2026 19:00:00 -0300
+Subject: [PATCH] agent_servers: a jail reaches no proxied MCP server until its
+ list names one
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo proposal §6.69 step 3 with §6.64. 0149 proxies Zeo's running MCP servers
+to Claude Agent (Plus) over its ACP connection. Such a server runs on the
+host with Zeo's files and network, so a jailed agent that reaches it reaches
+outside the jail. §6.64 makes that a per-jail opt-in: the jail page (§6.64
+step 2, not built yet) will write the list of servers a jail may use, and
+until it does a jail gets none -- the list is empty by default.
+
+AcpConnection::mcp_proxy_policy: a launch whose record has jail roots (0146's
+jail_servers::roots) gets McpProxyPolicy::only([]); any other launch keeps
+All. Nothing else changes for a jail: it keeps 0146's stdio entries for the
+servers it can start itself and the notice for the ones it cannot. When the
+jail page lands it returns its own list here, and a server it names should
+then also stop being left out by 0146, since the proxy reaches it.
+
+Tests mcp_over_acp_jail_tests (new): a jailed launch's session gets the
+server as stdio, not acp; a launch record without a jail gets acp.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index a040cbe..00dab67 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -989,8 +989,15 @@ impl AcpConnection {
+ 
+     /// Which servers this connection may reach through the proxy: the hook a sandboxed launch
+     /// narrows to its own opt-in list, since a proxied server runs outside the jail (§6.64).
+-    fn mcp_proxy_policy(&self, _cx: &App) -> McpProxyPolicy {
+-        McpProxyPolicy::All
++    fn mcp_proxy_policy(&self, cx: &App) -> McpProxyPolicy {
++        // A proxied server runs on the host with Zeo's files and network, so a jail reaches only
++        // the servers its own list names (§6.64 step 2, the jail page's to write); until it does,
++        // none. Its sessions keep 0146's stdio entries for the servers the jail can start.
++        if super::jail_servers::roots(self.launch_id, cx).is_some() {
++            McpProxyPolicy::only([])
++        } else {
++            McpProxyPolicy::All
++        }
+     }
+ 
+     /// Whether the agent lists `capability` in its `agentCapabilities._meta`.
+@@ -2279,6 +2286,9 @@ mod mcp_over_acp_tests;
+ #[cfg(test)]
+ mod zeo_lsp_tests;
+ 
++#[cfg(test)]
++mod mcp_over_acp_jail_tests;
++
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ struct SessionDirectories {
+     cwd: PathBuf,
+diff --git a/crates/agent_servers/src/acp/v1/mcp_over_acp_jail_tests.rs b/crates/agent_servers/src/acp/v1/mcp_over_acp_jail_tests.rs
+new file mode 100644
+index 0000000..0a390a1
+--- /dev/null
++++ b/crates/agent_servers/src/acp/v1/mcp_over_acp_jail_tests.rs
+@@ -0,0 +1,58 @@
++//! Zeo next proposal §6.69 with §6.64: a server proxied over MCP-over-ACP runs on the host, so
++//! a jailed launch reaches none until its opt-in list names one. Filter: `mcp_over_acp_jail`.
++
++use std::path::PathBuf;
++
++use super::mcp_over_acp_harness::{ProxyAgent, SERVER};
++use super::*;
++use agent_sandbox::launch::{LaunchRecord, LaunchRegistry, MemoryPort, Reason};
++
++fn record(reason: Reason) -> LaunchRecord {
++    LaunchRecord {
++        agent_id: AgentId::new("Test"),
++        project_root: PathBuf::from("/a"),
++        reason,
++        ai_jail_version: Some(semver::Version::new(3, 5, 0)),
++        ai_jail_path: None,
++        rw_maps: Vec::new(),
++        allow_hosts: Vec::new(),
++        forward_ports: Vec::new(),
++        memory_port: MemoryPort::Off,
++        settings_fingerprint: 0,
++        memory_fingerprint: 0,
++        settings_key: None,
++        jail_pid: None,
++        paused: false,
++        claude_config_dir: None,
++        ai_jail_missing: false,
++    }
++}
++
++async fn servers_for(reason: Reason, cx: &mut gpui::TestAppContext) -> Vec<acp::McpServer> {
++    let mut agent = ProxyAgent::connect(true, cx).await;
++    let launch = cx.update(|cx| LaunchRegistry::register(record(reason), cx));
++    Rc::get_mut(&mut agent.connection)
++        .expect("no session holds the connection yet")
++        .launch_id = Some(launch);
++    agent.new_session(cx).await
++}
++
++#[gpui::test]
++async fn mcp_over_acp_jail_a_jailed_launch_proxies_nothing(cx: &mut gpui::TestAppContext) {
++    let servers = servers_for(Reason::On, cx).await;
++
++    assert!(
++        matches!(&servers[..], [acp::McpServer::Stdio(stdio)] if stdio.name == SERVER),
++        "the jail starts what it can see itself; nothing runs outside it for the jail: {servers:?}"
++    );
++}
++
++#[gpui::test]
++async fn mcp_over_acp_jail_an_unjailed_launch_proxies_all(cx: &mut gpui::TestAppContext) {
++    let servers = servers_for(Reason::Off, cx).await;
++
++    assert!(
++        matches!(&servers[..], [acp::McpServer::Acp(_)]),
++        "a launch record without a jail changes nothing: {servers:?}"
++    );
++}

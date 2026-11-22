@@ -1,0 +1,1172 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sun, 22 Nov 2026 19:00:00 -0300
+Subject: [PATCH] agent_servers: zeo-lsp, the project's language servers for
+ Claude Agent (Plus) over ACP
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo proposal §6.13 (ask 5), the first cut of docs/SPIKE-6.13-LSP-OVER-MCP.md;
+built with §6.69 as one story, on 0149's MCP-over-ACP plumbing. Claude Code
+reads code through grep and file reads, while the language servers Zeo runs
+for the project know where a symbol is defined, who uses it and what it is.
+0002's IDE server was not the vehicle: the CLI keeps only getDiagnostics and
+executeCode from it, and only for buffers already open.
+
+zeo-lsp is one more acp declaration, after the proxied servers, answered by
+Zeo itself (acp/zeo_lsp.rs, acp/zeo_lsp_tools.rs) instead of a context server:
+server/discover, ping, tools/list and tools/call, five read-only tools --
+
+  diagnostics { path? }        one file's entries (severity line:column:
+                               message), or a count per file for the project
+  definition  { path, line, symbol? | column? }   path:line: the defining line
+  references  { path, line, symbol? | column? }   every use, path:line
+  hover       { path, line, symbol? | column? }   the server's hover text
+  document_symbols { path }    the outline, kind name Lstart-end, nested
+
+Lines and columns are 1-based; without a column the symbol is found on its
+line by name, the way the native agent's symbol_locator does. A file is
+opened with its language servers for the call: open_buffer, then
+register_buffer_with_language_servers -- Project::open_buffer_with_lsp is
+test-support only, so a test build compiled it and a release build did not
+(found by the z021 lane's first `cargo build -p zed`, 2026-11-22). A
+failed lookup is the tool's own answer (isError, with the reason) so the
+model reads why; an unknown tool is an MCP -32602 -- there is no rename,
+edit or code action.
+
+Declared only to an agent that advertised mcpCapabilities.acp, under the new
+agent.zeo_lsp (default true: the operator's 2026-11-21 decision, on for Plus),
+not for a remote project, not when a context server already has the name,
+and only where the connection's McpProxyPolicy allows it -- so a jail
+(0150) reaches it only through its opt-in list, like any proxied server.
+agent.mcp_servers_over_acp no longer gates it: the two settings are separate.
+0149's test harness turns it off, since those tests count the proxied servers.
+
+What a cold file costs: a language server that has not indexed it can answer
+empty, and many publish diagnostics only for open files; the instructions in
+server/discover say so. Not in this cut: workspace symbols, call hierarchy,
+type definition.
+
+Tests zeo_lsp_tests (new; 0149's scripted agent, a fake language server with
+the file already attached): discover and tools/list; not declared when off;
+definition asks at the named symbol's position and answers path:line: line;
+references, hover (by column) and document_symbols; diagnostics for a file
+and for the project after a publishDiagnostics; a missing symbol is an
+isError answer and an unknown tool -32602.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 072c35a..62ed98c 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -395,8 +395,10 @@ dependencies = [
+  "gpui_tokio",
+  "http_client",
+  "indoc",
++ "language",
+  "language_model",
+  "log",
++ "lsp",
+  "project",
+  "release_channel",
+  "remote",
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index fdb4c18..2a8ef46 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -1419,6 +1419,12 @@
+     //
+     // Default: true
+     "mcp_servers_over_acp": true,
++    // Whether an external agent that supports MCP-over-ACP (Claude Agent (Plus)) gets zeo-lsp:
++    // the project's language servers as a read-only MCP server (diagnostics, definition,
++    // references, hover, document symbols).
++    //
++    // Default: true
++    "zeo_lsp": true,
+     // Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
+     // The command is sent to the shell as if typed, so it is interpreted by your
+     // configured shell (including on Windows and remote/WSL projects).
+diff --git a/crates/agent_servers/Cargo.toml b/crates/agent_servers/Cargo.toml
+index 8889e51..e67e702 100644
+--- a/crates/agent_servers/Cargo.toml
++++ b/crates/agent_servers/Cargo.toml
+@@ -46,6 +46,7 @@ gpui.workspace = true
+ gpui_tokio = { workspace = true, optional = true }
+ http_client.workspace = true
+ indoc = { workspace = true, optional = true }
++language.workspace = true
+ language_model.workspace = true
+ log.workspace = true
+ paths.workspace = true
+@@ -77,6 +78,7 @@ indoc.workspace = true
+ acp_thread = { workspace = true, features = ["test-support"] }
+ gpui = { workspace = true, features = ["test-support"] }
+ gpui_tokio.workspace = true
++lsp = { workspace = true, features = ["test-support"] }
+ project = { workspace = true, features = ["test-support"] }
+ reqwest_client = { workspace = true, features = ["test-support"] }
+ settings = { workspace = true, features = ["test-support"] }
+diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
+index f68aa8a..bfe9d01 100644
+--- a/crates/agent_servers/src/acp.rs
++++ b/crates/agent_servers/src/acp.rs
+@@ -8,6 +8,7 @@ mod terminal_updates;
+ mod transport;
+ mod v1;
+ mod v2;
++mod zeo_lsp;
+ 
+ use debug_log::AcpDebugLog;
+ pub use debug_log::{AcpDebugMessage, AcpDebugMessageContent, AcpDebugMessageDirection};
+diff --git a/crates/agent_servers/src/acp/mcp_over_acp.rs b/crates/agent_servers/src/acp/mcp_over_acp.rs
+index b663b46..45a6e5d 100644
+--- a/crates/agent_servers/src/acp/mcp_over_acp.rs
++++ b/crates/agent_servers/src/acp/mcp_over_acp.rs
+@@ -66,7 +66,15 @@ impl McpProxyPolicy {
+ struct Route {
+     name: String,
+     project: WeakEntity<Project>,
+-    server: ContextServerId,
++    backend: Backend,
++}
++
++#[derive(Clone)]
++enum Backend {
++    /// A context server Zeo runs for the project.
++    ContextServer(ContextServerId),
++    /// `zeo-lsp`, answered from the project's language servers (§6.13).
++    ZeoLsp,
+ }
+ 
+ /// Per-connection state of the proxy: the servers declared so far, by `serverId`, and the
+@@ -123,7 +131,7 @@ impl McpOverAcp {
+                     Route {
+                         name: name.clone(),
+                         project: project.downgrade(),
+-                        server: id,
++                        backend: Backend::ContextServer(id),
+                     },
+                 );
+                 acp::McpServer::Acp(acp::McpServerAcp::new(name, server_id))
+@@ -131,6 +139,43 @@ impl McpOverAcp {
+             .collect()
+     }
+ 
++    /// `servers` and `zeo-lsp` after them, when it is on, the policy lets the connection reach
++    /// it and no context server already has the name.
++    pub(crate) fn declare_zeo_lsp(
++        &self,
++        project: &Entity<Project>,
++        mut servers: Vec<acp::McpServer>,
++        policy: &McpProxyPolicy,
++        cx: &App,
++    ) -> Vec<acp::McpServer> {
++        let name = super::zeo_lsp::ZEO_LSP_SERVER_NAME;
++        let taken = servers.iter().any(|server| match server {
++            acp::McpServer::Stdio(stdio) => stdio.name == name,
++            acp::McpServer::Http(http) => http.name == name,
++            acp::McpServer::Acp(acp) => acp.name == name,
++            _ => false,
++        });
++        // A remote project's language servers run on the remote host: not proven, as above.
++        if taken
++            || !project.read(cx).is_local()
++            || !policy.allows(name)
++            || !super::zeo_lsp::enabled(cx)
++        {
++            return servers;
++        }
++        let server_id = server_id_for(project, name);
++        self.routes.borrow_mut().insert(
++            server_id.clone(),
++            Route {
++                name: name.to_string(),
++                project: project.downgrade(),
++                backend: Backend::ZeoLsp,
++            },
++        );
++        servers.push(acp::McpServer::Acp(acp::McpServerAcp::new(name, server_id)));
++        servers
++    }
++
+     fn route(&self, server_id: &str) -> Option<Route> {
+         self.routes.borrow().get(server_id).cloned()
+     }
+diff --git a/crates/agent_servers/src/acp/mcp_over_acp_forward.rs b/crates/agent_servers/src/acp/mcp_over_acp_forward.rs
+index 69a5db1..11b4329 100644
+--- a/crates/agent_servers/src/acp/mcp_over_acp_forward.rs
++++ b/crates/agent_servers/src/acp/mcp_over_acp_forward.rs
+@@ -15,7 +15,8 @@ use gpui::AsyncApp;
+ use project::context_server_store::ContextServerStatus;
+ use serde_json::{Map, Value, json};
+ 
+-use super::Route;
++use super::{Backend, Route};
++use context_server::ContextServerId;
+ 
+ /// The one MCP revision the binding speaks (ACP SDK `MCP_PROTOCOL_VERSION`).
+ const BINDING_MCP_VERSION: &str = "2026-07-28";
+@@ -37,7 +38,21 @@ pub(super) async fn serve(
+     cancellation: RequestCancellation,
+     cx: &mut AsyncApp,
+ ) -> Result<acp::MessageMcpResponse, agent_client_protocol::Error> {
+-    let client = running_client(route, cx).await?;
++    let server = match &route.backend {
++        Backend::ContextServer(server) => server,
++        Backend::ZeoLsp => {
++            let project = route.project.upgrade().ok_or_else(|| {
++                agent_client_protocol::Error::new(
++                    MCP_SERVER_UNAVAILABLE,
++                    "zeo-lsp belongs to a project that is closed",
++                )
++            })?;
++            return Ok(
++                super::super::zeo_lsp::serve(project, &request.method, request.params, cx).await,
++            );
++        }
++    };
++    let client = running_client(route, server, cx).await?;
+     match request.method.as_str() {
+         "server/discover" => Ok(acp::MessageMcpResponse::success(discovery(&client))),
+         "ping" => Ok(acp::MessageMcpResponse::success(json!({}))),
+@@ -48,6 +63,7 @@ pub(super) async fn serve(
+ /// The running server's client, waiting while it is still starting.
+ async fn running_client(
+     route: &Route,
++    server: &ContextServerId,
+     cx: &mut AsyncApp,
+ ) -> Result<Arc<InitializedContextServerProtocol>, agent_client_protocol::Error> {
+     let unavailable = |why: &str| {
+@@ -64,9 +80,9 @@ async fn running_client(
+                 let store = project.context_server_store().read(cx);
+                 (
+                     store
+-                        .get_running_server(&route.server)
++                        .get_running_server(server)
+                         .and_then(|server| server.client()),
+-                    store.status_for_server(&route.server),
++                    store.status_for_server(server),
+                 )
+             })
+             .map_err(|_| unavailable("belongs to a project that is closed"))?;
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index ac81684..23a9901 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -953,11 +953,17 @@ impl AcpConnection {
+         servers: Vec<acp::McpServer>,
+         cx: &App,
+     ) -> Vec<acp::McpServer> {
+-        if !self.agent_capabilities.mcp_capabilities.acp || !super::mcp_over_acp::enabled(cx) {
++        if !self.agent_capabilities.mcp_capabilities.acp {
+             return servers;
+         }
+         let policy = self.mcp_proxy_policy(cx);
+-        self.mcp_over_acp.declare(project, servers, &policy, cx)
++        let servers = if super::mcp_over_acp::enabled(cx) {
++            self.mcp_over_acp.declare(project, servers, &policy, cx)
++        } else {
++            servers
++        };
++        self.mcp_over_acp
++            .declare_zeo_lsp(project, servers, &policy, cx)
+     }
+ 
+     /// Which servers this connection may reach through the proxy: the hook a sandboxed launch
+@@ -2199,6 +2205,9 @@ mod mcp_over_acp_harness;
+ #[cfg(test)]
+ mod mcp_over_acp_tests;
+ 
++#[cfg(test)]
++mod zeo_lsp_tests;
++
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ struct SessionDirectories {
+     cwd: PathBuf,
+diff --git a/crates/agent_servers/src/acp/v1/mcp_over_acp_harness.rs b/crates/agent_servers/src/acp/v1/mcp_over_acp_harness.rs
+index 53ae584..b34befa 100644
+--- a/crates/agent_servers/src/acp/v1/mcp_over_acp_harness.rs
++++ b/crates/agent_servers/src/acp/v1/mcp_over_acp_harness.rs
+@@ -66,7 +66,8 @@ impl ProxyAgent {
+ 
+     /// With `files` as the file system's root and `user_settings` applied before anything
+     /// starts: a settings change later recomputes the project settings and drops the context
+-    /// server this harness configures.
++    /// server this harness configures. `zeo-lsp` (0151) is off unless `user_settings` turns it
++    /// on: these tests count the proxied servers alone.
+     pub(super) async fn connect_with(
+         advertises_acp: bool,
+         files: Value,
+@@ -78,7 +79,10 @@ impl ProxyAgent {
+             cx.set_global(store);
+             cx.set_global(db::AppDatabase::test_new());
+             settings::SettingsStore::update_global(cx, |store, cx| {
+-                store.update_user_settings(cx, user_settings);
++                store.update_user_settings(cx, |settings| {
++                    settings.agent.get_or_insert_default().zeo_lsp = Some(false);
++                    user_settings(settings);
++                });
+             });
+         });
+         let fs = fs::FakeFs::new(cx.executor());
+@@ -231,15 +235,20 @@ impl ProxyAgent {
+ 
+     /// The `serverId` the last `session/new` declared for `SERVER`.
+     pub(super) fn declared_id(&self) -> String {
++        self.declared_id_of(SERVER)
++    }
++
++    /// The `serverId` the last `session/new` declared for `name`.
++    pub(super) fn declared_id_of(&self, name: &str) -> String {
+         let sessions = self.new_sessions.lock().expect("new sessions");
+         let servers = sessions.last().expect("a session");
+         servers
+             .iter()
+             .find_map(|server| match server {
+-                acp::McpServer::Acp(acp) if acp.name == SERVER => Some(acp.server_id.0.to_string()),
++                acp::McpServer::Acp(acp) if acp.name == name => Some(acp.server_id.0.to_string()),
+                 _ => None,
+             })
+-            .expect("SERVER declared as acp")
++            .unwrap_or_else(|| panic!("{name} declared as acp: {servers:?}"))
+     }
+ 
+     pub(super) fn agent(&self) -> agent_client_protocol::v1::ConnectionTo<Client> {
+diff --git a/crates/agent_servers/src/acp/v1/zeo_lsp_tests.rs b/crates/agent_servers/src/acp/v1/zeo_lsp_tests.rs
+new file mode 100644
+index 0000000..19dcc7d
+--- /dev/null
++++ b/crates/agent_servers/src/acp/v1/zeo_lsp_tests.rs
+@@ -0,0 +1,312 @@
++//! Zeo next proposal §6.13: `zeo-lsp`, the project's language servers as an MCP server over
++//! MCP-over-ACP. The agent is the scripted one of `mcp_over_acp_tests`; the language server is
++//! a fake one, so each answer can be traced to the request it got. Filter: `zeo_lsp_tests`.
++
++use std::sync::Arc;
++
++use super::mcp_over_acp_harness::{ProxyAgent, result_of, with_binding_meta};
++use super::*;
++use futures::StreamExt as _;
++use serde_json::{Value, json};
++
++const FILE: &str = "/a/main.rs";
++const SOURCE: &str = "fn target() {}\nfn main() {\n    target();\n}\n";
++
++struct LspAgent {
++    agent: ProxyAgent,
++    server: lsp::FakeLanguageServer,
++    zeo_lsp: String,
++    _buffer: (
++        Entity<language::Buffer>,
++        project::lsp_store::OpenLspBufferHandle,
++    ),
++}
++
++fn uri() -> lsp::Uri {
++    lsp::Uri::from_file_path(FILE).expect("a file uri")
++}
++
++fn range(start: (u32, u32), end: (u32, u32)) -> lsp::Range {
++    lsp::Range::new(
++        lsp::Position::new(start.0, start.1),
++        lsp::Position::new(end.0, end.1),
++    )
++}
++
++impl LspAgent {
++    /// A Rust file with a fake language server already attached, as a buffer an editor had
++    /// open would have it, and a session that declared `zeo-lsp`.
++    async fn connect(cx: &mut gpui::TestAppContext) -> Self {
++        let agent = ProxyAgent::connect_with(
++            true,
++            json!({ "a": { "main.rs": SOURCE } }),
++            |settings| settings.agent.get_or_insert_default().zeo_lsp = Some(true),
++            cx,
++        )
++        .await;
++        let registry = agent
++            .project
++            .read_with(cx, |project, _| project.languages().clone());
++        registry.add(Arc::new(language::Language::new(
++            language::LanguageConfig {
++                name: "Rust".into(),
++                matcher: language::LanguageMatcher {
++                    path_suffixes: vec!["rs".into()],
++                    ..Default::default()
++                }
++                .into(),
++                ..Default::default()
++            },
++            None,
++        )));
++        let mut servers = registry.register_fake_lsp(
++            "Rust",
++            language::FakeLspAdapter {
++                capabilities: lsp::ServerCapabilities {
++                    definition_provider: Some(lsp::OneOf::Left(true)),
++                    references_provider: Some(lsp::OneOf::Left(true)),
++                    hover_provider: Some(lsp::HoverProviderCapability::Simple(true)),
++                    document_symbol_provider: Some(lsp::OneOf::Left(true)),
++                    ..Default::default()
++                },
++                ..Default::default()
++            },
++        );
++        let buffer = agent
++            .project
++            .update(cx, |project, cx| {
++                project.open_local_buffer_with_lsp(FILE, cx)
++            })
++            .await
++            .expect("the file opens");
++        let server = servers.next().await.expect("the fake server starts");
++        cx.run_until_parked();
++
++        agent.new_session(cx).await;
++        let zeo_lsp = agent.declared_id_of("zeo-lsp");
++        Self {
++            agent,
++            server,
++            zeo_lsp,
++            _buffer: buffer,
++        }
++    }
++
++    /// `tools/call` of `tool`: its text and `isError`.
++    async fn call(&self, tool: &str, arguments: Value) -> (String, bool) {
++        let params = with_binding_meta(json!({ "name": tool, "arguments": arguments }));
++        let result = result_of(
++            self.agent
++                .mcp(&self.zeo_lsp, &format!("{tool}-1"), "tools/call", params)
++                .await
++                .expect("zeo-lsp answers"),
++        );
++        (
++            result["content"][0]["text"]
++                .as_str()
++                .expect("a text block")
++                .to_string(),
++            result["isError"].as_bool().expect("isError"),
++        )
++    }
++}
++
++#[gpui::test]
++async fn zeo_lsp_tests_is_declared_and_lists_its_tools(cx: &mut gpui::TestAppContext) {
++    let fixture = LspAgent::connect(cx).await;
++
++    let discovery = result_of(
++        fixture
++            .agent
++            .mcp(
++                &fixture.zeo_lsp,
++                "d-1",
++                "server/discover",
++                with_binding_meta(json!({})),
++            )
++            .await
++            .expect("discover"),
++    );
++    assert_eq!(discovery["serverInfo"]["name"], "zeo-lsp");
++    assert!(discovery["capabilities"]["tools"].is_object());
++
++    let list = result_of(
++        fixture
++            .agent
++            .mcp(
++                &fixture.zeo_lsp,
++                "l-1",
++                "tools/list",
++                with_binding_meta(json!({})),
++            )
++            .await
++            .expect("tools/list"),
++    );
++    let names: Vec<&str> = list["tools"]
++        .as_array()
++        .expect("tools")
++        .iter()
++        .filter_map(|tool| tool["name"].as_str())
++        .collect();
++    assert_eq!(
++        names,
++        [
++            "diagnostics",
++            "definition",
++            "references",
++            "hover",
++            "document_symbols"
++        ]
++    );
++}
++
++#[gpui::test]
++async fn zeo_lsp_tests_is_not_declared_when_off(cx: &mut gpui::TestAppContext) {
++    let agent = ProxyAgent::connect(true, cx).await;
++    let servers = agent.new_session(cx).await;
++
++    assert!(
++        !format!("{servers:?}").contains("zeo-lsp"),
++        "agent.zeo_lsp: false declares nothing more: {servers:?}"
++    );
++}
++
++#[gpui::test]
++async fn zeo_lsp_tests_definition_asks_at_the_named_symbol(cx: &mut gpui::TestAppContext) {
++    let fixture = LspAgent::connect(cx).await;
++    fixture
++        .server
++        .set_request_handler::<lsp::request::GotoDefinition, _, _>(|params, _| async move {
++            assert_eq!(
++                params.text_document_position_params.position,
++                lsp::Position::new(2, 4),
++                "line 3, at `target`"
++            );
++            Ok(Some(lsp::GotoDefinitionResponse::Scalar(
++                lsp::Location::new(uri(), range((0, 3), (0, 9))),
++            )))
++        });
++
++    let (text, is_error) = fixture
++        .call(
++            "definition",
++            json!({ "path": FILE, "line": 3, "symbol": "target" }),
++        )
++        .await;
++
++    assert!(!is_error, "{text}");
++    assert!(text.ends_with("main.rs:1: fn target() {}"), "{text}");
++}
++
++#[gpui::test]
++async fn zeo_lsp_tests_references_hover_and_symbols(cx: &mut gpui::TestAppContext) {
++    let fixture = LspAgent::connect(cx).await;
++    fixture
++        .server
++        .set_request_handler::<lsp::request::References, _, _>(|_, _| async move {
++            Ok(Some(vec![
++                lsp::Location::new(uri(), range((0, 3), (0, 9))),
++                lsp::Location::new(uri(), range((2, 4), (2, 10))),
++            ]))
++        });
++    fixture
++        .server
++        .set_request_handler::<lsp::request::HoverRequest, _, _>(|_, _| async move {
++            Ok(Some(lsp::Hover {
++                contents: lsp::HoverContents::Scalar(lsp::MarkedString::String(
++                    "fn target()".into(),
++                )),
++                range: None,
++            }))
++        });
++    fixture
++        .server
++        .set_request_handler::<lsp::request::DocumentSymbolRequest, _, _>(|_, _| async move {
++            #[allow(deprecated)]
++            let main = lsp::DocumentSymbol {
++                name: "main".into(),
++                detail: None,
++                kind: lsp::SymbolKind::FUNCTION,
++                tags: None,
++                deprecated: None,
++                range: range((1, 0), (3, 1)),
++                selection_range: range((1, 3), (1, 7)),
++                children: None,
++            };
++            Ok(Some(lsp::DocumentSymbolResponse::Nested(vec![main])))
++        });
++
++    let (references, _) = fixture
++        .call(
++            "references",
++            json!({ "path": FILE, "line": 1, "symbol": "target" }),
++        )
++        .await;
++    assert!(references.starts_with("2 references:"), "{references}");
++    assert!(references.contains("main.rs:3: target();"), "{references}");
++
++    let (hover, _) = fixture
++        .call("hover", json!({ "path": FILE, "line": 3, "column": 5 }))
++        .await;
++    assert_eq!(hover, "fn target()");
++
++    let (symbols, _) = fixture
++        .call("document_symbols", json!({ "path": FILE }))
++        .await;
++    assert_eq!(symbols, "function main L2-4");
++}
++
++#[gpui::test]
++async fn zeo_lsp_tests_diagnostics_per_file_and_for_the_project(cx: &mut gpui::TestAppContext) {
++    let fixture = LspAgent::connect(cx).await;
++    fixture
++        .server
++        .notify::<lsp::notification::PublishDiagnostics>(lsp::PublishDiagnosticsParams {
++            uri: uri(),
++            version: None,
++            diagnostics: vec![lsp::Diagnostic {
++                range: range((2, 4), (2, 10)),
++                severity: Some(lsp::DiagnosticSeverity::ERROR),
++                message: "boom".into(),
++                ..Default::default()
++            }],
++        });
++    cx.run_until_parked();
++
++    let (file, _) = fixture.call("diagnostics", json!({ "path": FILE })).await;
++    assert_eq!(file, "error 3:5: boom");
++    let (project, _) = fixture.call("diagnostics", json!({})).await;
++    assert!(
++        project.ends_with("main.rs: 1 error(s), 0 warning(s)"),
++        "{project}"
++    );
++}
++
++#[gpui::test]
++async fn zeo_lsp_tests_a_failed_lookup_is_the_tools_answer(cx: &mut gpui::TestAppContext) {
++    let fixture = LspAgent::connect(cx).await;
++
++    let (text, is_error) = fixture
++        .call(
++            "definition",
++            json!({ "path": FILE, "line": 1, "symbol": "absent" }),
++        )
++        .await;
++    assert!(is_error, "the model reads why: {text}");
++    assert!(text.contains("\"absent\" is not on line 1"), "{text}");
++
++    let response = fixture
++        .agent
++        .mcp(
++            &fixture.zeo_lsp,
++            "x-1",
++            "tools/call",
++            with_binding_meta(json!({ "name": "rename", "arguments": {} })),
++        )
++        .await
++        .expect("an inner error is a successful ACP response");
++    assert!(
++        matches!(response, acp::MessageMcpResponse::Error { ref error, .. } if error.code == -32602),
++        "read-only: there is no rename tool: {response:?}"
++    );
++}
+diff --git a/crates/agent_servers/src/acp/zeo_lsp.rs b/crates/agent_servers/src/acp/zeo_lsp.rs
+new file mode 100644
+index 0000000..20b7421
+--- /dev/null
++++ b/crates/agent_servers/src/acp/zeo_lsp.rs
+@@ -0,0 +1,153 @@
++//! `zeo-lsp`: Zeo's language servers as one more MCP server for Claude Agent (Plus), carried
++//! over MCP-over-ACP like the proxied ones (next proposal §6.13, spike
++//! `docs/SPIKE-6.13-LSP-OVER-MCP.md`).
++//!
++//! Claude Code reads code through grep and file reads; the language servers Zeo already runs
++//! for the project know where a symbol is defined, who uses it and what it is. `0002`'s IDE
++//! server was not the vehicle: the CLI keeps only `getDiagnostics` and `executeCode` from it,
++//! and only for buffers that are open. This server answers from the project itself, opening a
++//! file with its language servers when asked about it. Read-only: no edit, rename or code
++//! action is offered.
++//!
++//! The first cut is the spike's: `diagnostics`, `definition`, `references`, `hover` and
++//! `document_symbols`, lines 1-based, a symbol found on its line by name when no column is
++//! given. It is declared only to an agent that advertised `mcpCapabilities.acp`, under
++//! `agent.zeo_lsp` (default on, the operator's 2026-11-21 decision), and a jail reaches it only
++//! through the same opt-in list as any proxied server.
++
++use agent_client_protocol::v1::schema as acp;
++use gpui::{App, AsyncApp, Entity};
++use project::Project;
++use serde_json::{Map, Value, json};
++use settings::SettingsStore;
++
++#[path = "zeo_lsp_tools.rs"]
++mod tools;
++
++/// The server's name, as the agent sees it (`mcp__zeo-lsp__<tool>` in Claude Code).
++pub(crate) const ZEO_LSP_SERVER_NAME: &str = "zeo-lsp";
++/// MCP's "method not found" and "invalid params", for the inner error carrier.
++const METHOD_NOT_FOUND: i32 = -32601;
++const INVALID_PARAMS: i32 = -32602;
++
++const INSTRUCTIONS: &str = "Zeo's language servers for this project. Lines are 1-based. Name \
++the symbol on its line (`symbol`), or give a 1-based `column`. Paths are relative to the \
++project, or absolute. A file is opened with its language servers when asked about, so the \
++first answer for a file nobody had open can be empty until its server has indexed it.";
++
++/// `agent.zeo_lsp`, default on. A test app may run without a settings store.
++pub(crate) fn enabled(cx: &App) -> bool {
++    cx.try_global::<SettingsStore>()
++        .and_then(|store| store.merged_settings().agent.as_ref()?.zeo_lsp)
++        .unwrap_or(true)
++}
++
++/// One `mcp/message` for `zeo-lsp`, in `project`.
++pub(super) async fn serve(
++    project: Entity<Project>,
++    method: &str,
++    params: Option<Map<String, Value>>,
++    cx: &mut AsyncApp,
++) -> acp::MessageMcpResponse {
++    match method {
++        "server/discover" => acp::MessageMcpResponse::success(discovery()),
++        "ping" => acp::MessageMcpResponse::success(json!({})),
++        "tools/list" => acp::MessageMcpResponse::success(json!({ "tools": tool_list() })),
++        "tools/call" => {
++            let params = params.unwrap_or_default();
++            let Some(name) = params.get("name").and_then(Value::as_str) else {
++                return inner_error(INVALID_PARAMS, "tools/call needs a tool name");
++            };
++            let arguments = params
++                .get("arguments")
++                .and_then(Value::as_object)
++                .cloned()
++                .unwrap_or_default();
++            match tools::call(&project, name, &arguments, cx).await {
++                Some(Ok(text)) => acp::MessageMcpResponse::success(tool_result(text, false)),
++                // A failed lookup is the tool's answer, not a protocol error: the model reads it.
++                Some(Err(text)) => acp::MessageMcpResponse::success(tool_result(text, true)),
++                None => inner_error(INVALID_PARAMS, &format!("zeo-lsp has no tool {name:?}")),
++            }
++        }
++        other => inner_error(METHOD_NOT_FOUND, &format!("zeo-lsp does not serve {other}")),
++    }
++}
++
++fn discovery() -> Value {
++    json!({
++        "supportedVersions": ["2026-07-28"],
++        "capabilities": { "tools": {} },
++        "serverInfo": {
++            "name": ZEO_LSP_SERVER_NAME,
++            "title": "Zeo language servers",
++            "version": env!("CARGO_PKG_VERSION"),
++        },
++        "instructions": INSTRUCTIONS,
++    })
++}
++
++fn tool_result(text: String, is_error: bool) -> Value {
++    json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
++}
++
++fn inner_error(code: i32, message: &str) -> acp::MessageMcpResponse {
++    acp::MessageMcpResponse::error(acp::McpError::new(code, message))
++}
++
++fn position_schema(description: &str) -> Value {
++    json!({
++        "type": "object",
++        "description": description,
++        "properties": {
++            "path": { "type": "string", "description": "The file, relative to the project or absolute." },
++            "line": { "type": "integer", "minimum": 1, "description": "The 1-based line the symbol is on." },
++            "symbol": { "type": "string", "description": "The symbol's name as written on that line; its first occurrence is used." },
++            "column": { "type": "integer", "minimum": 1, "description": "The 1-based column, instead of `symbol`." },
++        },
++        "required": ["path", "line"],
++    })
++}
++
++fn tool_list() -> Value {
++    let read_only = json!({ "readOnlyHint": true, "openWorldHint": false });
++    json!([
++        {
++            "name": "diagnostics",
++            "description": "Errors and warnings the language servers report: for one file with `path`, otherwise a count per file for the whole project.",
++            "inputSchema": {
++                "type": "object",
++                "properties": { "path": { "type": "string", "description": "A file, relative to the project or absolute." } },
++            },
++            "annotations": read_only,
++        },
++        {
++            "name": "definition",
++            "description": "Where the symbol at a position is defined: path, lines and the defining line.",
++            "inputSchema": position_schema("The position of a use of the symbol."),
++            "annotations": read_only,
++        },
++        {
++            "name": "references",
++            "description": "Every place the symbol at a position is used, as path and line.",
++            "inputSchema": position_schema("The position of the symbol."),
++            "annotations": read_only,
++        },
++        {
++            "name": "hover",
++            "description": "What the language server says about the symbol at a position: its type, signature and documentation.",
++            "inputSchema": position_schema("The position of the symbol."),
++            "annotations": read_only,
++        },
++        {
++            "name": "document_symbols",
++            "description": "The outline of a file: its symbols, their kind and lines, nested.",
++            "inputSchema": {
++                "type": "object",
++                "properties": { "path": { "type": "string", "description": "The file, relative to the project or absolute." } },
++                "required": ["path"],
++            },
++            "annotations": read_only,
++        },
++    ])
++}
+diff --git a/crates/agent_servers/src/acp/zeo_lsp_tools.rs b/crates/agent_servers/src/acp/zeo_lsp_tools.rs
+new file mode 100644
+index 0000000..8c570a8
+--- /dev/null
++++ b/crates/agent_servers/src/acp/zeo_lsp_tools.rs
+@@ -0,0 +1,309 @@
++//! The five `zeo-lsp` tools (see `zeo_lsp.rs`), answered from the project's language servers.
++//! Each returns the text the model reads, or the reason it could not answer.
++
++use std::fmt::Write as _;
++
++use gpui::{App, AsyncApp, Entity};
++use language::{Buffer, DiagnosticSeverity, Location, Point, ToPoint as _};
++use project::lsp_store::OpenLspBufferHandle;
++use project::{DocumentSymbol, Project};
++use serde_json::{Map, Value};
++
++/// A line quoted back is cut here, as the native agent's tools cut theirs.
++const MAX_QUOTED_LINE: usize = 200;
++
++type Args = Map<String, Value>;
++
++/// `None` for a tool `zeo-lsp` does not have.
++pub(super) async fn call(
++    project: &Entity<Project>,
++    name: &str,
++    args: &Args,
++    cx: &mut AsyncApp,
++) -> Option<Result<String, String>> {
++    Some(match name {
++        "diagnostics" => diagnostics(project, args, cx).await,
++        "definition" => definition(project, args, cx).await,
++        "references" => references(project, args, cx).await,
++        "hover" => hover(project, args, cx).await,
++        "document_symbols" => document_symbols(project, args, cx).await,
++        _ => return None,
++    })
++}
++
++/// A file opened with its language servers; they stay attached while this lives.
++struct Opened {
++    buffer: Entity<Buffer>,
++    _lsp: OpenLspBufferHandle,
++}
++
++fn path_arg(args: &Args) -> Result<&str, String> {
++    args.get("path")
++        .and_then(Value::as_str)
++        .filter(|path| !path.is_empty())
++        .ok_or_else(|| "`path` is required".to_string())
++}
++
++async fn open(project: &Entity<Project>, path: &str, cx: &mut AsyncApp) -> Result<Opened, String> {
++    let task = project.update(cx, |project, cx| {
++        let project_path = project
++            .find_project_path(path, cx)
++            .ok_or_else(|| format!("No file {path:?} in the project"))?;
++        // `Project::open_buffer_with_lsp` is test-support only, so a release build has no such
++        // method: this is its body, open then register.
++        Ok::<_, String>(project.open_buffer(project_path, cx))
++    })?;
++    let buffer = task
++        .await
++        .map_err(|error| format!("Could not open {path:?}: {error:#}"))?;
++    let lsp = project.update(cx, |project, cx| {
++        project.register_buffer_with_language_servers(&buffer, cx)
++    });
++    Ok(Opened { buffer, _lsp: lsp })
++}
++
++/// The point the arguments name: `line` (1-based), then `column` (1-based characters) or
++/// the first occurrence of `symbol` on that line, else the line's first non-blank character.
++fn position(buffer: &Entity<Buffer>, args: &Args, cx: &AsyncApp) -> Result<Point, String> {
++    let line = args
++        .get("line")
++        .and_then(Value::as_u64)
++        .filter(|line| *line >= 1)
++        .ok_or_else(|| "`line` must be a 1-based line number".to_string())?;
++    buffer.read_with(cx, |buffer, _| {
++        let snapshot = buffer.snapshot();
++        let last_row = snapshot.max_point().row;
++        let row = u32::try_from(line - 1).unwrap_or(u32::MAX);
++        if row > last_row {
++            return Err(format!(
++                "Line {line} is past the end of the file ({} lines)",
++                last_row + 1
++            ));
++        }
++        let text: String = snapshot
++            .text_for_range(Point::new(row, 0)..Point::new(row, snapshot.line_len(row)))
++            .collect();
++        let byte = if let Some(column) = args.get("column").and_then(Value::as_u64) {
++            let index = usize::try_from(column.saturating_sub(1)).unwrap_or(usize::MAX);
++            text.char_indices()
++                .nth(index)
++                .map_or(text.len(), |(byte, _)| byte)
++        } else if let Some(symbol) = args.get("symbol").and_then(Value::as_str) {
++            text.find(symbol).ok_or_else(|| {
++                format!("{symbol:?} is not on line {line}: {}", quoted(text.trim()))
++            })?
++        } else {
++            text.len() - text.trim_start().len()
++        };
++        Ok(Point::new(row, u32::try_from(byte).unwrap_or(u32::MAX)))
++    })
++}
++
++fn quoted(text: &str) -> String {
++    match text.char_indices().nth(MAX_QUOTED_LINE) {
++        Some((cut, _)) => format!("{}…", &text[..cut]),
++        None => text.to_string(),
++    }
++}
++
++/// `path:line: the line`, or `path:start-end: …` for a range over several lines.
++fn describe(location: &Location, cx: &App) -> String {
++    let buffer = location.buffer.read(cx);
++    let snapshot = buffer.snapshot();
++    let start = location.range.start.to_point(&snapshot);
++    let end = location.range.end.to_point(&snapshot);
++    let path = buffer
++        .file()
++        .map(|file| file.full_path(cx).display().to_string())
++        .unwrap_or_else(|| "<untitled>".to_string());
++    let lines = if start.row == end.row {
++        (start.row + 1).to_string()
++    } else {
++        format!("{}-{}", start.row + 1, end.row + 1)
++    };
++    let text: String = snapshot
++        .text_for_range(
++            Point::new(start.row, 0)..Point::new(start.row, snapshot.line_len(start.row)),
++        )
++        .collect();
++    format!("{path}:{lines}: {}", quoted(text.trim()))
++}
++
++async fn definition(
++    project: &Entity<Project>,
++    args: &Args,
++    cx: &mut AsyncApp,
++) -> Result<String, String> {
++    let opened = open(project, path_arg(args)?, cx).await?;
++    let point = position(&opened.buffer, args, cx)?;
++    let links = project
++        .update(cx, |project, cx| {
++            project.definitions(&opened.buffer, point, cx)
++        })
++        .await
++        .map_err(|error| format!("The language server failed: {error:#}"))?
++        .unwrap_or_default();
++    if links.is_empty() {
++        return Ok("No definition found.".to_string());
++    }
++    Ok(cx.update(|cx| {
++        links
++            .iter()
++            .map(|link| describe(&link.target, cx))
++            .collect::<Vec<_>>()
++            .join("\n")
++    }))
++}
++
++async fn references(
++    project: &Entity<Project>,
++    args: &Args,
++    cx: &mut AsyncApp,
++) -> Result<String, String> {
++    let opened = open(project, path_arg(args)?, cx).await?;
++    let point = position(&opened.buffer, args, cx)?;
++    let locations = project
++        .update(cx, |project, cx| {
++            project.references(&opened.buffer, point, cx)
++        })
++        .await
++        .map_err(|error| format!("The language server failed: {error:#}"))?
++        .unwrap_or_default();
++    if locations.is_empty() {
++        return Ok("No references found.".to_string());
++    }
++    Ok(cx.update(|cx| {
++        let mut out = format!("{} references:\n", locations.len());
++        for location in &locations {
++            writeln!(out, "{}", describe(location, cx)).ok();
++        }
++        out.trim_end().to_string()
++    }))
++}
++
++async fn hover(
++    project: &Entity<Project>,
++    args: &Args,
++    cx: &mut AsyncApp,
++) -> Result<String, String> {
++    let opened = open(project, path_arg(args)?, cx).await?;
++    let point = position(&opened.buffer, args, cx)?;
++    let hovers = project
++        .update(cx, |project, cx| project.hover(&opened.buffer, point, cx))
++        .await
++        .unwrap_or_default();
++    let text = hovers
++        .iter()
++        .flat_map(|hover| hover.contents.iter())
++        .map(|block| block.text.trim())
++        .filter(|text| !text.is_empty())
++        .collect::<Vec<_>>()
++        .join("\n\n");
++    if text.is_empty() {
++        Ok("The language server has nothing to say about this position.".to_string())
++    } else {
++        Ok(text)
++    }
++}
++
++async fn document_symbols(
++    project: &Entity<Project>,
++    args: &Args,
++    cx: &mut AsyncApp,
++) -> Result<String, String> {
++    let opened = open(project, path_arg(args)?, cx).await?;
++    let symbols = project
++        .update(cx, |project, cx| {
++            project.document_symbols(&opened.buffer, cx)
++        })
++        .await
++        .map_err(|error| format!("The language server failed: {error:#}"))?;
++    if symbols.is_empty() {
++        return Ok("No symbols.".to_string());
++    }
++    let mut out = String::new();
++    outline(&symbols, 0, &mut out);
++    Ok(out.trim_end().to_string())
++}
++
++fn outline(symbols: &[DocumentSymbol], depth: usize, out: &mut String) {
++    for symbol in symbols {
++        let start = symbol.range.start.0.row + 1;
++        let end = symbol.range.end.0.row + 1;
++        let kind = format!("{:?}", symbol.kind).to_lowercase();
++        writeln!(
++            out,
++            "{}{kind} {} L{start}-{end}",
++            "  ".repeat(depth),
++            symbol.name
++        )
++        .ok();
++        outline(&symbol.children, depth + 1, out);
++    }
++}
++
++async fn diagnostics(
++    project: &Entity<Project>,
++    args: &Args,
++    cx: &mut AsyncApp,
++) -> Result<String, String> {
++    let Ok(path) = path_arg(args) else {
++        return Ok(project_diagnostics(project, cx));
++    };
++    let opened = open(project, path, cx).await?;
++    let text = opened.buffer.read_with(cx, |buffer, _| {
++        let snapshot = buffer.snapshot();
++        let mut out = String::new();
++        for (_, group) in snapshot.diagnostic_groups(None) {
++            let entry = &group.entries[group.primary_ix];
++            let severity = match entry.diagnostic.severity {
++                DiagnosticSeverity::ERROR => "error",
++                DiagnosticSeverity::WARNING => "warning",
++                DiagnosticSeverity::INFORMATION => "info",
++                _ => "hint",
++            };
++            let start = entry.range.start.to_point(&snapshot);
++            writeln!(
++                out,
++                "{severity} {}:{}: {}",
++                start.row + 1,
++                start.column + 1,
++                entry.diagnostic.message
++            )
++            .ok();
++        }
++        out
++    });
++    if text.is_empty() {
++        Ok(format!("No diagnostics for {path}."))
++    } else {
++        Ok(text.trim_end().to_string())
++    }
++}
++
++fn project_diagnostics(project: &Entity<Project>, cx: &AsyncApp) -> String {
++    project.read_with(cx, |project, cx| {
++        let mut out = String::new();
++        for (project_path, _, summary) in project.diagnostic_summaries(true, cx) {
++            if summary.error_count == 0 && summary.warning_count == 0 {
++                continue;
++            }
++            let Some(worktree) = project.worktree_for_id(project_path.worktree_id, cx) else {
++                continue;
++            };
++            writeln!(
++                out,
++                "{}: {} error(s), {} warning(s)",
++                worktree.read(cx).absolutize(&project_path.path).display(),
++                summary.error_count,
++                summary.warning_count
++            )
++            .ok();
++        }
++        if out.is_empty() {
++            "No errors or warnings in the project.".to_string()
++        } else {
++            out.trim_end().to_string()
++        }
++    })
++}
+diff --git a/crates/settings_content/src/agent.rs b/crates/settings_content/src/agent.rs
+index 2865a65..725928c 100644
+--- a/crates/settings_content/src/agent.rs
++++ b/crates/settings_content/src/agent.rs
+@@ -490,6 +490,12 @@ pub struct AgentSettingsContent {
+     ///
+     /// Default: true
+     pub mcp_servers_over_acp: Option<bool>,
++    /// Whether an external agent that supports MCP-over-ACP (today Claude Agent (Plus)) gets
++    /// `zeo-lsp`: the project's language servers as an MCP server with diagnostics, definition,
++    /// references, hover and document symbols. Read-only. Zeo next proposal §6.13.
++    ///
++    /// Default: true
++    pub zeo_lsp: Option<bool>,
+     /// Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
+     /// The command is sent to the shell as if typed, so it is interpreted by your
+     /// configured shell (including on Windows and remote/WSL projects).
+diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_data.rs
+index ee5013d..05622c8 100644
+--- a/crates/settings_ui/src/page_data.rs
++++ b/crates/settings_ui/src/page_data.rs
+@@ -9626,6 +9626,20 @@ fn ai_page(cx: &App) -> SettingsPage {
+                 metadata: None,
+                 files: USER,
+             }),
++            SettingsPageItem::SettingItem(SettingItem {
++                title: "Zeo LSP For Agents",
++                description: "Whether an external agent that supports MCP over ACP (Claude Agent (Plus)) gets zeo-lsp: the project's language servers as read-only tools (diagnostics, definition, references, hover, symbols). Applies to threads started or reopened afterwards.",
++                field: Box::new(SettingField {
++                    organization_override: None,
++                    json_path: Some("agent.zeo_lsp"),
++                    pick: |settings_content| settings_content.agent.as_ref()?.zeo_lsp.as_ref(),
++                    write: |settings_content, value, _| {
++                        settings_content.agent.get_or_insert_default().zeo_lsp = value;
++                    },
++                }),
++                metadata: None,
++                files: USER,
++            }),
+             SettingsPageItem::SettingItem(SettingItem {
+                 title: "Terminal Thread Init Command",
+                 description: "Command to automatically run when Zeo creates a Terminal Thread shell in the agent panel. Runs in your configured shell.",

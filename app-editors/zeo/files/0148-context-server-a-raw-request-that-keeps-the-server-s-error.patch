@@ -1,0 +1,458 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sun, 22 Nov 2026 19:00:00 -0300
+Subject: [PATCH] context_server: a raw request that keeps the server's error,
+ and its instructions
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo proposal §6.69 step 3 (ask 94) and §6.13. The patch after this one makes
+Zeo answer an external agent's MCP requests from the context server Zeo
+already runs (MCP-over-ACP). A relay has to hand back what the server said,
+and the client had no way to: request_with parses into a typed response and
+turns an error object into its message alone, so the code a caller acts on
+(-32602 for bad arguments, a server's own codes) and the data were lost. And
+InitializeResponse dropped the server's instructions (MCP 2025-03-26), which
+the agent should still get from the server/discover answer Zeo gives in the
+server's name.
+
+- Client::request_raw / InitializedContextServerProtocol::request_raw:
+  method and params as JSON, the result as JSON or the error object whole
+  (McpErrorObject: code, message, data). Same timeout as request, and the
+  same cancellation: a fired cancel_rx sends notifications/cancelled with the
+  request's id and fails with RequestCanceled, so the caller can tell a
+  cancellation from a failure. request_with now shares the send-and-wait
+  half (send_request) with it; what request_with returns is unchanged.
+- InitializeResponse.instructions, optional, kept when the server sends it.
+- test::ScriptedTransport (test-support): answers each message with what a
+  script returns -- error objects, notifications before the response, or
+  nothing, to leave a request pending -- and records every message sent.
+  FakeTransport can do none of the three.
+
+Tests client_raw_tests (new): the error object survives whole; a result with
+fields Zed has no type for is returned verbatim; a cancelled request tells
+the server which id to drop and fails with RequestCanceled; initialize keeps
+the instructions.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent/src/tests/mod.rs b/crates/agent/src/tests/mod.rs
+index 49ed70d..a595a20 100644
+--- a/crates/agent/src/tests/mod.rs
++++ b/crates/agent/src/tests/mod.rs
+@@ -5453,6 +5453,7 @@ fn setup_context_server(
+                     }),
+                     ..Default::default()
+                 },
++                instructions: None,
+                 meta: None,
+             }
+         })
+diff --git a/crates/context_server/src/client.rs b/crates/context_server/src/client.rs
+index 88b2f28..f444214 100644
+--- a/crates/context_server/src/client.rs
++++ b/crates/context_server/src/client.rs
+@@ -402,6 +402,45 @@ impl Client {
+         cancel_rx: Option<oneshot::Receiver<()>>,
+         timeout: Option<Duration>,
+     ) -> Result<T> {
++        let response = self
++            .send_request(method, params, cancel_rx, timeout)
++            .await?;
++        let parsed: AnyResponse = serde_json::from_str(&response)?;
++        if let Some(error) = parsed.error {
++            Err(anyhow!(error.message))
++        } else if let Some(result) = parsed.result {
++            Ok(serde_json::from_str(result.get())?)
++        } else {
++            anyhow::bail!("Invalid response: no result or error");
++        }
++    }
++
++    /// Sends a request whose result is not interpreted, and keeps the server's error object
++    /// whole -- code, message and data -- where [`Self::request_with`] keeps only the message.
++    /// For a caller that relays the answer to another MCP client (Zeo's MCP-over-ACP proxy,
++    /// next proposal §6.69), which must see the error the server sent.
++    pub async fn request_raw(
++        &self,
++        method: &str,
++        params: Option<Value>,
++        cancel_rx: Option<oneshot::Receiver<()>>,
++    ) -> Result<std::result::Result<Value, McpErrorObject>> {
++        let timeout = self.request_timeout.or(Some(DEFAULT_REQUEST_TIMEOUT));
++        let response = self
++            .send_request(method, params, cancel_rx, timeout)
++            .await?;
++        raw_outcome(&response)
++    }
++
++    /// Writes one request and waits for its response line, a cancellation (which tells the
++    /// server with `notifications/cancelled`) or the timeout.
++    async fn send_request(
++        &self,
++        method: &str,
++        params: impl Serialize,
++        cancel_rx: Option<oneshot::Receiver<()>>,
++        timeout: Option<Duration>,
++    ) -> Result<String> {
+         let id = self.next_id.fetch_add(1, SeqCst);
+         let request = serde_json::to_string(&Request {
+             jsonrpc: JSON_RPC_VERSION,
+@@ -458,16 +497,7 @@ impl Client {
+                 let elapsed = started.elapsed();
+                 log::trace!("took {elapsed:?} to receive response to {method:?} id {id}");
+                 match response {
+-                    Ok(response) => {
+-                        let parsed: AnyResponse = serde_json::from_str(&response)?;
+-                        if let Some(error) = parsed.error {
+-                            Err(anyhow!(error.message))
+-                        } else if let Some(result) = parsed.result {
+-                            Ok(serde_json::from_str(result.get())?)
+-                        } else {
+-                            anyhow::bail!("Invalid response: no result or error");
+-                        }
+-                    }
++                    Ok(response) => Ok(response),
+                     Err(_canceled) => {
+                         if let Some(err) = self.last_transport_error.lock().take() {
+                             return Err(err);
+@@ -539,6 +569,33 @@ impl std::fmt::Display for RequestCanceled {
+     }
+ }
+ 
++/// An MCP server's JSON-RPC error object as it sent it, for [`Client::request_raw`].
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct McpErrorObject {
++    pub code: i32,
++    pub message: String,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub data: Option<Value>,
++}
++
++/// Splits a response line into its result or its error object. A response with neither is
++/// a broken server, not an MCP error, so it fails the request.
++fn raw_outcome(response: &str) -> Result<std::result::Result<Value, McpErrorObject>> {
++    let mut response: Value = serde_json::from_str(response)?;
++    let object = response
++        .as_object_mut()
++        .context("Invalid response: not an object")?;
++    if let Some(error) = object.remove("error").filter(|error| !error.is_null()) {
++        return Ok(Err(
++            serde_json::from_value(error).context("Invalid response: malformed error object")?
++        ));
++    }
++    match object.remove("result") {
++        Some(result) => Ok(Ok(result)),
++        None => anyhow::bail!("Invalid response: no result or error"),
++    }
++}
++
+ impl fmt::Display for ContextServerId {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         self.0.fmt(f)
+@@ -628,3 +685,7 @@ impl Drop for NotificationSubscription {
+         });
+     }
+ }
++
++#[cfg(test)]
++#[path = "client_raw_tests.rs"]
++mod client_raw_tests;
+diff --git a/crates/context_server/src/client_raw_tests.rs b/crates/context_server/src/client_raw_tests.rs
+new file mode 100644
+index 0000000..9409b92
+--- /dev/null
++++ b/crates/context_server/src/client_raw_tests.rs
+@@ -0,0 +1,137 @@
++//! `request_raw` and the server's `instructions`: what Zeo's MCP-over-ACP proxy relays to an
++//! agent must be what the server sent (next proposal §6.69).
++
++use std::sync::Arc;
++
++use futures::channel::oneshot;
++use gpui::TestAppContext;
++use serde_json::{Value, json};
++
++use crate::client::{McpErrorObject, RequestCanceled};
++use crate::test::ScriptedTransport;
++use crate::{ContextServer, ContextServerId};
++
++fn reply(message: &Value, body: Value) -> Vec<Value> {
++    let mut reply = json!({ "jsonrpc": "2.0", "id": message["id"] });
++    for (key, value) in body.as_object().expect("a reply body is an object") {
++        reply[key] = value.clone();
++    }
++    vec![reply]
++}
++
++async fn started(transport: ScriptedTransport, cx: &mut TestAppContext) -> Arc<ContextServer> {
++    let server = Arc::new(ContextServer::new(
++        ContextServerId("scripted".into()),
++        Arc::new(transport),
++    ));
++    server
++        .start(&cx.to_async())
++        .await
++        .expect("the scripted server starts");
++    server
++}
++
++#[gpui::test]
++async fn request_raw_keeps_the_error_object_whole(cx: &mut TestAppContext) {
++    let transport = ScriptedTransport::new(None, |message| match message["method"].as_str() {
++        Some("tools/call") => reply(
++            message,
++            json!({ "error": { "code": -32602, "message": "no such tool", "data": { "tool": "x" } } }),
++        ),
++        _ => Vec::new(),
++    });
++    let server = started(transport, cx).await;
++    let client = server.client().expect("an initialized client");
++
++    let outcome = client
++        .request_raw("tools/call", Some(json!({ "name": "x" })), None)
++        .await
++        .expect("the request reaches the server");
++
++    assert_eq!(
++        outcome,
++        Err(McpErrorObject {
++            code: -32602,
++            message: "no such tool".into(),
++            data: Some(json!({ "tool": "x" })),
++        }),
++        "code and data survive, not only the message"
++    );
++}
++
++#[gpui::test]
++async fn request_raw_returns_the_result_verbatim(cx: &mut TestAppContext) {
++    let result = json!({
++        "content": [{ "type": "text", "text": "hi" }],
++        "structuredContent": { "unknown_to_zed": true },
++        "isError": false,
++    });
++    let expected = result.clone();
++    let transport = ScriptedTransport::new(None, move |message| match message["method"].as_str() {
++        Some("tools/call") => reply(message, json!({ "result": result.clone() })),
++        _ => Vec::new(),
++    });
++    let server = started(transport, cx).await;
++    let client = server.client().expect("an initialized client");
++
++    let outcome = client
++        .request_raw("tools/call", Some(json!({ "name": "x" })), None)
++        .await
++        .expect("the request reaches the server");
++
++    assert_eq!(outcome, Ok(expected), "fields Zed has no type for are kept");
++}
++
++#[gpui::test]
++async fn request_raw_cancellation_tells_the_server(cx: &mut TestAppContext) {
++    // The server never answers tools/call, so only the cancellation can end the request.
++    let transport = ScriptedTransport::new(None, |_| Vec::new());
++    let sent = transport.sent();
++    let server = started(transport, cx).await;
++    let client = server.client().expect("an initialized client");
++
++    let (cancel_tx, cancel_rx) = oneshot::channel();
++    let request = cx.executor().spawn(async move {
++        client
++            .request_raw(
++                "tools/call",
++                Some(json!({ "name": "slow" })),
++                Some(cancel_rx),
++            )
++            .await
++    });
++    cx.run_until_parked();
++    cancel_tx.send(()).expect("the request is still waiting");
++    let error = request.await.expect_err("a cancelled request fails");
++    // The notification is written by the client's output task: let it run.
++    cx.run_until_parked();
++
++    assert!(
++        error.downcast_ref::<RequestCanceled>().is_some(),
++        "the caller can tell a cancellation from a failure: {error:?}"
++    );
++    let sent = sent.snapshot();
++    let call_id = sent
++        .iter()
++        .find(|message| message["method"] == "tools/call")
++        .map(|message| message["id"].clone())
++        .expect("the call was sent");
++    assert!(
++        sent.iter()
++            .any(|message| message["method"] == "notifications/cancelled"
++                && message["params"]["requestId"] == call_id),
++        "the server is told which request to drop: {sent:?}"
++    );
++}
++
++#[gpui::test]
++async fn initialize_keeps_the_server_instructions(cx: &mut TestAppContext) {
++    let transport = ScriptedTransport::new(Some("Call search before read."), |_| Vec::new());
++    let server = started(transport, cx).await;
++
++    let client = server.client().expect("an initialized client");
++    assert_eq!(
++        client.initialize.instructions.as_deref(),
++        Some("Call search before read.")
++    );
++}
+diff --git a/crates/context_server/src/protocol.rs b/crates/context_server/src/protocol.rs
+index 6eb4a84..0395b68 100644
+--- a/crates/context_server/src/protocol.rs
++++ b/crates/context_server/src/protocol.rs
+@@ -12,7 +12,7 @@ use futures::{channel::oneshot, future::BoxFuture};
+ use gpui::AsyncApp;
+ use serde_json::Value;
+ 
+-use crate::client::{Client, NotificationSubscription};
++use crate::client::{Client, McpErrorObject, NotificationSubscription};
+ use crate::oauth::WwwAuthenticate;
+ use crate::types::{self, Notification, Request};
+ 
+@@ -119,6 +119,17 @@ impl InitializedContextServerProtocol {
+             .await
+     }
+ 
++    /// Sends `method` without interpreting its result, keeping an error object whole. A
++    /// cancellation tells the server with `notifications/cancelled`, as `request_with` does.
++    pub async fn request_raw(
++        &self,
++        method: &str,
++        params: Option<Value>,
++        cancel_rx: Option<oneshot::Receiver<()>>,
++    ) -> Result<std::result::Result<Value, McpErrorObject>> {
++        self.inner.request_raw(method, params, cancel_rx).await
++    }
++
+     pub fn notify<T: Notification>(&self, params: T::Params) -> Result<()> {
+         self.inner.notify(T::METHOD, params)
+     }
+diff --git a/crates/context_server/src/test.rs b/crates/context_server/src/test.rs
+index b1e4579..7fa8735 100644
+--- a/crates/context_server/src/test.rs
++++ b/crates/context_server/src/test.rs
+@@ -32,6 +32,7 @@ fn create_initialize_response(server_name: String) -> InitializeResponse {
+             description: None,
+         },
+         capabilities: ServerCapabilities::default(),
++        instructions: None,
+         meta: None,
+     }
+ }
+@@ -130,3 +131,94 @@ impl Transport for FakeTransport {
+         Box::pin(futures::stream::empty())
+     }
+ }
++
++/// What [`ScriptedTransport`] answers one message with: any number of lines, notifications
++/// before the response included, or none to leave a request pending.
++pub type Script = dyn Send + Sync + Fn(&serde_json::Value) -> Vec<serde_json::Value>;
++
++/// A transport that answers each message with whatever its script returns, and records
++/// every message it was sent. Unlike [`FakeTransport`] it can answer with an error object,
++/// send notifications mid-request and leave a request unanswered, which is what a test of a
++/// relay (Zeo's MCP-over-ACP proxy) needs.
++pub struct ScriptedTransport {
++    script: Arc<Script>,
++    sent: SentMessages,
++    tx: futures::channel::mpsc::UnboundedSender<String>,
++    rx: Arc<Mutex<futures::channel::mpsc::UnboundedReceiver<String>>>,
++}
++
++impl ScriptedTransport {
++    /// `script` sees every message but `initialize`, which gets a minimal answer carrying
++    /// `instructions` when given.
++    pub fn new(
++        instructions: Option<&str>,
++        script: impl 'static + Send + Sync + Fn(&serde_json::Value) -> Vec<serde_json::Value>,
++    ) -> Self {
++        let (tx, rx) = futures::channel::mpsc::unbounded();
++        let instructions = instructions.map(str::to_owned);
++        let script = move |message: &serde_json::Value| {
++            if message["method"] == "initialize" {
++                let mut result = serde_json::json!({
++                    "protocolVersion": crate::types::LATEST_PROTOCOL_VERSION,
++                    "capabilities": { "tools": { "listChanged": true } },
++                    "serverInfo": { "name": "scripted", "version": "1.0.0" },
++                });
++                if let Some(instructions) = &instructions {
++                    result["instructions"] = instructions.clone().into();
++                }
++                vec![serde_json::json!({ "jsonrpc": "2.0", "id": message["id"], "result": result })]
++            } else {
++                script(message)
++            }
++        };
++        Self {
++            script: Arc::new(script),
++            sent: Default::default(),
++            tx,
++            rx: Arc::new(Mutex::new(rx)),
++        }
++    }
++
++    /// A handle on every message the transport is sent, in order.
++    pub fn sent(&self) -> SentMessages {
++        self.sent.clone()
++    }
++}
++
++/// The messages a [`ScriptedTransport`] was sent; it keeps filling after the transport moves
++/// into a server.
++#[derive(Clone, Default)]
++pub struct SentMessages(Arc<parking_lot::Mutex<Vec<serde_json::Value>>>);
++
++impl SentMessages {
++    pub fn snapshot(&self) -> Vec<serde_json::Value> {
++        self.0.lock().clone()
++    }
++}
++
++#[async_trait::async_trait]
++impl Transport for ScriptedTransport {
++    async fn send(&self, message: String) -> anyhow::Result<()> {
++        let message: serde_json::Value = serde_json::from_str(&message)?;
++        let replies = (self.script)(&message);
++        self.sent.0.lock().push(message);
++        for reply in replies {
++            self.tx
++                .unbounded_send(reply.to_string())
++                .context("sending a message")?;
++        }
++        Ok(())
++    }
++
++    fn receive(&self) -> Pin<Box<dyn Stream<Item = String> + Send>> {
++        let rx = self.rx.clone();
++        Box::pin(futures::stream::unfold(rx, move |rx| async move {
++            let message = rx.lock().await.next().await?;
++            Some((message, rx))
++        }))
++    }
++
++    fn receive_err(&self) -> Pin<Box<dyn Stream<Item = String> + Send>> {
++        Box::pin(futures::stream::empty())
++    }
++}
+diff --git a/crates/context_server/src/types.rs b/crates/context_server/src/types.rs
+index 89f466a..df6f5d4 100644
+--- a/crates/context_server/src/types.rs
++++ b/crates/context_server/src/types.rs
+@@ -277,6 +277,10 @@ pub struct InitializeResponse {
+     pub protocol_version: ProtocolVersion,
+     pub capabilities: ServerCapabilities,
+     pub server_info: Implementation,
++    /// How to use the server, for the model; optional since MCP 2025-03-26. Kept so a client
++    /// that relays the server to an agent can pass it on (Zeo's MCP-over-ACP proxy).
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub instructions: Option<String>,
+     #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+     pub meta: Option<HashMap<String, serde_json::Value>>,
+ }

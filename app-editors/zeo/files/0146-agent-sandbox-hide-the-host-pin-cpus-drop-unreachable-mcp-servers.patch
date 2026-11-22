@@ -133,10 +133,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/assets/settings/default.json b/assets/settings/default.json
-index 101c156..23af3b5 100644
+index 96b51cf..d6ce2ef 100644
 --- a/assets/settings/default.json
 +++ b/assets/settings/default.json
-@@ -3177,8 +3177,19 @@
+@@ -3189,8 +3189,19 @@
        "max_tasks": 4096,
        // Disk the jail's state and the project may grow by, such as "20G"; past it the
        // agent is paused. `null` measures nothing.
@@ -1650,17 +1650,17 @@ index 6df1746..4a7bac8 100644
              limit_args: &[],
              ai_jail: bin,
 diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
-index 2faa34f..678dbd0 100644
+index 80f06b2..e61b2df 100644
 --- a/crates/agent_servers/src/acp.rs
 +++ b/crates/agent_servers/src/acp.rs
 @@ -1,5 +1,6 @@
  mod auth_status;
  mod debug_log;
 +mod jail_servers;
+ mod mcp_over_acp;
  mod runtime;
  mod session_meta;
- mod session_updates;
-@@ -55,7 +56,31 @@ use crate::thread_config_store;
+@@ -57,7 +58,31 @@ use crate::thread_config_store;
  
  const EXIT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
  
@@ -1692,7 +1692,7 @@ index 2faa34f..678dbd0 100644
      project: &Entity<Project>,
      cx: &App,
  ) -> Vec<(String, Arc<ContextServerConfiguration>)> {
-@@ -148,6 +173,7 @@ pub(crate) async fn connect(
+@@ -150,6 +175,7 @@ pub(crate) async fn connect(
          cwd,
          io_ended,
          jail_pid,
@@ -1700,7 +1700,7 @@ index 2faa34f..678dbd0 100644
      } = launch;
      // Both attempts start the command the same way: a jailed command runs in the root its launch
      // decision checked, with only its own env, never through a login shell (story 043).
-@@ -165,6 +191,7 @@ pub(crate) async fn connect(
+@@ -167,6 +193,7 @@ pub(crate) async fn connect(
                  cwd: cwd.clone(),
                  io_ended: Some(v2_io_ended),
                  jail_pid: jail_pid.clone(),
@@ -1708,7 +1708,7 @@ index 2faa34f..678dbd0 100644
              },
              cx,
          )
-@@ -198,6 +225,7 @@ pub(crate) async fn connect(
+@@ -200,6 +227,7 @@ pub(crate) async fn connect(
              cwd,
              io_ended,
              jail_pid,
@@ -1891,10 +1891,10 @@ index 0000000..a61a30f
 +    assert!(hidden.is_empty());
 +}
 diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
-index 69687d8..ca756b7 100644
+index 67fd142..5258507 100644
 --- a/crates/agent_servers/src/acp/v1.rs
 +++ b/crates/agent_servers/src/acp/v1.rs
-@@ -377,6 +377,8 @@ pub struct AcpConnection {
+@@ -380,6 +380,8 @@ pub struct AcpConnection {
      dispatch_tx: mpsc::UnboundedSender<ForegroundWork>,
      _wait_task: Task<()>,
      _stderr_task: Shared<Task<()>>,
@@ -1903,7 +1903,7 @@ index 69687d8..ca756b7 100644
  }
  
  #[derive(Clone, Default)]
-@@ -667,6 +669,9 @@ pub(crate) struct StdioLaunch {
+@@ -670,6 +672,9 @@ pub(crate) struct StdioLaunch {
      /// Set to the spawned process's id, for the agent sandbox's kill switch and disk watchdog
      /// (Zeo next §6.54). A v2 attempt that falls back to v1 spawns twice; the last one wins.
      pub jail_pid: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
@@ -1913,16 +1913,16 @@ index 69687d8..ca756b7 100644
  }
  
  pub(crate) async fn connect(
-@@ -862,7 +867,7 @@ impl AcpConnection {
+@@ -869,7 +874,7 @@ impl AcpConnection {
              Err(error) => return Task::ready(Err(error)),
          };
          let parent = session_id.clone();
 -        let mcp_servers = mcp_servers_for_project(&project, cx);
 +        let mcp_servers = mcp_servers_for_project(&project, self.launch_id, cx);
+         let mcp_servers = self.declare_mcp_servers(&project, mcp_servers, cx);
          // Read before the request, as a reopen reads before `session/load`. Keyed by
          // this entry and the parent, so another entry's record of the same id is not it.
-         let parent_record = thread_config_store::read(&self.id, &parent, cx);
-@@ -1017,6 +1022,7 @@ impl AcpConnection {
+@@ -1053,6 +1058,7 @@ impl AcpConnection {
              cwd,
              io_ended,
              jail_pid,
@@ -1930,7 +1930,7 @@ index 69687d8..ca756b7 100644
          } = launch;
          let ResolvedAgentServerCommand {
              command,
-@@ -1228,6 +1234,7 @@ impl AcpConnection {
+@@ -1268,6 +1274,7 @@ impl AcpConnection {
              _wait_task: wait_task,
              _stderr_task: stderr_task,
              _child: Some(child),
@@ -1938,7 +1938,7 @@ index 69687d8..ca756b7 100644
          };
          cx.update(|cx| result.refresh_auth_status(cx));
          Ok(result)
-@@ -1283,6 +1290,7 @@ impl AcpConnection {
+@@ -1324,6 +1331,7 @@ impl AcpConnection {
              dispatch_tx,
              _wait_task: Task::ready(()),
              _stderr_task: Task::ready(()).shared(),
@@ -1946,7 +1946,7 @@ index 69687d8..ca756b7 100644
          }
      }
  
-@@ -1418,6 +1426,8 @@ impl AcpConnection {
+@@ -1459,6 +1467,8 @@ impl AcpConnection {
              .as_ref()
              .map(|options| self.apply_session_config_options(&session_id, options, recorded, cx));
  
@@ -1955,7 +1955,7 @@ index 69687d8..ca756b7 100644
          let action_log = cx.new(|_| ActionLog::new(project.clone()));
          let thread: Entity<AcpThread> = cx.new(|cx| {
              AcpThread::new(
-@@ -1433,6 +1443,7 @@ impl AcpConnection {
+@@ -1474,6 +1484,7 @@ impl AcpConnection {
                  cx,
              )
          });
@@ -1963,7 +1963,7 @@ index 69687d8..ca756b7 100644
  
          let recorded_mode = recorded.and_then(|recorded| recorded.mode.as_deref());
          if let (Some(modes), Some(recorded_mode)) = (modes.as_ref(), recorded_mode) {
-@@ -1711,6 +1722,8 @@ impl AcpConnection {
+@@ -1752,6 +1763,8 @@ impl AcpConnection {
              Err(error) => return Task::ready(Err(error)),
          };
  
@@ -1972,7 +1972,7 @@ index 69687d8..ca756b7 100644
          let action_log = cx.new(|_| ActionLog::new(project.clone()));
          let thread = cx.new(|cx| {
              AcpThread::new(
-@@ -1725,6 +1738,7 @@ impl AcpConnection {
+@@ -1766,6 +1779,7 @@ impl AcpConnection {
                  cx,
              )
          });
@@ -1980,34 +1980,34 @@ index 69687d8..ca756b7 100644
          self.register_session(
              session_id.clone(),
              &thread,
-@@ -2358,7 +2372,7 @@ impl AgentConnection for AcpConnection {
+@@ -2408,7 +2422,7 @@ impl AgentConnection for AcpConnection {
              Ok(directories) => directories,
              Err(error) => return Task::ready(Err(error)),
          };
 -        let mcp_servers = mcp_servers_for_project(&project, cx);
 +        let mcp_servers = mcp_servers_for_project(&project, self.launch_id, cx);
+         let mcp_servers = self.declare_mcp_servers(&project, mcp_servers, cx);
          let sends_initial_config_options = self.agent_supports_initial_config_options(cx);
          let session_meta = super::session_meta::new_session_meta(&self.id, &project, cx);
- 
-@@ -2631,7 +2645,7 @@ impl AgentConnection for AcpConnection {
+@@ -2682,7 +2696,7 @@ impl AgentConnection for AcpConnection {
              ))));
          }
  
 -        let mcp_servers = mcp_servers_for_project(&project, cx);
 +        let mcp_servers = mcp_servers_for_project(&project, self.launch_id, cx);
+         let mcp_servers = self.declare_mcp_servers(&project, mcp_servers, cx);
          let session_meta = super::session_meta::new_session_meta(&self.id, &project, cx);
          self.open_or_create_session(
-             session_id,
-@@ -2678,7 +2692,7 @@ impl AgentConnection for AcpConnection {
+@@ -2730,7 +2744,7 @@ impl AgentConnection for AcpConnection {
              ))));
          }
  
 -        let mcp_servers = mcp_servers_for_project(&project, cx);
 +        let mcp_servers = mcp_servers_for_project(&project, self.launch_id, cx);
+         let mcp_servers = self.declare_mcp_servers(&project, mcp_servers, cx);
          let session_meta = super::session_meta::new_session_meta(&self.id, &project, cx);
          self.open_or_create_session(
-             session_id,
-@@ -11430,8 +11444,12 @@ exit 7
+@@ -11488,8 +11502,12 @@ exit 7
      include!("../acp_usage_refresh_tests.rs");
  }
  
@@ -2023,10 +2023,10 @@ index 69687d8..ca756b7 100644
          .map(|(name, configuration)| match &*configuration {
              project::context_server_store::ContextServerConfiguration::Custom {
 diff --git a/crates/agent_servers/src/acp/v1/fork_session_tests.rs b/crates/agent_servers/src/acp/v1/fork_session_tests.rs
-index b4ff2d9..d5be3e8 100644
+index 72ef611..09df0c0 100644
 --- a/crates/agent_servers/src/acp/v1/fork_session_tests.rs
 +++ b/crates/agent_servers/src/acp/v1/fork_session_tests.rs
-@@ -358,7 +358,7 @@ async fn fork_sends_one_request_and_registers_the_answered_session(cx: &mut gpui
+@@ -359,7 +359,7 @@ async fn fork_sends_one_request_and_registers_the_answered_session(cx: &mut gpui
          vec![PathBuf::from(EXTRA)],
          "the parent's additional directories"
      );
@@ -2036,7 +2036,7 @@ index b4ff2d9..d5be3e8 100644
          request.mcp_servers, expected_servers,
          "the project's MCP servers"
 diff --git a/crates/agent_servers/src/acp/v2.rs b/crates/agent_servers/src/acp/v2.rs
-index 9a21006..76ed051 100644
+index 222ec0e..4a62f38 100644
 --- a/crates/agent_servers/src/acp/v2.rs
 +++ b/crates/agent_servers/src/acp/v2.rs
 @@ -209,6 +209,8 @@ pub struct AcpV2Connection {
@@ -2067,7 +2067,7 @@ index 9a21006..76ed051 100644
          let mut runtime = connection.runtime.borrow_mut();
          let owned = runtime
              .as_mut()
-@@ -512,6 +516,7 @@ impl AcpV2Connection {
+@@ -513,6 +517,7 @@ impl AcpV2Connection {
              pending_session_updates,
              session_owners: Rc::new(RefCell::new(HashMap::default())),
              runtime,
@@ -2075,7 +2075,7 @@ index 9a21006..76ed051 100644
          };
          cx.update(|cx| result.refresh_auth_status(cx));
          Ok(result)
-@@ -794,6 +799,8 @@ impl AcpV2Connection {
+@@ -795,6 +800,8 @@ impl AcpV2Connection {
              .clone()
              .unwrap_or_default();
          let project_entity_id = project.entity_id();
@@ -2084,7 +2084,7 @@ index 9a21006..76ed051 100644
          let action_log = cx.new(|_| ActionLog::new(project.clone()));
          let thread = cx.new(|cx| {
              AcpThread::new(
-@@ -808,6 +815,7 @@ impl AcpV2Connection {
+@@ -809,6 +816,7 @@ impl AcpV2Connection {
                  cx,
              )
          });
@@ -2092,7 +2092,7 @@ index 9a21006..76ed051 100644
          let release_subscription =
              cx.observe_release(&thread, {
                  let this = Rc::downgrade(self);
-@@ -1075,7 +1083,7 @@ impl AcpV2Connection {
+@@ -1076,7 +1084,7 @@ impl AcpV2Connection {
          }
          let path_style = project.read(cx).path_style(cx);
          let context = match self.session_context(
@@ -2101,7 +2101,7 @@ index 9a21006..76ed051 100644
              &work_dirs,
              |path| path_style.is_absolute(path),
          ) {
-@@ -1426,7 +1434,7 @@ impl AgentConnection for AcpV2Connection {
+@@ -1427,7 +1435,7 @@ impl AgentConnection for AcpV2Connection {
      ) -> Task<Result<Entity<AcpThread>>> {
          let path_style = project.read(cx).path_style(cx);
          let context = match self.session_context(

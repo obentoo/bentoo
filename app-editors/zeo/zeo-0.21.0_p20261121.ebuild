@@ -2308,6 +2308,14 @@ src_prepare() {
 			"${FILESDIR}/0145-sidebar-a-running-task-after-the-turn-shows-the-background-spinner.patch"
 			# 0147: Zeo's skills reach Plus as local plugin directories.
 			"${FILESDIR}/0147-agent-servers-zeo-skills-reach-plus-as-plugins.patch"
+			# 0148: context_server's raw request (the server's error kept whole) and instructions.
+			"${FILESDIR}/0148-context-server-a-raw-request-that-keeps-the-server-s-error.patch"
+			# 0149: Zeo's MCP servers reach Plus over ACP. Only an agent that advertises
+			# mcpCapabilities.acp (Plus >= 0.40.0) gets them that way; an older Plus keeps
+			# the configured entries, so the RDEPEND does not move.
+			"${FILESDIR}/0149-agent-servers-mcp-servers-reach-claude-agent-plus-over-acp.patch"
+			# 0151: zeo-lsp, read-only language-server tools for Plus, over the same path.
+			"${FILESDIR}/0151-agent-servers-zeo-lsp-language-servers-for-claude-agent-plus.patch"
 		)
 	fi
 
@@ -2340,6 +2348,11 @@ src_prepare() {
 		PATCHES+=(
 			"${FILESDIR}/0144-settings-ui-the-jail-s-limits-are-steppers.patch"
 			"${FILESDIR}/0146-agent-sandbox-hide-the-host-pin-cpus-drop-unreachable-mcp-servers.patch"
+			# 0150, 0152 (§6.64 step 2): a jail gets only the MCP servers chosen for it
+			# (none by default), skills and connectors per project, secret-bearing servers
+			# never handed over unproxied.
+			"${FILESDIR}/0150-agent-servers-a-jail-reaches-no-proxied-mcp-server-by-default.patch"
+			"${FILESDIR}/0152-agent-sandbox-a-jail-s-capabilities-chosen-per-project.patch"
 		)
 	fi
 

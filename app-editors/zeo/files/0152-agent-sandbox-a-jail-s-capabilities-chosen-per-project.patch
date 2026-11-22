@@ -1,0 +1,3079 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sun, 22 Nov 2026 21:00:00 -0300
+Subject: [PATCH] agent_sandbox: a jail's capabilities -- the MCP servers,
+ skills and connectors its project chose
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo proposal §6.64 step 2 (ask 87), on §6.69's MCP-over-ACP (0149, 0150).
+0146 left out of a jailed session every MCP server the jail could not start,
+and handed it every one it could, as its command line -- arguments, env and
+all. So a jail got a server's API key whenever its binary happened to sit
+inside the jail's view, and never got an extension server, whatever the
+operator wanted. The operator decided on 2026-11-22 that MCP servers, skills
+and plugins reach a jail as chosen per project, servers carrying a secret
+listed but off, and claude.ai connectors off unless a project turns them on.
+
+The choice (user file only, as the rest of the section): a default in
+agent_sandbox.capabilities, a project's own in projects[<root>].capabilities,
+each field replacing the default it names, as the limits do. Both are
+Option-valued, so a project's explicit "mcp_servers": [] survives MergeFrom
+and means none whatever the default; an absent field follows the default.
+- mcp_servers: the names of Zeo's MCP servers (its context servers, and
+  zeo-lsp) the jail may use. Default [] (default.json): each one reaches
+  outside the jail.
+- skills: Zeo's skills (0147) in the jail, default on as in 0.20.0. Off, the
+  launch maps neither the plugin root nor ~/.agents/skills, and session/new,
+  load and resume send no skills plugin (new_session_meta gains `skills`).
+  It is in the settings fingerprint, so the lock says "restart to apply".
+- claude_ai_connectors (0146) gets its page switch.
+
+What a jailed session gets (acp.rs, jail_servers.rs): only chosen servers.
+A chosen server Zeo runs is proxied when the connection proxies at all (the
+agent advertised mcpCapabilities.acp and agent.mcp_servers_over_acp is on:
+AcpConnection::proxies_mcp, the gate declare_mcp_servers uses), and is then
+kept wherever its files are, since the agent reaches Zeo's copy. A chosen
+server that is not proxied and whose configuration carries a secret is not
+handed over at all -- as configured, the secret would be readable inside the
+jail: the TUI adapter, which cannot take servers over ACP, does not get it,
+and neither does Plus while Zeo's copy is stopped (operator, 2026-11-22).
+0146's "outside the jail" filter applies to the remaining chosen ones, which
+keep their notice, now saying why Zeo could not hand them over. mcp_proxy_policy returns Only(<the project's list>), so zeo-lsp too
+reaches a jail only when chosen. An unchosen server is not handed over in any
+form. The thread says so once: one Info notice,
+"N MCP servers are not enabled for this project's jail", naming the ones
+not chosen (zeo-lsp among them when the connection would have been offered
+it) and the secret-bearing ones skipped with their reason, and one log line
+with the counts -- on the thread's first session start, and again only when
+the set or a reason changes (operator, 2026-11-22). What it last said is kept
+per thread in the key-value store (namespace agent_jail_not_enabled_shown,
+keyed by agent and session as thread_config_store keys a thread, the value
+the sorted name/reason lines), so a reopened, resumed or loaded thread says
+nothing new; a failed read shows it. Its action, "Open Capabilities", is a `zeo/openSettingsAt`
+entry in the notice's _meta that agent_ui's SessionNotice renders as a button
+dispatching OpenSettingsAt { path: "agent_sandbox#capabilities" }; the
+settings window takes `#<anchor>` off the path (pages::request_anchor), and
+the jail page focuses the Capabilities heading's reveal wrapper, which scrolls
+it into view. The list is read from the settings of now
+at every session/new: a choice applies to the next thread without a restart,
+and is left out of the fingerprint for that reason. The launch record's key
+is looked up as `drifted` does (launch::settings_key_now, renamed from the
+private record_settings_key), so a project entry first written after the
+start is found.
+
+The page (settings_ui pages/agent_jail_capabilities.rs, new; the jail page
+only gains the call): a Capabilities block in This Project, after the limits:
+where the value in force comes from ("Default for every project" or "Set
+for this project", with the limits' reset button that drops the project's
+own), one switch per server of the project's context server store (the first
+change makes the list the project's own, starting from the default), plus zeo-lsp
+while agent.zeo_lsp is on and any chosen name no longer configured (so it can
+be turned off), each with its status; the Skills switch; a note that Zeo has
+no Claude Code plugin store yet, so a jail gets none of the host's
+(~/.claude/plugins is not mapped) and Zeo's skills reach it as plugins; the
+connectors switch. Every switch is a Tab stop wrapped by the page's
+RevealOnFocus.
+
+Secrets (agent_sandbox capabilities.rs, new): a server whose configuration
+looks like it carries one -- a non-empty value under a name containing KEY,
+TOKEN, SECRET, PASS(WORD|WD), CREDENTIAL, AUTH (not AUTHOR) or COOKIE, in its
+env, a --flag=value or --flag value argument, an http header or URL
+parameter, an extension's own settings, a Bearer/Basic value, an OAuth client
+secret -- is listed with where ("argument --figma-api-key"), never the value.
+Turning it on asks first, Cancel preselected: "Its configuration carries a
+secret (...). Zeo never hands it to the jail as configured, so the secret
+stays outside: ... The agent can still use the server's access." Turning any
+server off never asks. The writers live
+beside confirm.rs's (whose ask/save become pub(crate)) and key the entry the
+same way (target_project_key).
+
+Not here: read-only maps of a chosen server's binaries and allow_hosts for a
+remote one -- a proxied server needs neither, and one that is not proxied is
+left out with the notice when the jail cannot see it; a Claude Code plugin
+store (none exists in Zeo).
+
+Tests: agent_sandbox capabilities_tests (the heuristic, hostile lookalikes,
+the prompt never quoting a value, Cancel writes nothing, Allow adds, off
+never asks, defaults); agent_servers jail_servers_tests (only chosen servers,
+a proxied one kept outside the jail's view, a chosen unproxied one still left
+out, nothing filtered unjailed) and mcp_over_acp_jail_tests (0150's, now: an
+unchosen server reaches a jail in no form, a chosen one is proxied, another
+choice opens nothing, skills follow the project); settings_ui
+agent_jail_capabilities_tests (rows, secret note and prompt, a removed choice
+still listed, zeo-lsp off not offered) and the page's Tab order, which gains
+the three Capabilities stops of its fixture. Round 2: the default and a
+project's field-by-field override with an explicit [] (capabilities_tests,
+mcp_over_acp_jail_tests), the first choice starting from the default and the
+reset, a secret server skipped for an agent that cannot proxy and for a
+stopped copy (jail_servers_tests, mcp_over_acp_jail_tests), the one notice's
+count, text and action (jail_servers_tests, mcp_over_acp_jail_tests,
+session_notice_action_tests), the source label and the anchor
+(agent_jail_capabilities_tests). Round 3: the notice once per thread, again
+for a changed set, its own for another thread (mcp_over_acp_jail_tests), and
+the record's order-free fingerprint (jail_servers_tests).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index d6ce2ef..fa9732f 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -3202,6 +3202,15 @@
+     // Whether jailed agents load the account's claude.ai connectors, which reach their
+     // vendors through anthropic.com, past `allow_hosts`.
+     "claude_ai_connectors": false,
++    // What every jailed project may use besides the project; a project's own "capabilities"
++    // replace these field by field (its "mcp_servers": [] means none).
++    "capabilities": {
++      // Zeo's MCP servers (context servers and "zeo-lsp") a jail may use, by name. A chosen
++      // server Zeo runs reaches the jail through Zeo's own copy (MCP over ACP).
++      "mcp_servers": [],
++      // Zeo's skills, as plugins mapped read-only.
++      "skills": true
++    },
+     // Per-project overrides, keyed by the project's absolute root path:
+     // "/home/me/src/app": { "enabled": true, "rw_maps": [], "allow_hosts": [] }
+     "projects": {},
+diff --git a/crates/agent_sandbox/src/agent_sandbox.rs b/crates/agent_sandbox/src/agent_sandbox.rs
+index cfba4df..6945ee1 100644
+--- a/crates/agent_sandbox/src/agent_sandbox.rs
++++ b/crates/agent_sandbox/src/agent_sandbox.rs
+@@ -5,6 +5,7 @@
+ //! memory off. [`init`] also watches each local project's settings file and logs one warning
+ //! when it carries either key, so the ignored key does not go unnoticed.
+ 
++pub mod capabilities;
+ pub mod command;
+ pub mod confirm;
+ pub mod control;
+@@ -21,8 +22,8 @@ pub mod validate;
+ 
+ pub use crate::launch::LaunchRegistry;
+ pub use crate::settings::{
+-    AgentMemorySettings, AgentSandboxProjectSettings, AgentSandboxSettings, ProjectPolicy,
+-    SandboxLimits, lexical_match, resolve_project_key,
++    AgentMemorySettings, AgentSandboxProjectSettings, AgentSandboxSettings, ProjectCapabilities,
++    ProjectPolicy, SandboxCapabilities, SandboxLimits, lexical_match, resolve_project_key,
+ };
+ 
+ use gpui::App;
+diff --git a/crates/agent_sandbox/src/capabilities.rs b/crates/agent_sandbox/src/capabilities.rs
+new file mode 100644
+index 0000000..bfba4e7
+--- /dev/null
++++ b/crates/agent_sandbox/src/capabilities.rs
+@@ -0,0 +1,403 @@
++//! What a jail may use besides the project (Zeo proposal §6.64 step 2, ask 87): which of Zeo's MCP
++//! servers, whether Zeo's skills, whether the account's claude.ai connectors. The default lives in
++//! `agent_sandbox.capabilities`, a project's own in `agent_sandbox.projects[<root>]` (each field
++//! replacing the default it names), written only here, read by the launch (skills) and by
++//! `agent_servers`' jail filter at every `session/new` (servers).
++//!
++//! A chosen server is proxied from the copy Zeo runs, outside the jail. One Zeo cannot proxy is
++//! handed to the jail as configured -- unless its configuration looks like it carries a secret
++//! (an API key in its environment, its arguments or its headers): such a server reaches a jail
++//! only through Zeo's copy, so an agent that cannot proxy (the TUI adapter) does not get it
++//! (operator, 2026-11-22, round 2). Turning one on still asks, since the agent can use the
++//! server's access. Which part looks like a secret is decided by name and shape, never by
++//! printing or logging a value.
++
++use std::path::{Path, PathBuf};
++
++use gpui::{App, Task, Window};
++use project::context_server_store::ContextServerConfiguration;
++use settings::{
++    AgentSandboxCapabilitiesContent, AgentSandboxProjectSettingsContent, Settings as _,
++};
++
++use crate::confirm::{ask, refuse_non_utf8_root, save, target_project_key};
++use crate::settings::{AgentSandboxSettings, resolve_project_key};
++
++/// Cancel first: Zed's prompt preselects the first button, so a stray Enter keeps the server off.
++pub const SECRET_BUTTONS: [&str; 2] = ["Cancel", "Allow"];
++
++/// Name parts that mark a value as a credential, matched on the name upper-cased with `-` as `_`.
++/// Wider than `util::redact::should_redact`'s suffixes, since a flag (`--figma-api-key`) or a
++/// header (`Authorization`) names its secret differently from an environment variable.
++const SECRET_NAME_PARTS: [&str; 9] = [
++    "KEY",
++    "TOKEN",
++    "SECRET",
++    "PASSWORD",
++    "PASSWD",
++    "PASS",
++    "CREDENTIAL",
++    "AUTH",
++    "COOKIE",
++];
++
++/// Where a server's configuration seems to carry a secret, named for the operator; never the value.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum SecretSite {
++    Env(String),
++    Argument(String),
++    Header(String),
++    UrlParameter(String),
++    /// A key of the extension's own settings, as a dotted path.
++    ExtensionSetting(String),
++    OAuthClientSecret,
++}
++
++impl SecretSite {
++    pub fn describe(&self) -> String {
++        match self {
++            Self::Env(name) => format!("environment variable {name}"),
++            Self::Argument(flag) => format!("argument {flag}"),
++            Self::Header(name) => format!("header {name}"),
++            Self::UrlParameter(name) => format!("URL parameter {name}"),
++            Self::ExtensionSetting(path) => format!("extension setting {path}"),
++            Self::OAuthClientSecret => "OAuth client secret".to_string(),
++        }
++    }
++}
++
++/// One server's configuration, as far as secrets go: a stdio command or an http endpoint.
++pub enum ServerShape<'a> {
++    Stdio {
++        args: &'a [String],
++        env: Vec<(&'a str, &'a str)>,
++    },
++    Http {
++        url: &'a str,
++        headers: Vec<(&'a str, &'a str)>,
++    },
++}
++
++fn secret_name(name: &str) -> bool {
++    let name = name.to_ascii_uppercase().replace('-', "_");
++    SECRET_NAME_PARTS.iter().any(|part| {
++        if *part != "AUTH" {
++            return name.contains(part);
++        }
++        // AUTHORIZATION is one, AUTHOR (GIT_AUTHOR_NAME, --author) is not.
++        name.match_indices(part).any(|(at, _)| {
++            let rest = &name[at + part.len()..];
++            !rest.starts_with("OR") || rest.starts_with("ORIZATION")
++        })
++    })
++}
++
++fn credential_value(value: &str) -> bool {
++    value.starts_with("Bearer ") || value.starts_with("Basic ")
++}
++
++/// Every place `shape` seems to carry a secret: a non-empty value under a secret-looking name, a
++/// secret-looking `--flag=value` or `--flag value` argument, or a `Bearer`/`Basic` credential.
++pub fn secret_sites(shape: ServerShape<'_>) -> Vec<SecretSite> {
++    let mut sites = Vec::new();
++    match shape {
++        ServerShape::Stdio { args, mut env } => {
++            env.sort();
++            sites.extend(
++                env.into_iter()
++                    .filter(|(name, value)| !value.is_empty() && secret_name(name))
++                    .map(|(name, _)| SecretSite::Env(name.to_string())),
++            );
++            for (index, arg) in args.iter().enumerate() {
++                let flag = arg.trim_start_matches('-');
++                if flag.len() == arg.len() {
++                    if credential_value(arg) {
++                        sites.push(SecretSite::Argument(format!("#{}", index + 1)));
++                    }
++                    continue;
++                }
++                let (name, inline) = match flag.split_once('=') {
++                    Some((name, value)) => (name, Some(value)),
++                    None => (flag, None),
++                };
++                let has_value = match inline {
++                    Some(value) => !value.is_empty(),
++                    None => args
++                        .get(index + 1)
++                        .is_some_and(|next| !next.starts_with('-')),
++                };
++                if has_value && secret_name(name) {
++                    let dashes = &arg[..arg.len() - flag.len()];
++                    sites.push(SecretSite::Argument(format!("{dashes}{name}")));
++                }
++            }
++        }
++        ServerShape::Http { url, mut headers } => {
++            headers.sort();
++            sites.extend(
++                headers
++                    .into_iter()
++                    .filter(|(name, value)| {
++                        !value.is_empty() && (secret_name(name) || credential_value(value))
++                    })
++                    .map(|(name, _)| SecretSite::Header(name.to_string())),
++            );
++            if let Ok(url) = url::Url::parse(url) {
++                sites.extend(
++                    url.query_pairs()
++                        .filter(|(name, value)| !value.is_empty() && secret_name(name))
++                        .map(|(name, _)| SecretSite::UrlParameter(name.into_owned())),
++                );
++            }
++        }
++    }
++    sites
++}
++
++/// [`secret_sites`] of a context server as Zeo resolved it, plus an extension's own settings
++/// (the figma extension keeps its API key there and passes it as an argument) and an OAuth client
++/// secret.
++pub fn secret_sites_of(configuration: &ContextServerConfiguration) -> Vec<SecretSite> {
++    match configuration {
++        ContextServerConfiguration::Custom { command, .. }
++        | ContextServerConfiguration::Extension { command, .. } => {
++            let env = command
++                .env
++                .iter()
++                .flatten()
++                .map(|(name, value)| (name.as_str(), value.as_str()))
++                .collect();
++            let mut sites = secret_sites(ServerShape::Stdio {
++                args: &command.args,
++                env,
++            });
++            if let ContextServerConfiguration::Extension { settings, .. } = configuration {
++                setting_sites(settings, "", &mut sites);
++            }
++            sites
++        }
++        ContextServerConfiguration::Http {
++            url,
++            headers,
++            oauth,
++            ..
++        } => {
++            let headers = headers
++                .iter()
++                .map(|(name, value)| (name.as_str(), value.as_str()))
++                .collect();
++            let mut sites = secret_sites(ServerShape::Http {
++                url: url.as_str(),
++                headers,
++            });
++            if oauth
++                .as_ref()
++                .is_some_and(|oauth| oauth.client_secret.is_some())
++            {
++                sites.push(SecretSite::OAuthClientSecret);
++            }
++            sites
++        }
++    }
++}
++
++fn setting_sites(value: &serde_json::Value, path: &str, sites: &mut Vec<SecretSite>) {
++    let serde_json::Value::Object(map) = value else {
++        return;
++    };
++    for (key, value) in map {
++        let here = if path.is_empty() {
++            key.clone()
++        } else {
++            format!("{path}.{key}")
++        };
++        match value {
++            serde_json::Value::String(text) if !text.is_empty() && secret_name(key) => {
++                sites.push(SecretSite::ExtensionSetting(here))
++            }
++            serde_json::Value::Object(_) => setting_sites(value, &here, sites),
++            _ => {}
++        }
++    }
++}
++
++/// What the secret prompt says, in two parts: the question and its detail.
++pub fn secret_prompt(server: &str, sites: &[SecretSite]) -> (String, String) {
++    let places = sites
++        .iter()
++        .map(SecretSite::describe)
++        .collect::<Vec<_>>()
++        .join(", ");
++    (
++        format!("Allow \"{server}\" in this project's jail?"),
++        format!(
++            "Its configuration carries a secret ({places}). Zeo never hands it to the jail as \
++             configured, so the secret stays outside: the agent reaches the server only through \
++             Zeo's own copy (Claude Agent (Plus)), and an agent that cannot (the TUI adapter) \
++             does not get it. The agent can still use the server's access."
++        ),
++    )
++}
++
++/// Adds `server` to the project's own MCP server list, or takes it out. The first change makes
++/// the list the project's own, starting from the default it replaces. Turning on a server that
++/// carries a secret asks first ([`secret_prompt`]); turning one off never asks. Resolves to
++/// `true` only when the file was saved.
++pub fn set_project_mcp_server(
++    root: &Path,
++    server: &str,
++    on: bool,
++    secrets: &[SecretSite],
++    window: &mut Window,
++    cx: &mut App,
++) -> Task<bool> {
++    let consent = if on && !secrets.is_empty() {
++        let (message, detail) = secret_prompt(server, secrets);
++        ask(&message, &detail, &SECRET_BUTTONS, window, cx)
++    } else {
++        Task::ready(true)
++    };
++    let root = root.to_path_buf();
++    let server = server.to_string();
++    cx.spawn(async move |cx| {
++        if !consent.await {
++            return false;
++        }
++        let write = cx.update(|cx| {
++            write_project(
++                &root,
++                "capabilities.mcp_servers",
++                move |own, default_servers| {
++                    let list = own
++                        .mcp_servers
++                        .get_or_insert_with(|| default_servers.to_vec());
++                    list.retain(|name| *name != server);
++                    if on {
++                        list.push(server);
++                        list.sort();
++                    }
++                },
++                cx,
++            )
++        });
++        write.await
++    })
++}
++
++/// Sets the project's `capabilities.skills` (Zeo's skills in its jail); a restart applies it.
++pub fn set_project_skills(root: &Path, on: bool, cx: &mut App) -> Task<bool> {
++    write_project(
++        root,
++        "capabilities.skills",
++        move |own, _| own.skills = Some(on),
++        cx,
++    )
++}
++
++/// Drops the project's own MCP server list: the default applies again.
++pub fn reset_project_mcp_servers(root: &Path, cx: &mut App) -> Task<bool> {
++    write_project(
++        root,
++        "capabilities.mcp_servers",
++        |own, _| own.mcp_servers = None,
++        cx,
++    )
++}
++
++/// Drops the project's own `skills`: the default applies again.
++pub fn reset_project_skills(root: &Path, cx: &mut App) -> Task<bool> {
++    write_project(root, "capabilities.skills", |own, _| own.skills = None, cx)
++}
++
++/// Sets the project's `claude_ai_connectors`; a restart applies it.
++pub fn set_project_connectors(root: &Path, on: bool, cx: &mut App) -> Task<bool> {
++    let write =
++        move |entry: &mut AgentSandboxProjectSettingsContent| entry.claude_ai_connectors = Some(on);
++    write_entry(root, "claude_ai_connectors", write, cx)
++}
++
++/// Writes the project's `capabilities` through `update`, which also sees the default MCP server
++/// list in the file (empty when the file has none, as `default.json` says). A `capabilities`
++/// left with nothing set is removed, so a reset leaves the entry as it was.
++fn write_project(
++    root: &Path,
++    field: &'static str,
++    update: impl 'static + Send + FnOnce(&mut AgentSandboxCapabilitiesContent, &[String]),
++    cx: &mut App,
++) -> Task<bool> {
++    write_entry_with_defaults(
++        root,
++        field,
++        move |entry, defaults| {
++            let own = entry.capabilities.get_or_insert_default();
++            update(own, defaults);
++            if *own == AgentSandboxCapabilitiesContent::default() {
++                entry.capabilities = None;
++            }
++        },
++        cx,
++    )
++}
++
++fn write_entry(
++    root: &Path,
++    field: &'static str,
++    update: impl 'static + Send + FnOnce(&mut AgentSandboxProjectSettingsContent),
++    cx: &mut App,
++) -> Task<bool> {
++    write_entry_with_defaults(root, field, move |entry, _| update(entry), cx)
++}
++
++/// Writes the project's entry through `update`, keyed as every other writer of `projects` keys
++/// it ([`target_project_key`]). A root that is not UTF-8 is refused and said so.
++fn write_entry_with_defaults(
++    root: &Path,
++    field: &'static str,
++    update: impl 'static + Send + FnOnce(&mut AgentSandboxProjectSettingsContent, &[String]),
++    cx: &mut App,
++) -> Task<bool> {
++    let Some(root_text) = root.to_str().map(str::to_string) else {
++        refuse_non_utf8_root(root, cx);
++        return Task::ready(false);
++    };
++    let root = root.to_path_buf();
++    cx.spawn(async move |cx| {
++        let keys: Vec<String> = cx.update(|cx| {
++            AgentSandboxSettings::get_global(cx)
++                .projects
++                .keys()
++                .cloned()
++                .collect()
++        });
++        // Canonicalizing every key blocks, so it runs off the main thread.
++        let resolved: Option<PathBuf> = cx
++            .background_executor()
++            .spawn(async move {
++                resolve_project_key(keys.iter().map(String::as_str), &root).map(PathBuf::from)
++            })
++            .await;
++        let fallback = format!("agent_sandbox.projects[{root_text}].{field}");
++        save(
++            cx,
++            move |content| {
++                let sandbox = content.agent_sandbox.get_or_insert_default();
++                let default_servers = sandbox
++                    .capabilities
++                    .as_ref()
++                    .and_then(|defaults| defaults.mcp_servers.clone())
++                    .unwrap_or_default();
++                let projects = sandbox.projects.get_or_insert_default();
++                let key = target_project_key(projects.keys(), &root_text, resolved.as_deref());
++                let label = format!("agent_sandbox.projects[{key}].{field}");
++                update(projects.entry(key).or_default(), &default_servers);
++                label
++            },
++            fallback,
++        )
++        .await
++    })
++}
++
++#[cfg(test)]
++#[path = "capabilities_tests.rs"]
++mod capabilities_tests;
+diff --git a/crates/agent_sandbox/src/capabilities_tests.rs b/crates/agent_sandbox/src/capabilities_tests.rs
+new file mode 100644
+index 0000000..1741e22
+--- /dev/null
++++ b/crates/agent_sandbox/src/capabilities_tests.rs
+@@ -0,0 +1,355 @@
++// Zeo proposal §6.64 step 2: what a jail may use, the secret heuristic and the writers.
++// Filter: `capabilities_tests`.
++
++use std::path::Path;
++use std::sync::Arc;
++
++use fs::{FakeFs, Fs};
++use gpui::{TestAppContext, UpdateGlobal as _, VisualTestContext};
++use project::context_server_store::ContextServerConfiguration;
++use serde_json::{Value, json};
++use settings::{ContextServerCommand, SettingsStore};
++
++use super::*;
++
++const ROOT: &str = "/w/app";
++const VALUE: &str = "figd_SECRET_VALUE";
++
++fn stdio(args: &[&str], env: &[(&str, &str)]) -> Vec<SecretSite> {
++    let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
++    secret_sites(ServerShape::Stdio {
++        args: &args,
++        env: env.to_vec(),
++    })
++}
++
++#[test]
++fn capabilities_tests_a_flag_carrying_a_key_is_a_secret_either_way() {
++    assert_eq!(
++        stdio(
++            &["bin.js", &format!("--figma-api-key={VALUE}"), "--stdio"],
++            &[]
++        ),
++        [SecretSite::Argument("--figma-api-key".into())]
++    );
++    assert_eq!(
++        stdio(&["bin.js", "--figma-api-key", VALUE, "--stdio"], &[]),
++        [SecretSite::Argument("--figma-api-key".into())]
++    );
++}
++
++#[test]
++fn capabilities_tests_env_names_and_bearer_values_are_secrets() {
++    assert_eq!(
++        stdio(&[], &[("FIGMA_API_KEY", VALUE), ("PATH", "/usr/bin")]),
++        [SecretSite::Env("FIGMA_API_KEY".into())]
++    );
++    assert_eq!(
++        stdio(&["--header", "x", "Bearer abc"], &[]),
++        [SecretSite::Argument("#3".into())]
++    );
++}
++
++/// Hostile: names that only look alike, empty values and plain switches are not secrets.
++#[test]
++fn capabilities_tests_lookalikes_and_empty_values_are_not_secrets() {
++    assert!(
++        stdio(
++            &["--author", "me", "--stdio", "--api-key="],
++            &[("GIT_AUTHOR_NAME", "me"), ("GITHUB_TOKEN", "")],
++        )
++        .is_empty()
++    );
++    assert!(
++        stdio(&["--verbose", "--token"], &[]).is_empty(),
++        "a flag with no value"
++    );
++}
++
++#[test]
++fn capabilities_tests_http_headers_and_url_parameters() {
++    let sites = secret_sites(ServerShape::Http {
++        url: "https://mcp.example.com/mcp?token=abc&region=eu",
++        headers: vec![
++            ("X-Trace", "1"),
++            ("Authorization", "Bearer abc"),
++            ("X-Custom", "Basic Zm9v"),
++        ],
++    });
++    assert_eq!(
++        sites,
++        [
++            SecretSite::Header("Authorization".into()),
++            SecretSite::Header("X-Custom".into()),
++            SecretSite::UrlParameter("token".into()),
++        ]
++    );
++}
++
++#[test]
++fn capabilities_tests_an_extensions_own_settings_and_oauth_count() {
++    let extension = ContextServerConfiguration::Extension {
++        command: ContextServerCommand {
++            path: "/usr/bin/node".into(),
++            args: vec!["bin.js".into(), "--stdio".into()],
++            env: None,
++            timeout: None,
++        },
++        settings: json!({ "figma": { "api_key": VALUE }, "theme": "dark" }),
++        remote: false,
++    };
++    assert_eq!(
++        secret_sites_of(&extension),
++        [SecretSite::ExtensionSetting("figma.api_key".into())]
++    );
++    let oauth: project::project_settings::OAuthClientSettings =
++        serde_json::from_value(json!({ "client_id": "zeo", "client_secret": "s" }))
++            .expect("oauth settings");
++    let http = ContextServerConfiguration::Http {
++        url: "https://mcp.example.com/mcp".parse().expect("url"),
++        headers: Default::default(),
++        timeout: None,
++        oauth: Some(oauth),
++    };
++    assert_eq!(secret_sites_of(&http), [SecretSite::OAuthClientSecret]);
++}
++
++#[test]
++fn capabilities_tests_the_prompt_names_the_place_never_the_value() {
++    let (message, detail) =
++        secret_prompt("figma", &[SecretSite::Argument("--figma-api-key".into())]);
++    assert_eq!(message, "Allow \"figma\" in this project's jail?");
++    assert!(detail.contains("argument --figma-api-key"), "{detail}");
++    assert!(detail.contains("the secret stays outside"), "{detail}");
++    assert!(
++        detail.contains("does not get it"),
++        "an agent that cannot proxy: {detail}"
++    );
++    assert!(!detail.contains(VALUE));
++}
++
++async fn init(user: Value, cx: &mut TestAppContext) -> Arc<FakeFs> {
++    let fs = FakeFs::new(cx.executor());
++    cx.update(|cx| {
++        let store = SettingsStore::test(cx);
++        cx.set_global(store);
++        <dyn Fs>::set_global(fs.clone(), cx);
++        crate::init(cx);
++    });
++    fs.create_dir(paths::config_dir())
++        .await
++        .expect("config dir");
++    fs.insert_file(paths::settings_file(), user.to_string().into_bytes())
++        .await;
++    cx.update(|cx| {
++        SettingsStore::update_global(cx, |store, cx| {
++            store
++                .set_user_settings(&user.to_string(), cx)
++                .result()
++                .expect("user settings parse");
++        })
++    });
++    cx.run_until_parked();
++    fs
++}
++
++fn chosen(cx: &mut VisualTestContext) -> Vec<String> {
++    cx.update(|_, cx| {
++        AgentSandboxSettings::get_global(cx)
++            .mcp_servers_for_key(Some(ROOT))
++            .to_vec()
++    })
++}
++
++#[gpui::test]
++async fn capabilities_tests_a_secret_server_asks_and_cancel_writes_nothing(
++    cx: &mut TestAppContext,
++) {
++    let fs = init(json!({ "agent_sandbox": { "projects": { ROOT: {} } } }), cx).await;
++    let before = fs.load(paths::settings_file()).await.expect("file");
++    let secrets = [SecretSite::Env("FIGMA_API_KEY".into())];
++    let cx = cx.add_empty_window();
++    let task = cx.update(|window, cx| {
++        set_project_mcp_server(Path::new(ROOT), "figma", true, &secrets, window, cx)
++    });
++    cx.run_until_parked();
++    let (message, detail) = cx
++        .pending_prompt()
++        .expect("turning a secret server on asks");
++    assert!(message.contains("figma") && detail.contains("FIGMA_API_KEY"));
++    cx.simulate_prompt_answer("Cancel");
++    assert!(!task.await, "Cancel saves nothing");
++    cx.run_until_parked();
++    assert_eq!(fs.load(paths::settings_file()).await.expect("file"), before);
++}
++
++#[gpui::test]
++async fn capabilities_tests_allow_adds_the_server_and_off_never_asks(cx: &mut TestAppContext) {
++    init(json!({ "agent_sandbox": { "projects": { ROOT: {} } } }), cx).await;
++    let secrets = [SecretSite::Env("FIGMA_API_KEY".into())];
++    let cx = cx.add_empty_window();
++    let task = cx.update(|window, cx| {
++        set_project_mcp_server(Path::new(ROOT), "figma", true, &secrets, window, cx)
++    });
++    cx.run_until_parked();
++    cx.simulate_prompt_answer("Allow");
++    assert!(task.await);
++    cx.run_until_parked();
++    assert_eq!(chosen(cx), ["figma"]);
++
++    let task = cx.update(|window, cx| {
++        set_project_mcp_server(Path::new(ROOT), "figma", false, &secrets, window, cx)
++    });
++    cx.run_until_parked();
++    assert!(!cx.has_pending_prompt(), "turning a server off never asks");
++    assert!(task.await);
++    cx.run_until_parked();
++    assert!(chosen(cx).is_empty());
++}
++
++#[gpui::test]
++async fn capabilities_tests_a_plain_server_skills_and_connectors_write_at_once(
++    cx: &mut TestAppContext,
++) {
++    init(json!({}), cx).await;
++    let cx = cx.add_empty_window();
++    let task = cx.update(|window, cx| {
++        set_project_mcp_server(Path::new(ROOT), "files", true, &[], window, cx)
++    });
++    cx.run_until_parked();
++    assert!(!cx.has_pending_prompt(), "no secret, no question");
++    assert!(task.await);
++    let task = cx.update(|_, cx| set_project_skills(Path::new(ROOT), false, cx));
++    assert!(task.await);
++    let task = cx.update(|_, cx| set_project_connectors(Path::new(ROOT), true, cx));
++    assert!(task.await);
++    cx.run_until_parked();
++    assert_eq!(chosen(cx), ["files"]);
++    cx.update(|_, cx| {
++        let sandbox = AgentSandboxSettings::get_global(cx);
++        assert!(!sandbox.skills_for_key(Some(ROOT)));
++        assert!(sandbox.claude_ai_connectors_for_key(Some(ROOT)));
++    });
++}
++
++/// The defaults: no server (each reaches outside the jail), skills on (as in 0.20.0).
++#[gpui::test]
++async fn capabilities_tests_defaults_are_no_server_and_skills_on(cx: &mut TestAppContext) {
++    init(
++        json!({ "agent_sandbox": { "projects": { ROOT: { "enabled": true } } } }),
++        cx,
++    )
++    .await;
++    cx.update(|cx| {
++        let sandbox = AgentSandboxSettings::get_global(cx);
++        assert!(sandbox.mcp_servers_for_key(Some(ROOT)).is_empty());
++        assert!(sandbox.mcp_servers_for_key(None).is_empty());
++        assert!(sandbox.skills_for_key(Some(ROOT)));
++        assert!(sandbox.skills_for_key(None));
++    });
++}
++
++// Round 2 (operator, 2026-11-22): a default in `agent_sandbox.capabilities`, the project's own
++// replacing it field by field, an explicit empty list meaning none.
++
++#[gpui::test]
++async fn capabilities_tests_the_default_applies_and_a_project_overrides_field_by_field(
++    cx: &mut TestAppContext,
++) {
++    init(
++        json!({ "agent_sandbox": {
++            "capabilities": { "mcp_servers": ["files", "zeo-lsp"], "skills": false },
++            "projects": {
++                ROOT: { "capabilities": { "mcp_servers": [] } },
++                "/w/lib": { "capabilities": { "skills": true } },
++                "/w/other": {}
++            }
++        } }),
++        cx,
++    )
++    .await;
++    cx.update(|cx| {
++        let sandbox = AgentSandboxSettings::get_global(cx);
++        assert!(
++            sandbox.mcp_servers_for_key(Some(ROOT)).is_empty(),
++            "a project's [] is none, whatever the default"
++        );
++        assert!(sandbox.mcp_servers_set_for_key(Some(ROOT)));
++        assert!(
++            !sandbox.skills_for_key(Some(ROOT)),
++            "skills follow the default"
++        );
++        assert!(!sandbox.skills_set_for_key(Some(ROOT)));
++        assert_eq!(
++            sandbox.mcp_servers_for_key(Some("/w/lib")),
++            ["files", "zeo-lsp"]
++        );
++        assert!(sandbox.skills_for_key(Some("/w/lib")));
++        assert_eq!(
++            sandbox.mcp_servers_for_key(Some("/w/other")),
++            ["files", "zeo-lsp"]
++        );
++        assert_eq!(sandbox.mcp_servers_for_key(None), ["files", "zeo-lsp"]);
++    });
++}
++
++#[gpui::test]
++async fn capabilities_tests_a_first_choice_starts_from_the_default_and_reset_returns_to_it(
++    cx: &mut TestAppContext,
++) {
++    let fs = init(
++        json!({ "agent_sandbox": {
++            "capabilities": { "mcp_servers": ["files"] },
++            "projects": { ROOT: { "enabled": true } }
++        } }),
++        cx,
++    )
++    .await;
++    let cx = cx.add_empty_window();
++    let task = cx.update(|window, cx| {
++        set_project_mcp_server(Path::new(ROOT), "docs", true, &[], window, cx)
++    });
++    assert!(task.await);
++    cx.run_until_parked();
++    assert_eq!(
++        chosen(cx),
++        ["docs", "files"],
++        "the default list, plus the new one"
++    );
++    let task = cx.update(|window, cx| {
++        set_project_mcp_server(Path::new(ROOT), "files", false, &[], window, cx)
++    });
++    assert!(task.await);
++    let task = cx.update(|window, cx| {
++        set_project_mcp_server(Path::new(ROOT), "docs", false, &[], window, cx)
++    });
++    assert!(task.await);
++    cx.run_until_parked();
++    assert!(chosen(cx).is_empty(), "the project's own empty list");
++    let file: Value =
++        serde_json_lenient::from_str(&fs.load(paths::settings_file()).await.expect("file"))
++            .expect("settings JSON");
++    assert_eq!(
++        file["agent_sandbox"]["projects"][ROOT]["capabilities"]["mcp_servers"],
++        json!([]),
++        "written as [] -- none -- not dropped"
++    );
++
++    let task = cx.update(|_, cx| reset_project_mcp_servers(Path::new(ROOT), cx));
++    assert!(task.await);
++    cx.run_until_parked();
++    assert_eq!(chosen(cx), ["files"], "the default again");
++    let file: Value =
++        serde_json_lenient::from_str(&fs.load(paths::settings_file()).await.expect("file"))
++            .expect("settings JSON");
++    assert!(
++        file["agent_sandbox"]["projects"][ROOT]
++            .get("capabilities")
++            .is_none(),
++        "nothing of the project's own left: {file}"
++    );
++    assert_eq!(
++        file["agent_sandbox"]["projects"][ROOT]["enabled"],
++        json!(true)
++    );
++}
+diff --git a/crates/agent_sandbox/src/confirm.rs b/crates/agent_sandbox/src/confirm.rs
+index ba0a7ad..bed3d23 100644
+--- a/crates/agent_sandbox/src/confirm.rs
++++ b/crates/agent_sandbox/src/confirm.rs
+@@ -60,7 +60,7 @@ pub fn confirm_forget(path: &str, window: &mut Window, cx: &mut App) -> Task<boo
+     ask(&message, FORGET_DETAIL, &FORGET_BUTTONS, window, cx)
+ }
+ 
+-fn ask(
++pub(crate) fn ask(
+     message: &str,
+     detail: &str,
+     buttons: &[&str],
+@@ -239,7 +239,7 @@ pub fn non_utf8_root_message(root: &Path) -> String {
+     )
+ }
+ 
+-fn refuse_non_utf8_root(root: &Path, cx: &mut App) {
++pub(crate) fn refuse_non_utf8_root(root: &Path, cx: &mut App) {
+     log::warn!(
+         "agent_sandbox event=settings_write_refused reason=non_utf8_root root={:?}",
+         root.to_string_lossy()
+@@ -253,7 +253,7 @@ fn project_key_label(key: &str) -> String {
+ 
+ /// Writes the user settings file through `update`, which returns the key it wrote for the log.
+ /// `true` only when the file was saved; a failure is logged and shown, never dropped.
+-async fn save(
++pub(crate) async fn save(
+     cx: &mut AsyncApp,
+     update: impl 'static + Send + FnOnce(&mut SettingsContent) -> String,
+     fallback_key: String,
+diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
+index 0fc711f..838f037 100644
+--- a/crates/agent_sandbox/src/launch.rs
++++ b/crates/agent_sandbox/src/launch.rs
+@@ -586,6 +586,9 @@ impl LocalLaunch {
+         // A synthetic host view must agree with the cores the jail runs on, so it reserves them.
+         let reserve_cpus = mask_host || self.sandbox.reserve_cpus_for_key(key.as_deref());
+         let connectors = self.sandbox.claude_ai_connectors_for_key(key.as_deref());
++        // §6.64 step 2: a project that turns Zeo's skills off gets neither their maps here nor
++        // their plugins at session/new (`agent_servers`' jail filter).
++        let skills = self.sandbox.skills_for_key(key.as_deref());
+         let checked = match self.check(&root, &policy, mask_host, reserve_cpus).await {
+             Ok(checked) => checked,
+             Err(refusal) => {
+@@ -617,7 +620,7 @@ impl LocalLaunch {
+             state_root: checked.state_root.as_deref(),
+             limit_args: &checked.limit_args,
+             host_args: &checked.host_args,
+-            ro_maps: &checked.ro_maps,
++            ro_maps: if skills { &checked.ro_maps } else { &[] },
+             rw_maps: &checked.rw_maps,
+             allow_hosts: &checked.allow_hosts,
+             forward_ports: &checked.forward_ports,
+@@ -1156,6 +1159,9 @@ fn settings_fingerprint(
+     sandbox.mask_host_for_key(key).hash(&mut hasher);
+     sandbox.claude_ai_connectors_for_key(key).hash(&mut hasher);
+     sandbox.reserve_cpus_for_key(key).hash(&mut hasher);
++    // The skills' maps are made at start; the MCP list is read at each session/new, so a change
++    // to it applies to the next thread without a restart and is left out.
++    sandbox.skills_for_key(key).hash(&mut hasher);
+     policy.enabled.hash(&mut hasher);
+     policy.rw_maps.hash(&mut hasher);
+     policy.allow_hosts.hash(&mut hasher);
+@@ -1223,7 +1229,7 @@ pub fn drifted(record: &LaunchRecord, settings: &AgentSandboxSettings) -> bool {
+     match record.reason {
+         Reason::OwnCommand | Reason::Remote | Reason::NotClaude => false,
+         Reason::On | Reason::Off => {
+-            let key = record_settings_key(record, settings);
++            let key = settings_key_now(record, settings);
+             settings_fingerprint(settings, &settings.policy_for_key(key), key)
+                 != record.settings_fingerprint
+         }
+@@ -1232,7 +1238,7 @@ pub fn drifted(record: &LaunchRecord, settings: &AgentSandboxSettings) -> bool {
+ 
+ /// The `agent_sandbox.projects` key that governs `record`'s root now: the one it started with
+ /// while it still exists, else the lexical match.
+-fn record_settings_key<'a>(
++pub fn settings_key_now<'a>(
+     record: &'a LaunchRecord,
+     settings: &'a AgentSandboxSettings,
+ ) -> Option<&'a str> {
+@@ -1253,7 +1259,7 @@ pub fn jailed_on_next_start(
+         Reason::OwnCommand | Reason::Remote | Reason::NotClaude => None,
+         Reason::On | Reason::Off => Some(
+             settings
+-                .policy_for_key(record_settings_key(record, settings))
++                .policy_for_key(settings_key_now(record, settings))
+                 .enabled,
+         ),
+     }
+diff --git a/crates/agent_sandbox/src/settings.rs b/crates/agent_sandbox/src/settings.rs
+index a6741c2..b6912d8 100644
+--- a/crates/agent_sandbox/src/settings.rs
++++ b/crates/agent_sandbox/src/settings.rs
+@@ -46,6 +46,8 @@ pub struct AgentSandboxSettings {
+     pub claude_ai_connectors: bool,
+     /// `limits.reserve_cpus` for every jailed project (§6.63). Default: `false`.
+     pub reserve_cpus: bool,
++    /// What every jail may use besides its project (§6.64 step 2).
++    pub capabilities: SandboxCapabilities,
+     /// Per-project overrides, keyed by the absolute root path as written.
+     pub projects: BTreeMap<String, AgentSandboxProjectSettings>,
+ }
+@@ -137,6 +139,32 @@ pub struct AgentSandboxProjectSettings {
+     pub claude_ai_connectors: Option<bool>,
+     /// The project's `limits.reserve_cpus`; `None` follows the default.
+     pub reserve_cpus: Option<bool>,
++    /// What the project's jail may use, each `Some` replacing the default (§6.64 step 2).
++    pub capabilities: ProjectCapabilities,
++}
++
++/// What every jail may use besides its project (§6.64 step 2, `agent_sandbox.capabilities`).
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct SandboxCapabilities {
++    /// Zeo's MCP servers, by name. Empty: none.
++    pub mcp_servers: Vec<String>,
++    pub skills: bool,
++}
++
++impl Default for SandboxCapabilities {
++    fn default() -> Self {
++        Self {
++            mcp_servers: Vec::new(),
++            skills: true,
++        }
++    }
++}
++
++/// One project's own capabilities; `None` follows the default, and `Some(vec![])` is none.
++#[derive(Clone, Debug, Default, PartialEq, Eq)]
++pub struct ProjectCapabilities {
++    pub mcp_servers: Option<Vec<String>>,
++    pub skills: Option<bool>,
+ }
+ 
+ /// The defaults merged with one project's entry, unvalidated.
+@@ -199,6 +227,40 @@ impl AgentSandboxSettings {
+             .unwrap_or(self.claude_ai_connectors)
+     }
+ 
++    fn own_capabilities(&self, key: Option<&str>) -> Option<&ProjectCapabilities> {
++        key.and_then(|key| self.projects.get(key))
++            .map(|entry| &entry.capabilities)
++    }
++
++    /// The MCP servers the jail of the project under `key` may use (§6.64 step 2): the
++    /// project's own list when it has one (an empty one is none), else the default list, which
++    /// is empty unless the user set one, since each server reaches outside the jail.
++    pub fn mcp_servers_for_key(&self, key: Option<&str>) -> &[String] {
++        self.own_capabilities(key)
++            .and_then(|own| own.mcp_servers.as_deref())
++            .unwrap_or(&self.capabilities.mcp_servers)
++    }
++
++    /// Whether the project under `key` sets its own MCP server list rather than the default.
++    pub fn mcp_servers_set_for_key(&self, key: Option<&str>) -> bool {
++        self.own_capabilities(key)
++            .is_some_and(|own| own.mcp_servers.is_some())
++    }
++
++    /// Whether the jail of the project under `key` gets Zeo's skills (§6.64 step 2): the
++    /// project's choice, else the default (on: read-only text, and 0.20.0 gave them to every jail).
++    pub fn skills_for_key(&self, key: Option<&str>) -> bool {
++        self.own_capabilities(key)
++            .and_then(|own| own.skills)
++            .unwrap_or(self.capabilities.skills)
++    }
++
++    /// Whether the project under `key` sets its own `skills` rather than the default.
++    pub fn skills_set_for_key(&self, key: Option<&str>) -> bool {
++        self.own_capabilities(key)
++            .is_some_and(|own| own.skills.is_some())
++    }
++
+     /// Whether the project rooted at `root` runs its agent jailed, keyed as [`Self::project_policy`].
+     pub fn effective_enabled(&self, root: &Path) -> bool {
+         lexical_match(self.project_keys(), root)
+@@ -309,6 +371,14 @@ impl Settings for AgentSandboxSettings {
+             },
+             mask_host: sandbox.mask_host.unwrap_or(false),
+             claude_ai_connectors: sandbox.claude_ai_connectors.unwrap_or(false),
++            capabilities: {
++                let defaults = SandboxCapabilities::default();
++                let content = sandbox.capabilities.unwrap_or_default();
++                SandboxCapabilities {
++                    mcp_servers: content.mcp_servers.unwrap_or(defaults.mcp_servers),
++                    skills: content.skills.unwrap_or(defaults.skills),
++                }
++            },
+             projects: sandbox
+                 .projects
+                 .unwrap_or_default()
+@@ -334,6 +404,13 @@ impl Settings for AgentSandboxSettings {
+                             .limits
+                             .as_ref()
+                             .and_then(|limits| limits.reserve_cpus),
++                        capabilities: project
++                            .capabilities
++                            .map(|own| ProjectCapabilities {
++                                mcp_servers: own.mcp_servers,
++                                skills: own.skills,
++                            })
++                            .unwrap_or_default(),
+                     };
+                     (root, project)
+                 })
+diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
+index e61b2df..0d7f9f2 100644
+--- a/crates/agent_servers/src/acp.rs
++++ b/crates/agent_servers/src/acp.rs
+@@ -59,27 +59,58 @@ use crate::thread_config_store;
+ const EXIT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+ 
+ /// The context servers a session of `launch` gets: every configured one, less, in a jailed
+-/// launch, the stdio servers the jail cannot start (Zeo §6.64 step 1, `jail_hidden_servers`).
++/// launch, those not enabled for its jail and the stdio ones the jail cannot start unless the
++/// connection `proxies` them (Zeo §6.64, `jail_servers::split_chosen`, `jail_hidden_servers`).
+ fn mcp_configurations_for_project(
+     project: &Entity<Project>,
+     launch: Option<agent_sandbox::launch::LaunchId>,
++    proxies: bool,
+     cx: &App,
+ ) -> Vec<(String, Arc<ContextServerConfiguration>)> {
+-    let roots = jail_servers::roots(launch, cx);
+-    jail_servers::split_hidden(all_mcp_configurations(project, cx), roots.as_deref()).0
++    let choice = jail_servers::choice(launch, cx);
++    let proxied = jail_servers::proxied_servers(project, proxies, cx);
++    jail_servers::split_chosen(
++        all_mcp_configurations(project, cx),
++        choice.as_ref(),
++        &proxied,
++        proxies,
++    )
++    .kept
+ }
+ 
+-/// The servers [`mcp_configurations_for_project`] leaves out of a jailed session, with the path
+-/// that hides each, for the thread's notice.
++/// What a jailed session's thread is told once at its start: the chosen servers the jail cannot
++/// see, and the servers not enabled for it -- `zeo-lsp` among them when this connection would
++/// have been offered it (§6.13) and the list does not name it.
+ fn jail_hidden_servers(
+     project: &Entity<Project>,
+     launch: Option<agent_sandbox::launch::LaunchId>,
++    proxies: bool,
+     cx: &App,
+-) -> Vec<(String, PathBuf)> {
+-    let Some(roots) = jail_servers::roots(launch, cx) else {
+-        return Vec::new();
++) -> jail_servers::JailNotices {
++    let Some(choice) = jail_servers::choice(launch, cx) else {
++        return jail_servers::JailNotices::default();
+     };
+-    jail_servers::split_hidden(all_mcp_configurations(project, cx), Some(&roots)).1
++    let proxied = jail_servers::proxied_servers(project, proxies, cx);
++    let split = jail_servers::split_chosen(
++        all_mcp_configurations(project, cx),
++        Some(&choice),
++        &proxied,
++        proxies,
++    );
++    let mut not_enabled = split.not_enabled;
++    let zeo_lsp = zeo_lsp::ZEO_LSP_SERVER_NAME;
++    if proxies
++        && project.read(cx).is_local()
++        && zeo_lsp::enabled(cx)
++        && !choice.servers.contains(zeo_lsp)
++        && !not_enabled.iter().any(|(name, _)| name == zeo_lsp)
++    {
++        not_enabled.push((zeo_lsp.to_string(), jail_servers::NotEnabled::NotChosen));
++    }
++    jail_servers::JailNotices {
++        hidden: split.hidden,
++        not_enabled,
++    }
+ }
+ 
+ fn all_mcp_configurations(
+diff --git a/crates/agent_servers/src/acp/jail_servers.rs b/crates/agent_servers/src/acp/jail_servers.rs
+index 6f5c810..e4d7448 100644
+--- a/crates/agent_servers/src/acp/jail_servers.rs
++++ b/crates/agent_servers/src/acp/jail_servers.rs
+@@ -8,21 +8,177 @@
+ //! left out, one notice in the thread names it and the path that hides it, and one log line
+ //! records it. Leaving it out also keeps its arguments -- the figma extension passes its API key
+ //! as one -- out of the jail.
++//!
++//! §6.64 step 2 (2026-11-22): a jail gets only the servers its project chose on the jail's
++//! Capabilities page (`agent_sandbox.projects[<root>].mcp_servers`, none by default). A chosen
++//! server Zeo runs and can proxy over MCP-over-ACP (0149) reaches the agent from Zeo's own copy,
++//! outside the jail, so the jail need not see its files and it is kept; one that is not proxied
++//! is handed over as configured when the jail can start it, and left out with the notice when it
++//! cannot. A server the project did not choose is not handed over at all.
+ 
+ use std::path::PathBuf;
+ use std::sync::Arc;
+ 
+ use acp_thread::AcpThread;
+ use agent_client_protocol::v2::schema as acp_v2;
++use agent_sandbox::AgentSandboxSettings;
++use agent_sandbox::capabilities::secret_sites_of;
+ use agent_sandbox::host_view::{hidden_server_path, jail_roots};
+-use agent_sandbox::launch::{LaunchId, LaunchRegistry};
+-use gpui::{App, Entity};
+-use project::context_server_store::ContextServerConfiguration;
++use agent_sandbox::launch::{LaunchId, LaunchRegistry, settings_key_now};
++use collections::HashSet;
++use gpui::{App, AppContext as _, Entity};
++use project::Project;
++use project::context_server_store::{ContextServerConfiguration, ContextServerStatus};
++use settings::{Settings as _, SettingsStore};
++
++/// What a jailed launch may be handed (§6.64 step 2): the folders its jail shows, and the MCP
++/// servers and skills its project chose, read from the settings of now so a choice made on the
++/// page reaches the next session without a restart.
++pub(crate) struct JailChoice {
++    pub(crate) roots: Vec<PathBuf>,
++    pub(crate) servers: HashSet<String>,
++    pub(crate) skills: bool,
++}
+ 
+-/// The host folders the jail of `launch` shows; `None` when the launch is not jailed.
+-pub(crate) fn roots(launch: Option<LaunchId>, cx: &App) -> Option<Vec<PathBuf>> {
++/// The choice of `launch`'s jail; `None` when the launch is not jailed.
++pub(crate) fn choice(launch: Option<LaunchId>, cx: &App) -> Option<JailChoice> {
+     let record = LaunchRegistry::launch(launch?, cx)?;
+-    jail_roots(&record)
++    let roots = jail_roots(&record)?;
++    // A test app may run without a settings store: then nothing was chosen.
++    let (servers, skills) = if cx.has_global::<SettingsStore>() {
++        let sandbox = AgentSandboxSettings::get_global(cx);
++        let key = settings_key_now(&record, sandbox);
++        (
++            sandbox.mcp_servers_for_key(key).iter().cloned().collect(),
++            sandbox.skills_for_key(key),
++        )
++    } else {
++        (HashSet::default(), true)
++    };
++    Some(JailChoice {
++        roots,
++        servers,
++        skills,
++    })
++}
++
++/// Whether a session of `launch` gets Zeo's skills: always unjailed, as its project chose jailed.
++pub(crate) fn skills_allowed(launch: Option<LaunchId>, cx: &App) -> bool {
++    choice(launch, cx).is_none_or(|choice| choice.skills)
++}
++
++/// The servers of `project` that a connection which `proxies` (the agent advertised MCP over ACP
++/// and the setting is on) hands over as `acp`: those running or starting, the rule
++/// `McpOverAcp::declare` applies.
++pub(crate) fn proxied_servers(
++    project: &Entity<Project>,
++    proxies: bool,
++    cx: &App,
++) -> HashSet<String> {
++    if !proxies || !project.read(cx).is_local() {
++        return HashSet::default();
++    }
++    let store = project.read(cx).context_server_store().read(cx);
++    store
++        .server_ids()
++        .iter()
++        .filter(|id| {
++            matches!(
++                store.status_for_server(id),
++                Some(ContextServerStatus::Running | ContextServerStatus::Starting)
++            )
++        })
++        .map(|id| id.0.to_string())
++        .collect()
++}
++
++/// Why a configured server is not enabled for a jail (Zeo §6.64 step 2, round 2): said once in
++/// the thread when the session starts.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum NotEnabled {
++    /// Not on the project's (or the default) list.
++    NotChosen,
++    /// It carries a secret, which reaches a jail only through Zeo's copy, and this agent cannot
++    /// take MCP servers over ACP (the TUI adapter).
++    SecretAgentCannotProxy,
++    /// It carries a secret, and Zeo's copy is not running to proxy it.
++    SecretNotRunning,
++}
++
++impl NotEnabled {
++    /// A stable name, for the per-thread record of what the notice said.
++    fn as_str(self) -> &'static str {
++        match self {
++            Self::NotChosen => "not_chosen",
++            Self::SecretAgentCannotProxy => "secret_agent_cannot_proxy",
++            Self::SecretNotRunning => "secret_not_running",
++        }
++    }
++}
++
++/// What a jailed session gets and what it is told: the servers handed over, the chosen ones left
++/// out because the jail cannot see their files, and the ones not enabled.
++#[derive(Default)]
++pub(crate) struct JailSplit {
++    pub(crate) kept: Vec<(String, Arc<ContextServerConfiguration>)>,
++    pub(crate) hidden: Vec<(String, PathBuf)>,
++    pub(crate) not_enabled: Vec<(String, NotEnabled)>,
++}
++
++/// The servers a session of a jail with `choice` gets: only chosen ones, each kept when
++/// `proxied` names it, or else when it carries no secret and the jail can start it. `proxies`
++/// says whether the agent takes servers over ACP at all, for the reason a secret-bearing server
++/// is not enabled. Without `choice` (not jailed) every server is kept.
++pub(crate) fn split_chosen(
++    configurations: Vec<(String, Arc<ContextServerConfiguration>)>,
++    choice: Option<&JailChoice>,
++    proxied: &HashSet<String>,
++    proxies: bool,
++) -> JailSplit {
++    let Some(choice) = choice else {
++        return JailSplit {
++            kept: configurations,
++            ..JailSplit::default()
++        };
++    };
++    let mut split = JailSplit::default();
++    let mut rest = Vec::new();
++    let mut order = Vec::new();
++    for (name, configuration) in configurations {
++        if !choice.servers.contains(&name) {
++            split.not_enabled.push((name, NotEnabled::NotChosen));
++            continue;
++        }
++        order.push(name.clone());
++        if proxied.contains(&name) {
++            split.kept.push((name, configuration));
++        } else if !secret_sites_of(&configuration).is_empty() {
++            // Handed over as configured, its secret would be readable inside the jail.
++            let reason = if proxies {
++                NotEnabled::SecretNotRunning
++            } else {
++                NotEnabled::SecretAgentCannotProxy
++            };
++            split.not_enabled.push((name, reason));
++        } else {
++            rest.push((name, configuration));
++        }
++    }
++    let (kept, hidden) = split_hidden(rest, Some(&choice.roots));
++    split.kept.extend(kept);
++    split.hidden = hidden;
++    // The configured order, as an unjailed session gets them.
++    split
++        .kept
++        .sort_by_key(|(name, _)| order.iter().position(|other| other == name));
++    split
++}
++
++fn hidden_path(configuration: &ContextServerConfiguration, roots: &[PathBuf]) -> Option<PathBuf> {
++    configuration
++        .command()
++        .and_then(|command| hidden_server_path(&command.path, &command.args, roots))
++        .map(PathBuf::from)
+ }
+ 
+ /// `configurations` without the stdio servers the jail cannot start, and those servers' names
+@@ -40,11 +196,7 @@ pub(crate) fn split_hidden(
+     let mut kept = Vec::with_capacity(configurations.len());
+     let mut hidden = Vec::new();
+     for (name, configuration) in configurations {
+-        let path = configuration
+-            .command()
+-            .and_then(|command| hidden_server_path(&command.path, &command.args, roots))
+-            .map(PathBuf::from);
+-        match path {
++        match hidden_path(&configuration, roots) {
+             Some(path) => hidden.push((name, path)),
+             None => kept.push((name, configuration)),
+         }
+@@ -52,9 +204,124 @@ pub(crate) fn split_hidden(
+     (kept, hidden)
+ }
+ 
+-/// One warning notice per server left out, on the thread the session opened.
+-pub(crate) fn push_notices(thread: &Entity<AcpThread>, hidden: &[(String, PathBuf)], cx: &mut App) {
+-    for (name, path) in hidden {
++/// What a jailed session's thread is told once, at its start (Zeo §6.64).
++#[derive(Default)]
++pub(crate) struct JailNotices {
++    pub(crate) hidden: Vec<(String, PathBuf)>,
++    pub(crate) not_enabled: Vec<(String, NotEnabled)>,
++}
++
++/// The `_meta` key of a notice action that opens the settings at a path: agent_ui's
++/// `session_notice::OPEN_SETTINGS_META`, which this crate cannot reach.
++pub(crate) const SETTINGS_ACTION_META_KEY: &str = "zeo/openSettingsAt";
++/// Where the not-enabled notice's action lands: the Agent Sandbox page, at Capabilities.
++const CAPABILITIES_SETTINGS_PATH: &str = "agent_sandbox#capabilities";
++
++/// The one notice for the servers not enabled for a jail, `None` when there are none.
++pub(crate) fn not_enabled_notice(not_enabled: &[(String, NotEnabled)]) -> Option<acp_v2::Notice> {
++    if not_enabled.is_empty() {
++        return None;
++    }
++    let names = |wanted: &[NotEnabled]| {
++        not_enabled
++            .iter()
++            .filter(|(_, reason)| wanted.contains(reason))
++            .map(|(name, _)| name.as_str())
++            .collect::<Vec<_>>()
++            .join(", ")
++    };
++    let mut lines = Vec::new();
++    let not_chosen = names(&[NotEnabled::NotChosen]);
++    if !not_chosen.is_empty() {
++        lines.push(format!("Not chosen: {not_chosen}."));
++    }
++    let cannot = names(&[NotEnabled::SecretAgentCannotProxy]);
++    if !cannot.is_empty() {
++        lines.push(format!(
++            "Carries a secret, which reaches a jail only through Zeo's own copy, and this agent \
++             cannot use it (MCP over ACP): {cannot}."
++        ));
++    }
++    let stopped = names(&[NotEnabled::SecretNotRunning]);
++    if !stopped.is_empty() {
++        lines.push(format!(
++            "Carries a secret, which reaches a jail only through Zeo's own copy, and that copy \
++             is not running: {stopped}."
++        ));
++    }
++    lines.push("Choose them under Capabilities on the Agent Sandbox page.".to_string());
++    let count = not_enabled.len();
++    let title = if count == 1 {
++        "1 MCP server is not enabled for this project's jail".to_string()
++    } else {
++        format!("{count} MCP servers are not enabled for this project's jail")
++    };
++    let meta = serde_json::Map::from_iter([(
++        SETTINGS_ACTION_META_KEY.to_string(),
++        serde_json::json!({ "label": "Open Capabilities", "path": CAPABILITIES_SETTINGS_PATH }),
++    )]);
++    Some(
++        acp_v2::Notice::new(acp_v2::NoticeSeverity::Info, title)
++            .description(lines.join("\n"))
++            .meta(meta),
++    )
++}
++
++/// The key-value namespace of what each thread's not-enabled notice last said (§6.64, round 3).
++const NOTICE_SHOWN_NAMESPACE: &str = "agent_jail_not_enabled_shown";
++
++/// What a not-enabled notice says, as a stable string: one sorted `name<TAB>reason` line per
++/// server, so the same set in another order is the same notice.
++pub(crate) fn not_enabled_fingerprint(not_enabled: &[(String, NotEnabled)]) -> String {
++    let mut lines: Vec<String> = not_enabled
++        .iter()
++        .map(|(name, reason)| format!("{name}\t{}", reason.as_str()))
++        .collect();
++    lines.sort();
++    lines.join("\n")
++}
++
++/// Whether `thread`'s not-enabled notice should be shown for `fingerprint`: once per thread, and
++/// again only when the set or a reason changes (operator, 2026-11-22). The record is keyed as
++/// `thread_config_store` keys a thread, by agent and session, so a reopened, resumed or loaded
++/// thread finds what it already said. The record is written here, in the background; a read
++/// error shows the notice (better twice than never).
++fn not_enabled_is_new(thread: &Entity<AcpThread>, fingerprint: &str, cx: &mut App) -> bool {
++    let (agent_id, session_id) = {
++        let thread = thread.read(cx);
++        (thread.connection().agent_id(), thread.session_id().clone())
++    };
++    let Ok(key) = crate::thread_config_store::key(&agent_id, &session_id) else {
++        return true;
++    };
++    let kvp = db::kvp::KeyValueStore::global(cx);
++    let store = kvp.scoped(NOTICE_SHOWN_NAMESPACE);
++    let last = store.read(&key).unwrap_or_else(|error| {
++        log::warn!("agent_sandbox event=notice_record_read_failed error={error:#}");
++        None
++    });
++    if last.as_deref() == Some(fingerprint) {
++        return false;
++    }
++    let fingerprint = fingerprint.to_string();
++    cx.background_spawn(async move {
++        if let Err(error) = kvp
++            .scoped(NOTICE_SHOWN_NAMESPACE)
++            .write(key, fingerprint)
++            .await
++        {
++            log::warn!("agent_sandbox event=notice_record_write_failed error={error:#}");
++        }
++    })
++    .detach();
++    true
++}
++
++/// The thread's notices for a jailed session: one warning per chosen server the jail cannot see,
++/// then one notice for the servers not enabled, with an action to the Capabilities -- shown on
++/// the thread's first session start and again only when what it says changes.
++pub(crate) fn push_notices(thread: &Entity<AcpThread>, notices: &JailNotices, cx: &mut App) {
++    for (name, path) in &notices.hidden {
+         log::warn!(
+             "agent_sandbox event=mcp_server_left_out server={} reason=outside_jail",
+             crate::custom::log_token(name)
+@@ -64,12 +331,35 @@ pub(crate) fn push_notices(thread: &Entity<AcpThread>, hidden: &[(String, PathBu
+             format!("MCP server \"{name}\" is not available in the sandbox"),
+         )
+         .description(format!(
+-            "It needs {}, which is outside the jail, so the agent was not given it. Turn the \
+-             sandbox off for this project to use it.",
++            "It needs {}, which is outside the jail, and Zeo could not hand it over from its own \
++             copy (the agent does not take MCP servers over ACP, or the server is not running), \
++             so the agent was not given it.",
+             path.display()
+         ));
+         thread.update(cx, |thread, cx| thread.push_notice(notice, cx));
+     }
++    let fingerprint = not_enabled_fingerprint(&notices.not_enabled);
++    if !not_enabled_is_new(thread, &fingerprint, cx) {
++        log::debug!("agent_sandbox event=mcp_servers_not_enabled_already_shown");
++        return;
++    }
++    if let Some(notice) = not_enabled_notice(&notices.not_enabled) {
++        let count = |reason: NotEnabled| {
++            notices
++                .not_enabled
++                .iter()
++                .filter(|(_, other)| *other == reason)
++                .count()
++        };
++        log::info!(
++            "agent_sandbox event=mcp_servers_not_enabled not_chosen={} secret_no_proxy={} \
++             secret_not_running={}",
++            count(NotEnabled::NotChosen),
++            count(NotEnabled::SecretAgentCannotProxy),
++            count(NotEnabled::SecretNotRunning)
++        );
++        thread.update(cx, |thread, cx| thread.push_notice(notice, cx));
++    }
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/agent_servers/src/acp/jail_servers_tests.rs b/crates/agent_servers/src/acp/jail_servers_tests.rs
+index a61a30f..2798ea5 100644
+--- a/crates/agent_servers/src/acp/jail_servers_tests.rs
++++ b/crates/agent_servers/src/acp/jail_servers_tests.rs
+@@ -7,7 +7,7 @@ use std::sync::Arc;
+ use project::context_server_store::ContextServerConfiguration;
+ use settings::ContextServerCommand;
+ 
+-use super::split_hidden;
++use super::{NotEnabled, split_hidden};
+ 
+ fn stdio(path: &str, args: &[&str]) -> Arc<ContextServerConfiguration> {
+     Arc::new(ContextServerConfiguration::Custom {
+@@ -83,3 +83,199 @@ fn jail_servers_leave_nothing_out_without_a_jail() {
+     assert_eq!(kept.len(), 1);
+     assert!(hidden.is_empty());
+ }
++
++// §6.64 step 2: only what the project chose, a proxied server kept wherever its files are.
++
++fn choice(servers: &[&str]) -> super::JailChoice {
++    super::JailChoice {
++        roots: roots(),
++        servers: servers.iter().map(|name| name.to_string()).collect(),
++        skills: true,
++    }
++}
++
++fn configurations() -> Vec<(String, Arc<ContextServerConfiguration>)> {
++    vec![
++        (
++            "figma".to_string(),
++            stdio(
++                "/usr/bin/node",
++                &["/home/u/.local/share/zeo/extensions/work/figma/bin.js"],
++            ),
++        ),
++        (
++            "project-tool".to_string(),
++            stdio("/usr/bin/node", &["/w/app/tool.js"]),
++        ),
++        ("other".to_string(), stdio("/usr/bin/other", &[])),
++    ]
++}
++
++fn names(kept: &[(String, Arc<ContextServerConfiguration>)]) -> Vec<&str> {
++    kept.iter().map(|(name, _)| name.as_str()).collect()
++}
++
++#[test]
++fn jail_servers_hand_over_only_the_chosen_servers() {
++    let split = super::split_chosen(
++        configurations(),
++        Some(&choice(&["project-tool"])),
++        &Default::default(),
++        true,
++    );
++    assert_eq!(names(&split.kept), ["project-tool"]);
++    assert!(split.hidden.is_empty(), "an unchosen server is not hidden");
++    assert_eq!(
++        split.not_enabled,
++        [
++            ("figma".to_string(), NotEnabled::NotChosen),
++            ("other".to_string(), NotEnabled::NotChosen),
++        ],
++        "it is not enabled, which the session's one notice says"
++    );
++}
++
++#[test]
++fn jail_servers_keep_a_proxied_server_the_jail_cannot_see() {
++    let proxied = ["figma".to_string()].into_iter().collect();
++    let split = super::split_chosen(
++        configurations(),
++        Some(&choice(&["figma", "project-tool"])),
++        &proxied,
++        true,
++    );
++    assert_eq!(
++        names(&split.kept),
++        ["figma", "project-tool"],
++        "configured order"
++    );
++    assert!(split.hidden.is_empty());
++}
++
++/// Hostile: chosen but not proxied, a server outside the jail is still left out, with its path.
++#[test]
++fn jail_servers_leave_out_a_chosen_server_zeo_cannot_proxy() {
++    let split = super::split_chosen(
++        configurations(),
++        Some(&choice(&["figma"])),
++        &Default::default(),
++        true,
++    );
++    assert!(split.kept.is_empty());
++    assert_eq!(split.hidden.len(), 1);
++    assert_eq!(split.hidden[0].0, "figma");
++}
++
++#[test]
++fn jail_servers_choose_nothing_without_a_jail() {
++    let split = super::split_chosen(configurations(), None, &Default::default(), false);
++    assert_eq!(names(&split.kept), ["figma", "project-tool", "other"]);
++    assert!(split.hidden.is_empty() && split.not_enabled.is_empty());
++}
++
++// Round 2 (operator, 2026-11-22): a server carrying a secret reaches a jail only through Zeo's
++// copy, so an agent that cannot proxy (the TUI adapter) does not get it; the others still work.
++
++fn with_secret() -> Vec<(String, Arc<ContextServerConfiguration>)> {
++    vec![
++        (
++            "keyed".to_string(),
++            stdio("/usr/bin/node", &["/w/app/keyed.js", "--api-key", "VALUE"]),
++        ),
++        (
++            "project-tool".to_string(),
++            stdio("/usr/bin/node", &["/w/app/tool.js"]),
++        ),
++    ]
++}
++
++#[test]
++fn jail_servers_skip_a_secret_server_an_agent_cannot_proxy() {
++    let split = super::split_chosen(
++        with_secret(),
++        Some(&choice(&["keyed", "project-tool"])),
++        &Default::default(),
++        false,
++    );
++    assert_eq!(names(&split.kept), ["project-tool"], "the others work");
++    assert_eq!(
++        split.not_enabled,
++        [("keyed".to_string(), NotEnabled::SecretAgentCannotProxy)],
++        "visible to the jail, but its argv would carry the key in"
++    );
++}
++
++#[test]
++fn jail_servers_proxy_a_secret_server_and_skip_it_when_its_copy_is_stopped() {
++    let proxied = ["keyed".to_string()].into_iter().collect();
++    let split = super::split_chosen(with_secret(), Some(&choice(&["keyed"])), &proxied, true);
++    assert_eq!(names(&split.kept), ["keyed"], "Plus keeps proxying it");
++    let split = super::split_chosen(
++        with_secret(),
++        Some(&choice(&["keyed"])),
++        &Default::default(),
++        true,
++    );
++    assert!(split.kept.is_empty());
++    assert_eq!(
++        split.not_enabled,
++        [
++            ("keyed".to_string(), NotEnabled::SecretNotRunning),
++            ("project-tool".to_string(), NotEnabled::NotChosen),
++        ],
++        "its copy stopped, the keyed server is skipped, not handed over with its key"
++    );
++}
++
++#[test]
++fn jail_servers_say_once_how_many_are_not_enabled_and_where_to_choose() {
++    assert!(super::not_enabled_notice(&[]).is_none(), "nothing to say");
++    let notice = super::not_enabled_notice(&[
++        ("figma".to_string(), NotEnabled::NotChosen),
++        ("zeo-lsp".to_string(), NotEnabled::NotChosen),
++        ("keyed".to_string(), NotEnabled::SecretAgentCannotProxy),
++    ])
++    .expect("a notice");
++    assert_eq!(
++        notice.title,
++        "3 MCP servers are not enabled for this project's jail"
++    );
++    let description = notice.description.expect("a description");
++    assert!(
++        description.contains("Not chosen: figma, zeo-lsp."),
++        "{description}"
++    );
++    assert!(
++        description.contains("cannot use it (MCP over ACP): keyed."),
++        "{description}"
++    );
++    let action = &notice.meta.expect("an action")[super::SETTINGS_ACTION_META_KEY];
++    assert_eq!(action["path"], "agent_sandbox#capabilities");
++    let one = super::not_enabled_notice(&[("figma".to_string(), NotEnabled::NotChosen)])
++        .expect("a notice");
++    assert_eq!(
++        one.title,
++        "1 MCP server is not enabled for this project's jail"
++    );
++}
++
++// Round 3 (operator, 2026-11-22): the notice once per thread, again only when it would say
++// something else.
++
++#[test]
++fn jail_servers_fingerprint_ignores_order_and_sees_a_new_reason() {
++    let one = super::not_enabled_fingerprint(&[
++        ("b".to_string(), NotEnabled::NotChosen),
++        ("a".to_string(), NotEnabled::NotChosen),
++    ]);
++    let same = super::not_enabled_fingerprint(&[
++        ("a".to_string(), NotEnabled::NotChosen),
++        ("b".to_string(), NotEnabled::NotChosen),
++    ]);
++    assert_eq!(one, same);
++    let other_reason = super::not_enabled_fingerprint(&[
++        ("a".to_string(), NotEnabled::SecretAgentCannotProxy),
++        ("b".to_string(), NotEnabled::NotChosen),
++    ]);
++    assert_ne!(one, other_reason);
++}
+diff --git a/crates/agent_servers/src/acp/session_meta.rs b/crates/agent_servers/src/acp/session_meta.rs
+index d17869d..c5e9034 100644
+--- a/crates/agent_servers/src/acp/session_meta.rs
++++ b/crates/agent_servers/src/acp/session_meta.rs
+@@ -26,14 +26,16 @@ pub(crate) fn session_request_meta(cx: &App) -> Option<Map<String, Value>> {
+ 
+ /// [`session_request_meta`] for a session of `agent_id` in `project` (new, loaded or resumed),
+ /// plus Zeo's skills as plugins for Zeo's Claude adapters (§6.69 step 2,
+-/// `crate::zeo_skills_plugin`): each request starts the CLI, which loads plugins then.
++/// `crate::zeo_skills_plugin`): each request starts the CLI, which loads plugins then. A jail
++/// whose project turned them off (§6.64 step 2) passes `skills: false`.
+ pub(crate) fn new_session_meta(
+     agent_id: &project::AgentId,
+     project: &gpui::Entity<project::Project>,
++    skills: bool,
+     cx: &App,
+ ) -> Option<Map<String, Value>> {
+     let mut meta = session_request_meta(cx);
+-    if crate::zeo_skills_plugin::reads_claude_code_options(agent_id.0.as_ref()) {
++    if skills && crate::zeo_skills_plugin::reads_claude_code_options(agent_id.0.as_ref()) {
+         let root = project
+             .read(cx)
+             .visible_worktrees(cx)
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index 93dfd9b..c422384 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -874,7 +874,8 @@ impl AcpConnection {
+             Err(error) => return Task::ready(Err(error)),
+         };
+         let parent = session_id.clone();
+-        let mcp_servers = mcp_servers_for_project(&project, self.launch_id, cx);
++        let mcp_servers =
++            mcp_servers_for_project(&project, self.launch_id, self.proxies_mcp(cx), cx);
+         let mcp_servers = self.declare_mcp_servers(&project, mcp_servers, cx);
+         // Read before the request, as a reopen reads before `session/load`. Keyed by
+         // this entry and the parent, so another entry's record of the same id is not it.
+@@ -991,15 +992,20 @@ impl AcpConnection {
+     /// narrows to its own opt-in list, since a proxied server runs outside the jail (§6.64).
+     fn mcp_proxy_policy(&self, cx: &App) -> McpProxyPolicy {
+         // A proxied server runs on the host with Zeo's files and network, so a jail reaches only
+-        // the servers its own list names (§6.64 step 2, the jail page's to write); until it does,
+-        // none. Its sessions keep 0146's stdio entries for the servers the jail can start.
+-        if super::jail_servers::roots(self.launch_id, cx).is_some() {
+-            McpProxyPolicy::only([])
+-        } else {
+-            McpProxyPolicy::All
++        // the servers its project chose on the Capabilities page (§6.64 step 2; none by
++        // default), `zeo-lsp` included.
++        match super::jail_servers::choice(self.launch_id, cx) {
++            Some(choice) => McpProxyPolicy::only(choice.servers),
++            None => McpProxyPolicy::All,
+         }
+     }
+ 
++    /// Whether this connection hands Zeo's running servers over as `acp` ones: the gate of
++    /// [`Self::declare_mcp_servers`], which the jail filter must agree with (§6.64 step 2).
++    fn proxies_mcp(&self, cx: &App) -> bool {
++        self.agent_capabilities.mcp_capabilities.acp && super::mcp_over_acp::enabled(cx)
++    }
++
+     /// Whether the agent lists `capability` in its `agentCapabilities._meta`.
+     fn agent_advertises(&self, capability: &str) -> bool {
+         self.agent_capabilities
+@@ -1475,7 +1481,9 @@ impl AcpConnection {
+             .map(|options| self.apply_session_config_options(&session_id, options, recorded, cx));
+ 
+         // Zeo §6.64 step 1: what the session's servers left out, said in the thread.
+-        let hidden = cx.update(|cx| super::jail_hidden_servers(&project, self.launch_id, cx));
++        let hidden = cx.update(|cx| {
++            super::jail_hidden_servers(&project, self.launch_id, self.proxies_mcp(cx), cx)
++        });
+         let action_log = cx.new(|_| ActionLog::new(project.clone()));
+         let thread: Entity<AcpThread> = cx.new(|cx| {
+             AcpThread::new(
+@@ -1771,7 +1779,7 @@ impl AcpConnection {
+         };
+ 
+         // Zeo §6.64 step 1: what the session's servers left out, said in the thread.
+-        let hidden = super::jail_hidden_servers(&project, self.launch_id, cx);
++        let hidden = super::jail_hidden_servers(&project, self.launch_id, self.proxies_mcp(cx), cx);
+         let action_log = cx.new(|_| ActionLog::new(project.clone()));
+         let thread = cx.new(|cx| {
+             AcpThread::new(
+@@ -2432,10 +2440,16 @@ impl AgentConnection for AcpConnection {
+             Ok(directories) => directories,
+             Err(error) => return Task::ready(Err(error)),
+         };
+-        let mcp_servers = mcp_servers_for_project(&project, self.launch_id, cx);
++        let mcp_servers =
++            mcp_servers_for_project(&project, self.launch_id, self.proxies_mcp(cx), cx);
+         let mcp_servers = self.declare_mcp_servers(&project, mcp_servers, cx);
+         let sends_initial_config_options = self.agent_supports_initial_config_options(cx);
+-        let session_meta = super::session_meta::new_session_meta(&self.id, &project, cx);
++        let session_meta = super::session_meta::new_session_meta(
++            &self.id,
++            &project,
++            super::jail_servers::skills_allowed(self.launch_id, cx),
++            cx,
++        );
+ 
+         cx.spawn(async move |cx| {
+             let (response_sender, response_received) = futures::channel::oneshot::channel();
+@@ -2706,9 +2720,15 @@ impl AgentConnection for AcpConnection {
+             ))));
+         }
+ 
+-        let mcp_servers = mcp_servers_for_project(&project, self.launch_id, cx);
++        let mcp_servers =
++            mcp_servers_for_project(&project, self.launch_id, self.proxies_mcp(cx), cx);
+         let mcp_servers = self.declare_mcp_servers(&project, mcp_servers, cx);
+-        let session_meta = super::session_meta::new_session_meta(&self.id, &project, cx);
++        let session_meta = super::session_meta::new_session_meta(
++            &self.id,
++            &project,
++            super::jail_servers::skills_allowed(self.launch_id, cx),
++            cx,
++        );
+         self.open_or_create_session(
+             session_id,
+             project,
+@@ -2754,9 +2774,15 @@ impl AgentConnection for AcpConnection {
+             ))));
+         }
+ 
+-        let mcp_servers = mcp_servers_for_project(&project, self.launch_id, cx);
++        let mcp_servers =
++            mcp_servers_for_project(&project, self.launch_id, self.proxies_mcp(cx), cx);
+         let mcp_servers = self.declare_mcp_servers(&project, mcp_servers, cx);
+-        let session_meta = super::session_meta::new_session_meta(&self.id, &project, cx);
++        let session_meta = super::session_meta::new_session_meta(
++            &self.id,
++            &project,
++            super::jail_servers::skills_allowed(self.launch_id, cx),
++            cx,
++        );
+         self.open_or_create_session(
+             session_id,
+             project,
+@@ -11515,9 +11541,10 @@ exit 7
+ fn mcp_servers_for_project(
+     project: &Entity<Project>,
+     launch: Option<agent_sandbox::launch::LaunchId>,
++    proxies: bool,
+     cx: &App,
+ ) -> Vec<acp::McpServer> {
+-    mcp_configurations_for_project(project, launch, cx)
++    mcp_configurations_for_project(project, launch, proxies, cx)
+         .into_iter()
+         .map(|(name, configuration)| match &*configuration {
+             project::context_server_store::ContextServerConfiguration::Custom {
+diff --git a/crates/agent_servers/src/acp/v1/fork_session_tests.rs b/crates/agent_servers/src/acp/v1/fork_session_tests.rs
+index 09df0c0..f36fc00 100644
+--- a/crates/agent_servers/src/acp/v1/fork_session_tests.rs
++++ b/crates/agent_servers/src/acp/v1/fork_session_tests.rs
+@@ -359,7 +359,7 @@ async fn fork_sends_one_request_and_registers_the_answered_session(cx: &mut gpui
+         vec![PathBuf::from(EXTRA)],
+         "the parent's additional directories"
+     );
+-    let expected_servers = cx.update(|cx| mcp_servers_for_project(&agent.project, None, cx));
++    let expected_servers = cx.update(|cx| mcp_servers_for_project(&agent.project, None, false, cx));
+     assert_eq!(
+         request.mcp_servers, expected_servers,
+         "the project's MCP servers"
+diff --git a/crates/agent_servers/src/acp/v1/mcp_over_acp_jail_tests.rs b/crates/agent_servers/src/acp/v1/mcp_over_acp_jail_tests.rs
+index 0a390a1..dd46e62 100644
+--- a/crates/agent_servers/src/acp/v1/mcp_over_acp_jail_tests.rs
++++ b/crates/agent_servers/src/acp/v1/mcp_over_acp_jail_tests.rs
+@@ -1,5 +1,6 @@
+ //! Zeo next proposal §6.69 with §6.64: a server proxied over MCP-over-ACP runs on the host, so
+-//! a jailed launch reaches none until its opt-in list names one. Filter: `mcp_over_acp_jail`.
++//! a jailed launch reaches none until its opt-in list names one -- since §6.64 step 2, the list
++//! its project chose on the jail's Capabilities page. Filter: `mcp_over_acp_jail`.
+ 
+ use std::path::PathBuf;
+ 
+@@ -29,24 +30,98 @@ fn record(reason: Reason) -> LaunchRecord {
+ }
+ 
+ async fn servers_for(reason: Reason, cx: &mut gpui::TestAppContext) -> Vec<acp::McpServer> {
+-    let mut agent = ProxyAgent::connect(true, cx).await;
++    servers_with(reason, None, cx).await
++}
++
++/// A session of a launch with `reason`, its project (`/a`) choosing `chosen` when given.
++async fn servers_with(
++    reason: Reason,
++    chosen: Option<Vec<&str>>,
++    cx: &mut gpui::TestAppContext,
++) -> Vec<acp::McpServer> {
++    let chosen: Option<Vec<String>> =
++        chosen.map(|names| names.into_iter().map(str::to_string).collect());
++    let (agent, _) = jailed_agent(
++        reason,
++        true,
++        move |settings| {
++            if let Some(chosen) = chosen {
++                own_capabilities(settings).mcp_servers = Some(chosen);
++            }
++        },
++        cx,
++    )
++    .await;
++    agent.new_session(cx).await
++}
++
++/// The project's (`/a`) own `capabilities`, made when missing.
++fn own_capabilities(
++    settings: &mut settings::SettingsContent,
++) -> &mut settings::AgentSandboxCapabilitiesContent {
++    settings
++        .agent_sandbox
++        .get_or_insert_default()
++        .projects
++        .get_or_insert_default()
++        .entry("/a".to_string())
++        .or_default()
++        .capabilities
++        .get_or_insert_default()
++}
++
++/// An agent that advertises MCP over ACP or not, its connection started by a launch with
++/// `reason`, and the launch's id.
++async fn jailed_agent(
++    reason: Reason,
++    advertises_acp: bool,
++    user_settings: impl FnOnce(&mut settings::SettingsContent),
++    cx: &mut gpui::TestAppContext,
++) -> (ProxyAgent, agent_sandbox::launch::LaunchId) {
++    let mut agent = ProxyAgent::connect_with(
++        advertises_acp,
++        serde_json::json!({ "a": {} }),
++        user_settings,
++        cx,
++    )
++    .await;
+     let launch = cx.update(|cx| LaunchRegistry::register(record(reason), cx));
+     Rc::get_mut(&mut agent.connection)
+         .expect("no session holds the connection yet")
+         .launch_id = Some(launch);
+-    agent.new_session(cx).await
++    (agent, launch)
+ }
+ 
++/// §6.64 step 2: a server the project did not choose reaches a jail in no form -- neither
++/// proxied nor as its command line, which would carry its arguments into the jail.
+ #[gpui::test]
+ async fn mcp_over_acp_jail_a_jailed_launch_proxies_nothing(cx: &mut gpui::TestAppContext) {
+     let servers = servers_for(Reason::On, cx).await;
+ 
+     assert!(
+-        matches!(&servers[..], [acp::McpServer::Stdio(stdio)] if stdio.name == SERVER),
+-        "the jail starts what it can see itself; nothing runs outside it for the jail: {servers:?}"
++        servers.is_empty(),
++        "nothing chosen, nothing handed over: {servers:?}"
+     );
+ }
+ 
++#[gpui::test]
++async fn mcp_over_acp_jail_a_chosen_server_is_proxied(cx: &mut gpui::TestAppContext) {
++    let servers = servers_with(Reason::On, Some(vec![SERVER]), cx).await;
++
++    assert!(
++        matches!(&servers[..], [acp::McpServer::Acp(acp)] if acp.name == SERVER),
++        "the chosen server reaches the jail from Zeo's copy: {servers:?}"
++    );
++}
++
++/// Hostile: choosing another server does not open this one.
++#[gpui::test]
++async fn mcp_over_acp_jail_another_choice_leaves_the_server_out(cx: &mut gpui::TestAppContext) {
++    let servers = servers_with(Reason::On, Some(vec!["other"]), cx).await;
++
++    assert!(servers.is_empty(), "{servers:?}");
++}
++
+ #[gpui::test]
+ async fn mcp_over_acp_jail_an_unjailed_launch_proxies_all(cx: &mut gpui::TestAppContext) {
+     let servers = servers_for(Reason::Off, cx).await;
+@@ -56,3 +131,192 @@ async fn mcp_over_acp_jail_an_unjailed_launch_proxies_all(cx: &mut gpui::TestApp
+         "a launch record without a jail changes nothing: {servers:?}"
+     );
+ }
++
++/// §6.64 step 2: a project that turns Zeo's skills off gets no skills plugin in its jail; an
++/// unjailed launch always does.
++#[gpui::test]
++async fn mcp_over_acp_jail_skills_follow_the_projects_choice(cx: &mut gpui::TestAppContext) {
++    let _agent = ProxyAgent::connect_with(
++        true,
++        serde_json::json!({ "a": {} }),
++        |settings| own_capabilities(settings).skills = Some(false),
++        cx,
++    )
++    .await;
++    let jailed = cx.update(|cx| LaunchRegistry::register(record(Reason::On), cx));
++    let unjailed = cx.update(|cx| {
++        let mut other = record(Reason::Off);
++        other.agent_id = AgentId::new("Other");
++        LaunchRegistry::register(other, cx)
++    });
++
++    cx.update(|cx| {
++        assert!(!crate::acp::jail_servers::skills_allowed(Some(jailed), cx));
++        assert!(crate::acp::jail_servers::skills_allowed(Some(unjailed), cx));
++        assert!(crate::acp::jail_servers::skills_allowed(None, cx));
++    });
++}
++
++// Round 2 (operator, 2026-11-22): defaults, the TUI adapter and the one notice.
++
++/// `agent_sandbox.capabilities` is the default list; a project's own replaces it, and its empty
++/// list means none.
++#[gpui::test]
++async fn mcp_over_acp_jail_the_default_list_applies_and_a_projects_empty_list_wins(
++    cx: &mut gpui::TestAppContext,
++) {
++    let (agent, _) = jailed_agent(
++        Reason::On,
++        true,
++        |settings| {
++            settings
++                .agent_sandbox
++                .get_or_insert_default()
++                .capabilities
++                .get_or_insert_default()
++                .mcp_servers = Some(vec![SERVER.to_string()]);
++        },
++        cx,
++    )
++    .await;
++    let servers = agent.new_session(cx).await;
++    assert!(
++        matches!(&servers[..], [acp::McpServer::Acp(acp)] if acp.name == SERVER),
++        "the default list reaches a project without its own: {servers:?}"
++    );
++
++    let (agent, _) = jailed_agent(
++        Reason::On,
++        true,
++        |settings| {
++            settings
++                .agent_sandbox
++                .get_or_insert_default()
++                .capabilities
++                .get_or_insert_default()
++                .mcp_servers = Some(vec![SERVER.to_string()]);
++            own_capabilities(settings).mcp_servers = Some(Vec::new());
++        },
++        cx,
++    )
++    .await;
++    let servers = agent.new_session(cx).await;
++    assert!(servers.is_empty(), "an explicit [] is none: {servers:?}");
++}
++
++/// The TUI adapter cannot proxy: a chosen server carrying a secret (this one's argv has
++/// `--api-key`) is not handed to its jail as configured.
++#[gpui::test]
++async fn mcp_over_acp_jail_an_agent_that_cannot_proxy_gets_no_secret_server(
++    cx: &mut gpui::TestAppContext,
++) {
++    let (agent, launch) = jailed_agent(
++        Reason::On,
++        false,
++        |settings| own_capabilities(settings).mcp_servers = Some(vec![SERVER.to_string()]),
++        cx,
++    )
++    .await;
++    let servers = agent.new_session(cx).await;
++    assert!(servers.is_empty(), "the key stays outside: {servers:?}");
++    let notices =
++        cx.update(|cx| crate::acp::jail_hidden_servers(&agent.project, Some(launch), false, cx));
++    assert_eq!(
++        notices.not_enabled,
++        [(
++            SERVER.to_string(),
++            crate::acp::jail_servers::NotEnabled::SecretAgentCannotProxy
++        )]
++    );
++}
++
++/// The thread's one notice counts the unchosen servers, `zeo-lsp` included when the connection
++/// would have been offered it.
++#[gpui::test]
++async fn mcp_over_acp_jail_the_notice_counts_what_was_not_chosen(cx: &mut gpui::TestAppContext) {
++    let (agent, launch) = jailed_agent(
++        Reason::On,
++        true,
++        |settings| settings.agent.get_or_insert_default().zeo_lsp = Some(true),
++        cx,
++    )
++    .await;
++    let notices =
++        cx.update(|cx| crate::acp::jail_hidden_servers(&agent.project, Some(launch), true, cx));
++    let not_chosen = crate::acp::jail_servers::NotEnabled::NotChosen;
++    assert_eq!(
++        notices.not_enabled,
++        [
++            (SERVER.to_string(), not_chosen),
++            ("zeo-lsp".to_string(), not_chosen),
++        ]
++    );
++    let notice =
++        crate::acp::jail_servers::not_enabled_notice(&notices.not_enabled).expect("one notice");
++    assert_eq!(
++        notice.title,
++        "2 MCP servers are not enabled for this project's jail"
++    );
++}
++
++// Round 3 (operator, 2026-11-22): the not-enabled notice is shown on a thread's first session
++// start and again only when the set or a reason changes; reopening the thread does not repeat it.
++
++fn not_enabled_notices(thread: &Entity<AcpThread>, cx: &gpui::TestAppContext) -> usize {
++    thread.read_with(cx, |thread, _| {
++        thread
++            .notices()
++            .iter()
++            .filter(|(_, notice)| notice.title.contains("not enabled for this project's jail"))
++            .count()
++    })
++}
++
++#[gpui::test]
++async fn mcp_over_acp_jail_the_notice_shows_once_per_thread(cx: &mut gpui::TestAppContext) {
++    let (agent, launch) = jailed_agent(Reason::On, true, |_| {}, cx).await;
++    let new_thread = |cx: &mut gpui::TestAppContext| {
++        cx.update(|cx| {
++            agent.connection.clone().new_session(
++                agent.project.clone(),
++                PathList::new(&[std::path::Path::new("/a")]),
++                cx,
++            )
++        })
++    };
++    let thread = new_thread(cx).await.expect("session/new succeeds");
++    cx.run_until_parked();
++    assert_eq!(
++        not_enabled_notices(&thread, cx),
++        1,
++        "the first start says it"
++    );
++
++    // A reopen raises the session's notices again: the same set says nothing new.
++    let again =
++        cx.update(|cx| crate::acp::jail_hidden_servers(&agent.project, Some(launch), true, cx));
++    cx.update(|cx| crate::acp::jail_servers::push_notices(&thread, &again, cx));
++    cx.run_until_parked();
++    assert_eq!(not_enabled_notices(&thread, cx), 1, "not repeated");
++
++    // Another thread is told once too.
++    let other = new_thread(cx).await.expect("session/new succeeds");
++    cx.run_until_parked();
++    assert_eq!(not_enabled_notices(&other, cx), 1);
++
++    // What it would say changes: the thread is told again.
++    let changed = crate::acp::jail_servers::JailNotices {
++        hidden: Vec::new(),
++        not_enabled: vec![(
++            SERVER.to_string(),
++            crate::acp::jail_servers::NotEnabled::SecretAgentCannotProxy,
++        )],
++    };
++    cx.update(|cx| crate::acp::jail_servers::push_notices(&thread, &changed, cx));
++    cx.run_until_parked();
++    assert_eq!(
++        not_enabled_notices(&thread, cx),
++        2,
++        "a changed set is said again"
++    );
++}
+diff --git a/crates/agent_servers/src/acp/v2.rs b/crates/agent_servers/src/acp/v2.rs
+index 4a62f38..5dd0bee 100644
+--- a/crates/agent_servers/src/acp/v2.rs
++++ b/crates/agent_servers/src/acp/v2.rs
+@@ -801,7 +801,7 @@ impl AcpV2Connection {
+             .unwrap_or_default();
+         let project_entity_id = project.entity_id();
+         // Zeo §6.64 step 1: what the session's servers left out, said in the thread.
+-        let hidden = super::jail_hidden_servers(&project, self.launch_id, cx);
++        let hidden = super::jail_hidden_servers(&project, self.launch_id, false, cx);
+         let action_log = cx.new(|_| ActionLog::new(project.clone()));
+         let thread = cx.new(|cx| {
+             AcpThread::new(
+@@ -1084,7 +1084,7 @@ impl AcpV2Connection {
+         }
+         let path_style = project.read(cx).path_style(cx);
+         let context = match self.session_context(
+-            mcp_configurations_for_project(&project, self.launch_id, cx),
++            mcp_configurations_for_project(&project, self.launch_id, false, cx),
+             &work_dirs,
+             |path| path_style.is_absolute(path),
+         ) {
+@@ -1146,7 +1146,10 @@ impl AcpV2Connection {
+             .additional_directories(context.additional_directories.clone())
+             .mcp_servers(context.mcp_servers.clone())
+             .meta(super::session_meta::new_session_meta(
+-                &self.id, &project, cx,
++                &self.id,
++                &project,
++                super::jail_servers::skills_allowed(self.launch_id, cx),
++                cx,
+             ));
+         if replay_history {
+             request = request.replay_from(acp::ReplayFrom::Start(acp::ReplayFromStart::new()));
+@@ -1435,7 +1438,7 @@ impl AgentConnection for AcpV2Connection {
+     ) -> Task<Result<Entity<AcpThread>>> {
+         let path_style = project.read(cx).path_style(cx);
+         let context = match self.session_context(
+-            mcp_configurations_for_project(&project, self.launch_id, cx),
++            mcp_configurations_for_project(&project, self.launch_id, false, cx),
+             &work_dirs,
+             |path| path_style.is_absolute(path),
+         ) {
+@@ -1446,7 +1449,10 @@ impl AgentConnection for AcpV2Connection {
+             .additional_directories(context.additional_directories.clone())
+             .mcp_servers(context.mcp_servers.clone())
+             .meta(super::session_meta::new_session_meta(
+-                &self.id, &project, cx,
++                &self.id,
++                &project,
++                super::jail_servers::skills_allowed(self.launch_id, cx),
++                cx,
+             ));
+         if self.supports_initial_config_options(cx) {
+             // `apply_new_session_defaults` still runs after creation, so defaults the agent
+diff --git a/crates/agent_ui/src/ui/session_notice.rs b/crates/agent_ui/src/ui/session_notice.rs
+index 8e03511..b38e1ee 100644
+--- a/crates/agent_ui/src/ui/session_notice.rs
++++ b/crates/agent_ui/src/ui/session_notice.rs
+@@ -24,6 +24,7 @@ impl SessionNotice {
+             _ => (Severity::Info, None),
+         };
+ 
++        let settings_action = settings_action(notice);
+         Self {
+             id,
+             callout: Callout::new()
+@@ -32,6 +33,22 @@ impl SessionNotice {
+                 .when_some(icon, Callout::icon)
+                 .when_some(notice.description.clone(), Callout::description)
+                 .scrollable_description(false)
++                .when_some(settings_action, |callout, (label, path)| {
++                    callout.actions_slot(
++                        Button::new("open-settings", label)
++                            .label_size(LabelSize::Small)
++                            .tab_index(0_isize)
++                            .on_click(move |_, window, cx| {
++                                window.dispatch_action(
++                                    Box::new(zed_actions::OpenSettingsAt {
++                                        path: path.clone(),
++                                        target: None,
++                                    }),
++                                    cx,
++                                );
++                            }),
++                    )
++                })
+                 .dismiss_action(
+                     div()
+                         .debug_selector(move || format!("dismiss-{dismiss_id}"))
+@@ -49,6 +66,18 @@ impl SessionNotice {
+     }
+ }
+ 
++/// The `_meta` key a notice Zeo raises itself uses for an action that opens the settings at a path
++/// (`{"label", "path"}`): the jail's "not enabled" notice opens its Capabilities (§6.64). Only
++/// Zeo's own notices carry it; an agent's `_meta` is free-form, so a malformed one is ignored.
++pub const OPEN_SETTINGS_META: &str = "zeo/openSettingsAt";
++
++fn settings_action(notice: &acp::Notice) -> Option<(SharedString, String)> {
++    let action = notice.meta.as_ref()?.get(OPEN_SETTINGS_META)?;
++    let label = action.get("label")?.as_str()?;
++    let path = action.get("path")?.as_str()?;
++    Some((SharedString::from(label.to_string()), path.to_string()))
++}
++
+ impl RenderOnce for SessionNotice {
+     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+         div().id(self.id).w_full().flex_none().child(self.callout)
+@@ -203,3 +232,30 @@ impl Component for SessionNoticePreview {
+             .into_any_element()
+     }
+ }
++
++#[cfg(test)]
++mod session_notice_action_tests {
++    use super::*;
++
++    #[test]
++    fn session_notice_action_reads_zeos_settings_action_and_ignores_a_malformed_one() {
++        let meta = |value: serde_json::Value| {
++            serde_json::Map::from_iter([(OPEN_SETTINGS_META.to_string(), value)])
++        };
++        let notice = acp::Notice::new(acp::NoticeSeverity::Info, "n").meta(meta(
++            serde_json::json!({ "label": "Open Capabilities", "path": "agent_sandbox#capabilities" }),
++        ));
++        assert_eq!(
++            settings_action(&notice),
++            Some((
++                SharedString::from("Open Capabilities"),
++                "agent_sandbox#capabilities".to_string()
++            ))
++        );
++        let plain = acp::Notice::new(acp::NoticeSeverity::Info, "n");
++        assert_eq!(settings_action(&plain), None);
++        let malformed =
++            acp::Notice::new(acp::NoticeSeverity::Info, "n").meta(meta(serde_json::json!("x")));
++        assert_eq!(settings_action(&malformed), None);
++    }
++}
+diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
+index 832536a..a130892 100644
+--- a/crates/settings_content/src/settings_content.rs
++++ b/crates/settings_content/src/settings_content.rs
+@@ -399,6 +399,9 @@ pub struct AgentSandboxSettingsContent {
+     ///
+     /// Default: false
+     pub claude_ai_connectors: Option<bool>,
++    /// What every jailed project may use besides the project; a project's own replace these
++    /// field by field.
++    pub capabilities: Option<AgentSandboxCapabilitiesContent>,
+     /// Per-project overrides, keyed by the project's absolute root path.
+     ///
+     /// Default: {}
+@@ -451,6 +454,28 @@ pub struct AgentSandboxProjectSettingsContent {
+     pub mask_host: Option<bool>,
+     /// This project's choice of `agent_sandbox.claude_ai_connectors`. Unset follows the default.
+     pub claude_ai_connectors: Option<bool>,
++    /// What this project's jail may use, each field replacing the default it names. An empty
++    /// `mcp_servers` here means none, whatever the default.
++    pub capabilities: Option<AgentSandboxCapabilitiesContent>,
++}
++
++/// What a jail may use besides the project.
++#[with_fallible_options]
++#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
++pub struct AgentSandboxCapabilitiesContent {
++    /// Zeo's MCP servers (its context servers, and `zeo-lsp`) the jailed agent may use, by name.
++    /// A chosen server Zeo runs is proxied to the agent over its ACP connection, so it runs
++    /// outside the jail and its configuration stays on Zeo's side. One Zeo cannot proxy is
++    /// handed over as configured when the jail can start it, unless it carries a secret: such a
++    /// server reaches a jail only through Zeo's copy.
++    ///
++    /// Default: [] (none)
++    pub mcp_servers: Option<Vec<String>>,
++    /// Whether the jailed agent gets Zeo's skills (`~/.agents/skills` and the project's
++    /// `.agents/skills`) as plugins, mapped read-only.
++    ///
++    /// Default: true
++    pub skills: Option<bool>,
+ }
+ 
+ /// Configuration for the ai-memory server the agents talk to.
+diff --git a/crates/settings_ui/src/pages.rs b/crates/settings_ui/src/pages.rs
+index 6968307..e56bcce 100644
+--- a/crates/settings_ui/src/pages.rs
++++ b/crates/settings_ui/src/pages.rs
+@@ -12,7 +12,9 @@ mod skill_creator;
+ mod skills_setup;
+ mod tool_permissions_setup;
+ 
+-pub(crate) use agent_jail_page::{render_agent_jail_page, render_agent_memory_page};
++pub(crate) use agent_jail_page::{
++    render_agent_jail_page, render_agent_memory_page, request_anchor,
++};
+ pub(crate) use audio_input_output_setup::{
+     render_input_audio_device_dropdown, render_output_audio_device_dropdown,
+ };
+diff --git a/crates/settings_ui/src/pages/agent_jail_capabilities.rs b/crates/settings_ui/src/pages/agent_jail_capabilities.rs
+new file mode 100644
+index 0000000..ec73232
+--- /dev/null
++++ b/crates/settings_ui/src/pages/agent_jail_capabilities.rs
+@@ -0,0 +1,386 @@
++//! The Agent Sandbox page's Capabilities (Zeo proposal §6.64 step 2, ask 87): what this
++//! project's jail may use besides the project -- which of Zeo's MCP servers, Zeo's skills, the
++//! account's claude.ai connectors -- and a word on Claude Code plugins, which Zeo does not pass.
++//!
++//! The servers listed are the project's own context servers, as Zeo runs them, plus `zeo-lsp`.
++//! A chosen one reaches the jailed agent from Zeo's copy over MCP-over-ACP (0149), so it runs
++//! outside the jail; nothing is chosen by default, and one whose configuration carries a secret
++//! asks before it is turned on (`agent_sandbox::capabilities`).
++
++use std::path::Path;
++use std::sync::Arc;
++
++use agent_sandbox::AgentSandboxSettings;
++use agent_sandbox::capabilities::{
++    SecretSite, reset_project_mcp_servers, reset_project_skills, secret_sites_of,
++    set_project_connectors, set_project_mcp_server, set_project_skills,
++};
++use std::cell::RefCell;
++
++use gpui::{AnyElement, App, Entity, ScrollHandle};
++use project::context_server_store::{
++    ContextServerConfiguration, ContextServerStatus, ContextServerStore,
++};
++use settings::{Settings as _, SettingsStore};
++use ui::{SwitchField, ToggleState, Tooltip, prelude::*};
++
++use super::{JailPageState, reveal};
++
++/// `agent_servers::acp::zeo_lsp::ZEO_LSP_SERVER_NAME`, which this crate cannot reach.
++pub(crate) const ZEO_LSP: &str = "zeo-lsp";
++
++pub(crate) const SERVERS_NOTE: &str = "Zeo's MCP servers this project's jailed agent may use. A chosen server runs outside the jail, in Zeo, and the agent reaches it through Zeo (MCP over ACP), so its tools act with your files and network. None unless the default list (agent_sandbox.capabilities) names some; a choice applies to the next thread.";
++pub(crate) const PLUGINS_NOTE: &str = "Zeo has no plugin store yet, so the jail gets no Claude Code plugin: the host's ~/.claude/plugins is not mapped. Zeo's skills reach it as plugins, above.";
++const NO_SERVERS: &str = "This project has no MCP servers. Add one under MCP Servers.";
++/// The anchor `OpenSettingsAt { path: "agent_sandbox#capabilities" }` reveals (the jail notice).
++pub(crate) const CAPABILITIES_ANCHOR: &str = "capabilities";
++
++thread_local! {
++    /// The anchor the last `OpenSettingsAt` asked for, until a page reveals it.
++    static REQUESTED_ANCHOR: RefCell<Option<String>> = const { RefCell::new(None) };
++}
++
++/// Called by the settings window when it opens a path; an empty anchor clears a stale one.
++pub(crate) fn request_anchor(anchor: &str) {
++    REQUESTED_ANCHOR.with_borrow_mut(|requested| {
++        *requested = (!anchor.is_empty()).then(|| anchor.to_string());
++    });
++}
++
++/// Takes the requested anchor when it is `anchor`.
++pub(crate) fn take_anchor(anchor: &str) -> bool {
++    REQUESTED_ANCHOR.with_borrow_mut(|requested| {
++        let matches = requested.as_deref() == Some(anchor);
++        if matches {
++            *requested = None;
++        }
++        matches
++    })
++}
++
++/// Where the value in force comes from (§6.64 step 2, round 2): the project's own setting or
++/// the default in `agent_sandbox.capabilities`.
++pub(crate) fn source_label(set_here: bool) -> &'static str {
++    if set_here {
++        "Set for this project"
++    } else {
++        "Default for every project"
++    }
++}
++
++/// One server as the page lists it.
++#[derive(Clone, Debug, PartialEq)]
++pub(crate) struct ServerRow {
++    pub(crate) name: String,
++    pub(crate) note: String,
++    pub(crate) secrets: Vec<SecretSite>,
++    pub(crate) chosen: bool,
++}
++
++/// The rows for `servers` (name, configuration if Zeo resolved one, status), `zeo-lsp` when it is
++/// on, and any chosen name no longer configured, so it can still be turned off. Sorted by name.
++pub(crate) fn server_rows(
++    servers: Vec<(
++        String,
++        Option<Arc<ContextServerConfiguration>>,
++        ContextServerStatus,
++    )>,
++    chosen: &[String],
++    zeo_lsp: bool,
++) -> Vec<ServerRow> {
++    let mut rows: Vec<ServerRow> = servers
++        .into_iter()
++        .map(|(name, configuration, status)| {
++            let secrets = configuration
++                .as_deref()
++                .map(secret_sites_of)
++                .unwrap_or_default();
++            let mut note = status_note(&status).to_string();
++            if !secrets.is_empty() {
++                let places = secrets
++                    .iter()
++                    .map(SecretSite::describe)
++                    .collect::<Vec<_>>()
++                    .join(", ");
++                note = format!("{note}. Carries a secret ({places}): asks before turning on");
++            }
++            ServerRow {
++                chosen: chosen.contains(&name),
++                name,
++                note,
++                secrets,
++            }
++        })
++        .collect();
++    let listed = |rows: &[ServerRow], name: &str| rows.iter().any(|row| row.name == name);
++    if (zeo_lsp || chosen.iter().any(|name| name == ZEO_LSP)) && !listed(&rows, ZEO_LSP) {
++        rows.push(ServerRow {
++            name: ZEO_LSP.to_string(),
++            note: "The project's language servers, read-only: diagnostics, definition, references, hover, symbols".to_string(),
++            secrets: Vec::new(),
++            chosen: chosen.iter().any(|name| name == ZEO_LSP),
++        });
++    }
++    for name in chosen {
++        if !listed(&rows, name) {
++            rows.push(ServerRow {
++                name: name.clone(),
++                note: "Not configured in this project".to_string(),
++                secrets: Vec::new(),
++                chosen: true,
++            });
++        }
++    }
++    rows.sort_by(|a, b| a.name.cmp(&b.name));
++    rows
++}
++
++fn status_note(status: &ContextServerStatus) -> &'static str {
++    match status {
++        ContextServerStatus::Running => "Running",
++        ContextServerStatus::Starting => "Starting",
++        ContextServerStatus::Stopped => {
++            "Stopped: handed over as configured only if the jail can start it"
++        }
++        ContextServerStatus::Error(_) => "Failed to start",
++        ContextServerStatus::AuthRequired
++        | ContextServerStatus::ClientSecretRequired { .. }
++        | ContextServerStatus::Authenticating => "Needs authentication",
++    }
++}
++
++/// The rows of the project's servers, read from its context server store.
++fn rows_from_store(
++    store: Option<&Entity<ContextServerStore>>,
++    chosen: &[String],
++    cx: &App,
++) -> Vec<ServerRow> {
++    let servers = store
++        .map(|store| {
++            let store = store.read(cx);
++            store
++                .server_ids()
++                .iter()
++                .map(|id| {
++                    (
++                        id.0.to_string(),
++                        store.configuration_for_server(id),
++                        store
++                            .status_for_server(id)
++                            .unwrap_or(ContextServerStatus::Stopped),
++                    )
++                })
++                .collect()
++        })
++        .unwrap_or_default();
++    // A test app may run without a settings store; `agent.zeo_lsp` defaults on.
++    let zeo_lsp = cx
++        .try_global::<SettingsStore>()
++        .and_then(|store| store.merged_settings().agent.as_ref()?.zeo_lsp)
++        .unwrap_or(true);
++    server_rows(servers, chosen, zeo_lsp)
++}
++
++/// The Capabilities block of the project section.
++pub(crate) fn render_capabilities(
++    root: &Path,
++    key: Option<&str>,
++    store: Option<&Entity<ContextServerStore>>,
++    state: &Entity<JailPageState>,
++    scroll_handle: &ScrollHandle,
++    cx: &mut App,
++) -> AnyElement {
++    let sandbox = AgentSandboxSettings::get_global(cx).clone();
++    let chosen = sandbox.mcp_servers_for_key(key).to_vec();
++    let rows = rows_from_store(store, &chosen, cx);
++    let mut servers = Vec::with_capacity(rows.len());
++    for row in rows {
++        let id = format!("agent-jail-mcp-{}", row.name);
++        let switch = SwitchField::new(
++            SharedString::from(id.clone()),
++            Some(SharedString::from(row.name.clone())),
++            Some(row.note.into()),
++            row.chosen,
++            {
++                let root = root.to_path_buf();
++                let name = row.name;
++                let secrets = row.secrets;
++                move |toggle, window, cx| {
++                    let on = *toggle == ToggleState::Selected;
++                    set_project_mcp_server(&root, &name, on, &secrets, window, cx).detach();
++                }
++            },
++        )
++        .tab_index(0);
++        servers.push(reveal(state, id, scroll_handle, switch, cx));
++    }
++    let skills = SwitchField::new(
++        "agent-jail-skills",
++        Some("Skills"),
++        Some("Zeo's skills (~/.agents/skills and this project's .agents/skills) as plugins, mapped read-only. Restart the agent to apply.".into()),
++        sandbox.skills_for_key(key),
++        {
++            let root = root.to_path_buf();
++            move |toggle, _, cx| {
++                set_project_skills(&root, *toggle == ToggleState::Selected, cx).detach();
++            }
++        },
++    )
++    .tab_index(0);
++    let connectors = SwitchField::new(
++        "agent-jail-connectors",
++        Some("claude.ai Connectors"),
++        Some("The account's claude.ai connectors. They reach their vendors through anthropic.com, past the allowed hosts. Restart the agent to apply.".into()),
++        sandbox.claude_ai_connectors_for_key(key),
++        {
++            let root = root.to_path_buf();
++            move |toggle, _, cx| {
++                set_project_connectors(&root, *toggle == ToggleState::Selected, cx).detach();
++            }
++        },
++    )
++    .tab_index(0);
++    let muted = |text: &'static str| Label::new(text).size(LabelSize::Small).color(Color::Muted);
++    let heading = v_flex()
++        .gap_0p5()
++        .child(Label::new("Capabilities"))
++        .child(muted(
++            "What the jailed agent may use besides the project. A project's own choice replaces the default in agent_sandbox.capabilities, field by field.",
++        ));
++    // The jail notice's action: scroll the block's heading to the top of the page, once the page
++    // has its full height -- before the background probe lands the page is shorter and the scroll
++    // stops early (the round-2 Xvfb proof saw it stop ~160 px down). Focusing a wrapper, as Tab
++    // does, scrolls the least, which left the heading at the bottom edge.
++    let page_ready = !matches!(state.read(cx).jail, super::JailProbe::Pending);
++    let align = page_ready && take_anchor(CAPABILITIES_ANCHOR);
++    let heading = div()
++        .debug_selector(|| "agent-jail-capabilities".into())
++        .child(heading)
++        .when(align, |this| {
++            let scroll_handle = scroll_handle.clone();
++            this.on_children_prepainted(move |bounds, window, _| {
++                if let Some(bounds) = bounds.first()
++                    && align_to_top(&scroll_handle, *bounds)
++                {
++                    window.request_animation_frame();
++                }
++            })
++        });
++    let servers_source = source_row(
++        "agent-jail-mcp-reset",
++        "Use the default MCP servers",
++        sandbox.mcp_servers_set_for_key(key),
++        {
++            let root = root.to_path_buf();
++            move |cx: &mut App| reset_project_mcp_servers(&root, cx).detach()
++        },
++        state,
++        scroll_handle,
++        cx,
++    );
++    let skills_source = source_row(
++        "agent-jail-skills-reset",
++        "Use the default for skills",
++        sandbox.skills_set_for_key(key),
++        {
++            let root = root.to_path_buf();
++            move |cx: &mut App| reset_project_skills(&root, cx).detach()
++        },
++        state,
++        scroll_handle,
++        cx,
++    );
++    v_flex()
++        .gap_2()
++        .child(heading)
++        .child(
++            v_flex()
++                .gap_0p5()
++                .child(Label::new("MCP Servers").size(LabelSize::Small))
++                .child(muted(SERVERS_NOTE))
++                .child(servers_source),
++        )
++        .when(servers.is_empty(), |this| this.child(muted(NO_SERVERS)))
++        .children(servers)
++        .child(reveal(
++            state,
++            "agent-jail-skills",
++            scroll_handle,
++            skills,
++            cx,
++        ))
++        .child(skills_source)
++        .child(
++            v_flex()
++                .gap_0p5()
++                .child(Label::new("Claude Code Plugins").size(LabelSize::Small))
++                .child(muted(PLUGINS_NOTE)),
++        )
++        .child(reveal(
++            state,
++            "agent-jail-connectors",
++            scroll_handle,
++            connectors,
++            cx,
++        ))
++        .into_any_element()
++}
++
++/// Scrolls `scroll_handle` so `control` sits at the top of its viewport, as far as the page goes.
++/// Returns whether the offset changed.
++fn align_to_top(scroll_handle: &ScrollHandle, control: gpui::Bounds<gpui::Pixels>) -> bool {
++    let viewport = scroll_handle.bounds();
++    if viewport.size.height <= gpui::Pixels::ZERO {
++        return false;
++    }
++    let offset = scroll_handle.offset();
++    let y = (offset.y + viewport.top() - control.top())
++        .clamp(-scroll_handle.max_offset().y, gpui::Pixels::ZERO);
++    if y == offset.y {
++        return false;
++    }
++    scroll_handle.set_offset(gpui::point(offset.x, y));
++    true
++}
++
++/// Which value is in force and where it comes from, with the limits' reset button when the
++/// project sets its own.
++fn source_row(
++    reset_id: &'static str,
++    reset_label: &'static str,
++    set_here: bool,
++    on_reset: impl Fn(&mut App) + 'static,
++    state: &Entity<JailPageState>,
++    scroll_handle: &ScrollHandle,
++    cx: &mut App,
++) -> AnyElement {
++    let label = Label::new(source_label(set_here))
++        .size(LabelSize::Small)
++        .color(Color::Muted);
++    let reset = set_here.then(|| {
++        let button = IconButton::new(reset_id, IconName::RotateCcw)
++            .icon_size(IconSize::Small)
++            .icon_color(Color::Muted)
++            .tab_index(0_isize)
++            .aria_label(reset_label)
++            .tooltip(Tooltip::text(reset_label))
++            .on_click(move |_, _, cx| on_reset(cx));
++        reveal(state, reset_id, scroll_handle, button, cx)
++    });
++    h_flex()
++        .gap_2()
++        .child(label)
++        .children(reset)
++        .into_any_element()
++}
++
++/// The secret prompt the page's switch shows, for the tests.
++#[cfg(test)]
++pub(crate) fn prompt_for(row: &ServerRow) -> Option<(String, String)> {
++    (!row.secrets.is_empty())
++        .then(|| agent_sandbox::capabilities::secret_prompt(&row.name, &row.secrets))
++}
++
++#[cfg(test)]
++#[path = "agent_jail_capabilities_tests.rs"]
++mod agent_jail_capabilities_tests;
+diff --git a/crates/settings_ui/src/pages/agent_jail_capabilities_tests.rs b/crates/settings_ui/src/pages/agent_jail_capabilities_tests.rs
+new file mode 100644
+index 0000000..e172b9c
+--- /dev/null
++++ b/crates/settings_ui/src/pages/agent_jail_capabilities_tests.rs
+@@ -0,0 +1,123 @@
++// Zeo proposal §6.64 step 2: the rows of the jail's Capabilities. Filter:
++// `agent_jail_capabilities_tests`.
++
++use std::sync::Arc;
++
++use project::context_server_store::{ContextServerConfiguration, ContextServerStatus};
++use settings::ContextServerCommand;
++
++use super::*;
++
++fn stdio(args: &[&str]) -> Option<Arc<ContextServerConfiguration>> {
++    Some(Arc::new(ContextServerConfiguration::Custom {
++        command: ContextServerCommand {
++            path: "/usr/bin/node".into(),
++            args: args.iter().map(|arg| arg.to_string()).collect(),
++            env: None,
++            timeout: None,
++        },
++        remote: false,
++        launcher: None,
++    }))
++}
++
++fn servers() -> Vec<(
++    String,
++    Option<Arc<ContextServerConfiguration>>,
++    ContextServerStatus,
++)> {
++    vec![
++        (
++            "mcp-server-figma".to_string(),
++            stdio(&["bin.js", "--figma-api-key=figd_VALUE", "--stdio"]),
++            ContextServerStatus::Running,
++        ),
++        (
++            "files".to_string(),
++            stdio(&["/w/app/tool.js"]),
++            ContextServerStatus::Stopped,
++        ),
++    ]
++}
++
++#[test]
++fn agent_jail_capabilities_tests_list_servers_off_by_default_with_zeo_lsp() {
++    let rows = server_rows(servers(), &[], true);
++    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
++    assert_eq!(names, ["files", "mcp-server-figma", ZEO_LSP]);
++    assert!(
++        rows.iter().all(|row| !row.chosen),
++        "nothing chosen by default"
++    );
++}
++
++#[test]
++fn agent_jail_capabilities_tests_a_secret_server_says_so_and_asks() {
++    let rows = server_rows(servers(), &[], false);
++    let figma = rows
++        .iter()
++        .find(|row| row.name == "mcp-server-figma")
++        .expect("listed");
++    assert_eq!(
++        figma.secrets,
++        [SecretSite::Argument("--figma-api-key".into())]
++    );
++    assert!(
++        figma
++            .note
++            .contains("Carries a secret (argument --figma-api-key)"),
++        "{}",
++        figma.note
++    );
++    assert!(!figma.note.contains("figd_VALUE"), "never the value");
++    let (_, detail) = prompt_for(figma).expect("a secret server asks");
++    assert!(detail.contains("the secret stays outside"));
++    let files = rows.iter().find(|row| row.name == "files").expect("listed");
++    assert!(prompt_for(files).is_none(), "a plain server does not ask");
++}
++
++#[test]
++fn agent_jail_capabilities_tests_choices_show_and_survive_a_removed_server() {
++    let chosen = ["files".to_string(), "gone".to_string(), ZEO_LSP.to_string()];
++    let rows = server_rows(servers(), &chosen, false);
++    let chosen_names: Vec<&str> = rows
++        .iter()
++        .filter(|row| row.chosen)
++        .map(|row| row.name.as_str())
++        .collect();
++    assert_eq!(chosen_names, ["files", "gone", ZEO_LSP]);
++    let gone = rows
++        .iter()
++        .find(|row| row.name == "gone")
++        .expect("still listed");
++    assert_eq!(gone.note, "Not configured in this project");
++}
++
++/// Hostile: with `agent.zeo_lsp` off and not chosen, zeo-lsp is not offered.
++#[test]
++fn agent_jail_capabilities_tests_zeo_lsp_off_is_not_offered() {
++    let rows = server_rows(servers(), &[], false);
++    assert!(rows.iter().all(|row| row.name != ZEO_LSP));
++}
++
++// Round 2 (operator, 2026-11-22): where the value in force comes from, and the notice's anchor.
++
++#[test]
++fn agent_jail_capabilities_tests_say_where_the_value_in_force_comes_from() {
++    assert_eq!(source_label(false), "Default for every project");
++    assert_eq!(source_label(true), "Set for this project");
++}
++
++#[test]
++fn agent_jail_capabilities_tests_the_anchor_is_taken_once_and_only_by_its_page() {
++    request_anchor(CAPABILITIES_ANCHOR);
++    assert!(!take_anchor("elsewhere"), "another anchor leaves it");
++    assert!(take_anchor(CAPABILITIES_ANCHOR));
++    assert!(!take_anchor(CAPABILITIES_ANCHOR), "taken once");
++    request_anchor(CAPABILITIES_ANCHOR);
++    request_anchor("");
++    assert!(
++        !take_anchor(CAPABILITIES_ANCHOR),
++        "a plain path clears a stale anchor"
++    );
++}
+diff --git a/crates/settings_ui/src/pages/agent_jail_page.rs b/crates/settings_ui/src/pages/agent_jail_page.rs
+index 2f489d7..a978d8e 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page.rs
+@@ -916,6 +916,18 @@ pub(crate) fn render_agent_jail_page(
+                 window,
+                 cx,
+             );
++            // §6.64 step 2: what the jail may use besides the project.
++            let context_servers = settings_window
++                .active_project(cx)
++                .map(|project| project.read(cx).context_server_store());
++            let capabilities = agent_jail_capabilities::render_capabilities(
++                root,
++                key,
++                context_servers.as_ref(),
++                &state,
++                scroll_handle,
++                cx,
++            );
+             // The R7.3 note is shown once, beside the Memory switch.
+             let memory_notices: Vec<String> = supports_forward_port
+                 .and_then(|supports| forward_port_notice(&memory, supports))
+@@ -1026,6 +1038,7 @@ pub(crate) fn render_agent_jail_page(
+                 })
+                 .children(lists)
+                 .child(limits)
++                .child(capabilities)
+                 .child(preview)
+                 .into_any_element()
+         }
+@@ -1834,6 +1847,9 @@ pub(crate) fn render_agent_memory_page(
+         .into_any_element()
+ }
+ 
++#[path = "agent_jail_capabilities.rs"]
++mod agent_jail_capabilities;
++pub(crate) use agent_jail_capabilities::request_anchor;
+ #[path = "agent_jail_limits.rs"]
+ mod agent_jail_limits;
+ 
+diff --git a/crates/settings_ui/src/pages/agent_jail_page_tests.rs b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+index 7f434be..06ef208 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+@@ -617,6 +617,7 @@ mod page {
+             mask_host: false,
+             claude_ai_connectors: false,
+             reserve_cpus: false,
++            capabilities: Default::default(),
+             projects: Default::default(),
+         };
+         sandbox.projects.insert(
+@@ -629,6 +630,7 @@ mod page {
+                 mask_host: None,
+                 claude_ai_connectors: None,
+                 reserve_cpus: None,
++                ..Default::default()
+             },
+         );
+         let link = Path::new("/home/u/link");
+@@ -674,12 +676,17 @@ mod page {
+     // --- Q16: Tab reaches every control, and the page scrolls to the focused one ---------------
+ 
+     /// The controls Tab walks through, in page order, with the selectors their bounds are
+-    /// recorded under: the switches, the list inputs, Copy Command, the Memory switch, Refresh and
+-    /// one Forget per recent page of the fake ai-memory.
+-    const TAB_ORDER: [&str; 9] = [
++    /// recorded under: the switches, the list inputs, the Capabilities switches, Copy Command, the
++    /// Memory switch, Refresh and one Forget per recent page of the fake ai-memory.
++    const TAB_ORDER: [&str; 12] = [
+         "agent-jail-project-enabled",
+         "agent-jail-rw-map-new",
+         "agent-jail-allow-host-new",
++        // §6.64 step 2's Capabilities: zeo-lsp (the fixture has no MCP server), Skills and
++        // connectors.
++        "agent-jail-mcp-zeo-lsp",
++        "agent-jail-skills",
++        "agent-jail-connectors",
+         "agent-jail-copy-command",
+         "agent-jail-default-enabled",
+         "agent-memory-enabled",
+diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/settings_ui.rs
+index a1be68f..2aaa7c7 100644
+--- a/crates/settings_ui/src/settings_ui.rs
++++ b/crates/settings_ui/src/settings_ui.rs
+@@ -793,6 +793,10 @@ fn open_settings_editor_at_target(
+             return;
+         }
+ 
++        // Zeo §6.64: `<path>#<anchor>` opens the page at `<path>` and asks it to reveal a block
++        // (the jail notice's "Open Capabilities"); pages without anchors ignore it.
++        let (path, anchor) = path.split_once('#').unwrap_or((path, ""));
++        pages::request_anchor(anchor);
+         let query = format!("#{path}");
+         let indices = settings_window.filter_by_json_path(&query);
+ 

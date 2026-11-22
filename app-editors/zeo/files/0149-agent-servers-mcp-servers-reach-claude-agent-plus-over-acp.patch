@@ -1,0 +1,1520 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Sun, 22 Nov 2026 19:00:00 -0300
+Subject: [PATCH] agent_servers: Zeo's running MCP servers reach Claude Agent
+ (Plus) over ACP
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo proposal §6.69 step 3 (ask 94), built with §6.13 as one story. Zed sends
+every enabled context server to an external agent in session/new as its
+command line (stdio) or URL (http), and the agent starts its own copy. Zeo
+already runs one copy per open project, so on 2026-11-22 the one extension
+server the operator uses ran as 18 processes, about 1.7 GB, each with its
+API key in argv (docs/assets/zeo-asks-2026-11-22/C-mcp-skills.md, C1). A
+jailed agent could not start an extension server at all: its binary lives
+under ~/.local/share/zeo, which the jail hides (0146 leaves such servers out).
+
+MCP-over-ACP carries the server over the agent's own ACP connection instead.
+Claude Agent (Plus) advertises mcpCapabilities.acp since its mcp-over-acp
+release and turns each McpServer::Acp { name, serverId } into an in-process
+SDK server whose calls come back to Zeo as mcp/message (ACP 5.4.0, schema
+1.19, MCP 2026-07-28 -- the stateless binding, no initialize).
+
+Declaring (v1, the path Plus takes): on session/new, load, resume and fork,
+every entry naming a context server that is Running or Starting becomes an
+acp declaration, when the agent advertised mcpCapabilities.acp and
+agent.mcp_servers_over_acp is on (default true, assets/settings/default.json).
+Gated on the capability, as every _claude/* feature in the series is gated on
+what the agent says: only Plus advertises it, and the native Zed agent never
+goes through AcpConnection. A stopped server, a remote project and an agent
+without the capability keep today's stdio/http entries. The serverId is
+zeo-<project entity id>-<name>: the same on every request of one connection,
+because Plus folds the server list into its session fingerprint and a fresh
+id would tear the session down on every reload.
+
+Serving (acp/mcp_over_acp.rs, acp/mcp_over_acp_forward.rs): a tenth v1
+request handler, on the foreground like the other nine.
+- server/discover is answered from the handshake Zeo did when it started the
+  server: supportedVersions ["2026-07-28"], capabilities, serverInfo and
+  instructions (0148). Plus answers the CLI's initialize from it.
+- ping is answered; every other method is forwarded verbatim to the running
+  server through 0148's request_raw, with the binding's per-request
+  io.modelcontextprotocol/* _meta taken off (the stateful server knows none
+  of it). The result and an inner MCP error go back as they came.
+- progress: a request carrying _meta.progressToken is sent with a token
+  unique to Zeo (two agents may forward the same token to one shared server)
+  and the server's notifications/progress come back as mcp/message
+  notifications under the agent's own token, until the request ends.
+- cancellation: the agent's $/cancel_request (what Plus's McpOverAcpCaller
+  sends on abort) sends notifications/cancelled to the server and answers
+  -32800.
+- an undeclared serverId is -33001 (serverUnavailable), a backend failure
+  -33002, a duplicate active (serverId, requestId) -32602, as the binding
+  defines them; a server still starting is waited for, up to 30 s.
+- one log line per request (server, serverId, method, outcome, code, ms),
+  debug on success, warn on failure; never params or results.
+
+The jail hook: McpProxyPolicy, which servers one connection may reach through
+the proxy (AcpConnection::mcp_proxy_policy, All here). A proxied server runs on
+the host, outside any jail, so the jail group narrows it (0150).
+
+Not in this patch: change notifications (list_changed) and server-to-client
+requests, as on Plus's side; the v2 transport (acp-beta flag only, which Plus
+does not use); remote projects.
+
+Tests mcp_over_acp_tests (new; harness mcp_over_acp_harness: a scripted ACP
+agent against the real AcpConnection and handler set, a ScriptedTransport
+context server behind it):
+a running server is declared as acp with no command line; an agent without
+the capability and the setting off keep the command; the serverId is the
+same for every session; discover answers from the server's handshake;
+tools/call round-trips a result and an inner error, without the binding's
+_meta reaching the server; progress reaches the agent under its own token;
+a cancel tells the server and answers -32800; an undeclared id is -33001; a
+policy proxies only the servers it names.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 731f8f2..072c35a 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -385,6 +385,7 @@ dependencies = [
+  "chrono",
+  "client",
+  "collections",
++ "context_server",
+  "db",
+  "env_logger 0.11.8",
+  "feature_flags",
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index c41ccda..fdb4c18 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -1413,6 +1413,12 @@
+     //
+     // Default: true
+     "ask_questions_in_cards": true,
++    // Whether an external agent that supports MCP-over-ACP (Claude Agent (Plus)) reaches the MCP
++    // servers Zeo already runs through its own ACP connection, instead of starting a copy of
++    // each from its command line. A server that is not running keeps the old way.
++    //
++    // Default: true
++    "mcp_servers_over_acp": true,
+     // Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
+     // The command is sent to the shell as if typed, so it is interpreted by your
+     // configured shell (including on Windows and remote/WSL projects).
+diff --git a/crates/agent_servers/Cargo.toml b/crates/agent_servers/Cargo.toml
+index 20d5c9e..8889e51 100644
+--- a/crates/agent_servers/Cargo.toml
++++ b/crates/agent_servers/Cargo.toml
+@@ -36,6 +36,7 @@ base64.workspace = true
+ chrono.workspace = true
+ client.workspace = true
+ collections.workspace = true
++context_server.workspace = true
+ db.workspace = true
+ env_logger = { workspace = true, optional = true }
+ feature_flags.workspace = true
+@@ -67,6 +68,7 @@ zed_credentials_provider.workspace = true
+ 
+ [dev-dependencies]
+ client = { workspace = true, features = ["test-support"] }
++context_server = { workspace = true, features = ["test-support"] }
+ db = { workspace = true, features = ["test-support"] }
+ env_logger.workspace = true
+ fs.workspace = true
+diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
+index 14fd70b..f68aa8a 100644
+--- a/crates/agent_servers/src/acp.rs
++++ b/crates/agent_servers/src/acp.rs
+@@ -1,5 +1,6 @@
+ mod auth_status;
+ mod debug_log;
++mod mcp_over_acp;
+ mod runtime;
+ mod session_meta;
+ mod session_updates;
+@@ -259,6 +260,9 @@ struct ClientContext {
+     /// A v1 agent may only send `subagent_update` after Zed advertises the `subagents`
+     /// client capability. v2 includes subagents in every session.
+     accepts_subagent_updates: bool,
++    /// The servers this connection proxies over MCP-over-ACP (Zeo next §6.69); `None` where
++    /// no `mcp/message` can arrive (v2, ingress-only and most test contexts).
++    mcp_over_acp: Option<Rc<mcp_over_acp::McpOverAcp>>,
+ }
+ 
+ fn dispatch_queue_closed_error() -> agent_client_protocol::Error {
+diff --git a/crates/agent_servers/src/acp/mcp_over_acp.rs b/crates/agent_servers/src/acp/mcp_over_acp.rs
+new file mode 100644
+index 0000000..b663b46
+--- /dev/null
++++ b/crates/agent_servers/src/acp/mcp_over_acp.rs
+@@ -0,0 +1,199 @@
++//! MCP-over-ACP, Zeo's half (next proposal §6.69 step 3, with §6.13).
++//!
++//! Without it every MCP server Zeo runs reaches an external agent as its command line or URL,
++//! so each Claude session starts a copy of its own: on 2026-11-22 one extension server ran as 18
++//! processes, about 1.7 GB, each holding the server's API key in its argv. And a jailed agent
++//! could not start an extension server at all, its binary being outside the jail.
++//!
++//! With it, an agent that advertises `mcpCapabilities.acp` (Claude Agent (Plus) since its
++//! `mcp-over-acp` release) is handed `McpServer::Acp { name, serverId }` for every server Zeo
++//! is running, and sends each MCP request back over its own ACP connection as `mcp/message`.
++//! Zeo answers from the copy it already runs. The binding is MCP 2026-07-28, which is stateless
++//! (no `initialize`): `server/discover` is answered from the handshake Zeo did when it started
++//! the server, and every other request is forwarded into that existing session.
++//!
++//! The `serverId` is a function of the project and the server's name, so it is the same on
++//! every `session/new`, `load`, `resume` and `fork` of one connection. Plus folds it into the
++//! session's fingerprint: an id minted per request would tear the session down on each reload.
++//!
++//! Not carried, as on Plus's side: change notifications (`list_changed`) and server-to-client
++//! requests (sampling, elicitation), which keep landing on Zeo's own MCP client.
++
++use std::cell::RefCell;
++use std::sync::Arc;
++
++use agent_client_protocol::mcp_server::MCP_SERVER_UNAVAILABLE;
++use agent_client_protocol::v1::{ConnectionTo, Responder};
++use agent_client_protocol::{Agent, v1::schema as acp};
++use collections::{HashMap, HashSet};
++use context_server::ContextServerId;
++use gpui::{App, AsyncApp, Entity, WeakEntity};
++use project::Project;
++use project::context_server_store::ContextServerStatus;
++use settings::SettingsStore;
++
++use super::{ClientContext, respond_err};
++
++#[path = "mcp_over_acp_forward.rs"]
++mod forward;
++
++/// Which of Zeo's servers the sessions of one connection may reach through the proxy.
++///
++/// The hook a sandboxed launch narrows: a proxied server runs on the host, outside the jail,
++/// so a jail reaches only the servers its own opt-in list names (§6.64). Unjailed: all.
++#[derive(Clone, Debug, Default, PartialEq)]
++pub(crate) enum McpProxyPolicy {
++    #[default]
++    All,
++    Only(Arc<HashSet<String>>),
++}
++
++impl McpProxyPolicy {
++    pub(crate) fn only(names: impl IntoIterator<Item = String>) -> Self {
++        Self::Only(Arc::new(names.into_iter().collect()))
++    }
++
++    pub(crate) fn allows(&self, name: &str) -> bool {
++        match self {
++            Self::All => true,
++            Self::Only(names) => names.contains(name),
++        }
++    }
++}
++
++/// One declared server: where its requests go.
++#[derive(Clone)]
++struct Route {
++    name: String,
++    project: WeakEntity<Project>,
++    server: ContextServerId,
++}
++
++/// Per-connection state of the proxy: the servers declared so far, by `serverId`, and the
++/// connection that relays request-scoped notifications (progress) back to the agent.
++#[derive(Default)]
++pub(crate) struct McpOverAcp {
++    routes: RefCell<HashMap<String, Route>>,
++    connection: RefCell<Option<ConnectionTo<Agent>>>,
++    /// `(serverId, requestId)` of the requests being served: the binding rejects a second
++    /// active request with the same pair.
++    active: RefCell<HashSet<(String, String)>>,
++}
++
++impl McpOverAcp {
++    pub(crate) fn set_connection(&self, connection: ConnectionTo<Agent>) {
++        *self.connection.borrow_mut() = Some(connection);
++    }
++
++    /// `servers` with every entry naming a context server Zeo is running (or starting) turned
++    /// into an `acp` declaration, when `policy` lets the connection reach it. Anything else
++    /// keeps its stdio or http form, so a stopped server still behaves as before.
++    pub(crate) fn declare(
++        &self,
++        project: &Entity<Project>,
++        servers: Vec<acp::McpServer>,
++        policy: &McpProxyPolicy,
++        cx: &App,
++    ) -> Vec<acp::McpServer> {
++        // A remote project's servers run on the remote host, behind Zeo's proto client; the
++        // proxy is not proven there, so they keep today's forwarding.
++        if !project.read(cx).is_local() {
++            return servers;
++        }
++        let store = project.read(cx).context_server_store().read(cx);
++        servers
++            .into_iter()
++            .map(|server| {
++                let name = match &server {
++                    acp::McpServer::Stdio(stdio) => stdio.name.clone(),
++                    acp::McpServer::Http(http) => http.name.clone(),
++                    _ => return server,
++                };
++                let id = ContextServerId(name.as_str().into());
++                let running = matches!(
++                    store.status_for_server(&id),
++                    Some(ContextServerStatus::Running | ContextServerStatus::Starting)
++                );
++                if !running || !policy.allows(&name) {
++                    return server;
++                }
++                let server_id = server_id_for(project, &name);
++                self.routes.borrow_mut().insert(
++                    server_id.clone(),
++                    Route {
++                        name: name.clone(),
++                        project: project.downgrade(),
++                        server: id,
++                    },
++                );
++                acp::McpServer::Acp(acp::McpServerAcp::new(name, server_id))
++            })
++            .collect()
++    }
++
++    fn route(&self, server_id: &str) -> Option<Route> {
++        self.routes.borrow().get(server_id).cloned()
++    }
++}
++
++/// Stable for one (connection, project, server): see the module comment.
++fn server_id_for(project: &Entity<Project>, name: &str) -> String {
++    format!("zeo-{}-{name}", project.entity_id().as_u64())
++}
++
++/// `agent.mcp_servers_over_acp`, default on. A test app may run without a settings store.
++pub(crate) fn enabled(cx: &App) -> bool {
++    cx.try_global::<SettingsStore>()
++        .and_then(|store| store.merged_settings().agent.as_ref()?.mcp_servers_over_acp)
++        .unwrap_or(true)
++}
++
++/// `mcp/message` from the agent: one MCP request for a server Zeo declared.
++pub(super) fn handle_mcp_message(
++    request: acp::MessageMcpRequest,
++    responder: Responder<acp::MessageMcpResponse>,
++    cx: &mut AsyncApp,
++    ctx: &ClientContext,
++) {
++    let server_id = request.server_id.0.to_string();
++    let Some((router, route)) = ctx
++        .mcp_over_acp
++        .clone()
++        .and_then(|router| Some((router.clone(), router.route(&server_id)?)))
++    else {
++        log::warn!("mcp_over_acp event=request server_id={server_id:?} outcome=unavailable");
++        return respond_err(
++            responder,
++            agent_client_protocol::Error::new(
++                MCP_SERVER_UNAVAILABLE,
++                format!("no MCP server is declared as {server_id} on this connection"),
++            ),
++        );
++    };
++    let key = (server_id.clone(), request.request_id.0.to_string());
++    if !router.active.borrow_mut().insert(key.clone()) {
++        return respond_err(
++            responder,
++            agent_client_protocol::Error::invalid_params()
++                .data(format!("MCP request {} is already active", key.1)),
++        );
++    }
++    let notifier = router.connection.borrow().clone();
++    let cancellation = responder.cancellation();
++    cx.spawn(async move |cx| {
++        let started = std::time::Instant::now();
++        let method = request.method.clone();
++        let result = forward::serve(&route, request, notifier, cancellation, cx).await;
++        router.active.borrow_mut().remove(&key);
++        forward::log_outcome(&route.name, &server_id, &method, &result, started.elapsed());
++        match result {
++            Ok(response) => {
++                if let Err(error) = responder.respond(response) {
++                    log::warn!("mcp_over_acp event=reply-dropped server_id={server_id:?}: {error}");
++                }
++            }
++            Err(error) => respond_err(responder, error),
++        }
++    })
++    .detach();
++}
+diff --git a/crates/agent_servers/src/acp/mcp_over_acp_forward.rs b/crates/agent_servers/src/acp/mcp_over_acp_forward.rs
+new file mode 100644
+index 0000000..69a5db1
+--- /dev/null
++++ b/crates/agent_servers/src/acp/mcp_over_acp_forward.rs
+@@ -0,0 +1,245 @@
++//! How one `mcp/message` reaches the context server Zeo runs (see `mcp_over_acp.rs`).
++
++use std::pin::pin;
++use std::sync::Arc;
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::time::Duration;
++
++use agent_client_protocol::mcp_server::{MCP_BACKEND_FAILURE, MCP_SERVER_UNAVAILABLE};
++use agent_client_protocol::v1::ConnectionTo;
++use agent_client_protocol::{Agent, RequestCancellation, v1::schema as acp};
++use context_server::client::RequestCanceled;
++use context_server::protocol::InitializedContextServerProtocol;
++use futures::FutureExt as _;
++use gpui::AsyncApp;
++use project::context_server_store::ContextServerStatus;
++use serde_json::{Map, Value, json};
++
++use super::Route;
++
++/// The one MCP revision the binding speaks (ACP SDK `MCP_PROTOCOL_VERSION`).
++const BINDING_MCP_VERSION: &str = "2026-07-28";
++/// The per-request keys the binding adds to `params._meta`. Zeo's servers were initialized
++/// with stateful MCP and know none of them, so they are taken off before forwarding.
++const BINDING_META_PREFIX: &str = "io.modelcontextprotocol/";
++/// How long a request waits for a server that is still starting (declared while `Starting`).
++const STARTING_WAIT: Duration = Duration::from_secs(30);
++const STARTING_POLL: Duration = Duration::from_millis(100);
++
++/// Unique across every connection: two agents may forward the same progress token to one
++/// shared server, so the token the server sees is Zeo's, and is mapped back on the way out.
++static NEXT_PROGRESS_TOKEN: AtomicU64 = AtomicU64::new(1);
++
++pub(super) async fn serve(
++    route: &Route,
++    request: acp::MessageMcpRequest,
++    notifier: Option<ConnectionTo<Agent>>,
++    cancellation: RequestCancellation,
++    cx: &mut AsyncApp,
++) -> Result<acp::MessageMcpResponse, agent_client_protocol::Error> {
++    let client = running_client(route, cx).await?;
++    match request.method.as_str() {
++        "server/discover" => Ok(acp::MessageMcpResponse::success(discovery(&client))),
++        "ping" => Ok(acp::MessageMcpResponse::success(json!({}))),
++        _ => forward(route, &client, request, notifier, cancellation).await,
++    }
++}
++
++/// The running server's client, waiting while it is still starting.
++async fn running_client(
++    route: &Route,
++    cx: &mut AsyncApp,
++) -> Result<Arc<InitializedContextServerProtocol>, agent_client_protocol::Error> {
++    let unavailable = |why: &str| {
++        agent_client_protocol::Error::new(
++            MCP_SERVER_UNAVAILABLE,
++            format!("MCP server {} {why}", route.name),
++        )
++    };
++    let mut waited = Duration::ZERO;
++    loop {
++        let (client, status) = route
++            .project
++            .read_with(cx, |project, cx| {
++                let store = project.context_server_store().read(cx);
++                (
++                    store
++                        .get_running_server(&route.server)
++                        .and_then(|server| server.client()),
++                    store.status_for_server(&route.server),
++                )
++            })
++            .map_err(|_| unavailable("belongs to a project that is closed"))?;
++        if let Some(client) = client {
++            return Ok(client);
++        }
++        if !matches!(status, Some(ContextServerStatus::Starting)) || waited >= STARTING_WAIT {
++            return Err(unavailable("is not running"));
++        }
++        cx.background_executor().timer(STARTING_POLL).await;
++        waited += STARTING_POLL;
++    }
++}
++
++/// What the stateless revision has instead of the handshake: the answer the server gave Zeo
++/// when it started, projected onto the binding's one version.
++fn discovery(client: &InitializedContextServerProtocol) -> Value {
++    let initialize = &client.initialize;
++    let mut result = json!({
++        "supportedVersions": [BINDING_MCP_VERSION],
++        "capabilities": initialize.capabilities,
++        "serverInfo": initialize.server_info,
++    });
++    if let Some(instructions) = &initialize.instructions {
++        result["instructions"] = instructions.clone().into();
++    }
++    result
++}
++
++async fn forward(
++    route: &Route,
++    client: &InitializedContextServerProtocol,
++    request: acp::MessageMcpRequest,
++    notifier: Option<ConnectionTo<Agent>>,
++    cancellation: RequestCancellation,
++) -> Result<acp::MessageMcpResponse, agent_client_protocol::Error> {
++    let acp::MessageMcpRequest {
++        server_id,
++        request_id,
++        method,
++        params,
++        ..
++    } = request;
++    let mut params = params.map(strip_binding_meta);
++    // Held until the call ends: dropping it ends the relay.
++    let mut progress_relay = None;
++    if let (Some(params), Some(notifier)) = (params.as_mut(), notifier)
++        && let Some(original) = progress_token(params)
++    {
++        let token = format!(
++            "zeo-acp-{}",
++            NEXT_PROGRESS_TOKEN.fetch_add(1, Ordering::Relaxed)
++        );
++        set_progress_token(params, Value::String(token.clone()));
++        progress_relay = Some(relay_progress(
++            client, token, original, notifier, server_id, request_id,
++        ));
++    }
++
++    let (cancel_tx, cancel_rx) = futures::channel::oneshot::channel();
++    let mut call = pin!(
++        client
++            .request_raw(&method, params.map(Value::Object), Some(cancel_rx))
++            .fuse()
++    );
++    let mut cancelled = pin!(cancellation.cancelled().fuse());
++    let outcome = futures::select_biased! {
++        outcome = call => outcome,
++        _ = cancelled => {
++            // The client tells the server (`notifications/cancelled`) and ends the call.
++            cancel_tx.send(()).ok();
++            call.await
++        }
++    };
++    drop(progress_relay);
++
++    match outcome {
++        Ok(Ok(result)) => Ok(acp::MessageMcpResponse::success(result)),
++        Ok(Err(error)) => {
++            let mut inner = acp::McpError::new(error.code, error.message);
++            if let Some(data) = error.data {
++                inner = inner.data(data);
++            }
++            Ok(acp::MessageMcpResponse::error(inner))
++        }
++        Err(error) if error.downcast_ref::<RequestCanceled>().is_some() => {
++            Err(agent_client_protocol::Error::request_cancelled())
++        }
++        Err(error) => Err(agent_client_protocol::Error::new(
++            MCP_BACKEND_FAILURE,
++            format!("MCP server {}: {error:#}", route.name),
++        )),
++    }
++}
++
++/// Relays the server's progress for one forwarded request until the returned subscription is
++/// dropped, restoring the agent's own token.
++fn relay_progress(
++    client: &InitializedContextServerProtocol,
++    token: String,
++    original: Value,
++    notifier: ConnectionTo<Agent>,
++    server_id: acp::McpServerAcpId,
++    request_id: acp::McpRequestId,
++) -> context_server::client::NotificationSubscription {
++    client.on_notification(
++        "notifications/progress",
++        Box::new(move |params: Value, _cx: AsyncApp| {
++            let Value::Object(mut params) = params else {
++                return;
++            };
++            if params.get("progressToken").and_then(Value::as_str) != Some(token.as_str()) {
++                return;
++            }
++            params.insert("progressToken".into(), original.clone());
++            let notification = acp::MessageMcpNotification::new(
++                server_id.clone(),
++                request_id.clone(),
++                "notifications/progress",
++            )
++            .params(params);
++            if let Err(error) = notifier.send_notification(notification) {
++                log::debug!("mcp_over_acp event=progress-dropped: {error}");
++            }
++        }),
++    )
++}
++
++fn strip_binding_meta(mut params: Map<String, Value>) -> Map<String, Value> {
++    if let Some(Value::Object(meta)) = params.get_mut("_meta") {
++        meta.retain(|key, _| !key.starts_with(BINDING_META_PREFIX));
++        if meta.is_empty() {
++            params.remove("_meta");
++        }
++    }
++    params
++}
++
++fn progress_token(params: &Map<String, Value>) -> Option<Value> {
++    params
++        .get("_meta")?
++        .get("progressToken")
++        .filter(|token| token.is_string() || token.is_number())
++        .cloned()
++}
++
++fn set_progress_token(params: &mut Map<String, Value>, token: Value) {
++    if let Some(Value::Object(meta)) = params.get_mut("_meta") {
++        meta.insert("progressToken".into(), token);
++    }
++}
++
++/// One line per request, at the boundary: never the params or the result, which may carry
++/// whatever the tool reads.
++pub(super) fn log_outcome(
++    name: &str,
++    server_id: &str,
++    method: &str,
++    result: &Result<acp::MessageMcpResponse, agent_client_protocol::Error>,
++    elapsed: Duration,
++) {
++    let ms = elapsed.as_millis();
++    match result {
++        Ok(acp::MessageMcpResponse::Error { error, .. }) => log::debug!(
++            "mcp_over_acp event=request server={name:?} server_id={server_id:?} method={method:?} outcome=error code={} ms={ms}",
++            error.code
++        ),
++        Ok(_) => log::debug!(
++            "mcp_over_acp event=request server={name:?} server_id={server_id:?} method={method:?} outcome=result ms={ms}"
++        ),
++        Err(error) => log::warn!(
++            "mcp_over_acp event=request server={name:?} server_id={server_id:?} method={method:?} outcome=failed code={} ms={ms}",
++            i32::from(error.code)
++        ),
++    }
++}
+diff --git a/crates/agent_servers/src/acp/runtime.rs b/crates/agent_servers/src/acp/runtime.rs
+index d5d3782..5c071a5 100644
+--- a/crates/agent_servers/src/acp/runtime.rs
++++ b/crates/agent_servers/src/acp/runtime.rs
+@@ -211,6 +211,7 @@ mod tests {
+             active_request_scopes: None,
+             pending_session_updates: None,
+             accepts_subagent_updates: false,
++            mcp_over_acp: None,
+         };
+         let (mut runtime, shutdown) = ClientRuntime::new(context, &mut cx.to_async());
+         let retained_sender = runtime.sender();
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index 191b9b4..ac81684 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -1,6 +1,7 @@
+ use super::auth_status::{
+     ConnectionAuthStatus, from_v1 as auth_status_from_v1, update_v1 as handle_auth_status_update,
+ };
++use super::mcp_over_acp::{McpOverAcp, McpProxyPolicy, handle_mcp_message};
+ use super::{
+     AcpDebugLog, AcpDebugMessage, AcpSession, ClientContext, ConfigOptions, ConfigRecorder,
+     FlattenAcpResult as _, ForegroundWork, ModeTrigger, ReadOnlyConfigOptions, UnsupportedVersion,
+@@ -356,6 +357,8 @@ pub struct AcpConnection {
+     telemetry_id: SharedString,
+     agent_version: Option<SharedString>,
+     connection: ConnectionTo<Agent>,
++    /// The servers declared to this agent over MCP-over-ACP (Zeo next §6.69).
++    mcp_over_acp: Rc<McpOverAcp>,
+     sessions: Rc<RefCell<HashMap<acp_v2::SessionId, AcpSession>>>,
+     pending_sessions: RefCell<HashMap<acp_v2::SessionId, PendingAcpSession>>,
+     /// Sessions an explicit `close_session` is closing. The release path skips them,
+@@ -769,6 +772,10 @@ fn client_builder(
+             on_request!(handle_create_elicitation),
+             agent_client_protocol::on_receive_request!(),
+         )
++        .on_receive_request(
++            on_request!(handle_mcp_message),
++            agent_client_protocol::on_receive_request!(),
++        )
+         // --- Notification handlers (agent→client) ---
+         .on_receive_notification(
+             on_notification!(handle_auth_status_update),
+@@ -847,6 +854,7 @@ impl AcpConnection {
+         };
+         let parent = session_id.clone();
+         let mcp_servers = mcp_servers_for_project(&project, cx);
++        let mcp_servers = self.declare_mcp_servers(&project, mcp_servers, cx);
+         // Read before the request, as a reopen reads before `session/load`. Keyed by
+         // this entry and the parent, so another entry's record of the same id is not it.
+         let parent_record = thread_config_store::read(&self.id, &parent, cx);
+@@ -936,6 +944,28 @@ impl AcpConnection {
+         })
+     }
+ 
++    /// The session's `mcpServers` with Zeo's running servers declared as `acp` ones, when the
++    /// agent advertised `mcpCapabilities.acp` -- today only Claude Agent (Plus) does, which is how
++    /// this stays a Plus feature, as every `_claude/*` one is gated on what the agent says.
++    fn declare_mcp_servers(
++        &self,
++        project: &Entity<Project>,
++        servers: Vec<acp::McpServer>,
++        cx: &App,
++    ) -> Vec<acp::McpServer> {
++        if !self.agent_capabilities.mcp_capabilities.acp || !super::mcp_over_acp::enabled(cx) {
++            return servers;
++        }
++        let policy = self.mcp_proxy_policy(cx);
++        self.mcp_over_acp.declare(project, servers, &policy, cx)
++    }
++
++    /// Which servers this connection may reach through the proxy: the hook a sandboxed launch
++    /// narrows to its own opt-in list, since a proxied server runs outside the jail (§6.64).
++    fn mcp_proxy_policy(&self, _cx: &App) -> McpProxyPolicy {
++        McpProxyPolicy::All
++    }
++
+     /// Whether the agent lists `capability` in its `agentCapabilities._meta`.
+     fn agent_advertises(&self, capability: &str) -> bool {
+         self.agent_capabilities
+@@ -1002,6 +1032,7 @@ impl AcpConnection {
+ 
+         let accepts_subagent_updates = client_capabilities.subagents.is_some();
+         let auth_status = acp_beta.then(ConnectionAuthStatus::new);
++        let mcp_over_acp = Rc::new(McpOverAcp::default());
+         let dispatch_context = ClientContext {
+             auth_status: auth_status.as_ref().map(Rc::downgrade).unwrap_or_default(),
+             sessions: sessions.clone(),
+@@ -1010,6 +1041,7 @@ impl AcpConnection {
+             active_request_scopes: None,
+             pending_session_updates: None,
+             accepts_subagent_updates,
++            mcp_over_acp: Some(mcp_over_acp.clone()),
+         };
+         let (mut runtime, shutdown) = runtime::ClientRuntime::new(dispatch_context, cx);
+         let dispatch_tx = runtime.sender();
+@@ -1046,6 +1078,7 @@ impl AcpConnection {
+             cx,
+         )
+         .await?;
++        mcp_over_acp.set_connection(connection.clone());
+         let drained = {
+             let connection = connection.clone();
+             runtime::drain_transport(
+@@ -1151,6 +1184,7 @@ impl AcpConnection {
+             auth_status,
+             agent_server_store,
+             connection,
++            mcp_over_acp,
+             telemetry_id,
+             agent_version,
+             sessions,
+@@ -1204,6 +1238,7 @@ impl AcpConnection {
+             telemetry_id: "test".into(),
+             agent_version: None,
+             connection,
++            mcp_over_acp: Default::default(),
+             sessions,
+             pending_sessions: RefCell::new(HashMap::default()),
+             closing_sessions: RefCell::new(HashSet::default()),
+@@ -2158,6 +2193,12 @@ mod steering_tests;
+ #[cfg(test)]
+ mod fork_config_tests;
+ 
++#[cfg(test)]
++mod mcp_over_acp_harness;
++
++#[cfg(test)]
++mod mcp_over_acp_tests;
++
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ struct SessionDirectories {
+     cwd: PathBuf,
+@@ -2302,6 +2343,7 @@ impl AgentConnection for AcpConnection {
+             Err(error) => return Task::ready(Err(error)),
+         };
+         let mcp_servers = mcp_servers_for_project(&project, cx);
++        let mcp_servers = self.declare_mcp_servers(&project, mcp_servers, cx);
+         let sends_initial_config_options = self.agent_supports_initial_config_options(cx);
+         let session_meta = super::session_meta::new_session_meta(&self.id, &project, cx);
+ 
+@@ -2575,6 +2617,7 @@ impl AgentConnection for AcpConnection {
+         }
+ 
+         let mcp_servers = mcp_servers_for_project(&project, cx);
++        let mcp_servers = self.declare_mcp_servers(&project, mcp_servers, cx);
+         let session_meta = super::session_meta::new_session_meta(&self.id, &project, cx);
+         self.open_or_create_session(
+             session_id,
+@@ -2622,6 +2665,7 @@ impl AgentConnection for AcpConnection {
+         }
+ 
+         let mcp_servers = mcp_servers_for_project(&project, cx);
++        let mcp_servers = self.declare_mcp_servers(&project, mcp_servers, cx);
+         let session_meta = super::session_meta::new_session_meta(&self.id, &project, cx);
+         self.open_or_create_session(
+             session_id,
+@@ -3578,6 +3622,7 @@ pub mod test_support {
+             active_request_scopes: None,
+             pending_session_updates: None,
+             accepts_subagent_updates: false,
++            mcp_over_acp: None,
+         };
+         let dispatch_task = cx.spawn({
+             let mut dispatch_rx = dispatch_rx;
+@@ -9242,6 +9287,7 @@ exit 7
+             active_request_scopes: None,
+             pending_session_updates: None,
+             accepts_subagent_updates,
++            mcp_over_acp: None,
+             auth_status: Default::default(),
+         };
+         // `TestAppContext::spawn` hands out an `AsyncApp` by value, whereas the
+@@ -9629,6 +9675,7 @@ exit 7
+             active_request_scopes: None,
+             pending_session_updates: None,
+             accepts_subagent_updates: false,
++            mcp_over_acp: None,
+         };
+         let (dispatch_tx, mut dispatch_rx) = mpsc::unbounded::<ForegroundWork>();
+         let dispatch_task = cx.spawn(move |mut cx| async move {
+@@ -9796,6 +9843,7 @@ exit 7
+             active_request_scopes: None,
+             pending_session_updates: None,
+             accepts_subagent_updates,
++            mcp_over_acp: None,
+         };
+         let parent_id = parent_session_id.0.to_string();
+ 
+@@ -10002,6 +10050,7 @@ exit 7
+             active_request_scopes: None,
+             pending_session_updates: None,
+             accepts_subagent_updates: false,
++            mcp_over_acp: None,
+         };
+         let (sender, mut receiver) = mpsc::unbounded::<ForegroundWork>();
+         let cleanup = settle_after_disconnect(sender.clone()).boxed().shared();
+diff --git a/crates/agent_servers/src/acp/v1/fork_config_tests.rs b/crates/agent_servers/src/acp/v1/fork_config_tests.rs
+index 1c524b7..72a8465 100644
+--- a/crates/agent_servers/src/acp/v1/fork_config_tests.rs
++++ b/crates/agent_servers/src/acp/v1/fork_config_tests.rs
+@@ -239,6 +239,7 @@ impl ForkConfigAgent {
+             sessions: sessions.clone(),
+             pending_session_updates: None,
+             accepts_subagent_updates: false,
++            mcp_over_acp: None,
+             session_list: client_session_list.clone(),
+             request_elicitations: request_elicitations.clone(),
+             active_request_scopes: None,
+diff --git a/crates/agent_servers/src/acp/v1/fork_session_tests.rs b/crates/agent_servers/src/acp/v1/fork_session_tests.rs
+index b4ff2d9..72ef611 100644
+--- a/crates/agent_servers/src/acp/v1/fork_session_tests.rs
++++ b/crates/agent_servers/src/acp/v1/fork_session_tests.rs
+@@ -183,6 +183,7 @@ impl ForkAgent {
+             sessions: sessions.clone(),
+             pending_session_updates: None,
+             accepts_subagent_updates: false,
++            mcp_over_acp: None,
+             session_list: client_session_list.clone(),
+             request_elicitations: request_elicitations.clone(),
+             active_request_scopes: None,
+diff --git a/crates/agent_servers/src/acp/v1/mcp_over_acp_harness.rs b/crates/agent_servers/src/acp/v1/mcp_over_acp_harness.rs
+new file mode 100644
+index 0000000..53ae584
+--- /dev/null
++++ b/crates/agent_servers/src/acp/v1/mcp_over_acp_harness.rs
+@@ -0,0 +1,332 @@
++//! The harness of `mcp_over_acp_tests` (Zeo next proposal §6.69 step 3): a scripted ACP agent
++//! on the SDK's in-memory channel talks to the real `AcpConnection` and the production client
++//! handler set; the context server behind it is a `ScriptedTransport`, so every message the
++//! server sees is recorded.
++use std::sync::Mutex;
++
++use super::*;
++use crate::acp::mcp_over_acp::McpOverAcp;
++use context_server::test::{ScriptedTransport, SentMessages};
++use context_server::{ContextServer, ContextServerId};
++use futures::StreamExt as _;
++use gpui::UpdateGlobal as _;
++use project::project_settings::{ContextServerSettings, ProjectSettings};
++use serde_json::{Value, json};
++use settings::{ContextServerCommand, Settings as _};
++
++pub(super) const SERVER: &str = "files";
++const META_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
++
++pub(super) struct ProxyAgent {
++    pub(super) connection: Rc<AcpConnection>,
++    pub(super) project: Entity<Project>,
++    /// The `mcpServers` of every `session/new`, in order.
++    new_sessions: Arc<Mutex<Vec<Vec<acp::McpServer>>>>,
++    /// The agent's end of the connection, to send `mcp/message` from.
++    agent: Arc<Mutex<Option<agent_client_protocol::v1::ConnectionTo<Client>>>>,
++    pub(super) notifications: Arc<Mutex<Vec<acp::MessageMcpNotification>>>,
++    /// Every message the context server was sent.
++    pub(super) server_saw: SentMessages,
++    _keep_alive: Task<()>,
++}
++
++/// The server's answers: `tools/call` echoes, fails on `name: "broken"`, reports progress when
++/// asked to, and never answers `name: "slow"`.
++fn script(message: &Value) -> Vec<Value> {
++    let id = message["id"].clone();
++    if message["method"] != "tools/call" {
++        return Vec::new();
++    }
++    let params = &message["params"];
++    match params["name"].as_str() {
++        Some("slow") => Vec::new(),
++        Some("broken") => vec![json!({ "jsonrpc": "2.0", "id": id,
++            "error": { "code": -32602, "message": "bad arguments", "data": { "field": "path" } } })],
++        _ => {
++            let mut replies = Vec::new();
++            if let Some(token) = params["_meta"].get("progressToken") {
++                replies.push(
++                    json!({ "jsonrpc": "2.0", "method": "notifications/progress",
++                    "params": { "progressToken": token, "progress": 1, "total": 2 } }),
++                );
++            }
++            replies.push(json!({ "jsonrpc": "2.0", "id": id, "result": {
++                "content": [{ "type": "text", "text": "echo" }],
++                "structuredContent": { "args": params["arguments"] },
++            } }));
++            replies
++        }
++    }
++}
++
++impl ProxyAgent {
++    pub(super) async fn connect(advertises_acp: bool, cx: &mut gpui::TestAppContext) -> Self {
++        Self::connect_with(advertises_acp, json!({ "a": {} }), |_| {}, cx).await
++    }
++
++    /// With `files` as the file system's root and `user_settings` applied before anything
++    /// starts: a settings change later recomputes the project settings and drops the context
++    /// server this harness configures.
++    pub(super) async fn connect_with(
++        advertises_acp: bool,
++        files: Value,
++        user_settings: impl FnOnce(&mut settings::SettingsContent),
++        cx: &mut gpui::TestAppContext,
++    ) -> Self {
++        cx.update(|cx| {
++            let store = settings::SettingsStore::test(cx);
++            cx.set_global(store);
++            cx.set_global(db::AppDatabase::test_new());
++            settings::SettingsStore::update_global(cx, |store, cx| {
++                store.update_user_settings(cx, user_settings);
++            });
++        });
++        let fs = fs::FakeFs::new(cx.executor());
++        fs.insert_tree("/", files).await;
++        let project = project::Project::test(fs, [std::path::Path::new("/a")], cx).await;
++
++        let new_sessions: Arc<Mutex<Vec<Vec<acp::McpServer>>>> = Arc::default();
++        let agent: Arc<Mutex<Option<agent_client_protocol::v1::ConnectionTo<Client>>>> =
++            Arc::default();
++        let notifications: Arc<Mutex<Vec<acp::MessageMcpNotification>>> = Arc::default();
++        let (client_transport, agent_transport) = agent_client_protocol::Channel::duplex();
++        let agent_future = Agent
++            .v1()
++            .name("proxy-agent")
++            .on_receive_request(
++                async move |req: acp::InitializeRequest, responder, _cx| {
++                    let mut mcp = acp::McpCapabilities::new();
++                    mcp.acp = advertises_acp;
++                    responder.respond(
++                        acp::InitializeResponse::new(req.protocol_version).agent_capabilities(
++                            acp::AgentCapabilities::default().mcp_capabilities(mcp),
++                        ),
++                    )
++                },
++                agent_client_protocol::on_receive_request!(),
++            )
++            .on_receive_request(
++                {
++                    let new_sessions = new_sessions.clone();
++                    let agent = agent.clone();
++                    async move |req: acp::NewSessionRequest, responder, cx| {
++                        *agent.lock().expect("agent slot") = Some(cx);
++                        let mut sessions = new_sessions.lock().expect("new sessions");
++                        sessions.push(req.mcp_servers);
++                        let id = format!("session-{}", sessions.len());
++                        responder.respond(acp::NewSessionResponse::new(acp::SessionId::new(id)))
++                    }
++                },
++                agent_client_protocol::on_receive_request!(),
++            )
++            .on_receive_notification(
++                {
++                    let notifications = notifications.clone();
++                    async move |notification: acp::MessageMcpNotification, _cx| {
++                        notifications
++                            .lock()
++                            .expect("notifications")
++                            .push(notification);
++                        Ok(())
++                    }
++                },
++                agent_client_protocol::on_receive_notification!(),
++            )
++            .connect_to(agent_transport);
++        let agent_io_task = cx.background_spawn(agent_future);
++
++        let sessions: Rc<RefCell<HashMap<acp_v2::SessionId, AcpSession>>> =
++            Rc::new(RefCell::new(HashMap::default()));
++        let (dispatch_tx, dispatch_rx) = mpsc::unbounded::<ForegroundWork>();
++        let (connection_tx, connection_rx) = futures::channel::oneshot::channel();
++        let client_future = connect_client_future(
++            "zed-test",
++            client_transport,
++            dispatch_tx.clone(),
++            connection_tx,
++            futures::future::pending(),
++        );
++        let client_io_task = cx.background_spawn(async move {
++            client_future.await.ok();
++        });
++        let client_conn: ConnectionTo<Agent> = connection_rx.await.expect("connection handle");
++        let response = client_conn
++            .send_request(acp::InitializeRequest::new(ProtocolVersion::V1))
++            .block_task()
++            .await
++            .expect("initialize");
++
++        let router = Rc::new(McpOverAcp::default());
++        router.set_connection(client_conn.clone());
++        let request_elicitations = cx.new(|_| ElicitationStore::default());
++        let dispatch_context = ClientContext {
++            auth_status: Default::default(),
++            sessions: sessions.clone(),
++            pending_session_updates: None,
++            accepts_subagent_updates: false,
++            mcp_over_acp: Some(router.clone()),
++            session_list: Rc::new(RefCell::new(None)),
++            request_elicitations: request_elicitations.clone(),
++            active_request_scopes: None,
++        };
++        let dispatch_task = cx.spawn(move |cx| async move {
++            let mut cx = cx;
++            let mut dispatch_rx = dispatch_rx;
++            while let Some(work) = dispatch_rx.next().await {
++                work.run(&mut cx, &dispatch_context);
++            }
++        });
++        let agent_server_store =
++            project.read_with(cx, |project, _| project.agent_server_store().downgrade());
++        let mut connection = cx.update(|cx| {
++            AcpConnection::new_for_test(
++                client_conn,
++                sessions,
++                response.agent_capabilities,
++                false,
++                request_elicitations,
++                agent_server_store,
++                client_io_task,
++                dispatch_tx,
++                dispatch_task,
++                cx,
++            )
++        });
++        connection.mcp_over_acp = router;
++        let keep_alive = cx.background_spawn(async move {
++            agent_io_task.await.ok();
++        });
++
++        let transport = ScriptedTransport::new(Some("Read before you write."), script);
++        let server_saw = transport.sent();
++        start_context_server(&project, transport, cx);
++
++        Self {
++            connection: Rc::new(connection),
++            project,
++            new_sessions,
++            agent,
++            notifications,
++            server_saw,
++            _keep_alive: keep_alive,
++        }
++    }
++
++    pub(super) async fn new_session(&self, cx: &mut gpui::TestAppContext) -> Vec<acp::McpServer> {
++        let task = cx.update(|cx| {
++            self.connection.clone().new_session(
++                self.project.clone(),
++                PathList::new(&[std::path::Path::new("/a")]),
++                cx,
++            )
++        });
++        task.await.expect("session/new succeeds");
++        self.new_sessions
++            .lock()
++            .expect("new sessions")
++            .last()
++            .cloned()
++            .expect("the agent saw session/new")
++    }
++
++    /// The `serverId` the last `session/new` declared for `SERVER`.
++    pub(super) fn declared_id(&self) -> String {
++        let sessions = self.new_sessions.lock().expect("new sessions");
++        let servers = sessions.last().expect("a session");
++        servers
++            .iter()
++            .find_map(|server| match server {
++                acp::McpServer::Acp(acp) if acp.name == SERVER => Some(acp.server_id.0.to_string()),
++                _ => None,
++            })
++            .expect("SERVER declared as acp")
++    }
++
++    pub(super) fn agent(&self) -> agent_client_protocol::v1::ConnectionTo<Client> {
++        self.agent
++            .lock()
++            .expect("agent slot")
++            .clone()
++            .expect("a session was created")
++    }
++
++    pub(super) async fn mcp(
++        &self,
++        server_id: &str,
++        request_id: &str,
++        method: &str,
++        params: Value,
++    ) -> Result<acp::MessageMcpResponse, agent_client_protocol::Error> {
++        self.agent()
++            .send_request(mcp_request(server_id, request_id, method, params))
++            .block_task()
++            .await
++    }
++}
++
++pub(super) fn mcp_request(
++    server_id: &str,
++    request_id: &str,
++    method: &str,
++    params: Value,
++) -> acp::MessageMcpRequest {
++    let Value::Object(params) = params else {
++        panic!("params are an object");
++    };
++    acp::MessageMcpRequest::new(server_id.to_string(), request_id.to_string(), method)
++        .params(params)
++}
++
++/// Binding metadata as Plus's `McpOverAcpCaller` adds it to every request.
++pub(super) fn with_binding_meta(mut params: Value) -> Value {
++    let meta = params
++        .as_object_mut()
++        .expect("params are an object")
++        .entry("_meta")
++        .or_insert_with(|| json!({}));
++    meta[META_VERSION] = json!("2026-07-28");
++    meta["io.modelcontextprotocol/clientCapabilities"] = json!({});
++    params
++}
++
++fn start_context_server(
++    project: &Entity<Project>,
++    transport: ScriptedTransport,
++    cx: &mut gpui::TestAppContext,
++) {
++    cx.update(|cx| {
++        let mut settings = ProjectSettings::get_global(cx).clone();
++        settings.context_servers.insert(
++            SERVER.into(),
++            ContextServerSettings::Stdio {
++                enabled: true,
++                remote: false,
++                command: ContextServerCommand {
++                    path: "/usr/bin/files-mcp".into(),
++                    args: vec!["--api-key".into(), "SECRET".into()],
++                    env: None,
++                    timeout: None,
++                },
++            },
++        );
++        ProjectSettings::override_global(settings, cx);
++    });
++    let store = project.read_with(cx, |project, _| project.context_server_store());
++    store.update(cx, |store, cx| {
++        store.start_server(
++            Arc::new(ContextServer::new(
++                ContextServerId(SERVER.into()),
++                Arc::new(transport),
++            )),
++            cx,
++        )
++    });
++    cx.run_until_parked();
++}
++
++pub(super) fn result_of(response: acp::MessageMcpResponse) -> Value {
++    match response {
++        acp::MessageMcpResponse::Result { result, .. } => result,
++        other => panic!("expected an inner result, got {other:?}"),
++    }
++}
+diff --git a/crates/agent_servers/src/acp/v1/mcp_over_acp_tests.rs b/crates/agent_servers/src/acp/v1/mcp_over_acp_tests.rs
+new file mode 100644
+index 0000000..d32740c
+--- /dev/null
++++ b/crates/agent_servers/src/acp/v1/mcp_over_acp_tests.rs
+@@ -0,0 +1,260 @@
++//! Zeo next proposal §6.69 step 3: Zeo's running MCP servers reach an agent that advertises
++//! `mcpCapabilities.acp` as `acp` declarations, and its `mcp/message` requests are answered by
++//! the copy Zeo runs. Harness: `mcp_over_acp_harness`. Filter: `mcp_over_acp_tests`.
++
++use super::mcp_over_acp_harness::{ProxyAgent, SERVER, mcp_request, result_of, with_binding_meta};
++use super::*;
++use crate::acp::mcp_over_acp::McpOverAcp;
++use agent_client_protocol::mcp_server::MCP_SERVER_UNAVAILABLE;
++use serde_json::json;
++
++#[gpui::test]
++async fn a_running_server_is_declared_as_acp_with_no_command_line(cx: &mut gpui::TestAppContext) {
++    let agent = ProxyAgent::connect(true, cx).await;
++    let servers = agent.new_session(cx).await;
++
++    assert_eq!(
++        servers.len(),
++        1,
++        "one entry for the one server: {servers:?}"
++    );
++    let acp::McpServer::Acp(declared) = &servers[0] else {
++        panic!("declared over ACP, not as its command line: {servers:?}");
++    };
++    assert_eq!(declared.name, SERVER, "the agent names it as Zeo does");
++    assert!(
++        !format!("{servers:?}").contains("SECRET"),
++        "the server's argv no longer reaches the agent"
++    );
++}
++
++#[gpui::test]
++async fn an_agent_without_the_capability_still_gets_the_command(cx: &mut gpui::TestAppContext) {
++    let agent = ProxyAgent::connect(false, cx).await;
++    let servers = agent.new_session(cx).await;
++
++    assert!(
++        matches!(&servers[..], [acp::McpServer::Stdio(stdio)] if stdio.name == SERVER),
++        "today's mapping for every other agent: {servers:?}"
++    );
++}
++
++#[gpui::test]
++async fn the_setting_off_keeps_the_command(cx: &mut gpui::TestAppContext) {
++    let agent = ProxyAgent::connect_with(
++        true,
++        json!({ "a": {} }),
++        |settings| settings.agent.get_or_insert_default().mcp_servers_over_acp = Some(false),
++        cx,
++    )
++    .await;
++    let servers = agent.new_session(cx).await;
++
++    assert!(
++        matches!(&servers[..], [acp::McpServer::Stdio(_)]),
++        "agent.mcp_servers_over_acp: false is today's behaviour: {servers:?}"
++    );
++}
++
++#[gpui::test]
++async fn the_server_id_is_the_same_for_every_session(cx: &mut gpui::TestAppContext) {
++    let agent = ProxyAgent::connect(true, cx).await;
++    agent.new_session(cx).await;
++    let first = agent.declared_id();
++    agent.new_session(cx).await;
++
++    assert_eq!(
++        agent.declared_id(),
++        first,
++        "Plus fingerprints a session by its servers: a new id per session would recreate it"
++    );
++}
++
++#[gpui::test]
++async fn discover_answers_from_the_servers_own_handshake(cx: &mut gpui::TestAppContext) {
++    let agent = ProxyAgent::connect(true, cx).await;
++    agent.new_session(cx).await;
++    let id = agent.declared_id();
++
++    let result = result_of(
++        agent
++            .mcp(&id, "d-1", "server/discover", with_binding_meta(json!({})))
++            .await
++            .expect("discover is served"),
++    );
++
++    assert_eq!(result["supportedVersions"], json!(["2026-07-28"]));
++    assert_eq!(result["serverInfo"]["name"], "scripted");
++    assert!(result["capabilities"]["tools"].is_object(), "{result}");
++    assert_eq!(result["instructions"], "Read before you write.");
++}
++
++#[gpui::test]
++async fn tools_call_round_trips_through_the_running_server(cx: &mut gpui::TestAppContext) {
++    let agent = ProxyAgent::connect(true, cx).await;
++    agent.new_session(cx).await;
++    let id = agent.declared_id();
++
++    let params = with_binding_meta(json!({ "name": "read", "arguments": { "path": "a.txt" } }));
++    let result = result_of(
++        agent
++            .mcp(&id, "c-1", "tools/call", params)
++            .await
++            .expect("served"),
++    );
++    assert_eq!(
++        result["structuredContent"]["args"]["path"], "a.txt",
++        "{result}"
++    );
++
++    let error = agent
++        .mcp(
++            &id,
++            "c-2",
++            "tools/call",
++            with_binding_meta(json!({ "name": "broken" })),
++        )
++        .await
++        .expect("an inner MCP error is a successful ACP response");
++    let acp::MessageMcpResponse::Error { error, .. } = error else {
++        panic!("expected the server's error, got {error:?}");
++    };
++    assert_eq!(
++        (error.code, error.message.as_str()),
++        (-32602, "bad arguments")
++    );
++
++    let saw = agent.server_saw.snapshot();
++    let call = saw
++        .iter()
++        .find(|message| message["method"] == "tools/call")
++        .expect("the server got the call");
++    assert!(
++        call["params"].get("_meta").is_none(),
++        "the binding's metadata does not reach a stateful server: {call}"
++    );
++}
++
++#[gpui::test]
++async fn progress_reaches_the_agent_under_its_own_token(cx: &mut gpui::TestAppContext) {
++    let agent = ProxyAgent::connect(true, cx).await;
++    agent.new_session(cx).await;
++    let id = agent.declared_id();
++
++    let mut params = with_binding_meta(json!({ "name": "read" }));
++    params["_meta"]["progressToken"] = json!("agent-token-7");
++    agent
++        .mcp(&id, "p-1", "tools/call", params)
++        .await
++        .expect("served");
++    cx.run_until_parked();
++
++    let notifications = agent.notifications.lock().expect("notifications");
++    let [progress] = &notifications[..] else {
++        panic!("one progress notification: {notifications:?}");
++    };
++    assert_eq!(progress.method, "notifications/progress");
++    assert_eq!(progress.server_id.0.as_ref(), id);
++    assert_eq!(progress.request_id.0.as_ref(), "p-1");
++    let params = progress.params.as_ref().expect("progress params");
++    assert_eq!(
++        params["progressToken"], "agent-token-7",
++        "the agent's token, not Zeo's"
++    );
++    let saw = agent.server_saw.snapshot();
++    let sent_token = saw
++        .iter()
++        .find(|message| message["method"] == "tools/call")
++        .map(|message| message["params"]["_meta"]["progressToken"].clone())
++        .expect("the call");
++    assert_ne!(
++        sent_token,
++        json!("agent-token-7"),
++        "the server sees a token unique to Zeo"
++    );
++}
++
++#[gpui::test]
++async fn cancelling_tells_the_server_and_answers_cancelled(cx: &mut gpui::TestAppContext) {
++    let agent = ProxyAgent::connect(true, cx).await;
++    agent.new_session(cx).await;
++    let id = agent.declared_id();
++
++    let (result_tx, result_rx) = futures::channel::oneshot::channel();
++    let request = agent.agent().prepare_request(mcp_request(
++        &id,
++        "s-1",
++        "tools/call",
++        with_binding_meta(json!({ "name": "slow" })),
++    ));
++    let cancellation = request.cancellation_handle();
++    request
++        .on_receiving_result(async move |result: Result<acp::MessageMcpResponse, _>| {
++            result_tx.send(result).ok();
++            Ok(())
++        })
++        .expect("sent");
++    cx.run_until_parked();
++    cancellation.cancel().expect("cancel sent");
++    let result = result_rx.await.expect("an answer");
++    // The agent may stop waiting before Zeo has told the server: let Zeo finish.
++    cx.run_until_parked();
++
++    let error = result.expect_err("a cancelled request is an outer error");
++    assert_eq!(error.code, agent_client_protocol::ErrorCode::new(-32800));
++    let saw = agent.server_saw.snapshot();
++    let call_id = saw
++        .iter()
++        .find(|message| message["method"] == "tools/call")
++        .map(|message| message["id"].clone())
++        .expect("the call reached the server");
++    assert!(
++        saw.iter()
++            .any(|message| message["method"] == "notifications/cancelled"
++                && message["params"]["requestId"] == call_id),
++        "the server is told to stop: {saw:?}"
++    );
++}
++
++#[gpui::test]
++async fn an_undeclared_server_id_is_unavailable(cx: &mut gpui::TestAppContext) {
++    let agent = ProxyAgent::connect(true, cx).await;
++    agent.new_session(cx).await;
++
++    let error = agent
++        .mcp(
++            "zeo-0-nobody",
++            "u-1",
++            "tools/list",
++            with_binding_meta(json!({})),
++        )
++        .await
++        .expect_err("an outer error");
++    assert_eq!(error.code, MCP_SERVER_UNAVAILABLE);
++}
++
++#[gpui::test]
++async fn a_policy_proxies_only_the_servers_it_names(cx: &mut gpui::TestAppContext) {
++    let agent = ProxyAgent::connect(true, cx).await;
++    let stdio = || {
++        vec![acp::McpServer::Stdio(acp::McpServerStdio::new(
++            SERVER,
++            "/usr/bin/files-mcp",
++        ))]
++    };
++    let router = McpOverAcp::default();
++    let (none, named) = cx.update(|cx| {
++        (
++            router.declare(&agent.project, stdio(), &McpProxyPolicy::only([]), cx),
++            router.declare(
++                &agent.project,
++                stdio(),
++                &McpProxyPolicy::only([SERVER.to_string()]),
++                cx,
++            ),
++        )
++    });
++
++    assert!(matches!(&none[..], [acp::McpServer::Stdio(_)]), "{none:?}");
++    assert!(matches!(&named[..], [acp::McpServer::Acp(_)]), "{named:?}");
++}
+diff --git a/crates/agent_servers/src/acp/v1/thread_config_test_support.rs b/crates/agent_servers/src/acp/v1/thread_config_test_support.rs
+index 65d982a..03e26cd 100644
+--- a/crates/agent_servers/src/acp/v1/thread_config_test_support.rs
++++ b/crates/agent_servers/src/acp/v1/thread_config_test_support.rs
+@@ -305,6 +305,7 @@ impl ConfigAgent {
+             active_request_scopes: None,
+             pending_session_updates: None,
+             accepts_subagent_updates: false,
++            mcp_over_acp: None,
+         };
+         let dispatch_task = cx.spawn({
+             let mut dispatch_rx = dispatch_rx;
+diff --git a/crates/agent_servers/src/acp/v2.rs b/crates/agent_servers/src/acp/v2.rs
+index 8527034..4ee9718 100644
+--- a/crates/agent_servers/src/acp/v2.rs
++++ b/crates/agent_servers/src/acp/v2.rs
+@@ -352,6 +352,7 @@ impl AcpV2Connection {
+             request_elicitations: request_elicitations.clone(),
+             active_request_scopes: Some(RefCell::new(Default::default())),
+             accepts_subagent_updates: true,
++            mcp_over_acp: None,
+         };
+         let (mut client_runtime, shutdown) = runtime::ClientRuntime::new(context, cx);
+         let dispatch_tx = client_runtime.sender();
+diff --git a/crates/agent_servers/src/acp_task_actions_tests.rs b/crates/agent_servers/src/acp_task_actions_tests.rs
+index c1a1128..4c936bc 100644
+--- a/crates/agent_servers/src/acp_task_actions_tests.rs
++++ b/crates/agent_servers/src/acp_task_actions_tests.rs
+@@ -151,6 +151,7 @@ async fn connect_peer_with_meta(
+         active_request_scopes: None,
+         pending_session_updates: None,
+         accepts_subagent_updates: false,
++        mcp_over_acp: None,
+     };
+     let dispatch_task = cx.spawn({
+         let mut dispatch_rx = dispatch_rx;
+diff --git a/crates/settings_content/src/agent.rs b/crates/settings_content/src/agent.rs
+index 3d040c9..2865a65 100644
+--- a/crates/settings_content/src/agent.rs
++++ b/crates/settings_content/src/agent.rs
+@@ -483,6 +483,13 @@ pub struct AgentSettingsContent {
+     ///
+     /// Default: true
+     pub ask_questions_in_cards: Option<bool>,
++    /// Whether an external agent that supports MCP-over-ACP (today Claude Agent (Plus)) reaches
++    /// Zeo's MCP servers through the copy Zeo already runs, over its own ACP connection, instead
++    /// of being handed each server's command line and starting a copy of its own. A server that
++    /// is not running keeps the old way. Zeo next proposal §6.69.
++    ///
++    /// Default: true
++    pub mcp_servers_over_acp: Option<bool>,
+     /// Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
+     /// The command is sent to the shell as if typed, so it is interpreted by your
+     /// configured shell (including on Windows and remote/WSL projects).
+diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_data.rs
+index a7fe013..ee5013d 100644
+--- a/crates/settings_ui/src/page_data.rs
++++ b/crates/settings_ui/src/page_data.rs
+@@ -9603,6 +9603,29 @@ fn ai_page(cx: &App) -> SettingsPage {
+                 metadata: None,
+                 files: USER,
+             }),
++            SettingsPageItem::SettingItem(SettingItem {
++                title: "MCP Servers Over ACP",
++                description: "Whether an external agent that supports MCP over ACP (Claude Agent (Plus)) reaches Zeo's running MCP servers through its connection to Zeo, instead of starting a copy of each. Applies to threads started or reopened afterwards.",
++                field: Box::new(SettingField {
++                    organization_override: None,
++                    json_path: Some("agent.mcp_servers_over_acp"),
++                    pick: |settings_content| {
++                        settings_content
++                            .agent
++                            .as_ref()?
++                            .mcp_servers_over_acp
++                            .as_ref()
++                    },
++                    write: |settings_content, value, _| {
++                        settings_content
++                            .agent
++                            .get_or_insert_default()
++                            .mcp_servers_over_acp = value;
++                    },
++                }),
++                metadata: None,
++                files: USER,
++            }),
+             SettingsPageItem::SettingItem(SettingItem {
+                 title: "Terminal Thread Init Command",
+                 description: "Command to automatically run when Zeo creates a Terminal Thread shell in the agent panel. Runs in your configured shell.",
