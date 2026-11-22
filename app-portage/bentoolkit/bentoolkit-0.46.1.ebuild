@@ -36,8 +36,12 @@ BDEPEND+="
 
 # browser? enables the chromedp backend, which drives an already-installed
 # Chrome/Chromium over the DevTools Protocol (it does not download a browser).
+# bwrap: since 0.46.0 the host build gates of overlay autoupdate, validate
+# and compare run `ebuild` inside a bubblewrap sandbox, and refuse to build
+# (every gate SKIPPED) when it is missing.
 RDEPEND="
 	dev-vcs/git
+	sys-apps/bubblewrap
 	kde? ( kde-apps/kdialog )
 	browser? (
 		|| (
