@@ -4,6 +4,7 @@
 # BENTOO-DIVERGENCE: PATCHES - optional-gstreamer patch rebased onto 51.0.1
 # BENTOO-DIVERGENCE: DEPEND - 51.1 meson.build raises gtk4 to >= 4.24.0
 # BENTOO-DIVERGENCE: RDEPEND - 51.1 meson.build raises gtk4 to >= 4.24.0
+# BENTOO-DIVERGENCE: DEPEND - meson.build requires glycin-gtk4-2 unconditionally, so glycin[gtk]
 
 EAPI=8
 
@@ -22,7 +23,7 @@ REQUIRED_USE="gtk-doc? ( introspection )"
 
 DEPEND="
 	>=dev-libs/glib-2.89.0:2
-	media-libs/glycin:2
+	media-libs/glycin:2[gtk]
 	media-libs/gexiv2:0.16/4
 	gstreamer? ( media-libs/gstreamer:1.0
 		media-libs/gst-plugins-base:1.0 )
