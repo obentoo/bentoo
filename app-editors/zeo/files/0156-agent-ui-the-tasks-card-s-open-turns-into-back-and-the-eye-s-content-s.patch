@@ -1,0 +1,465 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 23 Nov 2026 01:08:46 -0300
+Subject: [PATCH] agent_ui: the tasks card's Open turns into Back, and the
+ eye's content sits on the panel
+
+Two operator asks of 2026-11-22 on the tasks card.
+
+Open Thread at This Task (0041, 0120) brought a subagent's thread on
+screen and stayed an open-arrow there, so the way back was the thread's
+own navigation. While the task's thread is the one its conversation
+shows, the row's button now reads "Back to the Main Thread", with the
+Exit icon, and brings the main thread back:
+- HeldView keeps shown_session, the session of the thread the view shows
+  (its root's, or a subagent's it navigated to). The card already
+  observes each held view; refresh_view now updates shown_session before
+  its root check, since navigating to a child changes the view without
+  changing its root, and notifies when it moves.
+- The row's task thread is the AcpSubagent source's child, or the feed
+  task's child_session_id. shows_task_thread matches it against the view
+  holding the row's session, so only that row goes back.
+- TasksCardEvent::ReturnToMainThread { session_id }: the panel brings the
+  conversation forward (open_thread_by_session) and navigates it to its
+  main thread (navigate_to_thread), logging the step.
+
+Watch This Task (0094): the preview drew its output and a shell's tail on
+the editor's background and a fallback body on the card's elevated
+surface. What the eye shows now always sits on the agent panel's
+background (preview::watch_background, panel_background). render_tail,
+render_result_line and render_expanded_body take the background, so the
+chevron's details keep the editor's.
+
+Tests: tasks_card::back_to_main_thread, 2 GPUI on the native-subagent
+rig -- Open shows the child and the same button then reads Back and
+returns to the main thread; on Bravo's thread only Bravo's row goes back,
+Alpha's still opens. Red seen with shows_task_thread forced false: both
+failed. The background has no automated test (GPUI tests do not expose a
+painted colour); it is proved on Xvfb.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
+index 4673b94..44949fb 100644
+--- a/crates/agent_ui/src/agent_panel.rs
++++ b/crates/agent_ui/src/agent_panel.rs
+@@ -1743,6 +1743,9 @@ impl AgentPanel {
+                     window,
+                     cx,
+                 ),
++                TasksCardEvent::ReturnToMainThread { session_id } => {
++                    panel.return_to_main_thread_from_card(session_id.clone(), window, cx)
++                }
+                 // The task history records it; the panel has nothing to do.
+                 TasksCardEvent::TaskLogSaved { .. } => {}
+             },
+@@ -2111,6 +2114,30 @@ impl AgentPanel {
+         }
+     }
+ 
++    /// The tasks card's Back (operator, 2026-11-22): brings `session_id`'s conversation forward on
++    /// its main thread, leaving the task's thread it was showing.
++    fn return_to_main_thread_from_card(
++        &mut self,
++        session_id: acp_v2::SessionId,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        let Some(conversation) = self.held_conversation_view(&session_id, cx) else {
++            log::warn!(
++                "agent panel: back to the main thread of session {session_id} from the tasks \
++                 card, but its thread is not open"
++            );
++            return;
++        };
++        self.open_thread_by_session(session_id.clone(), window, cx);
++        conversation.update(cx, |conversation, cx| {
++            conversation.navigate_to_thread(session_id.clone(), window, cx)
++        });
++        log::info!(
++            "agent panel: back to the main thread of session {session_id} from the tasks card"
++        );
++    }
++
+     /// Brings forward the thread the root thread of `session_id` names on its tool
+     /// call `tool_call_id` as the subagent's own, and returns that thread's session.
+     /// `Ok(None)` when there is none to show: no tool call id, no such root entry,
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index ce9c567..c059be2 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -24,8 +24,9 @@ use agent_settings::AgentSettings;
+ use collections::{HashMap, HashSet};
+ use gpui::{
+     AnyElement, AnyView, App, AvailableSpace, Bounds, Context, Element, Entity, EntityId,
+-    EventEmitter, FocusHandle, GlobalElementId, InspectorElementId, LayoutId, Pixels, PromptLevel,
+-    Render, ScrollHandle, SharedString, Style, Subscription, Task, WeakEntity, Window, point, size,
++    EventEmitter, FocusHandle, GlobalElementId, Hsla, InspectorElementId, LayoutId, Pixels,
++    PromptLevel, Render, ScrollHandle, SharedString, Style, Subscription, Task, WeakEntity, Window,
++    point, size,
+ };
+ use settings::{Settings as _, SettingsStore, TasksCardPosition};
+ use ui::{
+@@ -56,6 +57,10 @@ mod native_subagent_support;
+ #[path = "tasks_card/native_subagent_tests.rs"]
+ mod native_subagent;
+ 
++#[cfg(test)]
++#[path = "tasks_card/back_to_main_thread_tests.rs"]
++mod back_to_main_thread;
++
+ #[cfg(test)]
+ #[path = "tasks_card/model_tests.rs"]
+ mod model;
+@@ -250,6 +255,9 @@ pub enum TasksCardEvent {
+         task_id: AgentTaskId,
+         child: acp_v2::SessionId,
+     },
++    /// Leave the task's thread for the main thread of `session_id`'s conversation: the row's
++    /// Open turned into Back while the task's own thread is on screen (operator, 2026-11-22).
++    ReturnToMainThread { session_id: acp_v2::SessionId },
+ }
+ 
+ impl EventEmitter<TasksCardEvent> for TasksCard {}
+@@ -507,6 +515,8 @@ struct RowError {
+ struct HeldView {
+     view_id: EntityId,
+     thread: Option<HeldThread>,
++    /// The session of the thread the view shows: its root's, or a subagent's it navigated to.
++    shown_session: Option<acp_v2::SessionId>,
+     _observation: Subscription,
+ }
+ 
+@@ -1483,10 +1493,31 @@ impl TasksCard {
+         HeldView {
+             view_id,
+             thread,
++            shown_session: Self::shown_session_of(view, cx),
+             _observation,
+         }
+     }
+ 
++    fn shown_session_of(view: &Entity<ConversationView>, cx: &App) -> Option<acp_v2::SessionId> {
++        view.read(cx)
++            .active_thread()
++            .map(|thread| thread.read(cx).session_id.clone())
++    }
++
++    /// Whether the conversation holding `session_id`'s thread shows `child`'s thread now.
++    fn shows_task_thread(&self, session_id: &acp_v2::SessionId, child: &acp_v2::SessionId) -> bool {
++        self.views.iter().any(|held| {
++            held.thread
++                .as_ref()
++                .is_some_and(|thread| &thread.session_id == session_id)
++                && held.shown_session.as_ref() == Some(child)
++        })
++    }
++
++    fn return_to_main_thread(&mut self, session_id: acp_v2::SessionId, cx: &mut Context<Self>) {
++        cx.emit(TasksCardEvent::ReturnToMainThread { session_id });
++    }
++
+     fn hold_thread(thread: &Entity<AcpThread>, cx: &mut Context<Self>) -> HeldThread {
+         let _subscription = cx.subscribe(thread, |card, thread, event, cx| match event {
+             AcpThreadEvent::TasksUpdated => card.handle_tasks_updated(&thread, cx),
+@@ -1516,6 +1547,15 @@ impl TasksCard {
+         view: &Entity<ConversationView>,
+         cx: &mut Context<Self>,
+     ) {
++        // The thread on screen moves without the root changing (a subagent's thread opened):
++        // the rows' Open/Back follows it.
++        let shown_session = Self::shown_session_of(view, cx);
++        if let Some(held) = self.views.iter_mut().find(|held| held.view_id == view_id)
++            && held.shown_session != shown_session
++        {
++            held.shown_session = shown_session;
++            cx.notify();
++        }
+         // A view between threads (loading again) keeps the last one: its weak
+         // handle tells whether it is still alive.
+         let Some(root) = view.read(cx).root_thread(cx) else {
+@@ -2744,25 +2784,51 @@ impl TasksCard {
+         );
+         // §6.47: only a background subagent's row opens another thread at the task; the
+         // focus handle is made only with the button, so Tab never stops on a missing one.
++        // Operator, 2026-11-22: while the task's own thread is on screen, Open turns into Back,
++        // an exit, and returns to the main thread.
++        let task_thread = match &source {
++            TaskSource::AcpSubagent { child, .. } => Some(child.clone()),
++            TaskSource::ClaudeTasks => task.child_session_id.clone(),
++        };
++        let on_task_thread = task_thread
++            .as_ref()
++            .is_some_and(|child| self.shows_task_thread(session_id, child));
+         let open_button = offers_open.then(|| {
+             let open_focus_handle = self.row_focus_handle(&key, RowControl::Open, cx);
++            let (icon, aria, tooltip) = if on_task_thread {
++                (
++                    IconName::Exit,
++                    format!("Back to the main thread: {shown_label}"),
++                    "Back to the Main Thread",
++                )
++            } else {
++                (
++                    IconName::ArrowUpRight,
++                    format!("Open in thread: {shown_label}"),
++                    "Open Thread at This Task",
++                )
++            };
+             let open_button = IconButton::new(
+                 SharedString::from(format!("tasks-card-open-{element_key}")),
+-                IconName::ArrowUpRight,
++                icon,
+             )
+             .icon_size(IconSize::Small)
+             .icon_color(Color::Muted)
+-            .aria_label(row_aria_label(format!("Open in thread: {shown_label}")))
++            .aria_label(row_aria_label(aria))
+             .tooltip(card_tooltip(
+                 format!("open-{task_id}").into(),
+-                "Open Thread at This Task".into(),
++                tooltip.into(),
+             ))
+             .track_focus(&open_focus_handle)
+             .on_click(cx.listener({
+                 let session_id = session_id.clone();
+                 let task_id = task_id.clone();
+                 move |card, _, window, cx| {
+-                    card.open_task(session_id.clone(), task_id.clone(), window, cx)
++                    if on_task_thread {
++                        card.return_to_main_thread(session_id.clone(), cx)
++                    } else {
++                        card.open_task(session_id.clone(), task_id.clone(), window, cx)
++                    }
+                 }
+             }));
+             div()
+@@ -2952,17 +3018,30 @@ impl TasksCard {
+                         .children(progress_line)
+                         // §6.22: the chevron opens the details, the eye the preview.
+                         .when(details_open, |this| {
+-                            this.child(render_expanded_body(&task, running_what.clone(), cx))
++                            this.child(render_expanded_body(
++                                &task,
++                                running_what.clone(),
++                                cx.theme().colors().editor_background,
++                                cx,
++                            ))
+                         })
+                         .when(watched, |this| {
+                             this.child(preview::render_preview(
+                                 &task,
+                                 self.previews.get(&key),
+                                 || {
++                                    // Operator, 2026-11-22: what the eye shows sits on the
++                                    // agent panel's background, whatever shows it.
++                                    let background = preview::watch_background(cx);
+                                     if task.kind == SHELL_KIND {
+-                                        render_tail(&task, cx)
++                                        render_tail(&task, background, cx)
+                                     } else {
+-                                        render_expanded_body(&task, running_what.clone(), cx)
++                                        render_expanded_body(
++                                            &task,
++                                            running_what.clone(),
++                                            background,
++                                            cx,
++                                        )
+                                     }
+                                 },
+                                 cx,
+@@ -3264,7 +3343,14 @@ fn item_count(groups: &[ThreadGroup]) -> usize {
+ 
+ /// What an expanded row shows under its line (R4.1–R4.4): what the task runs, its
+ /// progress details, and for a running shell its tail or "No output yet".
+-fn render_expanded_body(task: &AgentTask, running_what: SharedString, cx: &App) -> AnyElement {
++/// `background` is the monospace blocks' own: the editor's in the details, the panel's in the
++/// eye's preview.
++fn render_expanded_body(
++    task: &AgentTask,
++    running_what: SharedString,
++    background: Hsla,
++    cx: &App,
++) -> AnyElement {
+     let task_id = &task.id;
+     let running_what = div()
+         .debug_selector({
+@@ -3286,14 +3372,16 @@ fn render_expanded_body(task: &AgentTask, running_what: SharedString, cx: &App)
+         .gap_0p5()
+         .child(running_what)
+         .child(render_details(task, task_id))
+-        .when(shows_tail, |this| this.child(render_tail(task, cx)))
+-        .children(render_result_line(task, cx))
++        .when(shows_tail, |this| {
++            this.child(render_tail(task, background, cx))
++        })
++        .children(render_result_line(task, background, cx))
+         .into_any_element()
+ }
+ 
+ /// An ended shell's last line of output, kept from its last tail (Zeo next §6.1): how the
+ /// task ended -- "Finished release", "2 tests failed" -- without opening its log.
+-fn render_result_line(task: &AgentTask, cx: &App) -> Option<AnyElement> {
++fn render_result_line(task: &AgentTask, background: Hsla, cx: &App) -> Option<AnyElement> {
+     if task.kind != SHELL_KIND || task.status.is_running() {
+         return None;
+     }
+@@ -3310,7 +3398,7 @@ fn render_result_line(task: &AgentTask, cx: &App) -> Option<AnyElement> {
+             .min_w_0()
+             .px_1()
+             .rounded_sm()
+-            .bg(cx.theme().colors().editor_background)
++            .bg(background)
+             .child(
+                 Label::new(tail_line(line))
+                     .size(LabelSize::XSmall)
+@@ -3324,7 +3412,7 @@ fn render_result_line(task: &AgentTask, cx: &App) -> Option<AnyElement> {
+ 
+ /// A running shell's tail, one entry per line in a monospace block, or "No output yet"
+ /// before the agent has sent any (R4.3, R4.4).
+-fn render_tail(task: &AgentTask, cx: &App) -> AnyElement {
++fn render_tail(task: &AgentTask, background: Hsla, cx: &App) -> AnyElement {
+     let task_id = task.id.clone();
+     let Some(lines) = task.tail.as_deref().filter(|tail| !tail.is_empty()) else {
+         return div()
+@@ -3343,7 +3431,7 @@ fn render_tail(task: &AgentTask, cx: &App) -> AnyElement {
+         .overflow_hidden()
+         .px_1()
+         .rounded_sm()
+-        .bg(cx.theme().colors().editor_background)
++        .bg(background)
+         .children(lines.iter().map(|line| {
+             Label::new(tail_line(line))
+                 .size(LabelSize::XSmall)
+diff --git a/crates/agent_ui/src/tasks_card/back_to_main_thread_tests.rs b/crates/agent_ui/src/tasks_card/back_to_main_thread_tests.rs
+new file mode 100644
+index 0000000..bac0a73
+--- /dev/null
++++ b/crates/agent_ui/src/tasks_card/back_to_main_thread_tests.rs
+@@ -0,0 +1,90 @@
++// Operator, 2026-11-22: "Open Thread at This Task" turns into an exit while the task's thread is on
++// screen, and clicking it returns to the main thread. Module path: `tasks_card::back_to_main_thread`;
++// fixtures in `native_subagent_support.rs`. Validation: `cargo test -p agent_ui back_to_main`.
++//
++// An Open/Back is read where it lands: the session the conversation shows, and the label the
++// row's button carries.
++
++use agent_client_protocol::v2::schema as acp_v2;
++use gpui::{Modifiers, TestAppContext};
++
++use super::RENDERED_ARIA_LABELS;
++use super::native_subagent_support::*;
++
++fn click_open(rig: &mut SubagentRig, task_id: &str) {
++    let open = selector(format!("tasks-card-open-{task_id}"));
++    let bounds = rig
++        .cx
++        .debug_bounds(open)
++        .expect("the row's Open is painted");
++    rig.cx.simulate_click(bounds.center(), Modifiers::none());
++    rig.cx.run_until_parked();
++    rig.draw();
++}
++
++fn open_label_shown(label: &str) -> bool {
++    RENDERED_ARIA_LABELS.with(|labels| labels.borrow().iter().any(|shown| shown.contains(label)))
++}
++
++#[gpui::test]
++async fn open_turns_into_back_on_the_task_s_thread_and_back_returns_to_the_main_thread(
++    cx: &mut TestAppContext,
++) {
++    let mut rig = subagent_rig(cx).await;
++    let alpha = rig.spawn_child("alpha", Some("Alpha"), true);
++    rig.report_running(&alpha);
++    rig.draw();
++    let id = rig
++        .row_of(&alpha)
++        .expect("Alpha has a row")
++        .task
++        .id
++        .to_string();
++    assert!(
++        open_label_shown("Open in thread: Alpha"),
++        "on the main thread the row opens"
++    );
++
++    click_open(&mut rig, &id);
++    assert_eq!(rig.shown_session(), Some(acp_v2::SessionId::new("alpha")));
++    RENDERED_ARIA_LABELS.with(|labels| labels.borrow_mut().clear());
++    rig.draw();
++    assert!(
++        open_label_shown("Back to the main thread: Alpha"),
++        "on the task's thread the same button goes back"
++    );
++
++    click_open(&mut rig, &id);
++    assert_eq!(
++        rig.shown_session(),
++        Some(rig.parent_session.clone()),
++        "Back shows the main thread again"
++    );
++    RENDERED_ARIA_LABELS.with(|labels| labels.borrow_mut().clear());
++    rig.draw();
++    assert!(open_label_shown("Open in thread: Alpha"));
++    assert!(!open_label_shown("Back to the main thread"));
++}
++
++/// Hostile: on Bravo's thread only Bravo's row goes back; Alpha's still opens Alpha.
++#[gpui::test]
++async fn only_the_row_of_the_thread_on_screen_goes_back(cx: &mut TestAppContext) {
++    let mut rig = subagent_rig(cx).await;
++    let alpha = rig.spawn_child("alpha", Some("Alpha"), true);
++    let bravo = rig.spawn_child("bravo", Some("Bravo"), true);
++    rig.report_running(&alpha);
++    rig.report_running(&bravo);
++    rig.draw();
++    let bravo_id = rig
++        .row_of(&bravo)
++        .expect("Bravo has a row")
++        .task
++        .id
++        .to_string();
++    click_open(&mut rig, &bravo_id);
++    assert_eq!(rig.shown_session(), Some(acp_v2::SessionId::new("bravo")));
++    RENDERED_ARIA_LABELS.with(|labels| labels.borrow_mut().clear());
++    rig.draw();
++    assert!(open_label_shown("Back to the main thread: Bravo"));
++    assert!(open_label_shown("Open in thread: Alpha"));
++}
+diff --git a/crates/agent_ui/src/tasks_card/preview.rs b/crates/agent_ui/src/tasks_card/preview.rs
+index a200b7b..0b848f9 100644
+--- a/crates/agent_ui/src/tasks_card/preview.rs
++++ b/crates/agent_ui/src/tasks_card/preview.rs
+@@ -9,7 +9,7 @@
+ use std::time::Duration;
+ 
+ use acp_thread::{AgentTask, TaskOutput};
+-use gpui::{AnyElement, App, ScrollHandle, SharedString, px};
++use gpui::{AnyElement, App, Hsla, ScrollHandle, SharedString, px};
+ use ui::prelude::*;
+ 
+ /// How often a running task's preview is refetched.
+@@ -78,7 +78,7 @@ pub(super) fn render_preview(
+                 .min_w_0()
+                 .px_1()
+                 .rounded_sm()
+-                .bg(cx.theme().colors().editor_background)
++                .bg(watch_background(cx))
+                 .when(cut || output.truncated, |this| {
+                     this.child(
+                         Label::new("… earlier output not shown")
+@@ -114,6 +114,12 @@ pub(super) fn render_preview(
+         .into_any_element()
+ }
+ 
++/// What the eye shows sits on the agent panel's background (operator, 2026-11-22): the card
++/// floats on an elevated surface, and the output it watches reads as the panel's own content.
++pub(super) fn watch_background(cx: &App) -> Hsla {
++    cx.theme().colors().panel_background
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;

@@ -1,0 +1,308 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 23 Nov 2026 00:57:52 -0300
+Subject: [PATCH] agent_ui: Markdown files get the composer's block look and
+ quotation highlight
+
+Operator, 2026-11-22: the highlight "has to exist in the editor's content
+area too; today it is only in the agent panel" -- and, asked to confirm,
+the same behaviour as the composer in Markdown files. An editor showing
+one Markdown file now gets what the composer has: fenced code and `>`
+quotes look like blocks (0107), text in quotation marks is highlighted
+(0122), and a typed backtick fence closes itself (0107, 0153).
+
+markdown_file_look.rs (new) runs the composer's own functions --
+composer_blocks::refresh_composer_blocks and close_opened_fence -- so the
+composer and the files cannot drift apart; only the trigger is new.
+agent_ui::init registers an observer on every new full editor, which
+subscribes to that editor's events:
+- Reparsed refreshes the look. The editor emits it after the parse that
+  follows each edit and on a language change, which is also the moment a
+  file's language becomes known after it opens. BufferEdited as well
+  would rescan the whole text twice per keystroke.
+- InputHandled ending in a backtick runs the fence rule.
+Only a singleton buffer with a file, in Markdown, at most 1 MiB
+(MARKDOWN_FILE_LOOK_MAX_BYTES), is handled. The file is what keeps the
+composer out: it is a Markdown buffer with none, in a full editor while
+empty or expanded, and it closes its fences itself, so handling it here
+would close a fence twice.
+
+Known gaps: a file over the limit keeps upstream's look (every edit
+rescans the whole text); a file whose language stops being Markdown, by a
+rename, keeps its last look until it is reopened.
+
+Tests: markdown_file_look::tests, 4 GPUI -- a Markdown file gets the code
+rows, the quote rows and the quotation background and follows an edit; a
+fence typed in a file closes as long as it is (0153); a .txt file keeps
+upstream's look; a Markdown buffer with no file is left alone (the
+composer's guard). Red seen with init returning early: the first two
+failed, the two guards passed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index ca86e33..ba3ec85 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -18,6 +18,7 @@ mod entry_view_state;
+ mod external_source_prompt;
+ mod inline_assistant;
+ mod inline_prompt_editor;
++mod markdown_file_look;
+ mod mention_set;
+ mod message_editor;
+ mod mode_selector;
+@@ -743,6 +744,8 @@ pub fn init(
+         init_language_model_settings(cx);
+     }
+     agent_panel::init(cx);
++    // Zeo (operator, 2026-11-22): the composer's Markdown look in the editor's Markdown files.
++    markdown_file_look::init(cx);
+     context_server_configuration::init(language_registry, fs.clone(), cx);
+     thread_metadata_store::init(cx);
+     thread_organization::init(cx);
+diff --git a/crates/agent_ui/src/markdown_file_look.rs b/crates/agent_ui/src/markdown_file_look.rs
+new file mode 100644
+index 0000000..3213f1e
+--- /dev/null
++++ b/crates/agent_ui/src/markdown_file_look.rs
+@@ -0,0 +1,84 @@
++//! The composer's Markdown look in the editor's Markdown files (Zeo, operator 2026-11-22: "it has
++//! to exist in the editor's content area too, today it is only in the agent panel").
++//!
++//! An editor showing one Markdown file gets what the agent composer has: fenced code and `>`
++//! quotes look like blocks (0107), text in quotation marks is highlighted (0122), and a typed
++//! backtick fence closes itself (0107, 0153). The same functions run, so the composer and the files
++//! cannot drift apart; only the trigger differs. The composer drives them from its own
++//! subscription, and its buffer has no file, so it is never handled twice.
++//!
++//! Known gaps: a file over [`MARKDOWN_FILE_LOOK_MAX_BYTES`] is left alone, because the look is
++//! recomputed from the whole text on every edit; and a file whose language stops being Markdown
++//! (renamed) keeps its last look until it is reopened.
++
++use editor::{Editor, EditorEvent};
++use gpui::{App, Context, Window};
++
++/// Markdown files larger than this keep upstream's look: every edit rescans the whole text.
++pub(crate) const MARKDOWN_FILE_LOOK_MAX_BYTES: usize = 1 << 20;
++
++/// Registers the look on every full editor as it is created.
++pub(crate) fn init(cx: &mut App) {
++    cx.observe_new(
++        |editor: &mut Editor, window: Option<&mut Window>, cx: &mut Context<Editor>| {
++            let Some(window) = window else {
++                return;
++            };
++            if !editor.mode().is_full() {
++                return;
++            }
++            let this = cx.entity();
++            cx.subscribe_in(
++                &this,
++                window,
++                |editor, _, event: &EditorEvent, window, cx| {
++                    on_markdown_file_event(editor, event, window, cx)
++                },
++            )
++            .detach();
++            if is_markdown_file(editor, cx) {
++                crate::composer_blocks::refresh_composer_blocks(editor, cx);
++            }
++        },
++    )
++    .detach();
++}
++
++/// Whether `editor` shows a single Markdown file small enough to rescan on every edit.
++pub(crate) fn is_markdown_file(editor: &Editor, cx: &App) -> bool {
++    let Some(buffer) = editor.buffer().read(cx).as_singleton() else {
++        return false;
++    };
++    let buffer = buffer.read(cx);
++    buffer.file().is_some()
++        && buffer.len() <= MARKDOWN_FILE_LOOK_MAX_BYTES
++        && buffer
++            .language()
++            .is_some_and(|language| language.name().as_ref() == "Markdown")
++}
++
++fn on_markdown_file_event(
++    editor: &mut Editor,
++    event: &EditorEvent,
++    window: &mut Window,
++    cx: &mut Context<Editor>,
++) {
++    match event {
++        // Once per edit, after the parse that follows it, and on a language change (a file's
++        // language arrives after it opens): the editor emits Reparsed for both. BufferEdited too
++        // would rescan the whole text twice per keystroke.
++        EditorEvent::Reparsed(_) if is_markdown_file(editor, cx) => {
++            crate::composer_blocks::refresh_composer_blocks(editor, cx)
++        }
++        EditorEvent::InputHandled { text, .. }
++            if text.ends_with('`') && is_markdown_file(editor, cx) =>
++        {
++            crate::composer_blocks::close_opened_fence(editor, window, cx)
++        }
++        _ => {}
++    }
++}
++
++#[cfg(test)]
++#[path = "markdown_file_look_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/markdown_file_look_tests.rs b/crates/agent_ui/src/markdown_file_look_tests.rs
+new file mode 100644
+index 0000000..3e892b1
+--- /dev/null
++++ b/crates/agent_ui/src/markdown_file_look_tests.rs
+@@ -0,0 +1,148 @@
++// Zeo (operator, 2026-11-22): the composer's Markdown look in the editor's Markdown files.
++// Filter: `markdown_file_look`.
++
++use std::ops::Range;
++use std::path::Path;
++
++use editor::Editor;
++use fs::FakeFs;
++use gpui::{AppContext as _, Entity, EntityInputHandler as _, TestAppContext, VisualTestContext};
++use language::Point;
++use multi_buffer::ToPoint as _;
++use pretty_assertions::assert_eq;
++use project::Project;
++use util::path;
++
++use super::*;
++use crate::composer_blocks::{ComposerCodeBlock, ComposerQuote};
++use crate::conversation_view::tests::init_test;
++
++const NOTE: &str = "```\ncode\n```\n> quote\nsay \"hi\"";
++
++/// An editor on `/project/<name>` holding `text`, with the look registered before it is created,
++/// as `agent_ui::init` does in the app.
++async fn file_editor<'a>(
++    name: &str,
++    text: &str,
++    cx: &'a mut TestAppContext,
++) -> (Entity<Editor>, &'a mut VisualTestContext) {
++    init_test(cx);
++    cx.update(init);
++    let fs = FakeFs::new(cx.executor());
++    let mut tree = serde_json::Map::new();
++    tree.insert(name.to_string(), text.into());
++    fs.insert_tree("/project", serde_json::Value::Object(tree))
++        .await;
++    let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
++    project.read_with(cx, |project, _| {
++        project.languages().add(language::markdown_lang())
++    });
++    let buffer = project
++        .update(cx, |project, cx| {
++            project.open_local_buffer(path!("/project/").to_string() + name, cx)
++        })
++        .await
++        .expect("open the file");
++    let (editor, cx) = cx.add_window_view(|window, cx| {
++        Editor::for_buffer(buffer, Some(project.clone()), window, cx)
++    });
++    cx.run_until_parked();
++    (editor, cx)
++}
++
++fn rows<T: 'static>(editor: &Entity<Editor>, cx: &mut VisualTestContext) -> Vec<Range<u32>> {
++    editor.update(cx, |editor, cx| {
++        let snapshot = editor.buffer().read(cx).snapshot(cx);
++        editor
++            .highlighted_rows::<T>(cx)
++            .map(|(range, _)| {
++                range.start.to_point(&snapshot).row..range.end.to_point(&snapshot).row
++            })
++            .collect()
++    })
++}
++
++fn text_backgrounds(editor: &Entity<Editor>, cx: &mut VisualTestContext) -> Vec<Range<(u32, u32)>> {
++    editor.update_in(cx, |editor, window, cx| {
++        editor
++            .all_text_background_highlights(window, cx)
++            .into_iter()
++            .map(|(range, _)| {
++                (range.start.row().0, range.start.column())..(range.end.row().0, range.end.column())
++            })
++            .collect()
++    })
++}
++
++#[gpui::test]
++async fn a_markdown_file_gets_the_composer_look(cx: &mut TestAppContext) {
++    let (editor, cx) = file_editor("notes.md", NOTE, cx).await;
++    assert_eq!(rows::<ComposerCodeBlock>(&editor, cx), vec![0..2]);
++    assert_eq!(rows::<ComposerQuote>(&editor, cx), vec![3..3]);
++    assert_eq!(text_backgrounds(&editor, cx), vec![(4, 4)..(4, 8)]);
++
++    // It follows edits.
++    editor.update_in(cx, |editor, window, cx| {
++        editor.set_text("plain\n> one\n> two", window, cx)
++    });
++    cx.run_until_parked();
++    assert_eq!(
++        rows::<ComposerCodeBlock>(&editor, cx),
++        Vec::<Range<u32>>::new()
++    );
++    assert_eq!(rows::<ComposerQuote>(&editor, cx), vec![1..2]);
++}
++
++#[gpui::test]
++async fn a_fence_typed_in_a_markdown_file_closes_itself(cx: &mut TestAppContext) {
++    let (editor, cx) = file_editor("notes.md", "", cx).await;
++    for ch in "````".chars() {
++        editor.update_in(cx, |editor, window, cx| {
++            editor.replace_text_in_range(None, &ch.to_string(), window, cx)
++        });
++        cx.run_until_parked();
++    }
++    let (text, cursor) = editor.update(cx, |editor, cx| {
++        let display_snapshot = editor.display_snapshot(cx);
++        (
++            editor.text(cx),
++            editor.selections.newest::<Point>(&display_snapshot).head(),
++        )
++    });
++    assert_eq!((text.as_str(), cursor), ("````\n````", Point::new(0, 4)));
++}
++
++#[gpui::test]
++async fn a_file_that_is_not_markdown_keeps_upstream_s_look(cx: &mut TestAppContext) {
++    let (editor, cx) = file_editor("notes.txt", NOTE, cx).await;
++    assert_eq!(
++        rows::<ComposerCodeBlock>(&editor, cx),
++        Vec::<Range<u32>>::new()
++    );
++    assert_eq!(rows::<ComposerQuote>(&editor, cx), Vec::<Range<u32>>::new());
++    assert!(text_backgrounds(&editor, cx).is_empty());
++}
++
++/// The composer is a Markdown buffer with no file, in a full editor while it is empty or expanded;
++/// it closes its fences itself (0107), so this look must leave a file-less buffer alone or a fence
++/// would be closed twice.
++#[gpui::test]
++async fn a_markdown_buffer_with_no_file_is_left_to_its_owner(cx: &mut TestAppContext) {
++    init_test(cx);
++    cx.update(init);
++    let buffer = cx.new(|cx| {
++        let mut buffer = language::Buffer::local("", cx);
++        buffer.set_language(Some(language::markdown_lang()), cx);
++        buffer
++    });
++    let (editor, cx) =
++        cx.add_window_view(|window, cx| Editor::for_buffer(buffer, None, window, cx));
++    cx.run_until_parked();
++    for ch in "```".chars() {
++        editor.update_in(cx, |editor, window, cx| {
++            editor.replace_text_in_range(None, &ch.to_string(), window, cx)
++        });
++        cx.run_until_parked();
++    }
++    assert_eq!(editor.update(cx, |editor, cx| editor.text(cx)), "```");
++}

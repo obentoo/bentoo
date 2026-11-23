@@ -1,0 +1,254 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 23 Nov 2026 00:49:41 -0300
+Subject: [PATCH] agent_ui: a longer fence in the composer closes as long as it
+ is
+
+Operator, 2026-11-22: four backticks must open and close a block the way
+three do, because ```` keeps a block whole when its text holds ```.
+0107 closed only a bare ``` as it was typed, with ```. A fourth backtick
+then left "````" over "```": the closing fence was too short to close,
+and the block ran to the end of the draft.
+
+Why it showed up as "the closing appears at the fourth key or at a line
+break": on a dead-key layout (ABNT2, US-International) a backtick is
+committed only by the next key, so the third backtick reaches the editor
+when the fourth is pressed, or Enter.
+
+composer_blocks::fence_edit replaces fence_to_close. A typed backtick at
+the end of a bare backtick fence of three or more, with no block open
+above, now:
+- grows the fence right below by one backtick when it is one shorter --
+  the closing a shorter opening got, typed one backtick at a time;
+- does nothing when the fence below already closes the block;
+- otherwise inserts a closing fence as long as the opening.
+Either edit is its own undo step, as 0107's closing is. Tildes are still
+never closed as they are typed, and a ``` typed above an existing block
+still gets its own closing (the rule looks one line down, not to the end
+of the draft, so a later fence is never mistaken for this one's).
+
+Tests: composer_blocks::tests::a_longer_fence_is_closed_as_long_as_it_is
+(the pure rule) and a_fourth_backtick_grows_the_closing_fence_and_one_
+undo_takes_it_back (a real MessageEditor); 0107's
+only_an_opening_bare_fence_at_the_cursor_is_closed now asserts the edit,
+and its "```` is not closed" case became the new rule. Red seen with the
+grow edit removed: the editor test failed, the rest passed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_ui/src/composer_blocks.rs b/crates/agent_ui/src/composer_blocks.rs
+index 8b8c6da..abde736 100644
+--- a/crates/agent_ui/src/composer_blocks.rs
++++ b/crates/agent_ui/src/composer_blocks.rs
+@@ -9,7 +9,10 @@
+ //! Fences follow CommonMark: three or more backticks or tildes, indented at most three spaces; a
+ //! backtick fence whose info string holds a backtick is inline code, not a fence; a block closes
+ //! on a fence of the same character, at least as long, with nothing after it but whitespace; an
+-//! unclosed fence runs to the end of the draft. Only a bare ``` is closed as it is typed.
++//! unclosed fence runs to the end of the draft. Only a bare backtick fence is closed as it is
++//! typed, with a closing fence as long as the opening one; a backtick typed onto a fence that was
++//! just closed grows the closing fence with it, so ```` opens and closes like ``` (operator,
++//! 2026-11-22: four backticks keep a block whole when its text holds three).
+ 
+ use std::ops::Range;
+ 
+@@ -121,21 +124,53 @@ fn ends_inside_a_block(text: &str) -> bool {
+     open.is_some()
+ }
+ 
+-/// Whether typing just completed an opening fence at `cursor` that should be closed: the line
+-/// up to the cursor is a bare ``` (indent and backticks only, nothing after the cursor), and no
+-/// block is open above it, so it opens one rather than closing one.
+-pub(crate) fn fence_to_close(text: &str, cursor: usize) -> bool {
++/// What a typed backtick at `cursor` does to the fence it completes.
++#[derive(Debug, PartialEq, Eq)]
++pub(crate) enum FenceEdit {
++    /// Insert this closing fence, newline first, at the cursor.
++    Close(String),
++    /// Add one backtick at this offset: the end of the closing fence right below, one shorter than
++    /// the opening. That is the fence a shorter opening was closed with, typed one backtick at a
++    /// time (```` arrives as ``` and then one more).
++    Grow(usize),
++}
++
++/// The fence edit a backtick typed at `cursor` asks for, if any: the line up to the cursor is a
++/// bare backtick fence (indent and three or more backticks, nothing after the cursor), and no block
++/// is open above it, so it opens one rather than closing one. Then the closing fence right below
++/// grows when it is one shorter, is left alone when it already closes the block, and is inserted
++/// otherwise.
++pub(crate) fn fence_edit(text: &str, cursor: usize) -> Option<FenceEdit> {
+     let line_start = text[..cursor].rfind('\n').map_or(0, |ix| ix + 1);
+     let line_end = text[cursor..]
+         .find('\n')
+         .map_or(text.len(), |ix| cursor + ix);
+     let line = &text[line_start..line_end];
+-    if cursor != line_end || fence(line).is_none() || line.trim() != "```" {
+-        return false;
++    let opening = fence(line)?;
++    if cursor != line_end || opening.ch != '`' || !opening.bare || line.trim_end() != line {
++        return None;
+     }
+     // Everything above the fence line, without the newline that ends it.
+     let above = text[..line_start].strip_suffix('\n').unwrap_or("");
+-    !ends_inside_a_block(above)
++    if ends_inside_a_block(above) {
++        return None;
++    }
++    let closing = "`".repeat(opening.len);
++    if line_end == text.len() {
++        return Some(FenceEdit::Close(format!("\n{closing}")));
++    }
++    let next_start = line_end + 1;
++    let next_end = text[next_start..]
++        .find('\n')
++        .map_or(text.len(), |ix| next_start + ix);
++    match fence(&text[next_start..next_end]) {
++        Some(below) if below.ch == '`' && below.bare && below.len + 1 == opening.len => {
++            let run_end = next_start + text[next_start..next_end].trim_end().len();
++            Some(FenceEdit::Grow(run_end))
++        }
++        Some(below) if below.ch == '`' && below.bare && below.len >= opening.len => None,
++        _ => Some(FenceEdit::Close(format!("\n{closing}"))),
++    }
+ }
+ 
+ /// Re-highlights the composer's blocks from its text as it stands.
+@@ -182,8 +217,9 @@ pub(crate) fn refresh_composer_blocks(editor: &mut Editor, cx: &mut Context<Edit
+     crate::composer_quotations::refresh_composer_quotations(editor, cx);
+ }
+ 
+-/// After typed input, closes a fence the input just opened. The closing fence is its own undo
+-/// step, so one undo takes it back and leaves what was typed.
++/// After typed input, closes a fence the input just opened, or grows the closing fence of one it
++/// just lengthened. Either edit is its own undo step, so one undo takes it back and leaves what was
++/// typed.
+ pub(crate) fn close_opened_fence(
+     editor: &mut Editor,
+     window: &mut Window,
+@@ -209,11 +245,17 @@ pub(crate) fn close_opened_fence(
+     let cursor = selection.head();
+     let snapshot = editor.buffer().read(cx).snapshot(cx);
+     let cursor_offset = snapshot.point_to_offset(cursor).0;
+-    if !fence_to_close(&snapshot.text(), cursor_offset) {
++    let Some(fence_edit) = fence_edit(&snapshot.text(), cursor_offset) else {
+         return;
+-    }
++    };
+     editor.finalize_last_transaction(cx);
+-    editor.edit([(cursor..cursor, "\n```")], cx);
++    match fence_edit {
++        FenceEdit::Close(closing) => editor.edit([(cursor..cursor, closing)], cx),
++        FenceEdit::Grow(offset) => {
++            let at = snapshot.offset_to_point(multi_buffer::MultiBufferOffset(offset));
++            editor.edit([(at..at, "`")], cx);
++        }
++    }
+     editor.change_selections(Default::default(), window, cx, |selections| {
+         selections.select_ranges([cursor..cursor]);
+     });
+diff --git a/crates/agent_ui/src/composer_blocks_tests.rs b/crates/agent_ui/src/composer_blocks_tests.rs
+index 9637808..b512cc7 100644
+--- a/crates/agent_ui/src/composer_blocks_tests.rs
++++ b/crates/agent_ui/src/composer_blocks_tests.rs
+@@ -56,18 +56,45 @@ fn four_spaces_of_indent_is_neither_a_fence_nor_a_quote() {
+     assert_eq!(scan_composer_blocks("    ```\n    > q"), rows(&[], &[]));
+ }
+ 
++fn close(fence: &str) -> Option<FenceEdit> {
++    Some(FenceEdit::Close(format!("\n{fence}")))
++}
++
+ #[test]
+ fn only_an_opening_bare_fence_at_the_cursor_is_closed() {
+-    assert!(fence_to_close("```", 3));
+-    assert!(fence_to_close("text\n  ```", 10));
++    assert_eq!(fence_edit("```", 3), close("```"));
++    assert_eq!(fence_edit("text\n  ```", 10), close("```"));
+     // The cursor is not at the end of the fence.
+-    assert!(!fence_to_close("```", 2));
++    assert_eq!(fence_edit("```", 2), None);
+     // Something follows the backticks.
+-    assert!(!fence_to_close("````", 4));
++    assert_eq!(fence_edit("```x", 3), None);
++    assert_eq!(fence_edit("``` ", 4), None);
+     // An odd number of fences above: this one closes a block.
+-    assert!(!fence_to_close("```\ncode\n```", 12));
++    assert_eq!(fence_edit("```\ncode\n```", 12), None);
+     // Two fences above: a new block opens.
+-    assert!(fence_to_close("```\ncode\n```\n```", 16));
++    assert_eq!(fence_edit("```\ncode\n```\n```", 16), close("```"));
++}
++
++/// Operator, 2026-11-22: ```` must open and close like ```, because four backticks keep a block
++/// whole when its text holds three.
++#[test]
++fn a_longer_fence_is_closed_as_long_as_it_is() {
++    // Typed in one go (a dead-key layout commits the backticks late): closed with four.
++    assert_eq!(fence_edit("````", 4), close("````"));
++    // Typed one at a time: ``` was closed with ```, and the fourth backtick grows that closing.
++    assert_eq!(fence_edit("````\n```", 4), Some(FenceEdit::Grow(8)));
++    assert_eq!(
++        fence_edit("`````\n````\nafter", 5),
++        Some(FenceEdit::Grow(10))
++    );
++    // Already closed right below: nothing to do.
++    assert_eq!(fence_edit("````\n````", 4), None);
++    assert_eq!(fence_edit("```\n````", 3), None);
++    // A closing fence two shorter, or a line that is not a fence, gets a closing of its own.
++    assert_eq!(fence_edit("`````\n```", 5), close("`````"));
++    assert_eq!(fence_edit("````\ntext", 4), close("````"));
++    // Tildes are never closed as they are typed.
++    assert_eq!(fence_edit("~~~", 3), None);
+ }
+ 
+ /// The composer's editor, with the `MessageEditor` that owns it: the subscriptions under test
+@@ -176,6 +203,30 @@ async fn typing_a_fence_closes_it_and_one_undo_takes_the_closing_back(cx: &mut T
+     assert_eq!(text_and_cursor(&editor, cx).0, "```rust\n```");
+ }
+ 
++#[gpui::test]
++async fn a_fourth_backtick_grows_the_closing_fence_and_one_undo_takes_it_back(
++    cx: &mut TestAppContext,
++) {
++    let (_message_editor, editor, cx) = composer(cx).await;
++    type_text(&editor, "````", cx);
++    assert_eq!(
++        text_and_cursor(&editor, cx),
++        ("````\n````".to_string(), Point::new(0, 4)),
++        "the closing fence is as long as the opening one, the cursor after the opening one"
++    );
++    assert_eq!(highlighted::<ComposerCodeBlock>(&editor, cx), vec![0..1]);
++
++    editor.update_in(cx, |editor, window, cx| {
++        editor.undo(&Default::default(), window, cx)
++    });
++    cx.run_until_parked();
++    assert_eq!(
++        text_and_cursor(&editor, cx).0,
++        "````\n```",
++        "one undo takes back the grown backtick, and only it"
++    );
++}
++
+ #[gpui::test]
+ async fn a_fence_that_closes_a_block_is_left_alone(cx: &mut TestAppContext) {
+     let (_message_editor, editor, cx) = composer(cx).await;
+@@ -244,7 +295,7 @@ fn a_backtick_in_a_backtick_fences_info_string_is_inline_code_not_a_fence() {
+     let text = "a\n```text```\nb\n```\nc\n```";
+     assert_eq!(scan_composer_blocks(text), rows(&[3..5], &[]));
+     assert!(
+-        fence_to_close("```text```\n```", 14),
++        fence_edit("```text```\n```", 14).is_some(),
+         "no block is open above, so a bare fence opens one"
+     );
+ }
+@@ -256,7 +307,7 @@ fn a_closing_fence_must_be_as_long_as_the_opening_one() {
+         rows(&[0..3], &[])
+     );
+     assert!(
+-        !fence_to_close("````\nx\n```", 10),
++        fence_edit("````\nx\n```", 10).is_none(),
+         "inside the four-backtick block"
+     );
+ }

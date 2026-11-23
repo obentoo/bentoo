@@ -1551,7 +1551,7 @@ declare -A GIT_CRATES=(
 # rewrites the date and EGIT_COMMIT; a second version variable it could not
 # keep current would leave a new tarball under an old, already-manifested name).
 
-EGIT_COMMIT="2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4"
+EGIT_COMMIT="f126950f9d3b62666f97437ae5d4ccac2272c4db"
 # LLVM 23 only, so it is the default slot: llvm-r2 would always prefer slot 22
 # (its newest stable) whenever 22 is listed. RUST_NEEDS_LLVM ties the Rust slot
 # to it. RUST_MIN_VER is the newest stable Rust, 1.100.0, past upstream's
@@ -1767,12 +1767,13 @@ DEPEND="
 # ai-jail: 0141 (§6.54) passes --memory/--cpu-quota/--max-tasks and --state-root, which
 # ai-jail 3.5.0-r1 adds as patches on upstream; ai-jail-bin is upstream's build and has
 # neither, so with it every jailed start would be refused (the limits default on).
+# -r2: 0158 turns the host view on by default, and its --mask-host is 3.5.0-r2's.
 RDEPEND="
 	${DEPEND}
 	!app-editors/zed
 	!app-editors/zed-bin
 	!app-editors/zeo-bin
-	ai-jail? ( >=sys-apps/ai-jail-3.5.0-r1 )
+	ai-jail? ( >=sys-apps/ai-jail-3.5.0-r2 )
 	browser-extension? ( www-plugins/zeo-browser )
 	claude-agent-acp-plus? ( >=dev-util/claude-agent-acp-plus-0.26.0 )
 	claude-agent-acp-tui? ( dev-util/claude-agent-acp-tui )
@@ -1912,6 +1913,9 @@ src_prepare() {
 		# carries; a Zeo built from source carries none, so this changes nothing
 		# here. Ungrouped like 0061: zeo-bin applies the whole series.
 		"${FILESDIR}/0124-remote-upload-the-server-zeo-bin-carries.patch"
+		# 0154: a Markdown quote continues on a new line and on a paste, in the
+		# composer and in Markdown files alike. Ungrouped like 0124.
+		"${FILESDIR}/0154-editor-a-markdown-quote-continues-on-a-new-line-and-on-a-paste.patch"
 	)
 
 	if use claude-agent-acp-plus; then
@@ -2316,6 +2320,12 @@ src_prepare() {
 			"${FILESDIR}/0149-agent-servers-mcp-servers-reach-claude-agent-plus-over-acp.patch"
 			# 0151: zeo-lsp, read-only language-server tools for Plus, over the same path.
 			"${FILESDIR}/0151-agent-servers-zeo-lsp-language-servers-for-claude-agent-plus.patch"
+			# 0153: ```` and longer fences close as long as they are. On 0107.
+			"${FILESDIR}/0153-agent-ui-a-longer-fence-in-the-composer-closes-as-long-as-it-is.patch"
+			# 0155: Markdown files get the composer's look (0107, 0122, 0153). On 0153.
+			"${FILESDIR}/0155-agent-ui-markdown-files-get-the-composer-s-block-look-and-quotation-hi.patch"
+			# 0156: the tasks card's Open turns into Back; the eye's preview on the panel background.
+			"${FILESDIR}/0156-agent-ui-the-tasks-card-s-open-turns-into-back-and-the-eye-s-content-s.patch"
 		)
 	fi
 
@@ -2353,6 +2363,11 @@ src_prepare() {
 			# never handed over unproxied.
 			"${FILESDIR}/0150-agent-servers-a-jail-reaches-no-proxied-mcp-server-by-default.patch"
 			"${FILESDIR}/0152-agent-sandbox-a-jail-s-capabilities-chosen-per-project.patch"
+			# 0157: the not-enabled notice offers Restart Session. On 0152.
+			"${FILESDIR}/0157-agent-ui-agent-servers-the-jail-s-not-enabled-notice-offers-restart-se.patch"
+			# 0158: Hide the Host on by default (needs ai-jail 3.5.0-r2, RDEPEND); Reserve
+			# CPUs on the Agent Sandbox page. On 0157.
+			"${FILESDIR}/0158-agent-sandbox-settings-ui-hide-the-host-on-by-default-reserve-cpus-mov.patch"
 		)
 	fi
 

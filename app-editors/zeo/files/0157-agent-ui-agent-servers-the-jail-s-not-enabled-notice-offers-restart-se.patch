@@ -1,0 +1,255 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 23 Nov 2026 01:14:53 -0300
+Subject: [PATCH] agent_ui, agent_servers: the jail's not-enabled notice offers
+ Restart Session
+
+Operator, 2026-11-22: a jailed session's notice about the MCP servers not
+enabled for it "should offer to restart the session, or load them without
+a restart if possible". 0152's notice opened Capabilities and stopped
+there, while a choice made there reaches the agent only on its next start.
+
+- jail_servers::not_enabled_notice adds a second `_meta` key,
+  RESTART_ACTION_META_KEY ("zeo/restartAgent": true), beside 0152's
+  settings action.
+- session_notice::SessionNotice::new takes an optional restart handler;
+  a Restart Session button is drawn, beside Open Capabilities, only when
+  the notice carries RESTART_AGENT_META set to true. Only Zeo's own
+  notices carry it; an agent's `_meta` is free-form, so anything but a
+  boolean true is ignored, as 0152 ignores a malformed settings action.
+- The thread view hands it restart_agent_for_jail (0141's restart: asks
+  first while a turn runs, keeps the thread).
+
+Without a restart: the Agent SDK has Query.setMcpServers, which replaces a
+running session's MCP servers, but Claude Agent (Plus) does not call it
+and ACP has no request for it, so loading a server live is a Plus change
+plus a Zeo request -- left for a story of its own.
+
+Tests: jail_servers_say_once_how_many_are_not_enabled_and_where_to_choose
+now asserts the restart key; session_notice_offers_a_restart_only_when_
+zeos_notice_asks (true offers; false, a string, nothing do not). Red seen
+with the key set false and the reader forced false: both failed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_servers/src/acp/jail_servers.rs b/crates/agent_servers/src/acp/jail_servers.rs
+index e4d7448..904a094 100644
+--- a/crates/agent_servers/src/acp/jail_servers.rs
++++ b/crates/agent_servers/src/acp/jail_servers.rs
+@@ -214,6 +214,9 @@ pub(crate) struct JailNotices {
+ /// The `_meta` key of a notice action that opens the settings at a path: agent_ui's
+ /// `session_notice::OPEN_SETTINGS_META`, which this crate cannot reach.
+ pub(crate) const SETTINGS_ACTION_META_KEY: &str = "zeo/openSettingsAt";
++/// The `_meta` key that asks for a Restart Session button: agent_ui's
++/// `session_notice::RESTART_AGENT_META` (operator, 2026-11-22).
++pub(crate) const RESTART_ACTION_META_KEY: &str = "zeo/restartAgent";
+ /// Where the not-enabled notice's action lands: the Agent Sandbox page, at Capabilities.
+ const CAPABILITIES_SETTINGS_PATH: &str = "agent_sandbox#capabilities";
+ 
+@@ -256,10 +259,14 @@ pub(crate) fn not_enabled_notice(not_enabled: &[(String, NotEnabled)]) -> Option
+     } else {
+         format!("{count} MCP servers are not enabled for this project's jail")
+     };
+-    let meta = serde_json::Map::from_iter([(
+-        SETTINGS_ACTION_META_KEY.to_string(),
+-        serde_json::json!({ "label": "Open Capabilities", "path": CAPABILITIES_SETTINGS_PATH }),
+-    )]);
++    let meta = serde_json::Map::from_iter([
++        (
++            SETTINGS_ACTION_META_KEY.to_string(),
++            serde_json::json!({ "label": "Open Capabilities", "path": CAPABILITIES_SETTINGS_PATH }),
++        ),
++        // A choice made there reaches the agent on its next start: the notice offers it.
++        (RESTART_ACTION_META_KEY.to_string(), serde_json::json!(true)),
++    ]);
+     Some(
+         acp_v2::Notice::new(acp_v2::NoticeSeverity::Info, title)
+             .description(lines.join("\n"))
+diff --git a/crates/agent_servers/src/acp/jail_servers_tests.rs b/crates/agent_servers/src/acp/jail_servers_tests.rs
+index 2798ea5..1d3d91f 100644
+--- a/crates/agent_servers/src/acp/jail_servers_tests.rs
++++ b/crates/agent_servers/src/acp/jail_servers_tests.rs
+@@ -249,8 +249,14 @@ fn jail_servers_say_once_how_many_are_not_enabled_and_where_to_choose() {
+         description.contains("cannot use it (MCP over ACP): keyed."),
+         "{description}"
+     );
+-    let action = &notice.meta.expect("an action")[super::SETTINGS_ACTION_META_KEY];
++    let meta = notice.meta.expect("an action");
++    let action = &meta[super::SETTINGS_ACTION_META_KEY];
+     assert_eq!(action["path"], "agent_sandbox#capabilities");
++    // Operator, 2026-11-22: the choice applies on the next start, so the notice offers it.
++    assert_eq!(
++        meta[super::RESTART_ACTION_META_KEY],
++        serde_json::json!(true)
++    );
+     let one = super::not_enabled_notice(&[("figma".to_string(), NotEnabled::NotChosen)])
+         .expect("a notice");
+     assert_eq!(
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index ed0c096..dabde24 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -15259,6 +15259,8 @@ impl ThreadView {
+                     let notice_id = *notice_id;
+                     let thread = self.thread.clone();
+                     let focus_handle = self.activation_focus_handle(cx);
++                    let restart: std::rc::Rc<dyn Fn(&mut Window, &mut App)> =
++                        std::rc::Rc::from(self.restart_agent_for_jail());
+                     crate::ui::SessionNotice::new(
+                         ("session-notice", notice_id),
+                         notice,
+@@ -15270,6 +15272,7 @@ impl ThreadView {
+                                 focus_handle.focus(window, cx);
+                             }
+                         },
++                        Some(restart),
+                     )
+                 }))
+                 .into_any_element(),
+diff --git a/crates/agent_ui/src/ui/session_notice.rs b/crates/agent_ui/src/ui/session_notice.rs
+index b38e1ee..8d2d431 100644
+--- a/crates/agent_ui/src/ui/session_notice.rs
++++ b/crates/agent_ui/src/ui/session_notice.rs
+@@ -1,5 +1,7 @@
+ use agent_client_protocol::v2::schema as acp;
+ use component::{Component, ComponentScope, example_group_with_title, single_example};
++use std::rc::Rc;
++
+ use gpui::{AnyElement, App, ClickEvent, ElementId, Stateful, Window, px};
+ use ui::{Callout, Color, IconButton, IconName, IconSize, Severity, Tooltip, prelude::*};
+ 
+@@ -10,10 +12,13 @@ pub struct SessionNotice {
+ }
+ 
+ impl SessionNotice {
++    /// `on_restart` restarts the thread's agent; it is offered only on a notice that asks for it
++    /// ([`RESTART_AGENT_META`]).
+     pub fn new(
+         id: impl Into<ElementId>,
+         notice: &acp::Notice,
+         on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
++        on_restart: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+     ) -> Self {
+         let id = id.into();
+         let dismiss_id = id.clone();
+@@ -25,6 +30,7 @@ impl SessionNotice {
+         };
+ 
+         let settings_action = settings_action(notice);
++        let restart_action = on_restart.filter(|_| asks_for_restart(notice));
+         Self {
+             id,
+             callout: Callout::new()
+@@ -33,22 +39,44 @@ impl SessionNotice {
+                 .when_some(icon, Callout::icon)
+                 .when_some(notice.description.clone(), Callout::description)
+                 .scrollable_description(false)
+-                .when_some(settings_action, |callout, (label, path)| {
+-                    callout.actions_slot(
+-                        Button::new("open-settings", label)
+-                            .label_size(LabelSize::Small)
+-                            .tab_index(0_isize)
+-                            .on_click(move |_, window, cx| {
+-                                window.dispatch_action(
+-                                    Box::new(zed_actions::OpenSettingsAt {
+-                                        path: path.clone(),
+-                                        target: None,
+-                                    }),
+-                                    cx,
+-                                );
+-                            }),
+-                    )
+-                })
++                .when(
++                    settings_action.is_some() || restart_action.is_some(),
++                    |callout| {
++                        callout.actions_slot(
++                            h_flex()
++                                .gap_1()
++                                .when_some(settings_action, |actions, (label, path)| {
++                                    actions.child(
++                                        Button::new("open-settings", label)
++                                            .label_size(LabelSize::Small)
++                                            .tab_index(0_isize)
++                                            .on_click(move |_, window, cx| {
++                                                window.dispatch_action(
++                                                    Box::new(zed_actions::OpenSettingsAt {
++                                                        path: path.clone(),
++                                                        target: None,
++                                                    }),
++                                                    cx,
++                                                );
++                                            }),
++                                    )
++                                })
++                                // Operator, 2026-11-22: a choice made under Capabilities reaches the
++                                // agent on its next start, so the notice offers that start.
++                                .when_some(restart_action, |actions, restart| {
++                                    actions.child(
++                                    Button::new("restart-agent", "Restart Session")
++                                        .label_size(LabelSize::Small)
++                                        .tab_index(0_isize)
++                                        .tooltip(Tooltip::text(
++                                            "Restart the agent so it gets the servers now chosen",
++                                        ))
++                                        .on_click(move |_, window, cx| restart(window, cx)),
++                                )
++                                }),
++                        )
++                    },
++                )
+                 .dismiss_action(
+                     div()
+                         .debug_selector(move || format!("dismiss-{dismiss_id}"))
+@@ -71,6 +99,19 @@ impl SessionNotice {
+ /// Zeo's own notices carry it; an agent's `_meta` is free-form, so a malformed one is ignored.
+ pub const OPEN_SETTINGS_META: &str = "zeo/openSettingsAt";
+ 
++/// The `_meta` key (`true`) a notice Zeo raises itself uses to offer restarting the thread's agent:
++/// the jail's "not enabled" notice, whose fix applies on the next start (operator, 2026-11-22).
++pub const RESTART_AGENT_META: &str = "zeo/restartAgent";
++
++fn asks_for_restart(notice: &acp::Notice) -> bool {
++    notice
++        .meta
++        .as_ref()
++        .and_then(|meta| meta.get(RESTART_AGENT_META))
++        .and_then(serde_json::Value::as_bool)
++        == Some(true)
++}
++
+ fn settings_action(notice: &acp::Notice) -> Option<(SharedString, String)> {
+     let action = notice.meta.as_ref()?.get(OPEN_SETTINGS_META)?;
+     let label = action.get("label")?.as_str()?;
+@@ -94,7 +135,7 @@ pub fn session_notice_list(id: impl Into<ElementId>) -> Stateful<Div> {
+ }
+ 
+ fn preview_notice(id: impl Into<ElementId>, notice: acp::Notice) -> AnyElement {
+-    SessionNotice::new(id, &notice, |_, _, _| {}).into_any_element()
++    SessionNotice::new(id, &notice, |_, _, _| {}, None).into_any_element()
+ }
+ 
+ #[derive(RegisterComponent)]
+@@ -258,4 +299,21 @@ mod session_notice_action_tests {
+             acp::Notice::new(acp::NoticeSeverity::Info, "n").meta(meta(serde_json::json!("x")));
+         assert_eq!(settings_action(&malformed), None);
+     }
++
++    #[test]
++    fn session_notice_offers_a_restart_only_when_zeos_notice_asks() {
++        let with = |value: serde_json::Value| {
++            acp::Notice::new(acp::NoticeSeverity::Info, "n").meta(serde_json::Map::from_iter([(
++                RESTART_AGENT_META.to_string(),
++                value,
++            )]))
++        };
++        assert!(asks_for_restart(&with(serde_json::json!(true))));
++        assert!(!asks_for_restart(&with(serde_json::json!(false))));
++        assert!(!asks_for_restart(&with(serde_json::json!("yes"))));
++        assert!(!asks_for_restart(&acp::Notice::new(
++            acp::NoticeSeverity::Info,
++            "n"
++        )));
++    }
+ }

@@ -1,0 +1,388 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 23 Nov 2026 00:49:51 -0300
+Subject: [PATCH] editor: a Markdown quote continues on a new line and on a
+ paste
+
+Operator, 2026-11-22: the `>` quote "works on one line only; it should
+extend as I break lines or paste several". Upstream continues `- ` and
+`1. ` lists on a newline (list_delimiter_for_newline) but not quotes, and
+its own test_markdown_indents case 7 pinned that: after "> Item 1" the
+new line began bare, and a pasted paragraph left the quote after its
+first line. The agent composer is a Markdown buffer, so it had the same
+gap, and 0107's quote look ended with the markers.
+
+markdown_quote.rs (new, pure functions, then two small hooks):
+- Editor::newline, after the list step and under the same
+  extend_list_on_newline setting, in a Markdown buffer: in the quoted
+  text of a quote line the new line starts with the quote's markers,
+  normalised to "> " per level; on an empty quote line one level ends
+  ("> > " becomes "> ", "> " becomes empty), as an empty list item ends
+  a list. Inside the markers a newline stays plain.
+- edit_for_markdown_paste (upstream's Markdown paste hook): a multi-line
+  paste into the quoted text of a quote line gets the markers after each
+  of its newlines. A one-line paste and a URL paste are unchanged.
+CommonMark's lazy continuation would already read a bare next line as
+quoted, but neither the composer's look nor a reader's eye does.
+NewlineConfig became pub(crate) for the new step to set it; the quote
+step reuses ClearCurrentLine and UnindentCurrentLine, the variants the
+list step uses for the same purpose.
+
+Tests: markdown_quote::tests, 3 unit and 3 on an EditorTestContext with
+the Markdown grammar (newline continues and ends levels, nested quotes,
+lists unchanged, a paste quoted, a paste outside a quote unchanged).
+Upstream's test_markdown_indents case 7 now expects "> " on the new
+line. Red seen with the newline step and the paste hook disabled: the
+two editor tests and case 7 failed, the guard (newline outside a quote)
+passed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/editor/src/clipboard.rs b/crates/editor/src/clipboard.rs
+index 3597710..a6631df 100644
+--- a/crates/editor/src/clipboard.rs
++++ b/crates/editor/src/clipboard.rs
+@@ -717,6 +717,18 @@ fn edit_for_markdown_paste<'a>(
+     to_insert_is_url: bool,
+ ) -> (Range<MultiBufferOffset>, Cow<'a, str>) {
+     if !to_insert_is_url {
++        // Zeo (operator, 2026-11-22): a multi-line paste into a `>` quote stays in the quote.
++        let start = range.start.to_point(buffer);
++        if let Some((line_snapshot, line_range)) =
++            buffer.buffer_line_for_row(MultiBufferRow(start.row))
++        {
++            let line = line_snapshot.text_for_range(line_range).collect::<String>();
++            if let Some(quoted) =
++                crate::markdown_quote::quoted_paste(&line, start.column as usize, to_insert)
++            {
++                return (range, Cow::Owned(quoted));
++            }
++        }
+         return (range, Cow::Borrowed(to_insert));
+     };
+ 
+diff --git a/crates/editor/src/editor.rs b/crates/editor/src/editor.rs
+index afaa963..599f4e7 100644
+--- a/crates/editor/src/editor.rs
++++ b/crates/editor/src/editor.rs
+@@ -72,6 +72,7 @@ mod diagnostics;
+ mod edit_prediction;
+ mod input;
+ mod markdown_actions;
++mod markdown_quote;
+ mod navigation;
+ mod rewrap;
+ mod selection;
+diff --git a/crates/editor/src/editor_tests.rs b/crates/editor/src/editor_tests.rs
+index a3da45b..a8abe73 100644
+--- a/crates/editor/src/editor_tests.rs
++++ b/crates/editor/src/editor_tests.rs
+@@ -44302,7 +44302,8 @@ async fn test_markdown_indents(cx: &mut gpui::TestAppContext) {
+             - Item 1.a
+         -ˇ"});
+ 
+-    // Case 7: Test blockquote newline preserves something
++    // Case 7: Test blockquote newline preserves something. Zeo (operator, 2026-11-22): the quote
++    // continues, as a list does (markdown_quote.rs).
+     cx.set_state(indoc! {"
+         > Item 1ˇ"
+     });
+@@ -44311,7 +44312,7 @@ async fn test_markdown_indents(cx: &mut gpui::TestAppContext) {
+     });
+     cx.assert_editor_state(indoc! {"
+         > Item 1
+-        ˇ"
++        > ˇ"
+     });
+ }
+ 
+diff --git a/crates/editor/src/input.rs b/crates/editor/src/input.rs
+index 8bcc20d..1c73bfd 100644
+--- a/crates/editor/src/input.rs
++++ b/crates/editor/src/input.rs
+@@ -645,6 +645,23 @@ impl Editor {
+                                 );
+                             }) {
+                                 delimiter = Some(list_delimiter);
++                            } else if let Some(quote_delimiter) = maybe!({
++                                // Zeo (operator, 2026-11-22): a `>` quote continues as a list
++                                // does, under the same setting.
++                                if !selection_is_empty
++                                    || !multi_buffer.language_settings(cx).extend_list_on_newline
++                                    || language.language_name().as_ref() != "Markdown"
++                                {
++                                    return None;
++                                }
++
++                                crate::markdown_quote::quote_delimiter_for_newline(
++                                    &start_point,
++                                    &buffer,
++                                    &mut newline_config,
++                                )
++                            }) {
++                                delimiter = Some(quote_delimiter);
+                             }
+ 
+                             (delimiter, newline_config)
+@@ -2364,7 +2381,7 @@ pub(super) fn is_list_prefix_row(
+ }
+ 
+ #[derive(Debug)]
+-enum NewlineConfig {
++pub(crate) enum NewlineConfig {
+     /// Insert newline with optional additional indent and optional extra blank line
+     Newline {
+         additional_indent: IndentSize,
+diff --git a/crates/editor/src/markdown_quote.rs b/crates/editor/src/markdown_quote.rs
+new file mode 100644
+index 0000000..93c586d
+--- /dev/null
++++ b/crates/editor/src/markdown_quote.rs
+@@ -0,0 +1,111 @@
++//! Markdown quotes continue (Zeo, operator 2026-11-22): a new line in a `>` quote starts with the
++//! quote's markers, and so does every line of a multi-line paste into one, the way upstream
++//! already continues `- ` and `1. ` lists. An empty quote line ends one level of the quote, as an
++//! empty list item ends the list.
++//!
++//! Before this, a quote held one line: the next line began bare, and a pasted paragraph left the
++//! quote after its first line. Markdown's lazy continuation would read that bare line as part of
++//! the quote, but the agent composer's block look (and most readers' eyes) follows the markers.
++
++use std::sync::Arc;
++
++use language::Point;
++use multi_buffer::{MultiBufferRow, MultiBufferSnapshot};
++
++use crate::input::NewlineConfig;
++
++/// A line's quote markers: one `>` per level, each with at most one space after it, behind up to
++/// three spaces of indent (CommonMark §5.1).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) struct QuoteMarkers {
++    /// The byte column where the markers end and the quoted text begins.
++    pub end: usize,
++    /// How deep the quote is: `> >` is two.
++    pub depth: usize,
++}
++
++impl QuoteMarkers {
++    /// The markers a continued line starts with, normalised to `> ` per level.
++    pub fn continuation(depth: usize) -> String {
++        "> ".repeat(depth)
++    }
++}
++
++/// `line`'s quote markers, if it is a quote line.
++pub(crate) fn quote_markers(line: &str) -> Option<QuoteMarkers> {
++    let indent = line.len() - line.trim_start_matches(' ').len();
++    if indent > 3 {
++        return None;
++    }
++    let mut rest = &line[indent..];
++    let mut end = indent;
++    let mut depth = 0;
++    while let Some(after) = rest.strip_prefix('>') {
++        depth += 1;
++        end += 1;
++        rest = after;
++        if let Some(after) = rest.strip_prefix(' ') {
++            end += 1;
++            rest = after;
++        }
++    }
++    (depth > 0).then_some(QuoteMarkers { end, depth })
++}
++
++/// What a newline at `column` of `line` does to its quote: `Ok(Some(markers))` continues it with
++/// them, `Ok(None)` inserts a plain newline, and `Err(outer)` ends one level of an empty quote
++/// line, leaving `outer` (empty for the last level) on that line instead of a newline.
++pub(crate) fn quote_newline(line: &str, column: usize) -> Result<Option<String>, String> {
++    let Some(markers) = quote_markers(line) else {
++        return Ok(None);
++    };
++    if column < markers.end {
++        return Ok(None);
++    }
++    if line[markers.end..].trim().is_empty() {
++        return Err(QuoteMarkers::continuation(markers.depth - 1));
++    }
++    Ok(Some(QuoteMarkers::continuation(markers.depth)))
++}
++
++/// `text` pasted at `column` of `line`, with the line's quote markers after each of its newlines,
++/// when the paste lands in the quoted text of a quote line. `None` leaves the paste unchanged.
++pub(crate) fn quoted_paste(line: &str, column: usize, text: &str) -> Option<String> {
++    if !text.contains('\n') {
++        return None;
++    }
++    let markers = quote_markers(line)?;
++    if column < markers.end {
++        return None;
++    }
++    let continuation = QuoteMarkers::continuation(markers.depth);
++    Some(text.replace('\n', &format!("\n{continuation}")))
++}
++
++/// `Editor::newline`'s quote step, for a Markdown buffer: the delimiter to continue the quote
++/// with, or `None` after setting `newline_config` to end an empty quote line's last level.
++pub(crate) fn quote_delimiter_for_newline(
++    start_point: &Point,
++    buffer: &MultiBufferSnapshot,
++    newline_config: &mut NewlineConfig,
++) -> Option<Arc<str>> {
++    let (snapshot, range) = buffer.buffer_line_for_row(MultiBufferRow(start_point.row))?;
++    let line = snapshot.text_for_range(range).collect::<String>();
++    match quote_newline(&line, start_point.column as usize) {
++        Ok(continuation) => continuation.map(Into::into),
++        Err(outer) if outer.is_empty() => {
++            *newline_config = NewlineConfig::ClearCurrentLine;
++            None
++        }
++        Err(outer) => {
++            *newline_config = NewlineConfig::UnindentCurrentLine {
++                continuation: outer.into(),
++            };
++            None
++        }
++    }
++}
++
++#[cfg(test)]
++#[path = "markdown_quote_tests.rs"]
++mod tests;
+diff --git a/crates/editor/src/markdown_quote_tests.rs b/crates/editor/src/markdown_quote_tests.rs
+new file mode 100644
+index 0000000..bf7e6ad
+--- /dev/null
++++ b/crates/editor/src/markdown_quote_tests.rs
+@@ -0,0 +1,129 @@
++// Zeo (operator, 2026-11-22): Markdown quotes continue on a newline and on a multi-line paste.
++// Filter: `markdown_quote`.
++
++use gpui::{ClipboardItem, TestAppContext};
++use indoc::indoc;
++use pretty_assertions::assert_eq;
++
++use super::*;
++use crate::editor_tests::init_test;
++use crate::test::editor_test_context::EditorTestContext;
++use crate::{Newline, Paste};
++
++#[test]
++fn quote_markers_count_levels_behind_up_to_three_spaces() {
++    assert_eq!(
++        quote_markers("> text"),
++        Some(QuoteMarkers { end: 2, depth: 1 })
++    );
++    assert_eq!(
++        quote_markers(">text"),
++        Some(QuoteMarkers { end: 1, depth: 1 })
++    );
++    assert_eq!(
++        quote_markers("   > > text"),
++        Some(QuoteMarkers { end: 7, depth: 2 })
++    );
++    assert_eq!(quote_markers(">>"), Some(QuoteMarkers { end: 2, depth: 2 }));
++    assert_eq!(quote_markers("    > code"), None, "four spaces is code");
++    assert_eq!(quote_markers("text > not"), None);
++}
++
++#[test]
++fn a_newline_continues_a_quote_and_ends_an_empty_level() {
++    assert_eq!(quote_newline("> text", 6), Ok(Some("> ".into())));
++    assert_eq!(quote_newline(">> text", 7), Ok(Some("> > ".into())));
++    // Inside the markers: a plain newline.
++    assert_eq!(quote_newline("> text", 1), Ok(None));
++    assert_eq!(quote_newline("text", 4), Ok(None));
++    // An empty quote line ends one level.
++    assert_eq!(quote_newline("> ", 2), Err(String::new()));
++    assert_eq!(quote_newline("> > ", 4), Err("> ".into()));
++}
++
++#[test]
++fn a_paste_into_quoted_text_quotes_every_line() {
++    assert_eq!(
++        quoted_paste("> ", 2, "one\ntwo\nthree").as_deref(),
++        Some("one\n> two\n> three")
++    );
++    assert_eq!(
++        quoted_paste("> > a", 5, "b\nc").as_deref(),
++        Some("b\n> > c")
++    );
++    assert_eq!(quoted_paste("> a", 3, "one line"), None);
++    assert_eq!(quoted_paste("plain", 5, "one\ntwo"), None);
++    assert_eq!(
++        quoted_paste("> a", 0, "one\ntwo"),
++        None,
++        "before the markers"
++    );
++}
++
++async fn markdown(cx: &mut TestAppContext) -> EditorTestContext {
++    init_test(cx, |_| {});
++    let markdown_language = languages::language("markdown", tree_sitter_md::LANGUAGE.into());
++    let mut cx = EditorTestContext::new(cx).await;
++    cx.update_buffer(|buffer, cx| buffer.set_language(Some(markdown_language), cx));
++    cx
++}
++
++#[gpui::test]
++async fn newline_in_a_markdown_quote_continues_it(cx: &mut TestAppContext) {
++    let mut cx = markdown(cx).await;
++
++    cx.set_state("> quotedˇ");
++    cx.update_editor(|e, window, cx| e.newline(&Newline, window, cx));
++    cx.wait_for_autoindent_applied().await;
++    cx.assert_editor_state("> quoted\n> ˇ");
++
++    // A second newline on the empty quote line ends the quote.
++    cx.update_editor(|e, window, cx| e.newline(&Newline, window, cx));
++    cx.wait_for_autoindent_applied().await;
++    cx.assert_editor_state("> quoted\nˇ");
++
++    cx.set_state("> > nestedˇ");
++    cx.update_editor(|e, window, cx| e.newline(&Newline, window, cx));
++    cx.wait_for_autoindent_applied().await;
++    cx.assert_editor_state("> > nested\n> > ˇ");
++    cx.update_editor(|e, window, cx| e.newline(&Newline, window, cx));
++    cx.wait_for_autoindent_applied().await;
++    cx.assert_editor_state("> > nested\n> ˇ");
++}
++
++#[gpui::test]
++async fn newline_outside_a_markdown_quote_is_unchanged(cx: &mut TestAppContext) {
++    let mut cx = markdown(cx).await;
++    cx.set_state("plain textˇ");
++    cx.update_editor(|e, window, cx| e.newline(&Newline, window, cx));
++    cx.wait_for_autoindent_applied().await;
++    cx.assert_editor_state("plain text\nˇ");
++
++    // Lists keep upstream's continuation.
++    cx.set_state("- itemˇ");
++    cx.update_editor(|e, window, cx| e.newline(&Newline, window, cx));
++    cx.wait_for_autoindent_applied().await;
++    cx.assert_editor_state("- item\n- ˇ");
++}
++
++#[gpui::test]
++async fn a_multi_line_paste_into_a_markdown_quote_stays_in_it(cx: &mut TestAppContext) {
++    let mut cx = markdown(cx).await;
++    cx.set_state("> ˇ");
++    cx.update_editor(|editor, window, cx| {
++        cx.write_to_clipboard(ClipboardItem::new_string("one\ntwo\nthree".to_string()));
++        editor.paste(&Paste, window, cx);
++    });
++    cx.assert_editor_state(indoc! {"
++        > one
++        > two
++        > threeˇ"});
++
++    // Outside a quote, the paste is unchanged.
++    cx.set_state("ˇ");
++    cx.update_editor(|editor, window, cx| {
++        cx.write_to_clipboard(ClipboardItem::new_string("one\ntwo".to_string()));
++        editor.paste(&Paste, window, cx);
++    });
++    cx.assert_editor_state("one\ntwoˇ");
++}

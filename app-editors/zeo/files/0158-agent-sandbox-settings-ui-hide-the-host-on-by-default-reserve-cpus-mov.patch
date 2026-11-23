@@ -1,0 +1,589 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 23 Nov 2026 01:27:49 -0300
+Subject: [PATCH] agent_sandbox, settings_ui: Hide the Host on by default;
+ Reserve CPUs moves to the page
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two operator decisions of 2026-11-22 on the agent sandbox.
+
+Reserve CPUs was a button beside the thread's lock (0146). The operator
+found it out of place there and asked for it in the settings window. It
+is now a switch on the Agent Sandbox page, beside a new "Hide the Host"
+switch for agent_sandbox.mask_host, which had no switch at all (0146 read
+it only for the command preview). agent_jail_host.rs (new) draws both from
+host_switches, a pure model: each follows the project's own choice, then
+the default; while Hide the Host is on, Reserve CPUs shows on and
+disabled, because its CPU files must match the cores the jail runs on
+(launch.rs already reserved under mask_host). Both write the project's
+entry -- set_project_reserve_cpus (0146) and set_project_mask_host (new,
+beside set_project_connectors) -- and apply on the next start. Beside the
+lock only "Shares CPUs" stays, as information: render_cpu_shared_label
+replaces render_cpu_reservation_toggle.
+
+Hide the Host is on by default. The operator saw a jailed agent read the
+machine's CPU model, thread count, RAM and swap, and chose "default, plus
+an extra layer" (the extra layer -- mount sources, kernel, load -- is an
+ai-jail change of its own). default.json and the settings fallback say
+true. --mask-host is the fork's (sys-apps/ai-jail-3.5.0-r2), and 0146
+refuses to start a jail that asks for it from an ai-jail without the
+option (fail closed), so the ebuild's RDEPEND moves to 3.5.0-r2 and the
+refusal and the missing-ai-jail tooltip name that version and the page's
+switch. Only a custom ai_jail_path at an older binary meets the refusal.
+
+Tests: agent_jail_host_tests (the model: the default hides and reserves,
+a project's own choices replace it); host_view_launch_hides_the_host_by_
+default (a settings file that never names mask_host passes --mask-host
+and pins). The fixtures that predate the host view (agent_sandbox launch and round
+trip, agent_servers sandbox hooks) now set it off,
+as they set the limits off for §6.54; the missing-ai-jail tooltip test
+reads -r2. Red seen with default.json false and the forced reservation
+dropped: both new tests failed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index fa9732f..6f2ada6 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -3198,7 +3198,9 @@
+     // memory the limits allow, only the jail's own cgroup, a machine id of its own. It hides
+     // hardware and cgroup details; nested sandboxes are unavailable in the jail either way.
+     // Needs an ai-jail with --mask-host; without one, a jail that asks for it does not start.
+-    "mask_host": false,
++    // On by default (operator, 2026-11-22: hide the host from the jailed agent); it also
++    // reserves the jail's cores, which its CPU files must match.
++    "mask_host": true,
+     // Whether jailed agents load the account's claude.ai connectors, which reach their
+     // vendors through anthropic.com, past `allow_hosts`.
+     "claude_ai_connectors": false,
+diff --git a/crates/agent_sandbox/src/capabilities.rs b/crates/agent_sandbox/src/capabilities.rs
+index bfba4e7..71ebef2 100644
+--- a/crates/agent_sandbox/src/capabilities.rs
++++ b/crates/agent_sandbox/src/capabilities.rs
+@@ -316,6 +316,13 @@ pub fn set_project_connectors(root: &Path, on: bool, cx: &mut App) -> Task<bool>
+     write_entry(root, "claude_ai_connectors", write, cx)
+ }
+ 
++/// Sets the project's `mask_host` (ai-jail's --mask-host, §6.63; the page's Hide the Host); a
++/// restart applies it.
++pub fn set_project_mask_host(root: &Path, on: bool, cx: &mut App) -> Task<bool> {
++    let write = move |entry: &mut AgentSandboxProjectSettingsContent| entry.mask_host = Some(on);
++    write_entry(root, "mask_host", write, cx)
++}
++
+ /// Writes the project's `capabilities` through `update`, which also sees the default MCP server
+ /// list in the file (empty when the file has none, as `default.json` says). A `capabilities`
+ /// left with nothing set is removed, so a reset leaves the entry as it was.
+diff --git a/crates/agent_sandbox/src/host_view_launch_tests.rs b/crates/agent_sandbox/src/host_view_launch_tests.rs
+index 55366df..e04caa4 100644
+--- a/crates/agent_sandbox/src/host_view_launch_tests.rs
++++ b/crates/agent_sandbox/src/host_view_launch_tests.rs
+@@ -92,6 +92,32 @@ async fn host_view_launch_lets_a_project_keep_its_connectors(cx: &mut TestAppCon
+ }
+ 
+ /// Hostile: the host view asked for and not offered refuses the start (fail closed).
++/// Operator, 2026-11-22: the host is hidden by default -- a settings file that never names
++/// `mask_host` passes --mask-host.
++#[gpui::test]
++async fn host_view_launch_hides_the_host_by_default(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, &help(true));
++    let mut value = settings(&f, Value::Null);
++    value["agent_sandbox"]
++        .as_object_mut()
++        .expect("an agent_sandbox object")
++        .remove("mask_host");
++    set_user_settings(value, cx);
++    let project = project(&f, cx).await;
++    let (_, cmd) = jailed(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    let separator = cmd.args.iter().position(|arg| arg == "--").expect("`--`");
++    assert!(
++        cmd.args[..separator]
++            .iter()
++            .any(|arg| arg == MASK_HOST_OPTION),
++        "{:?}",
++        cmd.args
++    );
++    assert_pinned(&cmd.args, "the default host view reserves its cores");
++}
++
+ #[gpui::test]
+ async fn host_view_launch_refuses_mask_host_without_the_option(cx: &mut TestAppContext) {
+     init(cx);
+diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
+index 838f037..74c19c3 100644
+--- a/crates/agent_sandbox/src/launch.rs
++++ b/crates/agent_sandbox/src/launch.rs
+@@ -330,7 +330,7 @@ impl fmt::Display for LaunchCause {
+             ),
+             Self::MaskHostUnsupported => write!(
+                 f,
+-                "The host view is on for this project (agent_sandbox.mask_host), and the installed ai-jail cannot give it (it has no --mask-host). Install an ai-jail with --mask-host, or turn the host view off."
++                "The host view is on for this project (agent_sandbox.mask_host), and the installed ai-jail cannot give it (it has no --mask-host). Install sys-apps/ai-jail 3.5.0-r2 or later, or turn Hide the Host off on the Agent Sandbox page."
+             ),
+             Self::StateRootCreate { dir, error } => write!(
+                 f,
+diff --git a/crates/agent_sandbox/src/launch_tests.rs b/crates/agent_sandbox/src/launch_tests.rs
+index f955b95..626deb3 100644
+--- a/crates/agent_sandbox/src/launch_tests.rs
++++ b/crates/agent_sandbox/src/launch_tests.rs
+@@ -120,6 +120,10 @@ pub(crate) fn sandbox(f: &Fixture, default_on: bool, project: Value, memory: Val
+             // Zeo next §6.54: these fixtures predate the limits, which are on by default; `0`
+             // turns each off. limits_tests turns them on.
+             "limits": { "memory": "0", "cpu_quota": 0, "max_tasks": 0 },
++            // These fixtures also predate the host view, on by default since 2026-11-22 (it needs
++            // an ai-jail with --mask-host, which their fakes lack); host_view_launch_tests turns
++            // it on.
++            "mask_host": false,
+             "projects": projects,
+         },
+         "agent_memory": memory,
+@@ -747,6 +751,8 @@ mod run_additions {
+             "agent_sandbox": {
+                 // Zeo next §6.54: a fixture that predates the limits (on by default); 0 turns each off.
+                 "limits": { "memory": "0", "cpu_quota": 0, "max_tasks": 0 },
++                // ...and the host view, on by default since 2026-11-22.
++                "mask_host": false,
+                 "enabled": true,
+                 "ai_jail_path": f.ai_jail,
+                 "claude_config_dir": claude_dir,
+diff --git a/crates/agent_sandbox/src/roundtrip_tests.rs b/crates/agent_sandbox/src/roundtrip_tests.rs
+index 877eaad..c71ccc6 100644
+--- a/crates/agent_sandbox/src/roundtrip_tests.rs
++++ b/crates/agent_sandbox/src/roundtrip_tests.rs
+@@ -74,6 +74,9 @@ async fn roundtrip_page_write_to_launch_to_registry_to_drift(cx: &mut TestAppCon
+         "agent_sandbox": {
+             // Zeo next §6.54: a fixture that predates the limits (on by default); 0 turns each off.
+             "limits": { "memory": "0", "cpu_quota": 0, "max_tasks": 0 },
++            // Predates the host view, on by default since 2026-11-22: its fake ai-jail has no
++            // --mask-host.
++            "mask_host": false,
+             "enabled": false,
+             "ai_jail_path": ai_jail,
+             "claude_config_dir": claude_dir,
+diff --git a/crates/agent_sandbox/src/settings.rs b/crates/agent_sandbox/src/settings.rs
+index b6912d8..2fd078c 100644
+--- a/crates/agent_sandbox/src/settings.rs
++++ b/crates/agent_sandbox/src/settings.rs
+@@ -40,7 +40,8 @@ pub struct AgentSandboxSettings {
+     pub state_root: String,
+     /// Limits for every jailed project (§6.54).
+     pub limits: SandboxLimits,
+-    /// ai-jail's synthetic host view for every jailed project (§6.63). Default: `false`.
++    /// ai-jail's synthetic host view for every jailed project (§6.63). Default: `true` (operator,
++    /// 2026-11-22).
+     pub mask_host: bool,
+     /// The account's claude.ai connectors in every jailed project (§6.64). Default: `false`.
+     pub claude_ai_connectors: bool,
+@@ -369,7 +370,8 @@ impl Settings for AgentSandboxSettings {
+                     disk_quota: limits.disk_quota,
+                 }
+             },
+-            mask_host: sandbox.mask_host.unwrap_or(false),
++            // default.json says true (operator, 2026-11-22); a file without it agrees.
++            mask_host: sandbox.mask_host.unwrap_or(true),
+             claude_ai_connectors: sandbox.claude_ai_connectors.unwrap_or(false),
+             capabilities: {
+                 let defaults = SandboxCapabilities::default();
+diff --git a/crates/agent_servers/src/sandbox_hook_lifecycle_tests.rs b/crates/agent_servers/src/sandbox_hook_lifecycle_tests.rs
+index f7d8821..f2550ba 100644
+--- a/crates/agent_servers/src/sandbox_hook_lifecycle_tests.rs
++++ b/crates/agent_servers/src/sandbox_hook_lifecycle_tests.rs
+@@ -74,6 +74,9 @@ exec cat >/dev/null
+             "agent_sandbox": {
+                 // Zeo next §6.54: a fixture that predates the limits (on by default); 0 turns each off.
+                 "limits": { "memory": "0", "cpu_quota": 0, "max_tasks": 0 },
++                // Predates the host view, on by default since 2026-11-22: its fake ai-jail has no
++                // --mask-host.
++                "mask_host": false,
+                 "enabled": sandbox_on,
+                 "ai_jail_path": ai_jail_path,
+                 "claude_config_dir": self.base.join("claude-jailed"),
+diff --git a/crates/agent_servers/src/sandbox_hook_tests.rs b/crates/agent_servers/src/sandbox_hook_tests.rs
+index 29da47c..67b11eb 100644
+--- a/crates/agent_servers/src/sandbox_hook_tests.rs
++++ b/crates/agent_servers/src/sandbox_hook_tests.rs
+@@ -186,6 +186,9 @@ impl Fixture {
+             "agent_sandbox": {
+                 // Zeo next §6.54: a fixture that predates the limits (on by default); 0 turns each off.
+                 "limits": { "memory": "0", "cpu_quota": 0, "max_tasks": 0 },
++                // Predates the host view, on by default since 2026-11-22: its fake ai-jail has no
++                // --mask-host.
++                "mask_host": false,
+                 "enabled": sandbox_on,
+                 "ai_jail_path": ai_jail_path,
+                 "claude_config_dir": self.claude_dir,
+diff --git a/crates/agent_servers/src/sandbox_hook_v2_tests.rs b/crates/agent_servers/src/sandbox_hook_v2_tests.rs
+index 88515ad..15cceae 100644
+--- a/crates/agent_servers/src/sandbox_hook_v2_tests.rs
++++ b/crates/agent_servers/src/sandbox_hook_v2_tests.rs
+@@ -104,6 +104,9 @@ done
+             "agent_sandbox": {
+                 // Zeo next §6.54: a fixture that predates the limits (on by default); 0 turns each off.
+                 "limits": { "memory": "0", "cpu_quota": 0, "max_tasks": 0 },
++                // Predates the host view, on by default since 2026-11-22: its fake ai-jail has no
++                // --mask-host.
++                "mask_host": false,
+                 "enabled": true,
+                 "ai_jail_path": ai_jail,
+                 "claude_config_dir": base.join("claude-jailed"),
+diff --git a/crates/agent_ui/src/agent_jail_status.rs b/crates/agent_ui/src/agent_jail_status.rs
+index f7cc112..3e56895 100644
+--- a/crates/agent_ui/src/agent_jail_status.rs
++++ b/crates/agent_ui/src/agent_jail_status.rs
+@@ -101,48 +101,21 @@ pub fn cpu_shared_line(reservation: &CpuReservation) -> String {
+ /// The label beside the lock of a jail whose reserved cores are shared (§6.63).
+ pub const CPU_SHARED_LABEL: &str = "Shares CPUs";
+ 
+-/// The thread's "Reserve CPUs" switch beside the lock (§6.63, operator 2026-11-22): pins the
+-/// project's jail to cores of its own, or lets the quota alone limit it. A click writes the
+-/// project's `limits.reserve_cpus` and restarts the agent, which applies it.
+-pub fn render_cpu_reservation_toggle(
+-    reserving: bool,
+-    shared: bool,
+-    on_toggle: Box<dyn Fn(&mut Window, &mut App)>,
+-) -> AnyElement {
+-    let (icon, tooltip) = if reserving {
+-        (
+-            IconName::Unpin,
+-            "Stop Reserving CPUs: the quota alone limits this jail (restarts the agent)",
+-        )
+-    } else {
+-        (
+-            IconName::Pin,
+-            "Reserve CPUs: pin this jail to cores no other reserving jail uses (restarts the agent)",
+-        )
+-    };
+-    h_flex()
+-        .gap_1()
+-        .when(shared, |this| {
+-            this.child(
+-                Label::new(CPU_SHARED_LABEL)
+-                    .size(LabelSize::Small)
+-                    .color(Color::Warning),
+-            )
+-        })
+-        .child(
+-            IconButton::new("agent-jail-reserve-cpus", icon)
+-                .icon_size(IconSize::Small)
+-                .icon_color(if shared { Color::Warning } else { Color::Muted })
+-                .tooltip(Tooltip::text(tooltip))
+-                .on_click(move |_, window, cx| on_toggle(window, cx)),
+-        )
+-        .into_any_element()
++/// "Shares CPUs" beside the lock of a jail whose reserved cores are shared (§6.63), nothing
++/// otherwise. Reserving is chosen on the Agent Sandbox page (operator, 2026-11-22).
++pub fn render_cpu_shared_label(shared: bool) -> Option<AnyElement> {
++    shared.then(|| {
++        Label::new(CPU_SHARED_LABEL)
++            .size(LabelSize::Small)
++            .color(Color::Warning)
++            .into_any_element()
++    })
+ }
+ 
+ /// The icon's presentation for `record`; `drifted` is whether the settings of now differ from
+ /// those the agent was started with (R5.4).
+ /// The tooltip of a disabled lock: the sandbox needs ai-jail (operator, 2026-11-22).
+-pub const AI_JAIL_MISSING: &str = "The agent sandbox needs ai-jail, which is not installed. Install sys-apps/ai-jail 3.5.0-r1 or later, then start a new thread to turn the sandbox on.";
++pub const AI_JAIL_MISSING: &str = "The agent sandbox needs ai-jail, which is not installed. Install sys-apps/ai-jail 3.5.0-r2 or later, then start a new thread to turn the sandbox on.";
+ 
+ pub fn jail_status_summary(record: &LaunchRecord, drifted: bool) -> JailStatusSummary {
+     let mut lines: Vec<SharedString> = Vec::new();
+diff --git a/crates/agent_ui/src/agent_jail_status_tests.rs b/crates/agent_ui/src/agent_jail_status_tests.rs
+index 22b18aa..146ecc8 100644
+--- a/crates/agent_ui/src/agent_jail_status_tests.rs
++++ b/crates/agent_ui/src/agent_jail_status_tests.rs
+@@ -610,7 +610,8 @@ fn agent_jail_status_a_missing_ai_jail_disables_the_lock() {
+     let summary = jail_status_summary(&off, false);
+     assert!(summary.unavailable, "nothing to turn on");
+     assert!(
+-        has(&summary.lines, "sys-apps/ai-jail 3.5.0-r1"),
++        // -r2: the host view, on by default since 2026-11-22, needs its --mask-host.
++        has(&summary.lines, "sys-apps/ai-jail 3.5.0-r2"),
+         "the tooltip says what to install: {:?}",
+         summary.lines
+     );
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index dabde24..d9c4448 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -7006,38 +7006,21 @@ impl ThreadView {
+             }),
+             _ => None,
+         };
+-        // §6.63 (operator, 2026-11-22): "Reserve CPUs" where the operator acts on the jail. It
+-        // writes the project's setting and restarts the agent, which reserves (or frees) its cores.
+-        let reserve_toggle = (record.reason == agent_sandbox::launch::Reason::On).then(|| {
+-            let reserving = agent_sandbox::AgentSandboxSettings::get_global(cx)
+-                .reserve_cpus_for_key(record.settings_key.as_deref());
+-            let shared = reservation
+-                .as_ref()
+-                .is_some_and(|reservation| reservation.shared);
+-            let root = root.clone();
+-            let restart = std::rc::Rc::new(self.restart_agent_for_jail());
+-            crate::agent_jail_status::render_cpu_reservation_toggle(
+-                reserving,
+-                shared,
+-                Box::new(move |window, cx| {
+-                    let saved =
+-                        agent_sandbox::confirm::set_project_reserve_cpus(&root, !reserving, cx);
+-                    let restart = restart.clone();
+-                    window
+-                        .spawn(cx, async move |cx| {
+-                            if saved.await {
+-                                cx.update(|window, cx| restart(window, cx)).log_err();
+-                            }
+-                        })
+-                        .detach();
+-                }),
+-            )
+-        });
++        // §6.63: a jail whose reserved cores are shared says so beside the lock. Reserve CPUs itself
++        // moved to the Agent Sandbox page (operator, 2026-11-22: out of place beside the lock).
++        let shared_cpus = (record.reason == agent_sandbox::launch::Reason::On)
++            .then(|| {
++                reservation
++                    .as_ref()
++                    .is_some_and(|reservation| reservation.shared)
++            })
++            .unwrap_or(false);
++        let shared_label = crate::agent_jail_status::render_cpu_shared_label(shared_cpus);
+         Some(
+             h_flex()
+                 .gap_1()
+                 .children(paused_controls)
+-                .children(reserve_toggle)
++                .children(shared_label)
+                 .child(button)
+                 .into_any_element(),
+         )
+diff --git a/crates/settings_ui/src/pages/agent_jail_host.rs b/crates/settings_ui/src/pages/agent_jail_host.rs
+new file mode 100644
+index 0000000..11dc350
+--- /dev/null
++++ b/crates/settings_ui/src/pages/agent_jail_host.rs
+@@ -0,0 +1,105 @@
++//! The Agent Sandbox page's host switches (operator, 2026-11-22): "Hide the Host" (ai-jail's
++//! --mask-host, §6.63) and "Reserve CPUs" (§6.63 step 3). Reserve CPUs used to be a button beside
++//! the thread's lock; the operator found it out of place there and asked for it here, with the
++//! other per-project choices. Both write the project's own entry and apply on the next start.
++
++use std::path::Path;
++
++use agent_sandbox::AgentSandboxSettings;
++use agent_sandbox::capabilities::set_project_mask_host;
++use agent_sandbox::confirm::set_project_reserve_cpus;
++use gpui::{AnyElement, App, Entity, ScrollHandle};
++use ui::{SwitchField, ToggleState, prelude::*};
++
++use super::{JailPageState, reveal};
++
++/// What the two switches show for the project under `key`.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) struct HostSwitches {
++    pub mask_host: bool,
++    pub reserve_cpus: bool,
++    /// Reserve CPUs cannot be turned off: Hide the Host's CPU files must match the cores the jail
++    /// runs on, so a masked jail always reserves (launch.rs, `mask_host || reserve_cpus`).
++    pub reserve_forced: bool,
++}
++
++pub(crate) fn host_switches(sandbox: &AgentSandboxSettings, key: Option<&str>) -> HostSwitches {
++    let mask_host = sandbox.mask_host_for_key(key);
++    HostSwitches {
++        mask_host,
++        reserve_cpus: mask_host || sandbox.reserve_cpus_for_key(key),
++        reserve_forced: mask_host,
++    }
++}
++
++pub(crate) const MASK_HOST_NOTE: &str = "The jailed agent sees only the CPUs and memory its limits allow, its own cgroup and a machine id of its own, instead of this machine's. It hides; it does not isolate: a determined process can still infer the hardware. Restart the agent to apply.";
++pub(crate) const RESERVE_NOTE: &str = "Pin the jail to cores of its own, none shared with another reserving jail while enough are free. Off, the CPU quota alone limits it. Restart the agent to apply.";
++pub(crate) const RESERVE_FORCED_NOTE: &str =
++    "On while Hide the Host is on: its CPU files must match the cores the jail runs on.";
++
++pub(crate) fn render_host_switches(
++    root: &Path,
++    sandbox: &AgentSandboxSettings,
++    key: Option<&str>,
++    state: &Entity<JailPageState>,
++    scroll_handle: &ScrollHandle,
++    cx: &mut App,
++) -> AnyElement {
++    let switches = host_switches(sandbox, key);
++    let mask_host = SwitchField::new(
++        "agent-jail-mask-host",
++        Some("Hide the Host"),
++        Some(MASK_HOST_NOTE.into()),
++        switches.mask_host,
++        {
++            let root = root.to_path_buf();
++            move |toggle, _, cx| {
++                set_project_mask_host(&root, *toggle == ToggleState::Selected, cx).detach();
++            }
++        },
++    )
++    .tab_index(0);
++    let reserve = SwitchField::new(
++        "agent-jail-reserve-cpus",
++        Some("Reserve CPUs"),
++        Some(
++            if switches.reserve_forced {
++                RESERVE_FORCED_NOTE
++            } else {
++                RESERVE_NOTE
++            }
++            .into(),
++        ),
++        switches.reserve_cpus,
++        {
++            let root = root.to_path_buf();
++            move |toggle, _, cx| {
++                set_project_reserve_cpus(&root, *toggle == ToggleState::Selected, cx).detach();
++            }
++        },
++    )
++    .disabled(switches.reserve_forced)
++    .tab_index(0);
++    v_flex()
++        .gap_2()
++        .child(Label::new("Host"))
++        .child(reveal(
++            state,
++            "agent-jail-mask-host",
++            scroll_handle,
++            mask_host,
++            cx,
++        ))
++        .child(reveal(
++            state,
++            "agent-jail-reserve-cpus",
++            scroll_handle,
++            reserve,
++            cx,
++        ))
++        .into_any_element()
++}
++
++#[cfg(test)]
++#[path = "agent_jail_host_tests.rs"]
++mod agent_jail_host_tests;
+diff --git a/crates/settings_ui/src/pages/agent_jail_host_tests.rs b/crates/settings_ui/src/pages/agent_jail_host_tests.rs
+new file mode 100644
+index 0000000..798d342
+--- /dev/null
++++ b/crates/settings_ui/src/pages/agent_jail_host_tests.rs
+@@ -0,0 +1,70 @@
++// Operator, 2026-11-22: Hide the Host and Reserve CPUs on the Agent Sandbox page.
++// Filter: `agent_jail_host`.
++
++use std::collections::BTreeMap;
++
++use agent_sandbox::{AgentSandboxProjectSettings, AgentSandboxSettings};
++use pretty_assertions::assert_eq;
++
++use super::{HostSwitches, host_switches};
++
++fn sandbox(
++    mask_host: bool,
++    reserve_cpus: bool,
++    project: AgentSandboxProjectSettings,
++) -> AgentSandboxSettings {
++    AgentSandboxSettings {
++        enabled: true,
++        ai_jail_path: None,
++        claude_config_dir: "~/.claude".to_string(),
++        rw_maps: Vec::new(),
++        allow_hosts: Vec::new(),
++        state_root: "/var/tmp/zeo-jail".to_string(),
++        limits: Default::default(),
++        mask_host,
++        claude_ai_connectors: false,
++        reserve_cpus,
++        capabilities: Default::default(),
++        projects: BTreeMap::from([("/p".to_string(), project)]),
++    }
++}
++
++#[test]
++fn agent_jail_host_switches_follow_the_project_then_the_default() {
++    let follows = sandbox(true, false, AgentSandboxProjectSettings::default());
++    assert_eq!(
++        host_switches(&follows, Some("/p")),
++        HostSwitches {
++            mask_host: true,
++            reserve_cpus: true,
++            reserve_forced: true,
++        },
++        "the default hides the host, which reserves"
++    );
++    let own = sandbox(
++        true,
++        false,
++        AgentSandboxProjectSettings {
++            mask_host: Some(false),
++            reserve_cpus: Some(true),
++            ..AgentSandboxProjectSettings::default()
++        },
++    );
++    assert_eq!(
++        host_switches(&own, Some("/p")),
++        HostSwitches {
++            mask_host: false,
++            reserve_cpus: true,
++            reserve_forced: false,
++        },
++        "the project's own choices replace the defaults"
++    );
++    assert_eq!(
++        host_switches(&sandbox(false, false, Default::default()), None),
++        HostSwitches {
++            mask_host: false,
++            reserve_cpus: false,
++            reserve_forced: false,
++        }
++    );
++}
+diff --git a/crates/settings_ui/src/pages/agent_jail_page.rs b/crates/settings_ui/src/pages/agent_jail_page.rs
+index a978d8e..6364e79 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page.rs
+@@ -916,6 +916,15 @@ pub(crate) fn render_agent_jail_page(
+                 window,
+                 cx,
+             );
++            // Operator, 2026-11-22: Hide the Host and Reserve CPUs, beside the limits.
++            let host = agent_jail_host::render_host_switches(
++                root,
++                &sandbox,
++                key,
++                &state,
++                scroll_handle,
++                cx,
++            );
+             // §6.64 step 2: what the jail may use besides the project.
+             let context_servers = settings_window
+                 .active_project(cx)
+@@ -1038,6 +1047,7 @@ pub(crate) fn render_agent_jail_page(
+                 })
+                 .children(lists)
+                 .child(limits)
++                .child(host)
+                 .child(capabilities)
+                 .child(preview)
+                 .into_any_element()
+@@ -1850,6 +1860,8 @@ pub(crate) fn render_agent_memory_page(
+ #[path = "agent_jail_capabilities.rs"]
+ mod agent_jail_capabilities;
+ pub(crate) use agent_jail_capabilities::request_anchor;
++#[path = "agent_jail_host.rs"]
++mod agent_jail_host;
+ #[path = "agent_jail_limits.rs"]
+ mod agent_jail_limits;
+ 
