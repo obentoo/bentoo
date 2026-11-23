@@ -3,8 +3,10 @@
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
+# Based on ::gentoo's 1.5.0 ebuild, bumped ahead of ::gentoo to 1.6.0; python3_15
+# added. No other change. Drop this copy once ::gentoo ships >=1.6.0 with python3_15.
+# BENTOO-DIVERGENCE: KEYWORDS - ~amd64 only: a bump past ::gentoo is no longer a mirror,
+# so it follows the overlay baseline (amd64, x86-64-v3).
 # BENTOO-DIVERGENCE: BDEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
 PYTHON_COMPAT=( python3_{11..15} )
 
@@ -15,7 +17,7 @@ HOMEPAGE="https://gitlab.gnome.org/GNOME/gtk-vnc"
 
 LICENSE="LGPL-2.1+"
 SLOT="0"
-KEYWORDS="~alpha amd64 ~arm arm64 ~loong ~ppc ppc64 ~riscv ~sparc x86"
+KEYWORDS="~amd64"
 IUSE="gtk-doc +introspection pulseaudio sasl +vala valgrind wayland X"
 REQUIRED_USE="vala? ( introspection )"
 

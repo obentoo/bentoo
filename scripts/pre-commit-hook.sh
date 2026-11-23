@@ -35,4 +35,22 @@ if [ -n "$staged" ]; then
 	if ((rc > worst)); then worst=$rc; fi
 fi
 
+# The registry's own lint, only when packages.toml is staged. bentoo#104
+# committed a field-order error that only a later `--lint --fix` caught.
+# Without bentoolkit on PATH the check is reported as skipped, never as passed.
+if ! registry=$(git -C "$top" diff --cached --no-renames --name-only -- \
+	.autoupdate/packages.toml); then
+	printf 'pre-commit: git diff --cached failed\n' >&2
+	exit 2
+fi
+if [ -n "$registry" ]; then
+	if command -v bentoo >/dev/null 2>&1; then
+		rc=0
+		bentoo overlay autoupdate --lint --overlay "$top" || rc=1
+		if ((rc > worst)); then worst=$rc; fi
+	else
+		printf 'pre-commit: SKIP registry lint: bentoo (app-portage/bentoolkit) is not on PATH\n' >&2
+	fi
+fi
+
 exit "$worst"
