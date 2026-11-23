@@ -1,0 +1,1185 @@
+--syscall-view for ai-jail 3.5.0 (from the fork's feat/syscall-view, merged into
+the Zeo stack zeo/ebuild-350-r4): with --mask-host, uname(2) and sysinfo(2)
+are answered by ai-jail outside the sandbox through a seccomp user-notify
+filter the in-sandbox helper installs before its deny filter, so `uname -r`,
+Python's platform and `getconf _PHYS_PAGES` agree with the host view's files:
+the numeric release, the sandbox's host name, its age as uptime, no load,
+memory sized to the limit. Opt-in, Linux only, never saved; only the native
+architecture is trapped. Must follow ai-jail-host-view-extra.patch. Design:
+zeo-workspace docs/HOST-VIEW-EXTRA-LAYER.md §4.3.
+
+diff --git a/README.md b/README.md
+index b4e4c90..d48a6ee 100644
+--- a/README.md
++++ b/README.md
+@@ -894,6 +894,18 @@ subvolume for them; it is separate because an overlay slows metadata walks
+ itself an overlay stacked too deep (inside a container it can fail with
+ `Invalid argument`).
+ 
++`--syscall-view` (with `--mask-host`) closes what files cannot: `uname(2)` and
++`sysinfo(2)`. A seccomp filter installed in the sandbox right before its deny
++filter sends those two calls to ai-jail outside it
++(`SECCOMP_RET_USER_NOTIF`), which writes the answer into the caller's buffer:
++`uname -r`, Python's `platform` and Node's `os.release()` read the same numeric
++release as `/proc/version`, the host name is the sandbox's, and `sysinfo`
++reports the sandbox's age as uptime, no load, memory sized to the limit and the
++sandbox's own task count (so `getconf _PHYS_PAGES` agrees with
++`/proc/meminfo`). Each of those calls makes a round trip to ai-jail; if ai-jail
++dies, they fail with `ENOSYS`, and bwrap ends the sandbox with it anyway.
++Only the native architecture is trapped.
++
+ The allowed CPUs are the `--cpus` set, else the process's affinity
+ (`taskset`), trimmed to the cgroup's `cpu.max` rounded up to whole CPUs; the
+ memory limit is the smallest `memory.max` from the sandbox's cgroup up to the
+@@ -913,7 +925,9 @@ so this changes behaviour only under `--no-landlock --no-seccomp`.
+ The `cpuid` instruction, timing, the `uname(2)` kernel release, the CPU
+ numbers `sched_getaffinity` and `/proc/self/status` return, and the mount
+ sources in `/proc/self/mountinfo` of the writable mounts (and of the system
+-trees without `--overlay-system`) stay the host's. Only a VM changes those.
++trees without `--overlay-system`) stay the host's (the release and memory
++`uname(2)`/`sysinfo(2)` report too, without `--syscall-view`). Only a VM
++changes those.
+ 
+ ## Browsers
+ 
+@@ -1049,6 +1063,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
+ --state-root DIR                $HOME, /tmp and Claude config on disk under DIR (Linux; not saved)
+ --mask-host                     hardware view sized to the sandbox's limits (Linux; not saved; see Hiding the host)
+ --overlay-system                with --mask-host: /usr, /etc, /opt through read-only overlays (Linux; not saved)
++--syscall-view                  with --mask-host: uname(2) and sysinfo(2) answered by ai-jail (Linux; not saved)
+ --browser[=hard|soft]           isolated browser profile (needs --network --display)
+ --dry-run                       print the backend invocation
+ --init                          write configuration and exit
+diff --git a/docs/CLI_TUI_PARITY.md b/docs/CLI_TUI_PARITY.md
+index 2a75963..70abd46 100644
+--- a/docs/CLI_TUI_PARITY.md
++++ b/docs/CLI_TUI_PARITY.md
+@@ -93,8 +93,8 @@ or integration rather than saved sandbox authority.
+ - Host view: `--mask-host` (a per-run choice made by the caller --
+   typically a wrapper such as an editor -- not saved authority: no
+   configuration key, refused on macOS; it only narrows what the sandbox
+-  reads), and `--overlay-system` with it (the same per-run choice; refused
+-  without `--mask-host`)
++  reads), and `--overlay-system` and `--syscall-view` with it (the same per-run
++  choice; each refused without `--mask-host`)
+ - Backward-compatible rejected option: `--allow-tcp-port`
+ 
+ ## Release rule
+diff --git a/docs/USER_GUIDE.md b/docs/USER_GUIDE.md
+index 0ae0c07..24ba04c 100644
+--- a/docs/USER_GUIDE.md
++++ b/docs/USER_GUIDE.md
+@@ -659,6 +659,13 @@ instead of the host's disk for them. Metadata walks get slower (a `find` over
+ `/usr` measured +21 %), and an overlay cannot sit on a root that is already
+ stacked too deep (some containers: `Invalid argument`).
+ 
++`--syscall-view` (with `--mask-host` only; never saved) answers `uname(2)` and
++`sysinfo(2)` from ai-jail through a seccomp user-notify filter, so `uname -r`
++and `getconf _PHYS_PAGES` agree with the files above: the numeric release, the
++sandbox's host name, its age as uptime, no load, memory sized to `--memory`.
++Each of those calls costs a round trip to ai-jail; only the native
++architecture is trapped.
++
+ A nested sandbox can no longer mount its own `/proc` under `--mask-host`; with
+ ai-jail's default Landlock and seccomp a nested sandbox is refused anyway, so
+ this matters only under `--no-landlock --no-seccomp`. The `cpuid` instruction,
+diff --git a/src/cli.rs b/src/cli.rs
+index 7a31aaf..8ce3b9f 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -213,6 +213,9 @@ OPTIONS:
+     --overlay-system               With --mask-host: serve /usr, /etc and /opt through
+                                    read-only overlays so the mount table names no host disk
+                                    (Linux; never saved; slower metadata walks)
++    --syscall-view                 With --mask-host: answer uname(2) and sysinfo(2) from
++                                   ai-jail, so the kernel release, memory, load and uptime
++                                   they report match the host view (Linux; never saved)
+     --clean                        Ignore saved and legacy project policy, start fresh
+     --dry-run                      Print the sandbox command without executing
+     --init                         Create/update external per-project config and exit
+@@ -290,6 +293,9 @@ pub struct CliArgs {
+     pub state_root: Option<PathBuf>,
+     pub mask_host: bool,
+     pub overlay_system: bool,
++    pub syscall_view: bool,
++    /// Internal: the helper's end of the `--syscall-view` socket pair.
++    pub syscall_view_fd: Option<i32>,
+     pub agent_state: Option<bool>,
+     pub harnesses: Vec<String>,
+     pub request_files: Vec<PathBuf>,
+@@ -581,6 +587,22 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
+             Long("overlay-system") => {
+                 args.overlay_system = true;
+             }
++            Long("syscall-view") => {
++                args.syscall_view = true;
++            }
++            Long("syscall-view-fd") => {
++                if !args.landlock_exec {
++                    return Err(
++                        "--syscall-view-fd is internal and only valid with --landlock-exec"
++                            .into(),
++                    );
++                }
++                let value = parser.value().map_err(|e| e.to_string())?;
++                args.syscall_view_fd =
++                    Some(value.to_string_lossy().parse().map_err(|_| {
++                        "invalid --syscall-view-fd".to_string()
++                    })?);
++            }
+             Long(s @ ("gpu" | "no-gpu")) => {
+                 args.gpu = Some(s == "gpu");
+             }
+@@ -1230,6 +1252,7 @@ const SANDBOX_LONG_FLAGS: &[&str] = &[
+     "--state-root",
+     "--mask-host",
+     "--overlay-system",
++    "--syscall-view",
+     "--x11",
+     "--no-x11",
+     "--host-shm",
+@@ -1281,6 +1304,7 @@ const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
+     "state_root",
+     "mask_host",
+     "overlay_system",
++    "syscall_view",
+ ];
+ 
+ /// Names already missing from docs/USER_GUIDE.md at upstream v3.3.0
+@@ -3072,6 +3096,24 @@ mod tests {
+         assert!(args.mask_host && args.overlay_system);
+     }
+ 
++    #[test]
++    fn parse_syscall_view_and_its_internal_fd() {
++        let args =
++            parse_test(&["--mask-host", "--syscall-view", "claude"]).unwrap();
++        assert!(args.syscall_view && args.syscall_view_fd.is_none());
++        assert!(parse_test(&["--syscall-view-fd", "9", "true"]).is_err());
++        let helper = parse_test(&[
++            "--landlock-exec",
++            "--syscall-view-fd",
++            "9",
++            "--",
++            "bash",
++        ])
++        .unwrap();
++        assert_eq!(helper.syscall_view_fd, Some(9));
++        assert!(!HELP.contains("--syscall-view-fd"));
++    }
++
+     #[test]
+     fn parse_claude_dir() {
+         let args = parse_test(&[
+diff --git a/src/config.rs b/src/config.rs
+index 4324078..fdc2b41 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -195,6 +195,10 @@ pub struct Config {
+     /// under `--mask-host`. Runtime only, never saved.
+     #[serde(default, skip)]
+     pub overlay_system: bool,
++    /// `--syscall-view`: uname/sysinfo answered by ai-jail under
++    /// `--mask-host`. Runtime only, never saved.
++    #[serde(default, skip)]
++    pub syscall_view: bool,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub command: Vec<String>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+@@ -2657,6 +2661,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
+     config.state_root = cli.state_root.clone();
+     config.mask_host = cli.mask_host;
+     config.overlay_system = cli.overlay_system;
++    config.syscall_view = cli.syscall_view;
+ 
+     expand_user_paths(&mut config);
+ 
+@@ -4984,6 +4989,7 @@ no_gpu = true
+             state_root: None,
+             mask_host: false,
+             overlay_system: false,
++            syscall_view: false,
+             command: vec!["claude".into()],
+             rw_maps: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
+             ro_maps: vec![PathBuf::from("/opt/data")],
+@@ -8387,6 +8393,7 @@ hide_dotdirs = [".my_secrets"]
+             state_root: None,
+             mask_host: false,
+             overlay_system: false,
++            syscall_view: false,
+             command: vec!["codex".into()],
+             rw_maps: vec![PathBuf::from("/tmp/shared")],
+             ro_maps: vec![],
+diff --git a/src/config_store.rs b/src/config_store.rs
+index e4d316c..f3f5125 100644
+--- a/src/config_store.rs
++++ b/src/config_store.rs
+@@ -1199,6 +1199,7 @@ pub(crate) fn save_project_grants(
+     // `--mask-host` is invocation-scoped for the same reason.
+     grants.mask_host = false;
+     grants.overlay_system = false;
++    grants.syscall_view = false;
+     doc.directory_grants = approved_directory_grants.to_vec();
+     doc.grants = grants;
+     doc.approved_env_names = approved_env_names;
+@@ -1523,6 +1524,7 @@ const CONFIG_FIELD_POLICY: &[ConfigFieldPolicy] = &[
+     excluded_policy!("state_root", Authority),
+     excluded_policy!("mask_host", Restriction),
+     excluded_policy!("overlay_system", Restriction),
++    excluded_policy!("syscall_view", Restriction),
+     static_policy!("command", Authority, Command),
+     static_policy!("rw_maps", Authority, RwMaps),
+     static_policy!("ro_maps", Authority, RoMaps),
+@@ -2335,6 +2337,7 @@ mod tests {
+         expected_excluded!("state_root", Authority),
+         expected_excluded!("mask_host", Restriction),
+         expected_excluded!("overlay_system", Restriction),
++        expected_excluded!("syscall_view", Restriction),
+         expected_authority!("command", Authority, Command, ["command claude"]),
+         expected_authority!(
+             "rw_maps",
+@@ -2456,6 +2459,9 @@ mod tests {
+             "overlay_system" => {
+                 config.overlay_system = true;
+             }
++            "syscall_view" => {
++                config.syscall_view = true;
++            }
+             "command" => {
+                 config.command =
+                     vec!["claude".into(), "--token=top-secret".into()];
+diff --git a/src/main.rs b/src/main.rs
+index 7690635..4ec642b 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -354,6 +354,9 @@ fn validate_overlay_system(config: &config::Config) -> Result<(), String> {
+     if config.overlay_system && !config.mask_host {
+         return Err("--overlay-system requires --mask-host".into());
+     }
++    if config.syscall_view && !config.mask_host {
++        return Err("--syscall-view requires --mask-host".into());
++    }
+     Ok(())
+ }
+ 
+@@ -1116,6 +1119,13 @@ fn run_landlock_exec(cli: &cli::CliArgs) -> Result<i32, String> {
+     // Apply seccomp filter after Landlock (reduces kernel syscall
+     // surface). Must happen before exec so the user command inherits
+     // the filter.
++    // `--syscall-view`: the notify filter goes on first, since the deny
++    // filter below may refuse seccomp(2) itself; its listener leaves for
++    // the launcher before the agent is exec'd.
++    #[cfg(target_os = "linux")]
++    if let Some(fd) = cli.syscall_view_fd {
++        sandbox::syscall_view_install(fd)?;
++    }
+     sandbox::apply_seccomp(&config, cli.verbose)?;
+ 
+     // Apply the full limit set here, inside the sandbox, after bwrap
+@@ -2912,6 +2922,12 @@ mod tests {
+             ..Config::default()
+         };
+         assert!(validate_overlay_system(&both).is_ok());
++        let syscalls = Config {
++            syscall_view: true,
++            ..Config::default()
++        };
++        let error = validate_overlay_system(&syscalls).unwrap_err();
++        assert!(error.contains("--syscall-view"), "{error}");
+         assert!(validate_overlay_system(&Config::default()).is_ok());
+     }
+ 
+diff --git a/src/proxy.rs b/src/proxy.rs
+index 3bffe1f..185a817 100644
+--- a/src/proxy.rs
++++ b/src/proxy.rs
+@@ -2113,7 +2113,10 @@ fn serve_published(control: &UnixStream, port: u16) {
+ /// Send one byte carrying `fd` as SCM_RIGHTS ancillary data. std has no
+ /// stable API for it, and nix's would pull in its `socket` feature.
+ #[cfg(target_os = "linux")]
+-fn send_fd(stream: &UnixStream, fd: &impl AsRawFd) -> io::Result<()> {
++pub(crate) fn send_fd(
++    stream: &UnixStream,
++    fd: &impl AsRawFd,
++) -> io::Result<()> {
+     use nix::libc;
+     let byte = [0_u8; 1];
+     let mut iov = libc::iovec {
+@@ -2157,7 +2160,7 @@ fn send_fd(stream: &UnixStream, fd: &impl AsRawFd) -> io::Result<()> {
+ /// `Ok(None)` at end of stream; `InvalidData` for a byte that carried no
+ /// descriptor. Extra descriptors in one message are closed.
+ #[cfg(target_os = "linux")]
+-fn recv_fd(stream: &UnixStream) -> io::Result<Option<OwnedFd>> {
++pub(crate) fn recv_fd(stream: &UnixStream) -> io::Result<Option<OwnedFd>> {
+     use nix::libc;
+     let mut byte = [0_u8; 1];
+     let mut iov = libc::iovec {
+diff --git a/src/sandbox/bwrap.rs b/src/sandbox/bwrap.rs
+index dbc3615..5ac3f2a 100644
+--- a/src/sandbox/bwrap.rs
++++ b/src/sandbox/bwrap.rs
+@@ -352,7 +352,7 @@ impl MountSet {
+             "--unshare-uts".into(),
+             "--unshare-ipc".into(),
+             "--hostname".into(),
+-            "ai-sandbox".into(),
++            super::syscall_view::JAIL_HOSTNAME.into(),
+         ];
+ 
+         if lockdown || should_use_new_session() {
+@@ -619,6 +619,9 @@ pub struct SandboxGuard {
+     /// `--mask-host`'s synthetic files, made on first use and removed
+     /// with the guard, which outlives the sandbox.
+     host_view: std::cell::OnceCell<super::host_view::HostView>,
++    /// `--syscall-view`'s supervisor, started on first use and stopped
++    /// with the guard, after the sandbox ended.
++    syscall_view: std::cell::OnceCell<super::syscall_view::Supervisor>,
+ }
+ 
+ impl SandboxGuard {
+@@ -657,6 +660,17 @@ impl SandboxGuard {
+         &self.deny_dir_path
+     }
+ 
++    fn syscall_view(&self) -> Result<&super::syscall_view::Supervisor, String> {
++        if let Some(supervisor) = self.syscall_view.get() {
++            return Ok(supervisor);
++        }
++        let supervisor = super::syscall_view::Supervisor::start(
++            super::syscall_view::answers_for_host(),
++            std::time::Instant::now(),
++        )?;
++        Ok(self.syscall_view.get_or_init(|| supervisor))
++    }
++
+     fn host_view(
+         &self,
+         config: &Config,
+@@ -763,6 +777,7 @@ impl SandboxGuard {
+             deny_file_path: PathBuf::from("/tmp/ai-jail-test-deny-file"),
+             deny_dir_path: PathBuf::from("/tmp/ai-jail-test-deny-dir"),
+             host_view: std::cell::OnceCell::new(),
++            syscall_view: std::cell::OnceCell::new(),
+         }
+     }
+ }
+@@ -1129,6 +1144,7 @@ pub fn prepare() -> Result<SandboxGuard, String> {
+         deny_file_path,
+         deny_dir_path,
+         host_view: std::cell::OnceCell::new(),
++        syscall_view: std::cell::OnceCell::new(),
+     })
+ }
+ 
+@@ -1449,6 +1465,8 @@ fn resolve_landlock_wrapper(
+         // audit record still report them.
+         && config.rlimit.is_empty()
+         && config.cpus.is_none()
++        // --syscall-view's notify filter is installed by the wrapper.
++        && !config.syscall_view
+     {
+         return Ok(None);
+     }
+@@ -1715,7 +1733,18 @@ pub fn build(
+     // accept the command from the fd).
+     cmd.arg("--");
+     if wrapper.is_some() {
+-        for arg in landlock_wrapper_args(config, &map_args, verbose) {
++        let mut wrapper_args =
++            landlock_wrapper_args(config, &map_args, verbose);
++        // `--syscall-view`: the helper's end of the supervisor's socket
++        // pair, before the wrapper's own `--`.
++        if config.syscall_view {
++            let fd = guard.syscall_view()?.child_fd();
++            let separator = wrapper_args.pop();
++            wrapper_args.push(super::syscall_view::FD_FLAG.into());
++            wrapper_args.push(fd.to_string());
++            wrapper_args.extend(separator);
++        }
++        for arg in wrapper_args {
+             cmd.arg(arg);
+         }
+     }
+diff --git a/src/sandbox/mod.rs b/src/sandbox/mod.rs
+index 114706b..4ccb1e6 100644
+--- a/src/sandbox/mod.rs
++++ b/src/sandbox/mod.rs
+@@ -70,6 +70,15 @@ mod host_view_synth;
+ #[cfg(target_os = "linux")]
+ pub(crate) mod host_view_timens;
+ #[cfg(target_os = "linux")]
++mod syscall_view;
++
++/// In the helper: install `--syscall-view`'s notify filter and hand its
++/// listener out over `fd`.
++#[cfg(target_os = "linux")]
++pub fn syscall_view_install(fd: i32) -> Result<(), String> {
++    syscall_view::install_in_jail(fd)
++}
++#[cfg(target_os = "linux")]
+ mod host_view_uptime;
+ #[cfg(target_os = "linux")]
+ mod landlock;
+@@ -1975,7 +1984,7 @@ pub fn build(
+     #[cfg(target_os = "macos")]
+     {
+         let _ = (guard, bridge_sockets);
+-        if config.mask_host || config.overlay_system {
++        if config.mask_host || config.overlay_system || config.syscall_view {
+             return Err("--mask-host is Linux-only".into());
+         }
+         let prepared = prepare_seatbelt_config(config)?;
+@@ -2011,7 +2020,7 @@ pub fn dry_run(
+     #[cfg(target_os = "macos")]
+     {
+         let _ = (guard, bridge_sockets);
+-        if config.mask_host || config.overlay_system {
++        if config.mask_host || config.overlay_system || config.syscall_view {
+             return Err("--mask-host is Linux-only".into());
+         }
+         let prepared = prepare_seatbelt_config(config)?;
+diff --git a/src/sandbox/syscall_view.rs b/src/sandbox/syscall_view.rs
+new file mode 100644
+index 0000000..fe43a7e
+--- /dev/null
++++ b/src/sandbox/syscall_view.rs
+@@ -0,0 +1,453 @@
++//! `--syscall-view` (with `--mask-host`): `uname(2)` and `sysinfo(2)`
++//! answered by ai-jail, so the kernel release and the machine's memory,
++//! swap, load and uptime the jail reads through them agree with the host
++//! view's files.
++//!
++//! Nothing unprivileged rewrites what these two system calls return: the
++//! UTS namespace lets a process set only its host and domain names, and
++//! `sysinfo` reads the whole machine. So the in-jail helper installs, right
++//! before its deny filter, a seccomp filter whose answer to `uname` and
++//! `sysinfo` is `SECCOMP_RET_USER_NOTIF`, created with
++//! `SECCOMP_FILTER_FLAG_NEW_LISTENER`, and hands the listener descriptor out
++//! over a socket pair the launcher made (`--syscall-view-fd`). A thread of
++//! the launcher -- outside the jail, where its seccomp denies neither
++//! `process_vm_writev` nor the listener's ioctls -- then answers each call:
++//! it checks the notification is still live (`SECCOMP_IOCTL_NOTIF_ID_VALID`,
++//! so a recycled pid cannot be written), writes a `new_utsname` or a
++//! `struct sysinfo` into the caller's buffer and returns 0. The launcher is
++//! the jail's ancestor, which is what Yama's `ptrace_scope = 1` asks of a
++//! process writing another's memory.
++//!
++//! If the launcher dies, the trapped calls fail with `ENOSYS`; bwrap's
++//! `--die-with-parent` ends the jail with it. Only the native architecture
++//! is trapped: a 32-bit or x32 call passes through unchanged.
++//!
++//! It hides, it does not isolate: `cpuid`, timing and the vDSO stay.
++
++use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
++use std::os::unix::net::UnixStream;
++use std::path::PathBuf;
++use std::sync::Arc;
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::thread::JoinHandle;
++use std::time::{Duration, Instant};
++
++use nix::libc;
++
++/// The internal flag that carries the helper's end of the socket pair.
++pub(crate) const FD_FLAG: &str = "--syscall-view-fd";
++
++/// The jail's host name, as bwrap's `--hostname` sets it.
++pub(crate) const JAIL_HOSTNAME: &str = "ai-sandbox";
++
++#[cfg(target_arch = "x86_64")]
++const NATIVE_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
++#[cfg(target_arch = "aarch64")]
++const NATIVE_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
++#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
++const NATIVE_ARCH: u32 = 0; // matches nothing: the filter traps nothing
++
++/// Bytes of one `new_utsname` field (`__NEW_UTS_LEN + 1`).
++const UTS_FIELD: usize = 65;
++/// `struct new_utsname`: six fields.
++pub(super) const UTSNAME_LEN: usize = 6 * UTS_FIELD;
++
++/// How often the supervisor thread looks at its stop flag.
++const POLL: Duration = Duration::from_millis(200);
++
++/// What the jail is told.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct Answers {
++    pub release: String,
++    pub version: String,
++    pub machine: String,
++    /// The jail's cgroup, for `memory.current` and `pids.current`.
++    pub cgroup_dir: Option<PathBuf>,
++    pub memory_max: Option<u64>,
++    pub swap_max: Option<u64>,
++}
++
++/// `struct new_utsname` as the jail should read it: `Linux`, the jail's
++/// host name, the cleaned release and version, the host's machine, no
++/// domain. A value longer than 64 bytes is cut.
++pub(super) fn utsname_bytes(a: &Answers) -> [u8; UTSNAME_LEN] {
++    let mut out = [0u8; UTSNAME_LEN];
++    for (i, value) in [
++        "Linux",
++        JAIL_HOSTNAME,
++        a.release.as_str(),
++        a.version.as_str(),
++        a.machine.as_str(),
++        "(none)",
++    ]
++    .iter()
++    .enumerate()
++    {
++        let bytes = value.as_bytes();
++        let n = bytes.len().min(UTS_FIELD - 1);
++        out[i * UTS_FIELD..i * UTS_FIELD + n].copy_from_slice(&bytes[..n]);
++    }
++    out
++}
++
++/// `struct sysinfo` for the jail: the host's, with the jail's age as
++/// uptime, no load, memory sized to the limit (free = limit - used), swap
++/// to the swap limit, and the jail's own task count. `mem_unit` 1, so the
++/// sizes are bytes.
++pub(super) fn sysinfo_for(
++    host: &libc::sysinfo,
++    age: Duration,
++    a: &Answers,
++    memory_current: Option<u64>,
++    tasks: Option<u64>,
++) -> libc::sysinfo {
++    let mut out = *host;
++    let unit = u64::from(host.mem_unit.max(1));
++    // c_ulong is u64 on every 64-bit Linux target ai-jail builds for.
++    let bytes = |v: libc::c_ulong| v.saturating_mul(unit);
++    let long =
++        |v: u64| libc::c_ulong::try_from(v).unwrap_or(libc::c_ulong::MAX);
++    out.uptime = libc::c_long::try_from(age.as_secs()).unwrap_or(0);
++    out.loads = [0; 3];
++    out.mem_unit = 1;
++    match a.memory_max {
++        Some(max) => {
++            let used = memory_current.unwrap_or(0).min(max);
++            out.totalram = long(max);
++            out.freeram = long(max - used);
++            out.sharedram = 0;
++            out.bufferram = 0;
++        }
++        None => {
++            out.totalram = long(bytes(host.totalram));
++            out.freeram = long(bytes(host.freeram));
++            out.sharedram = long(bytes(host.sharedram));
++            out.bufferram = long(bytes(host.bufferram));
++        }
++    }
++    match a.swap_max {
++        Some(max) => {
++            out.totalswap = long(max);
++            out.freeswap = long(max);
++        }
++        None => {
++            out.totalswap = long(bytes(host.totalswap));
++            out.freeswap = long(bytes(host.freeswap));
++        }
++    }
++    out.totalhigh = 0;
++    out.freehigh = 0;
++    if let Some(n) = tasks {
++        out.procs = u16::try_from(n).unwrap_or(u16::MAX);
++    }
++    out
++}
++
++/// The notify filter: `uname` and `sysinfo` of the native architecture go
++/// to the listener, everything else is allowed (the deny filter installed
++/// after it still applies to the rest).
++pub(super) fn notify_program() -> Vec<libc::sock_filter> {
++    const LD_W_ABS: u16 = (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16;
++    const JEQ_K: u16 = (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16;
++    const RET_K: u16 = (libc::BPF_RET | libc::BPF_K) as u16;
++    let op = |code, jt, jf, k| libc::sock_filter { code, jt, jf, k };
++    // seccomp_data: nr at 0, arch at 4.
++    vec![
++        op(LD_W_ABS, 0, 0, 4),
++        op(JEQ_K, 0, 4, NATIVE_ARCH), // foreign arch -> allow (6)
++        op(LD_W_ABS, 0, 0, 0),
++        op(JEQ_K, 1, 0, libc::SYS_uname as u32), // -> notify (5)
++        op(JEQ_K, 0, 1, libc::SYS_sysinfo as u32), // -> notify / allow
++        op(RET_K, 0, 0, libc::SECCOMP_RET_USER_NOTIF),
++        op(RET_K, 0, 0, libc::SECCOMP_RET_ALLOW),
++    ]
++}
++
++/// In the helper: install the notify filter and send its listener over
++/// `fd`, then close both. Must run before the deny filter (which may deny
++/// `seccomp(2)` itself) and before the final exec.
++pub(crate) fn install_in_jail(fd: RawFd) -> Result<(), String> {
++    // SAFETY: `fd` is the inherited socket end this process now owns.
++    let socket = UnixStream::from(unsafe { OwnedFd::from_raw_fd(fd) });
++    let program = notify_program();
++    let prog = libc::sock_fprog {
++        len: program.len() as u16,
++        filter: program.as_ptr().cast_mut(),
++    };
++    // SAFETY: plain syscalls; `prog` points at `program`, alive here.
++    let listener = unsafe {
++        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
++            return Err(format!(
++                "--syscall-view: no_new_privs: {}",
++                std::io::Error::last_os_error()
++            ));
++        }
++        libc::syscall(
++            libc::SYS_seccomp,
++            libc::SECCOMP_SET_MODE_FILTER,
++            libc::SECCOMP_FILTER_FLAG_NEW_LISTENER,
++            &prog as *const libc::sock_fprog,
++        )
++    };
++    if listener < 0 {
++        return Err(format!(
++            "--syscall-view: cannot install the notify filter: {}",
++            std::io::Error::last_os_error()
++        ));
++    }
++    // SAFETY: the kernel just returned this descriptor to this process.
++    let listener = unsafe { OwnedFd::from_raw_fd(listener as RawFd) };
++    crate::proxy::send_fd(&socket, &listener).map_err(|e| {
++        format!("--syscall-view: cannot hand out the listener: {e}")
++    })
++}
++
++/// The launcher's side: the socket end it keeps, the one the helper
++/// inherits, and the thread answering the calls. Stopped and joined on
++/// drop, which the sandbox guard does after the jail ended.
++#[derive(Debug)]
++pub(crate) struct Supervisor {
++    stop: Arc<AtomicBool>,
++    thread: Option<JoinHandle<()>>,
++    child_end: OwnedFd,
++}
++
++impl Supervisor {
++    pub fn start(answers: Answers, start: Instant) -> Result<Self, String> {
++        let (ours, theirs) = UnixStream::pair()
++            .map_err(|e| format!("--syscall-view: socket pair: {e}"))?;
++        let child_end = OwnedFd::from(theirs);
++        // The helper inherits it through the supervisor and bwrap.
++        // SAFETY: fcntl on a descriptor this process owns.
++        unsafe {
++            let flags = libc::fcntl(child_end.as_raw_fd(), libc::F_GETFD);
++            if flags < 0
++                || libc::fcntl(
++                    child_end.as_raw_fd(),
++                    libc::F_SETFD,
++                    flags & !libc::FD_CLOEXEC,
++                ) < 0
++            {
++                return Err(format!(
++                    "--syscall-view: {}",
++                    std::io::Error::last_os_error()
++                ));
++            }
++        }
++        let stop = Arc::new(AtomicBool::new(false));
++        let flag = Arc::clone(&stop);
++        let thread = std::thread::Builder::new()
++            .name("ai-jail-syscall-view".into())
++            .spawn(move || run(ours, &answers, start, &flag))
++            .map_err(|e| format!("--syscall-view: cannot start: {e}"))?;
++        Ok(Supervisor {
++            stop,
++            thread: Some(thread),
++            child_end,
++        })
++    }
++
++    /// The descriptor number to pass as `--syscall-view-fd`.
++    pub fn child_fd(&self) -> RawFd {
++        self.child_end.as_raw_fd()
++    }
++}
++
++impl Drop for Supervisor {
++    fn drop(&mut self) {
++        self.stop.store(true, Ordering::Release);
++        if let Some(thread) = self.thread.take() {
++            let _ = thread.join();
++        }
++    }
++}
++
++/// Wait until `fd` is readable or the stop flag is set; `false` on stop
++/// or on a hang-up with nothing to read.
++fn wait_readable(fd: RawFd, stop: &AtomicBool) -> bool {
++    loop {
++        if stop.load(Ordering::Acquire) {
++            return false;
++        }
++        let mut pfd = libc::pollfd {
++            fd,
++            events: libc::POLLIN,
++            revents: 0,
++        };
++        let ms = i32::try_from(POLL.as_millis()).unwrap_or(200);
++        // SAFETY: one valid pollfd.
++        let n = unsafe { libc::poll(&mut pfd, 1, ms) };
++        if n > 0 {
++            if pfd.revents & libc::POLLIN != 0 {
++                return true;
++            }
++            if pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL)
++                != 0
++            {
++                return false;
++            }
++        }
++    }
++}
++
++fn run(socket: UnixStream, a: &Answers, start: Instant, stop: &AtomicBool) {
++    if !wait_readable(socket.as_raw_fd(), stop) {
++        return;
++    }
++    let Ok(Some(listener)) = crate::proxy::recv_fd(&socket) else {
++        return;
++    };
++    drop(socket);
++    let sizes = notif_sizes();
++    while wait_readable(listener.as_raw_fd(), stop) {
++        // An error here is a notification whose caller already went away.
++        let _ = answer_one(listener.as_raw_fd(), sizes, a, start);
++    }
++}
++
++fn notif_sizes() -> libc::seccomp_notif_sizes {
++    let mut sizes = libc::seccomp_notif_sizes {
++        seccomp_notif: 0,
++        seccomp_notif_resp: 0,
++        seccomp_data: 0,
++    };
++    // SAFETY: the kernel fills `sizes`.
++    unsafe {
++        libc::syscall(
++            libc::SYS_seccomp,
++            libc::SECCOMP_GET_NOTIF_SIZES,
++            0,
++            &mut sizes as *mut libc::seccomp_notif_sizes,
++        );
++    }
++    sizes
++}
++
++fn read_u64(path: Option<PathBuf>) -> Option<u64> {
++    std::fs::read_to_string(path?).ok()?.trim().parse().ok()
++}
++
++fn answer_one(
++    listener: RawFd,
++    sizes: libc::seccomp_notif_sizes,
++    a: &Answers,
++    start: Instant,
++) -> std::io::Result<()> {
++    let req_len = usize::from(sizes.seccomp_notif)
++        .max(std::mem::size_of::<libc::seccomp_notif>());
++    let resp_len = usize::from(sizes.seccomp_notif_resp)
++        .max(std::mem::size_of::<libc::seccomp_notif_resp>());
++    // u64 storage: aligned for both structs; zeroed, as RECV requires.
++    let mut req = vec![0u64; req_len.div_ceil(8)];
++    // SAFETY: `req` is zeroed and at least as large as the kernel's struct.
++    if unsafe {
++        libc::ioctl(listener, libc::SECCOMP_IOCTL_NOTIF_RECV, req.as_mut_ptr())
++    } < 0
++    {
++        return Err(std::io::Error::last_os_error());
++    }
++    // SAFETY: the buffer holds an initialised seccomp_notif prefix.
++    let notif = unsafe { &*req.as_ptr().cast::<libc::seccomp_notif>() };
++    let addr = notif.data.args[0];
++    let payload: Vec<u8> = if i64::from(notif.data.nr) == libc::SYS_uname {
++        utsname_bytes(a).to_vec()
++    } else {
++        // SAFETY: zeroed is a valid sysinfo; the call fills it.
++        let mut host: libc::sysinfo = unsafe { std::mem::zeroed() };
++        unsafe { libc::sysinfo(&mut host) };
++        let dir = a.cgroup_dir.clone();
++        let info = sysinfo_for(
++            &host,
++            start.elapsed(),
++            a,
++            read_u64(dir.as_ref().map(|d| d.join("memory.current"))),
++            read_u64(dir.map(|d| d.join("pids.current"))),
++        );
++        // SAFETY: plain-old-data viewed as bytes.
++        unsafe {
++            std::slice::from_raw_parts(
++                (&info as *const libc::sysinfo).cast::<u8>(),
++                std::mem::size_of::<libc::sysinfo>(),
++            )
++        }
++        .to_vec()
++    };
++    let mut id = notif.id;
++    // The caller may have died and its pid been reused since RECV.
++    // SAFETY: `id` is a u64 the ioctl reads.
++    let live = unsafe {
++        libc::ioctl(listener, libc::SECCOMP_IOCTL_NOTIF_ID_VALID, &mut id)
++    } == 0;
++    if !live {
++        return Ok(());
++    }
++    let local = libc::iovec {
++        iov_base: payload.as_ptr().cast_mut().cast(),
++        iov_len: payload.len(),
++    };
++    let remote = libc::iovec {
++        iov_base: addr as *mut libc::c_void,
++        iov_len: payload.len(),
++    };
++    // SAFETY: one local and one remote iovec, both sized to `payload`.
++    let written = unsafe {
++        libc::process_vm_writev(
++            notif.pid as libc::pid_t,
++            &local,
++            1,
++            &remote,
++            1,
++            0,
++        )
++    };
++    let mut resp = vec![0u64; resp_len.div_ceil(8)];
++    // SAFETY: `resp` is zeroed and large enough for the kernel's struct.
++    let r =
++        unsafe { &mut *resp.as_mut_ptr().cast::<libc::seccomp_notif_resp>() };
++    r.id = notif.id;
++    if written == payload.len() as isize {
++        r.val = 0;
++        r.error = 0;
++    } else {
++        r.val = -1;
++        r.error = -libc::EFAULT;
++    }
++    // SAFETY: `resp` holds an initialised response.
++    if unsafe {
++        libc::ioctl(listener, libc::SECCOMP_IOCTL_NOTIF_SEND, resp.as_mut_ptr())
++    } < 0
++    {
++        return Err(std::io::Error::last_os_error());
++    }
++    Ok(())
++}
++
++/// The answers for this host, from the same cleaning as the host view's
++/// files and the jail's cgroup limits.
++pub(crate) fn answers_for_host() -> Answers {
++    let identity = super::host_view_extra::HostIdentity::read(String::new());
++    let snap = super::host_view::HostSnapshot::read();
++    // SAFETY: zeroed utsname is valid; uname fills it.
++    let machine = unsafe {
++        let mut u: libc::utsname = std::mem::zeroed();
++        if libc::uname(&mut u) == 0 {
++            std::ffi::CStr::from_ptr(u.machine.as_ptr())
++                .to_string_lossy()
++                .into_owned()
++        } else {
++            String::new()
++        }
++    };
++    Answers {
++        release: super::host_view_extra::kernel_release(&identity.osrelease),
++        version: super::host_view_extra::kernel_version(&identity.version),
++        machine,
++        cgroup_dir: snap.cgroup_dir,
++        memory_max: snap.memory_max,
++        swap_max: snap.swap_max,
++    }
++}
++
++#[cfg(test)]
++#[path = "syscall_view_tests.rs"]
++mod tests;
+diff --git a/src/sandbox/syscall_view_tests.rs b/src/sandbox/syscall_view_tests.rs
+new file mode 100644
+index 0000000..c81c9d4
+--- /dev/null
++++ b/src/sandbox/syscall_view_tests.rs
+@@ -0,0 +1,112 @@
++use super::*;
++
++fn answers() -> Answers {
++    Answers {
++        release: "7.3.5".into(),
++        version: "#1 SMP PREEMPT_DYNAMIC".into(),
++        machine: "x86_64".into(),
++        cgroup_dir: None,
++        memory_max: Some(8 << 30),
++        swap_max: Some(0),
++    }
++}
++
++fn field(bytes: &[u8], i: usize) -> &str {
++    let f = &bytes[i * UTS_FIELD..(i + 1) * UTS_FIELD];
++    let end = f.iter().position(|b| *b == 0).unwrap();
++    std::str::from_utf8(&f[..end]).unwrap()
++}
++
++#[test]
++fn utsname_names_the_jail_and_the_cleaned_kernel() {
++    let bytes = utsname_bytes(&answers());
++    assert_eq!(bytes.len(), 390);
++    assert_eq!(field(&bytes, 0), "Linux");
++    assert_eq!(field(&bytes, 1), "ai-sandbox");
++    assert_eq!(field(&bytes, 2), "7.3.5");
++    assert_eq!(field(&bytes, 3), "#1 SMP PREEMPT_DYNAMIC");
++    assert_eq!(field(&bytes, 4), "x86_64");
++    assert_eq!(field(&bytes, 5), "(none)");
++}
++
++#[test]
++fn utsname_cuts_a_long_value_and_keeps_its_terminator() {
++    let a = Answers {
++        version: "x".repeat(200),
++        ..answers()
++    };
++    let bytes = utsname_bytes(&a);
++    assert_eq!(field(&bytes, 3).len(), 64);
++    assert_eq!(field(&bytes, 4), "x86_64");
++}
++
++fn host() -> libc::sysinfo {
++    // SAFETY: zeroed is a valid sysinfo.
++    let mut h: libc::sysinfo = unsafe { std::mem::zeroed() };
++    h.uptime = 999_999;
++    h.loads = [70_000, 60_000, 50_000];
++    h.totalram = 64 << 20;
++    h.freeram = 10 << 20;
++    h.totalswap = 4 << 20;
++    h.freeswap = 3 << 20;
++    h.procs = 900;
++    h.mem_unit = 1024;
++    h
++}
++
++#[test]
++fn sysinfo_is_sized_to_the_limits_and_aged_from_the_jail() {
++    let info = sysinfo_for(
++        &host(),
++        Duration::from_secs(42),
++        &answers(),
++        Some(1 << 30),
++        Some(12),
++    );
++    assert_eq!(info.uptime, 42);
++    assert_eq!(info.loads, [0; 3]);
++    assert_eq!(info.mem_unit, 1);
++    assert_eq!(info.totalram, 8 << 30);
++    assert_eq!(info.freeram, 7 << 30);
++    assert_eq!((info.totalswap, info.freeswap), (0, 0));
++    assert_eq!(info.procs, 12);
++}
++
++#[test]
++fn sysinfo_keeps_the_hosts_sizes_without_a_limit_in_bytes() {
++    let a = Answers {
++        memory_max: None,
++        swap_max: None,
++        ..answers()
++    };
++    let info = sysinfo_for(&host(), Duration::from_secs(1), &a, None, None);
++    assert_eq!(info.mem_unit, 1);
++    assert_eq!(info.totalram, (64 << 20) * 1024);
++    assert_eq!(info.freeswap, (3 << 20) * 1024);
++    assert_eq!(info.procs, 900, "no pids.current: the host's count stays");
++    assert_eq!(info.uptime, 1);
++}
++
++#[test]
++fn sysinfo_never_reports_more_used_than_the_limit() {
++    let info =
++        sysinfo_for(&host(), Duration::ZERO, &answers(), Some(20 << 30), None);
++    assert_eq!(info.freeram, 0);
++}
++
++#[test]
++fn the_filter_traps_only_uname_and_sysinfo_of_this_architecture() {
++    let p = notify_program();
++    assert_eq!(p.len(), 7);
++    assert_eq!(p[1].k, NATIVE_ARCH);
++    assert_eq!(p[3].k, libc::SYS_uname as u32);
++    assert_eq!(p[4].k, libc::SYS_sysinfo as u32);
++    assert_eq!(p[5].k, libc::SECCOMP_RET_USER_NOTIF);
++    assert_eq!(p[6].k, libc::SECCOMP_RET_ALLOW);
++    // Every jump lands inside the program: on a foreign arch at ALLOW,
++    // on uname at NOTIFY, on sysinfo at NOTIFY, on anything else at ALLOW.
++    assert_eq!(1 + 1 + usize::from(p[1].jf), 6);
++    assert_eq!(3 + 1 + usize::from(p[3].jt), 5);
++    assert_eq!(4 + 1 + usize::from(p[4].jt), 5);
++    assert_eq!(4 + 1 + usize::from(p[4].jf), 6);
++}
+diff --git a/tests/syscall_view.rs b/tests/syscall_view.rs
+new file mode 100644
+index 0000000..d73ac42
+--- /dev/null
++++ b/tests/syscall_view.rs
+@@ -0,0 +1,162 @@
++// `--syscall-view` end to end: uname(2) and sysinfo(2) answered by
++// ai-jail inside a real jail. Linux-only; skipped when bwrap cannot create
++// namespaces or python3 is missing.
++#![cfg(target_os = "linux")]
++
++use std::process::{Command, Output};
++
++mod common;
++
++use common::{SANDBOX_RUN_LOCK, ai_jail, bwrap_available};
++
++const JAIL_FLAGS: &[&str] = &[
++    "--clean",
++    "--no-save-config",
++    "--no-ssh",
++    "--no-gpu",
++    "--no-docker",
++    "--no-display",
++    "--no-status-bar",
++    "--mask-host",
++];
++
++fn ready() -> bool {
++    if !bwrap_available() {
++        eprintln!("SKIPPED: bwrap cannot create namespaces here");
++        return false;
++    }
++    if !Command::new("python3")
++        .arg("-c")
++        .arg("0")
++        .output()
++        .is_ok_and(|o| o.status.success())
++    {
++        eprintln!("SKIPPED: no python3");
++        return false;
++    }
++    true
++}
++
++const PROBE: &str = r#"
++echo "release=$(uname -r)"
++echo "nodename=$(uname -n)"
++echo "version=$(uname -v)"
++python3 - <<'PY'
++import ctypes, os
++buf = (ctypes.c_long * 64)()
++ctypes.CDLL(None).sysinfo(buf)
++print("sysuptime=%d" % buf[0])
++print("pyrelease=%s" % os.uname().release)
++PY
++"#;
++
++fn jail(prefix: &[&str], extra: &[&str], script: &str) -> Output {
++    let _lock = SANDBOX_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    let mut cmd = if prefix.is_empty() {
++        Command::new(ai_jail())
++    } else {
++        let mut c = Command::new(prefix[0]);
++        c.args(&prefix[1..]).arg(ai_jail());
++        c
++    };
++    cmd.args(JAIL_FLAGS)
++        .args(extra)
++        .args(["sh", "-c", script])
++        .output()
++        .expect("failed to spawn ai-jail")
++}
++
++fn stdout(out: &Output) -> String {
++    assert!(
++        out.status.success(),
++        "jail failed: {}\nstderr: {}",
++        out.status,
++        String::from_utf8_lossy(&out.stderr)
++    );
++    String::from_utf8_lossy(&out.stdout).into_owned()
++}
++
++fn field<'a>(text: &'a str, key: &str) -> &'a str {
++    text.lines()
++        .find_map(|l| l.strip_prefix(&format!("{key}=")))
++        .unwrap_or_else(|| panic!("{key} missing:\n{text}"))
++}
++
++fn host_release() -> String {
++    String::from_utf8_lossy(
++        &Command::new("uname").arg("-r").output().unwrap().stdout,
++    )
++    .trim()
++    .to_string()
++}
++
++#[test]
++fn syscall_view_answers_uname_and_sysinfo() {
++    if !ready() {
++        return;
++    }
++    let out = stdout(&jail(&[], &["--syscall-view"], PROBE));
++    let release = field(&out, "release");
++    assert!(
++        release.chars().all(|c| c.is_ascii_digit() || c == '.'),
++        "uname -r still the host's: {out}"
++    );
++    assert_eq!(field(&out, "pyrelease"), release, "{out}");
++    assert_eq!(field(&out, "nodename"), "ai-sandbox");
++    assert!(!field(&out, "version").contains(':'), "date in {out}");
++    let uptime: i64 = field(&out, "sysuptime").parse().unwrap();
++    assert!((0..60).contains(&uptime), "sysinfo uptime: {out}");
++}
++
++#[test]
++fn without_syscall_view_uname_is_the_kernels() {
++    if !ready() {
++        return;
++    }
++    let out = stdout(&jail(&[], &[], PROBE));
++    assert_eq!(field(&out, "release"), host_release());
++}
++
++#[test]
++fn syscall_view_sizes_phys_pages_to_a_memory_limit() {
++    if !ready() {
++        return;
++    }
++    let scope = Command::new("systemd-run")
++        .args([
++            "--user",
++            "--scope",
++            "--quiet",
++            "-p",
++            "MemoryMax=512M",
++            "true",
++        ])
++        .output();
++    if !scope.is_ok_and(|o| o.status.success()) {
++        eprintln!("SKIPPED: no systemd user scope available");
++        return;
++    }
++    let out = stdout(&jail(
++        &[
++            "systemd-run",
++            "--user",
++            "--scope",
++            "--quiet",
++            "-p",
++            "MemoryMax=512M",
++        ],
++        &["--syscall-view"],
++        "echo bytes=$(( $(getconf _PHYS_PAGES) * $(getconf PAGESIZE) ))",
++    ));
++    assert_eq!(field(&out, "bytes"), (512u64 << 20).to_string(), "{out}");
++}
++
++#[test]
++fn syscall_view_alone_is_refused() {
++    let out = Command::new(ai_jail())
++        .args(["--clean", "--no-save-config", "--syscall-view", "true"])
++        .output()
++        .expect("failed to spawn ai-jail");
++    assert!(!out.status.success());
++    assert!(String::from_utf8_lossy(&out.stderr).contains("--mask-host"));
++}
