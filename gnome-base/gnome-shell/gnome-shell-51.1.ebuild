@@ -5,6 +5,7 @@
 # BENTOO-DIVERGENCE: DEPEND - 51.0 meson.build adds librsvg, glycin-2, cairo, json-glib>=1.6; mutter :0/51
 # BENTOO-DIVERGENCE: RDEPEND - follows DEPEND; gnome-session and gdm floors >=51
 # BENTOO-DIVERGENCE: PATCHES - elogind sd_notify patch dropped: 51.0 supports elogind natively
+# BENTOO-DIVERGENCE: RDEPEND - 51.1 js/misc/dependencies.js imports GUdev-1.0 at startup, so libgudev[introspection]
 
 EAPI=8
 
@@ -106,6 +107,7 @@ RDEPEND="${DEPEND}
 	>=sys-power/upower-0.99:=[introspection]
 	gnome-base/librsvg:2[introspection]
 	gui-libs/libadwaita:1[introspection]
+	dev-libs/libgudev[introspection]
 
 	>=gnome-base/gnome-session-51
 	>=gnome-base/gnome-settings-daemon-3.8.3
