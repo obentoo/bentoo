@@ -1,0 +1,142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 23 Nov 2026 05:13:15 -0300
+Subject: [PATCH] agent_sandbox: a jail also hides the disks' names, swap and
+ the kernel's details
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Operator, 2026-11-23, on docs/HOST-VIEW-EXTRA-LAYER.md (hub) §4.1: the part of the extra host
+layer that needs no ai-jail change, now. 0146's every-jail mask list grows from 6 paths to 22:
+- /etc/crypttab: world-readable, it names the encrypted volumes (kekkai, muken, dojo here) --
+  the design work found it, the operator had not listed it;
+- /etc/portage;
+- /proc/swaps, /proc/partitions, /proc/diskstats, /proc/zoneinfo: swap and disk sizes, memory
+  zones;
+- /proc/interrupts, /proc/schedstat: one column or line per host CPU, so they count every core
+  whatever --cpus pins;
+- /proc/sys/kernel/random/boot_id, /proc/pressure;
+- /sys/block, /sys/class/block, /sys/devices/system/node, /sys/devices/system/memory: disks,
+  NUMA nodes (their cpulist and meminfo), memory blocks;
+- /usr/lib/modules, /usr/src: the kernel's exact build.
+ai-jail's --mask empties a file and tmpfs-es a folder; a path this machine lacks is left out,
+as before. Each is empty-safe: run in the installed ai-jail 3.5.0-r2 with every mask and
+--mask-host, `swapon --show` exits 0 and df, lscpu, free, node, python, git, cargo and uptime
+all run (2026-11-23). The kernel-version files and os-release need content, not emptiness, so
+they wait for the ai-jail branch the design proposes.
+
+What stays visible, by decision: the writable mounts' sources -- the project's disk, subvolume
+and size -- need root on the host to hide (accepted as a known limit); /usr, /etc and /opt's
+sources wait for the overlay, behind its own switch until measured; uname(2) and sysinfo(2)
+wait for step 2.
+
+Tests: host_view_masks_disks_swap_and_kernel_details_in_every_jail (every new path, with and
+without mask_host). Red seen with the list as 0158 left it: the new test failed, the old one
+passed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_sandbox/src/host_view.rs b/crates/agent_sandbox/src/host_view.rs
+index 9716bbe..4d083f3 100644
+--- a/crates/agent_sandbox/src/host_view.rs
++++ b/crates/agent_sandbox/src/host_view.rs
+@@ -29,21 +29,49 @@
+ //! `cpu.max`) says 4 while `getconf` and runtimes asking `sched_getaffinity` say 32. A jail that
+ //! reserves cores (`cpu_reserve`) is pinned with `--cpus`, and then they all agree.
+ //!
+-//! This hides, it does not isolate: `cpuid`, timing, `uname(2)` and mount sources stay visible
+-//! short of a VM.
++//! Zeo 0.22.1 adds the rest of what a plain `--mask` can hide (docs/HOST-VIEW-EXTRA-LAYER.md
++//! §4.1): `/etc/crypttab` -- world-readable, it names the encrypted volumes -- `/etc/portage`,
++//! swap, disk, NUMA, memory-block, interrupt, scheduler and pressure files, the boot id, and the
++//! kernel's modules and sources. An empty file is fine for each of these (measured: `swapon
++//! --show`, `df`, `lscpu`, node, python, git and cargo still run); the kernel-version files and
++//! os-release need content, so they wait for ai-jail.
++//!
++//! This hides, it does not isolate: `cpuid`, timing, `uname(2)`, `sysinfo(2)` and mount sources
++//! stay visible short of a VM. The writable mounts' sources (the project's disk and subvolume)
++//! stay visible by decision (operator, 2026-11-23): hiding them needs root on the host.
+ 
+ use std::path::{Component, Path, PathBuf};
+ 
+ use crate::launch::{LaunchRecord, Reason};
+ 
+ /// Masked in every jail: files become empty, folders an empty tmpfs.
+-pub const HOST_MASKS: [&str; 6] = [
++pub const HOST_MASKS: [&str; 22] = [
+     "/etc/hostname",
+     "/etc/fstab",
+     "/proc/cmdline",
+     "/sys/class/net",
+     "/sys/class/dmi",
+     "/sys/devices/virtual/dmi",
++    // Zeo 0.22.1 (docs/HOST-VIEW-EXTRA-LAYER.md §4.1, operator 2026-11-23): the disk-encryption
++    // names (crypttab is world-readable), the package manager's configuration, swap, disks,
++    // NUMA and memory blocks, per-CPU interrupt and scheduler counters (they count every host
++    // CPU), pressure, the boot id, and the kernel's modules and sources.
++    "/etc/crypttab",
++    "/etc/portage",
++    "/proc/swaps",
++    "/proc/partitions",
++    "/proc/diskstats",
++    "/proc/zoneinfo",
++    "/proc/interrupts",
++    "/proc/schedstat",
++    "/proc/sys/kernel/random/boot_id",
++    "/proc/pressure",
++    "/sys/block",
++    "/sys/class/block",
++    "/sys/devices/system/node",
++    "/sys/devices/system/memory",
++    "/usr/lib/modules",
++    "/usr/src",
+ ];
+ 
+ /// Masked in every jail unless `mask_host` is on, where ai-jail writes a per-jail id instead.
+diff --git a/crates/agent_sandbox/src/host_view_tests.rs b/crates/agent_sandbox/src/host_view_tests.rs
+index 63420da..e1c80e2 100644
+--- a/crates/agent_sandbox/src/host_view_tests.rs
++++ b/crates/agent_sandbox/src/host_view_tests.rs
+@@ -42,6 +42,40 @@ fn host_view_mask_host_keeps_the_masks_and_its_own_machine_id() {
+     }
+ }
+ 
++/// Zeo 0.22.1 (operator, 2026-11-23): what the operator's jailed agent read besides the machine's
++/// names -- the encrypted volumes' names in crypttab, swap and disk sizes, every host CPU counted in
++/// the interrupt and scheduler tables, the kernel's modules -- is masked in every jail too.
++#[test]
++fn host_view_masks_disks_swap_and_kernel_details_in_every_jail() {
++    for mask_host in [false, true] {
++        let args = host_args(mask_host, all_exist);
++        for path in [
++            "/etc/crypttab",
++            "/etc/portage",
++            "/proc/swaps",
++            "/proc/partitions",
++            "/proc/diskstats",
++            "/proc/zoneinfo",
++            "/proc/interrupts",
++            "/proc/schedstat",
++            "/proc/sys/kernel/random/boot_id",
++            "/proc/pressure",
++            "/sys/block",
++            "/sys/class/block",
++            "/sys/devices/system/node",
++            "/sys/devices/system/memory",
++            "/usr/lib/modules",
++            "/usr/src",
++        ] {
++            assert!(
++                args.windows(2)
++                    .any(|pair| pair[0] == "--mask" && pair[1] == path),
++                "{path} is not masked (mask_host {mask_host}): {args:?}"
++            );
++        }
++    }
++}
++
+ #[test]
+ fn host_view_skips_a_path_this_machine_lacks() {
+     let args = host_args(false, |path| path != Path::new("/etc/fstab"));

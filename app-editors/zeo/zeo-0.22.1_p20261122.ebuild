@@ -2368,6 +2368,8 @@ src_prepare() {
 			# 0158: Hide the Host on by default (needs ai-jail 3.5.0-r2, RDEPEND); Reserve
 			# CPUs on the Agent Sandbox page. On 0157.
 			"${FILESDIR}/0158-agent-sandbox-settings-ui-hide-the-host-on-by-default-reserve-cpus-mov.patch"
+			# 0159: every jail also masks crypttab, swap, disks, NUMA and the kernel's details. On 0158.
+			"${FILESDIR}/0159-agent-sandbox-a-jail-also-hides-the-disks-names-swap-and-the-kernel-s.patch"
 		)
 	fi
 
