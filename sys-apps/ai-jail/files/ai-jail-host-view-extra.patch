@@ -1,0 +1,1724 @@
+--mask-host's second layer for ai-jail 3.5.0 (from the fork's
+feat/host-view-extra, merged into the Zeo stack zeo/ebuild-350-r3). Under
+--mask-host the sandbox now also reads: the numeric kernel release only in
+/proc/version and /proc/sys/kernel/{osrelease,version} (no distribution
+suffix, builder, compiler or date); a generic os-release (ID=linux); a
+/proc/swaps with no swap; its own boot id; empty /etc/crypttab, release
+files and partition, disk, NUMA, memory-block, interrupt, scheduler and
+pressure files; a tmpfs over /etc/portage, /sys/block, /usr/lib/modules and
+/usr/src; CPU topology files, so lscpu reads one thread per core; a live
+free-memory figure under a memory limit; and CLOCK_BOOTTIME,
+CLOCK_MONOTONIC and sysinfo().uptime counted from the launch, in a time
+namespace the supervisor enters before it execs bwrap. Every jail: the
+landlock helper drops AI_JAIL_QUIET before the final exec. New opt-in
+--overlay-system (with --mask-host): /usr, /etc and /opt through read-only
+overlays so the mount table names no host disk for them. Must follow
+ai-jail-mask-host.patch. Design: zeo-workspace docs/HOST-VIEW-EXTRA-LAYER.md §4.2.
+
+diff --git a/README.md b/README.md
+index 8dff7f1..b4e4c90 100644
+--- a/README.md
++++ b/README.md
+@@ -878,6 +878,21 @@ sandbox:
+ | `/sys/fs/cgroup` | only the sandbox's own cgroup, read-only, in its own cgroup namespace (`/proc/self/cgroup` reads `0::/`) |
+ | `/sys/class/dmi`, `/sys/devices/virtual/dmi` | empty |
+ | `/etc/machine-id` | the sandbox's own id: kept in `DIR/machine-id` under `--state-root DIR`, else random per launch |
++| `/proc/version`, `/proc/sys/kernel/{osrelease,version}` | the numeric release only (`7.3.5`, not `7.3.5-bentoo-dist`): no distribution suffix, builder, compiler or build date |
++| `/usr/lib/os-release` (and `/etc/os-release` when it is a file) | generic: `NAME="Linux"`, `ID=linux` |
++| `/proc/swaps` | the header only (no swap device) |
++| `/proc/sys/kernel/random/boot_id` | a random id per launch |
++| `/etc/crypttab`, `/etc/gentoo-release`, `/etc/lsb-release`, `/proc/{partitions,diskstats,zoneinfo,interrupts,schedstat}` | empty |
++| `/etc/portage`, `/proc/pressure`, `/sys/block`, `/sys/class/block`, `/sys/devices/system/{node,memory}`, `/usr/lib/modules`, `/usr/src` | empty |
++| `CLOCK_BOOTTIME`, `CLOCK_MONOTONIC`, `sysinfo().uptime` | start at the launch, in a time namespace (skipped with a warning on a kernel without `CONFIG_TIME_NS`) |
++
++A path the host lacks is skipped. `--overlay-system` (with `--mask-host`)
++also serves `/usr`, `/etc` and `/opt` through read-only overlays, so
++`/proc/self/mountinfo` names `overlay` instead of the host's disk and
++subvolume for them; it is separate because an overlay slows metadata walks
++(a `find` over `/usr` measured +21 %), and it needs a root that is not
++itself an overlay stacked too deep (inside a container it can fail with
++`Invalid argument`).
+ 
+ The allowed CPUs are the `--cpus` set, else the process's affinity
+ (`taskset`), trimmed to the cgroup's `cpu.max` rounded up to whole CPUs; the
+@@ -897,7 +912,8 @@ so this changes behaviour only under `--no-landlock --no-seccomp`.
+ **What it cannot hide.** This hides the easy answers; it does not isolate.
+ The `cpuid` instruction, timing, the `uname(2)` kernel release, the CPU
+ numbers `sched_getaffinity` and `/proc/self/status` return, and the mount
+-sources in `/proc/self/mountinfo` stay the host's. Only a VM changes those.
++sources in `/proc/self/mountinfo` of the writable mounts (and of the system
++trees without `--overlay-system`) stay the host's. Only a VM changes those.
+ 
+ ## Browsers
+ 
+@@ -1032,6 +1048,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
+ --cpus LIST                     pin the sandbox to CPUs, locked by seccomp
+ --state-root DIR                $HOME, /tmp and Claude config on disk under DIR (Linux; not saved)
+ --mask-host                     hardware view sized to the sandbox's limits (Linux; not saved; see Hiding the host)
++--overlay-system                with --mask-host: /usr, /etc, /opt through read-only overlays (Linux; not saved)
+ --browser[=hard|soft]           isolated browser profile (needs --network --display)
+ --dry-run                       print the backend invocation
+ --init                          write configuration and exit
+diff --git a/docs/CLI_TUI_PARITY.md b/docs/CLI_TUI_PARITY.md
+index a198bf9..2a75963 100644
+--- a/docs/CLI_TUI_PARITY.md
++++ b/docs/CLI_TUI_PARITY.md
+@@ -93,7 +93,8 @@ or integration rather than saved sandbox authority.
+ - Host view: `--mask-host` (a per-run choice made by the caller --
+   typically a wrapper such as an editor -- not saved authority: no
+   configuration key, refused on macOS; it only narrows what the sandbox
+-  reads)
++  reads), and `--overlay-system` with it (the same per-run choice; refused
++  without `--mask-host`)
+ - Backward-compatible rejected option: `--allow-tcp-port`
+ 
+ ## Release rule
+diff --git a/docs/USER_GUIDE.md b/docs/USER_GUIDE.md
+index 709ce9b..0ae0c07 100644
+--- a/docs/USER_GUIDE.md
++++ b/docs/USER_GUIDE.md
+@@ -643,12 +643,28 @@ namespace; DMI is hidden; `/etc/machine-id` is the sandbox's own.
+   `/proc/meminfo` stays the host's.
+ - Machine id: kept in `DIR/machine-id` under `--state-root DIR`, so it stays the
+   same between launches; a fresh one per launch otherwise.
++- Identity: `/proc/version` and `/proc/sys/kernel/{osrelease,version}` carry
++  the numeric release only (no distribution suffix, builder, compiler or
++  date); `os-release` is generic (`ID=linux`); `/proc/swaps` lists no swap; the
++  boot id is the sandbox's own; `/etc/crypttab`, the partition, disk, NUMA,
++  memory-block, interrupt, scheduler and pressure files, `/etc/portage`, the
++  kernel's modules and sources are empty. A path the host lacks is skipped.
++- Clocks: `CLOCK_BOOTTIME`, `CLOCK_MONOTONIC` and `sysinfo().uptime` start at
++  the launch, in a time namespace (skipped with a warning without
++  `CONFIG_TIME_NS`).
++
++`--overlay-system` (with `--mask-host` only; never saved) serves `/usr`, `/etc`
++and `/opt` through read-only overlays, so the mount table names `overlay`
++instead of the host's disk for them. Metadata walks get slower (a `find` over
++`/usr` measured +21 %), and an overlay cannot sit on a root that is already
++stacked too deep (some containers: `Invalid argument`).
+ 
+ A nested sandbox can no longer mount its own `/proc` under `--mask-host`; with
+ ai-jail's default Landlock and seccomp a nested sandbox is refused anyway, so
+ this matters only under `--no-landlock --no-seccomp`. The `cpuid` instruction,
+ timing, `uname(2)`, the CPU numbers of `sched_getaffinity` and the mount
+-sources in `/proc/self/mountinfo` stay the host's. Linux only, never saved to a
++sources in `/proc/self/mountinfo` of the writable mounts (and of the system
++trees without `--overlay-system`) stay the host's. Linux only, never saved to a
+ profile: pass it on each launch.
+ 
+ ## Migration and reapproval
+diff --git a/src/cli.rs b/src/cli.rs
+index 6946f07..7a31aaf 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -210,6 +210,9 @@ OPTIONS:
+                                    own machine-id (Linux; never saved). A nested sandbox can no
+                                    longer mount /proc (bwrap, podman, Claude Code's Bash
+                                    sandbox; already refused unless --no-landlock --no-seccomp)
++    --overlay-system               With --mask-host: serve /usr, /etc and /opt through
++                                   read-only overlays so the mount table names no host disk
++                                   (Linux; never saved; slower metadata walks)
+     --clean                        Ignore saved and legacy project policy, start fresh
+     --dry-run                      Print the sandbox command without executing
+     --init                         Create/update external per-project config and exit
+@@ -286,6 +289,7 @@ pub struct CliArgs {
+     pub claude_dir: Option<PathBuf>,
+     pub state_root: Option<PathBuf>,
+     pub mask_host: bool,
++    pub overlay_system: bool,
+     pub agent_state: Option<bool>,
+     pub harnesses: Vec<String>,
+     pub request_files: Vec<PathBuf>,
+@@ -574,6 +578,9 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
+             Long("mask-host") => {
+                 args.mask_host = true;
+             }
++            Long("overlay-system") => {
++                args.overlay_system = true;
++            }
+             Long(s @ ("gpu" | "no-gpu")) => {
+                 args.gpu = Some(s == "gpu");
+             }
+@@ -1222,6 +1229,7 @@ const SANDBOX_LONG_FLAGS: &[&str] = &[
+     "--claude-dir",
+     "--state-root",
+     "--mask-host",
++    "--overlay-system",
+     "--x11",
+     "--no-x11",
+     "--host-shm",
+@@ -1272,6 +1280,7 @@ const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
+     "runtime_harnesses",
+     "state_root",
+     "mask_host",
++    "overlay_system",
+ ];
+ 
+ /// Names already missing from docs/USER_GUIDE.md at upstream v3.3.0
+@@ -3055,6 +3064,14 @@ mod tests {
+         assert_eq!(args.command, vec!["claude"]);
+     }
+ 
++    #[test]
++    fn parse_overlay_system() {
++        assert!(!parse_test(&["claude"]).unwrap().overlay_system);
++        let args =
++            parse_test(&["--mask-host", "--overlay-system", "claude"]).unwrap();
++        assert!(args.mask_host && args.overlay_system);
++    }
++
+     #[test]
+     fn parse_claude_dir() {
+         let args = parse_test(&[
+diff --git a/src/config.rs b/src/config.rs
+index c7572fe..4324078 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -191,6 +191,10 @@ pub struct Config {
+     /// Runtime only, like `runtime_harnesses`: a launch flag, never saved.
+     #[serde(default, skip)]
+     pub mask_host: bool,
++    /// `--overlay-system`: read-only overlays for `/usr`, `/etc`, `/opt`
++    /// under `--mask-host`. Runtime only, never saved.
++    #[serde(default, skip)]
++    pub overlay_system: bool,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub command: Vec<String>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+@@ -2652,6 +2656,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
+     }
+     config.state_root = cli.state_root.clone();
+     config.mask_host = cli.mask_host;
++    config.overlay_system = cli.overlay_system;
+ 
+     expand_user_paths(&mut config);
+ 
+@@ -4978,6 +4983,7 @@ no_gpu = true
+             runtime_harnesses: Vec::new(),
+             state_root: None,
+             mask_host: false,
++            overlay_system: false,
+             command: vec!["claude".into()],
+             rw_maps: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
+             ro_maps: vec![PathBuf::from("/opt/data")],
+@@ -8380,6 +8386,7 @@ hide_dotdirs = [".my_secrets"]
+             runtime_harnesses: Vec::new(),
+             state_root: None,
+             mask_host: false,
++            overlay_system: false,
+             command: vec!["codex".into()],
+             rw_maps: vec![PathBuf::from("/tmp/shared")],
+             ro_maps: vec![],
+diff --git a/src/config_store.rs b/src/config_store.rs
+index 71105eb..e4d316c 100644
+--- a/src/config_store.rs
++++ b/src/config_store.rs
+@@ -1198,6 +1198,7 @@ pub(crate) fn save_project_grants(
+     grants.state_root = None;
+     // `--mask-host` is invocation-scoped for the same reason.
+     grants.mask_host = false;
++    grants.overlay_system = false;
+     doc.directory_grants = approved_directory_grants.to_vec();
+     doc.grants = grants;
+     doc.approved_env_names = approved_env_names;
+@@ -1521,6 +1522,7 @@ const CONFIG_FIELD_POLICY: &[ConfigFieldPolicy] = &[
+     excluded_policy!("runtime_harnesses", Authority),
+     excluded_policy!("state_root", Authority),
+     excluded_policy!("mask_host", Restriction),
++    excluded_policy!("overlay_system", Restriction),
+     static_policy!("command", Authority, Command),
+     static_policy!("rw_maps", Authority, RwMaps),
+     static_policy!("ro_maps", Authority, RoMaps),
+@@ -2332,6 +2334,7 @@ mod tests {
+         expected_excluded!("runtime_harnesses", Authority),
+         expected_excluded!("state_root", Authority),
+         expected_excluded!("mask_host", Restriction),
++        expected_excluded!("overlay_system", Restriction),
+         expected_authority!("command", Authority, Command, ["command claude"]),
+         expected_authority!(
+             "rw_maps",
+@@ -2450,6 +2453,9 @@ mod tests {
+             "mask_host" => {
+                 config.mask_host = true;
+             }
++            "overlay_system" => {
++                config.overlay_system = true;
++            }
+             "command" => {
+                 config.command =
+                     vec!["claude".into(), "--token=top-secret".into()];
+diff --git a/src/main.rs b/src/main.rs
+index eb5555e..7690635 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -347,6 +347,16 @@ fn validate_network_flags(config: &config::Config) -> Result<(), String> {
+     validate_publish_ports(config)
+ }
+ 
++/// `--overlay-system` is a layer of `--mask-host`'s view (its empty bottom
++/// layer lives in the view's directory), so it is refused alone rather than
++/// ignored.
++fn validate_overlay_system(config: &config::Config) -> Result<(), String> {
++    if config.overlay_system && !config.mask_host {
++        return Err("--overlay-system requires --mask-host".into());
++    }
++    Ok(())
++}
++
+ /// `--egress-log` only sees what the filtered-egress proxy relays, so with
+ /// the network off or full it would log nothing while looking enabled.
+ /// Checked on the finalized config: a config file or a harness
+@@ -1137,6 +1147,11 @@ fn run_landlock_exec(cli: &cli::CliArgs) -> Result<i32, String> {
+         unsafe { std::env::set_var("PATH", &pruned) };
+     }
+ 
++    // The quiet marker is for this helper only; the agent would read it
++    // as one more name that says it runs under ai-jail.
++    // SAFETY: single-threaded, before exec.
++    unsafe { std::env::remove_var("AI_JAIL_QUIET") };
++
+     // Replace this process with the real command
+     let err = std::process::Command::new(&cli.command[0])
+         .args(&cli.command[1..])
+@@ -1783,6 +1798,7 @@ fn run(
+     config::absolutize_user_paths(&mut config, &invocation_cwd);
+     apply_browser_profile(&mut config, !command_from_untrusted_project);
+     validate_network_flags(&config)?;
++    validate_overlay_system(&config)?;
+     let resource_limits = validate_resource_limits(&config)?;
+ 
+     // Handle status command
+@@ -2528,7 +2544,7 @@ mod tests {
+         should_auto_save_project_config, should_check_update,
+         should_save_global_preferences,
+         untrusted_project_command_carries_credentials, validate_egress_log_on,
+-        validate_network_flags, validate_write_flags,
++        validate_network_flags, validate_overlay_system, validate_write_flags,
+     };
+     use crate::cli::CliArgs;
+     use crate::config::{BrowserProfile, Config};
+@@ -2882,6 +2898,23 @@ mod tests {
+         assert!(validate_network_flags(&Config::default()).is_ok());
+     }
+ 
++    #[test]
++    fn overlay_system_is_refused_without_mask_host() {
++        let alone = Config {
++            overlay_system: true,
++            ..Config::default()
++        };
++        let error = validate_overlay_system(&alone).unwrap_err();
++        assert!(error.contains("--mask-host"), "{error}");
++        let both = Config {
++            overlay_system: true,
++            mask_host: true,
++            ..Config::default()
++        };
++        assert!(validate_overlay_system(&both).is_ok());
++        assert!(validate_overlay_system(&Config::default()).is_ok());
++    }
++
+     #[test]
+     fn secrets_require_filtered_mode_allowlist_and_env_key() {
+         // Not filtered.
+diff --git a/src/sandbox/bwrap.rs b/src/sandbox/bwrap.rs
+index e78df80..dbc3615 100644
+--- a/src/sandbox/bwrap.rs
++++ b/src/sandbox/bwrap.rs
+@@ -68,6 +68,12 @@ enum Mount {
+         work: PathBuf,
+         dest: PathBuf,
+     },
++    /// Read-only overlay of `layers`, lowest first (`--mask-host
++    /// --overlay-system`).
++    RoOverlay {
++        layers: Vec<PathBuf>,
++        dest: PathBuf,
++    },
+ }
+ 
+ impl Mount {
+@@ -84,6 +90,10 @@ impl Mount {
+                 work,
+                 dest,
+             } => vec![(lower, dest), (upper, dest), (work, dest)],
++            Mount::RoOverlay { layers, dest } => layers
++                .iter()
++                .map(|l| (l.as_path(), dest.as_path()))
++                .collect(),
+             _ => Vec::new(),
+         }
+     }
+@@ -98,7 +108,8 @@ impl Mount {
+             | Mount::Proc { dest }
+             | Mount::Tmpfs { dest }
+             | Mount::Symlink { dest, .. }
+-            | Mount::Overlay { dest, .. } => dest,
++            | Mount::Overlay { dest, .. }
++            | Mount::RoOverlay { dest, .. } => dest,
+         }
+     }
+ 
+@@ -158,6 +169,18 @@ impl Mount {
+                     dest.display().to_string(),
+                 ]
+             }
++            Mount::RoOverlay { layers, dest } => {
++                // Each `--overlay-src` adds a layer above the previous one;
++                // `--ro-overlay` mounts them with no writable layer.
++                let mut args = Vec::new();
++                for layer in layers {
++                    args.push("--overlay-src".into());
++                    args.push(layer.display().to_string());
++                }
++                args.push("--ro-overlay".into());
++                args.push(dest.display().to_string());
++                args
++            }
+         }
+     }
+ }
+@@ -668,6 +691,7 @@ fn host_view_request(config: &Config) -> super::host_view::HostViewRequest {
+             .state_root
+             .as_deref()
+             .map(|root| root.join("machine-id")),
++        overlay_system: config.overlay_system,
+     }
+ }
+ 
+@@ -677,9 +701,25 @@ fn apply_host_view(
+     view: &super::host_view::HostView,
+ ) {
+     use super::host_view::HostViewMount;
++    // An overlay replaces the base bind of its tree in place: appended
++    // after it, it would cover the binds made inside that tree since
++    // (/etc/hosts, resolv.conf) and the view's own masks.
++    for m in view.mounts() {
++        if let HostViewMount::RoOverlay { lower, empty, dest } = m {
++            for base in &mut mount_set.base {
++                if matches!(base, Mount::RoBind { dest: d, .. } if d == dest) {
++                    *base = Mount::RoOverlay {
++                        layers: vec![empty.clone(), lower.clone()],
++                        dest: dest.clone(),
++                    };
++                }
++            }
++        }
++    }
+     mount_set.host_view = view
+         .mounts()
+         .iter()
++        .filter(|m| !matches!(m, HostViewMount::RoOverlay { .. }))
+         .map(|m| match m {
+             HostViewMount::File { src, dest } => Mount::FileRoBind {
+                 src: src.clone(),
+@@ -689,7 +729,8 @@ fn apply_host_view(
+                 src: src.clone(),
+                 dest: dest.clone(),
+             },
+-            HostViewMount::Tmpfs { dest } => {
++            HostViewMount::Tmpfs { dest }
++            | HostViewMount::RoOverlay { dest, .. } => {
+                 Mount::Tmpfs { dest: dest.clone() }
+             }
+         })
+@@ -1690,6 +1731,18 @@ pub fn build(
+     // posix_spawn does not reliably pass a non-stdio fd through. (#147)
+     let proc_path = std::ffi::CString::new(format!("/proc/self/fd/{args_fd}"))
+         .map_err(|e| format!("building bwrap args fd path: {e}"))?;
++    // `--mask-host`: the jail's clocks start at its launch. The supervisor
++    // that execs bwrap enters the namespace (host_view_timens).
++    if config.mask_host {
++        match super::host_view_timens::TimeNamespace::prepare() {
++            Some(ns) => {
++                cmd.env(super::host_view_timens::ENV, ns.offsets());
++            }
++            None => crate::output::warn(
++                "--mask-host: no time namespaces in this kernel (CONFIG_TIME_NS); uptime and boot clocks stay the host's",
++            ),
++        }
++    }
+     // SAFETY: the closure calls only async-signal-safe libc functions.
+     unsafe {
+         cmd.pre_exec(move || {
+diff --git a/src/sandbox/host_view.rs b/src/sandbox/host_view.rs
+index 17168f2..710a30b 100644
+--- a/src/sandbox/host_view.rs
++++ b/src/sandbox/host_view.rs
+@@ -35,8 +35,9 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+ use std::path::{Path, PathBuf};
+ use std::time::{SystemTime, UNIX_EPOCH};
+ 
++use super::host_view_extra as extra;
+ use super::host_view_synth as synth;
+-use super::host_view_uptime::UptimeTicker;
++use super::host_view_uptime::{LiveFile, UptimeTicker};
+ 
+ const CGROUP_ROOT: &str = "/sys/fs/cgroup";
+ const SYS_CPU: &str = "/sys/devices/system/cpu";
+@@ -55,6 +56,9 @@ pub(crate) struct HostViewRequest {
+     /// Where the jail's machine id is kept between launches. `None` gives
+     /// every launch a fresh id.
+     pub machine_id_file: Option<PathBuf>,
++    /// `--overlay-system`: serve `/usr`, `/etc` and `/opt` through
++    /// read-only overlays (see `host_view_extra::overlay_mounts`).
++    pub overlay_system: bool,
+ }
+ 
+ /// The host as the jail's limits frame it, read once per launch.
+@@ -148,9 +152,23 @@ fn cgroup_ancestry(dir: &Path, file: &str) -> Vec<String> {
+ /// One mount of the host view; `bwrap.rs` turns it into arguments.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub(super) enum HostViewMount {
+-    File { src: PathBuf, dest: PathBuf },
+-    Dir { src: PathBuf, dest: PathBuf },
+-    Tmpfs { dest: PathBuf },
++    File {
++        src: PathBuf,
++        dest: PathBuf,
++    },
++    Dir {
++        src: PathBuf,
++        dest: PathBuf,
++    },
++    Tmpfs {
++        dest: PathBuf,
++    },
++    /// A read-only overlay of `lower` over the empty directory `empty`.
++    RoOverlay {
++        lower: PathBuf,
++        empty: PathBuf,
++        dest: PathBuf,
++    },
+ }
+ 
+ /// What to write (relative to the view's directory) and what to mount.
+@@ -172,12 +190,7 @@ pub(super) fn plan(
+     dir: &Path,
+     exists: &dyn Fn(&Path) -> bool,
+ ) -> HostViewPlan {
+-    let base = request
+-        .cpus
+-        .clone()
+-        .or_else(|| snap.affinity.clone())
+-        .unwrap_or_else(|| snap.host_cpus.clone());
+-    let ids = synth::jail_cpu_ids(&base, snap.quota_cpus);
++    let ids = cpu_ids(snap, request);
+     let mut out = HostViewPlan {
+         uptime_cpus: ids.len(),
+         ..HostViewPlan::default()
+@@ -250,6 +263,20 @@ pub(super) fn plan(
+     out
+ }
+ 
++/// The CPU ids the jail is shown: its pinned or allowed set, narrowed to
++/// its CPU quota.
++pub(super) fn cpu_ids(
++    snap: &HostSnapshot,
++    request: &HostViewRequest,
++) -> BTreeSet<usize> {
++    let base = request
++        .cpus
++        .clone()
++        .or_else(|| snap.affinity.clone())
++        .unwrap_or_else(|| snap.host_cpus.clone());
++    synth::jail_cpu_ids(&base, snap.quota_cpus)
++}
++
+ /// The view of one launch: its temp directory (removed on drop) and the
+ /// mounts that put it in place.
+ #[derive(Debug)]
+@@ -286,16 +313,33 @@ impl HostView {
+             Ok(_) => true,
+             Err(_) => false,
+         };
+-        let plan = plan(&snap, &request, &machine_id, &dir, &exists);
++        let mut plan = plan(&snap, &request, &machine_id, &dir, &exists);
++        let identity = extra::HostIdentity::read(boot_id()?);
++        let ids = cpu_ids(&snap, &request);
++        extra::extend_plan(&mut plan, &identity, &ids, &dir, &exists);
++        if request.overlay_system {
++            plan.mounts.extend(extra::overlay_mounts(&dir, &exists));
++        }
+         let mut view = HostView {
+             dir,
+             written: false,
+             mounts: plan.mounts,
+             uptime: None,
+         };
+-        if write && let Some(file) = view.write(&plan.files)? {
+-            view.uptime =
+-                Some(UptimeTicker::start(file, start, plan.uptime_cpus)?);
++        if write {
++            let (uptime, meminfo) = view.write(&plan.files)?;
++            if request.overlay_system {
++                view.make_empty_dir("overlay-empty")?;
++            }
++            let live = meminfo.map(|file| live_meminfo(file, &snap));
++            if let Some(file) = uptime {
++                view.uptime = Some(UptimeTicker::start(
++                    file,
++                    start,
++                    plan.uptime_cpus,
++                    live,
++                )?);
++            }
+         }
+         Ok(view)
+     }
+@@ -304,12 +348,23 @@ impl HostView {
+         &self.mounts
+     }
+ 
+-    /// Write the files; returns `uptime` still open for writing, since the
+-    /// ticker could not reopen it once it is read-only.
++    /// The empty bottom layer of `--overlay-system`'s overlays.
++    fn make_empty_dir(&self, name: &str) -> Result<(), String> {
++        let path = self.dir.join(name);
++        std::fs::DirBuilder::new()
++            .mode(0o755)
++            .create(&path)
++            .map_err(|e| {
++                format!("--mask-host: cannot create {}: {e}", path.display())
++            })
++    }
++
++    /// Write the files; returns `uptime` and `meminfo` still open for
++    /// writing, since the ticker could not reopen them once read-only.
+     fn write(
+         &mut self,
+         files: &[(PathBuf, String)],
+-    ) -> Result<Option<std::fs::File>, String> {
++    ) -> Result<(Option<std::fs::File>, Option<std::fs::File>), String> {
+         let fail = |what: &Path, e: std::io::Error| {
+             format!("--mask-host: cannot write {}: {e}", what.display())
+         };
+@@ -318,7 +373,7 @@ impl HostView {
+             .create(&self.dir)
+             .map_err(|e| fail(&self.dir, e))?;
+         self.written = true;
+-        let mut uptime = None;
++        let (mut uptime, mut meminfo) = (None, None);
+         for (rel, text) in files {
+             let path = self.dir.join(rel);
+             if let Some(parent) = path.parent() {
+@@ -344,9 +399,11 @@ impl HostView {
+             .map_err(|e| fail(&path, e))?;
+             if rel == Path::new("uptime") {
+                 uptime = Some(f);
++            } else if rel == Path::new("meminfo") {
++                meminfo = Some(f);
+             }
+         }
+-        Ok(uptime)
++        Ok((uptime, meminfo))
+     }
+ }
+ 
+@@ -359,6 +416,38 @@ impl Drop for HostView {
+     }
+ }
+ 
++/// `/proc/meminfo` kept current: free memory follows the cgroup's
++/// `memory.current`, the rest stays as planned. `synth::meminfo` pads every
++/// value to the total's width, so a rewrite never changes the length.
++fn live_meminfo(file: std::fs::File, snap: &HostSnapshot) -> LiveFile {
++    let (memory, swap, host) = (
++        snap.memory_max.unwrap_or(0),
++        snap.swap_max,
++        snap.meminfo.clone(),
++    );
++    let current = snap.cgroup_dir.as_ref().map(|d| d.join("memory.current"));
++    LiveFile {
++        file,
++        render: Box::new(move || {
++            let used = current
++                .as_deref()
++                .and_then(|p| std::fs::read_to_string(p).ok())
++                .and_then(|v| v.trim().parse().ok())
++                .unwrap_or(0);
++            synth::meminfo(memory, used, swap, &host)
++        }),
++    }
++}
++
++/// A fresh boot id for the jail.
++fn boot_id() -> Result<String, String> {
++    let mut bytes = [0u8; 16];
++    std::fs::File::open("/dev/urandom")
++        .and_then(|mut f| f.read_exact(&mut bytes))
++        .map_err(|e| format!("--mask-host: cannot read /dev/urandom: {e}"))?;
++    Ok(extra::format_boot_id(bytes))
++}
++
+ /// A machine id in systemd's format (32 lowercase hex digits).
+ pub(super) fn valid_machine_id(text: &str) -> bool {
+     text.len() == 32
+diff --git a/src/sandbox/host_view_extra.rs b/src/sandbox/host_view_extra.rs
+new file mode 100644
+index 0000000..ddb8674
+--- /dev/null
++++ b/src/sandbox/host_view_extra.rs
+@@ -0,0 +1,317 @@
++//! The second layer of `--mask-host`: what names the host rather than
++//! sizing it.
++//!
++//! `host_view` replaces what describes the machine's capacity (CPUs, RAM,
++//! load). This module adds what *identifies* it: the kernel's build
++//! strings, the distribution's release files, the disks (`/proc/swaps`,
++//! partitions, block devices, `/etc/crypttab`), the NUMA and memory-block
++//! layout, the installed kernels and a stable boot id. Each is either a
++//! generic stand-in written into the view's directory or a mask (an empty
++//! file, a tmpfs for a directory). A path the host lacks is skipped, so a
++//! distribution without `/etc/portage` or `/proc/pressure` launches the
++//! same.
++//!
++//! The kernel release keeps its numeric part (`7.3.5`): feature probes
++//! compare versions, so a fake number would break them. `uname(2)` itself
++//! still answers with the full string -- nothing unprivileged rewrites it.
++//!
++//! It also builds the time namespace's offsets, so `CLOCK_BOOTTIME`,
++//! `CLOCK_MONOTONIC` and `sysinfo().uptime` count from the jail's start
++//! (see `bwrap::time_namespace_hook`), and, under `--overlay-system`, the
++//! read-only overlays that keep `/usr`, `/etc` and `/opt`'s mount sources
++//! (device mapper names, subvolumes) out of `/proc/self/mountinfo`.
++
++use std::collections::BTreeSet;
++use std::path::{Path, PathBuf};
++use std::time::Duration;
++
++use super::host_view::{HostViewMount, HostViewPlan};
++use super::host_view_synth as synth;
++
++/// Files emptied under `--mask-host`. `/etc/crypttab` is world-readable
++/// and names the encrypted volumes.
++pub(super) const FILE_MASKS: &[&str] = &[
++    "/etc/crypttab",
++    "/etc/gentoo-release",
++    "/etc/lsb-release",
++    "/proc/partitions",
++    "/proc/diskstats",
++    "/proc/zoneinfo",
++    "/proc/interrupts",
++    "/proc/schedstat",
++];
++
++/// Directories hidden by a tmpfs under `--mask-host`.
++pub(super) const DIR_MASKS: &[&str] = &[
++    "/etc/portage",
++    "/proc/pressure",
++    "/sys/block",
++    "/sys/class/block",
++    "/sys/devices/system/node",
++    "/sys/devices/system/memory",
++    "/usr/lib/modules",
++    "/usr/src",
++];
++
++/// `/etc/os-release` is a symlink to this on systemd-era distributions,
++/// and bwrap refuses to mount over a symlink.
++const OS_RELEASE: &str = "/usr/lib/os-release";
++const ETC_OS_RELEASE: &str = "/etc/os-release";
++const PROC_VERSION: &str = "/proc/version";
++const OSRELEASE: &str = "/proc/sys/kernel/osrelease";
++const KERNEL_VERSION: &str = "/proc/sys/kernel/version";
++const BOOT_ID: &str = "/proc/sys/kernel/random/boot_id";
++const SWAPS: &str = "/proc/swaps";
++
++/// A distribution-neutral `os-release`.
++pub(super) const GENERIC_OS_RELEASE: &str =
++    "NAME=\"Linux\"\nID=linux\nPRETTY_NAME=\"Linux\"\n";
++
++/// `/proc/swaps` with no swap device: the header line only, which
++/// `swapon --show` and `free` read as "no swap".
++pub(super) const EMPTY_SWAPS: &str =
++    "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n";
++
++/// The trees `--overlay-system` serves through a read-only overlay.
++pub(super) const OVERLAY_TREES: &[&str] = &["/usr", "/etc", "/opt"];
++
++/// The host's identity strings, read once per launch.
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub(super) struct HostIdentity {
++    /// `/proc/sys/kernel/osrelease`, e.g. `7.3.5-bentoo-dist`.
++    pub osrelease: String,
++    /// `/proc/sys/kernel/version`, e.g. `#1 SMP PREEMPT_DYNAMIC <date>`.
++    pub version: String,
++    /// A fresh boot id for this jail, in the kernel's format.
++    pub boot_id: String,
++    /// `/etc/os-release` is a regular file rather than the usual symlink
++    /// into `/usr/lib`, so it needs a bind of its own.
++    pub etc_os_release_is_file: bool,
++}
++
++impl HostIdentity {
++    pub fn read(boot_id: String) -> Self {
++        let read = |p: &str| {
++            std::fs::read_to_string(p)
++                .map(|t| t.trim().to_string())
++                .unwrap_or_default()
++        };
++        HostIdentity {
++            osrelease: read(OSRELEASE),
++            version: read(KERNEL_VERSION),
++            boot_id,
++            etc_os_release_is_file: std::fs::symlink_metadata(ETC_OS_RELEASE)
++                .is_ok_and(|m| m.file_type().is_file()),
++        }
++    }
++}
++
++/// The numeric part of a kernel release: `7.3.5-bentoo-dist` -> `7.3.5`,
++/// `6.1.0-13-amd64` -> `6.1.0`. The local suffix names the distribution or
++/// the builder; the number is what feature probes compare.
++pub(super) fn kernel_release(raw: &str) -> String {
++    let numeric: String = raw
++        .trim()
++        .chars()
++        .take_while(|c| c.is_ascii_digit() || *c == '.')
++        .collect();
++    let numeric = numeric.trim_end_matches('.');
++    if numeric.is_empty() {
++        "0.0.0".into()
++    } else {
++        numeric.into()
++    }
++}
++
++/// The kernel version string without its build date: `#1 SMP
++/// PREEMPT_DYNAMIC Tue Nov 17 ...` -> `#1 SMP PREEMPT_DYNAMIC`. Keeps the
++/// build number and the all-caps feature words, stops at the first other
++/// word (the weekday).
++pub(super) fn kernel_version(raw: &str) -> String {
++    let mut words = raw.split_whitespace();
++    let mut out = match words.next() {
++        Some(first) if first.starts_with('#') => first.to_string(),
++        _ => return "#1 SMP".into(),
++    };
++    for word in words {
++        let feature = !word.is_empty()
++            && word
++                .chars()
++                .all(|c| c.is_ascii_uppercase() || c == '_' || c == '-');
++        if !feature {
++            break;
++        }
++        out.push(' ');
++        out.push_str(word);
++    }
++    out
++}
++
++/// `/proc/version` built from the cleaned strings: no builder, compiler
++/// or date.
++pub(super) fn proc_version(release: &str, version: &str) -> String {
++    format!("Linux version {release} {version}\n")
++}
++
++/// A random boot id in the kernel's format (a v4 UUID, lowercase).
++pub(super) fn format_boot_id(bytes: [u8; 16]) -> String {
++    let mut b = bytes;
++    b[6] = (b[6] & 0x0f) | 0x40;
++    b[8] = (b[8] & 0x3f) | 0x80;
++    let hex: Vec<String> = b.iter().map(|x| format!("{x:02x}")).collect();
++    format!(
++        "{}-{}-{}-{}-{}",
++        hex[0..4].concat(),
++        hex[4..6].concat(),
++        hex[6..8].concat(),
++        hex[8..10].concat(),
++        hex[10..16].concat()
++    )
++}
++
++/// A CPU set in the kernel's bitmap format: 32-bit hex words, most
++/// significant first, comma-separated (`cpu/cpuN/topology/*_siblings`).
++pub(super) fn cpu_mask(ids: &BTreeSet<usize>) -> String {
++    let top = ids.iter().next_back().copied().unwrap_or(0);
++    let mut words = vec![0u32; top / 32 + 1];
++    for id in ids {
++        words[id / 32] |= 1 << (id % 32);
++    }
++    let text: Vec<String> =
++        words.iter().rev().map(|w| format!("{w:08x}")).collect();
++    format!("{}\n", text.join(","))
++}
++
++/// `topology/` files for each CPU stub: every CPU its own core in one
++/// package, so `lscpu` reads one thread per core instead of zero. Both the
++/// list and the bitmap forms, since tools read either.
++pub(super) fn topology_files(ids: &BTreeSet<usize>) -> Vec<(String, String)> {
++    let all = format!("{}\n", synth::format_id_list(ids));
++    let all_mask = cpu_mask(ids);
++    let mut out = Vec::new();
++    for (core, id) in ids.iter().enumerate() {
++        let own = format!("{id}\n");
++        let own_mask = cpu_mask(&BTreeSet::from([*id]));
++        let base = format!("cpu/cpu{id}/topology");
++        for (name, text) in [
++            ("core_id", format!("{core}\n")),
++            ("physical_package_id", "0\n".to_string()),
++            ("die_id", "0\n".to_string()),
++            ("thread_siblings_list", own.clone()),
++            ("core_cpus_list", own.clone()),
++            ("core_siblings_list", all.clone()),
++            ("package_cpus_list", all.clone()),
++            ("thread_siblings", own_mask.clone()),
++            ("core_cpus", own_mask.clone()),
++            ("core_siblings", all_mask.clone()),
++            ("package_cpus", all_mask.clone()),
++        ] {
++            out.push((format!("{base}/{name}"), text));
++        }
++    }
++    out
++}
++
++/// Add the identity layer to `out`. Pure, like `host_view::plan`.
++pub(super) fn extend_plan(
++    out: &mut HostViewPlan,
++    identity: &HostIdentity,
++    ids: &BTreeSet<usize>,
++    dir: &Path,
++    exists: &dyn Fn(&Path) -> bool,
++) {
++    let mut file = |name: &str, text: String, dest: &str| {
++        if !exists(Path::new(dest)) {
++            return;
++        }
++        out.files.push((PathBuf::from(name), text));
++        out.mounts.push(HostViewMount::File {
++            src: dir.join(name),
++            dest: dest.into(),
++        });
++    };
++    let release = kernel_release(&identity.osrelease);
++    let version = kernel_version(&identity.version);
++    file("version", proc_version(&release, &version), PROC_VERSION);
++    file("osrelease", format!("{release}\n"), OSRELEASE);
++    file("kernel-version", format!("{version}\n"), KERNEL_VERSION);
++    file("boot_id", format!("{}\n", identity.boot_id), BOOT_ID);
++    file("swaps", EMPTY_SWAPS.into(), SWAPS);
++    file("os-release", GENERIC_OS_RELEASE.into(), OS_RELEASE);
++    // A distribution whose /etc/os-release is a regular file, not the
++    // usual symlink, needs its own bind.
++    if identity.etc_os_release_is_file {
++        file("etc-os-release", GENERIC_OS_RELEASE.into(), ETC_OS_RELEASE);
++    }
++    if FILE_MASKS.iter().any(|p| exists(Path::new(p))) {
++        out.files.push((PathBuf::from("empty"), String::new()));
++    }
++    for path in FILE_MASKS {
++        if exists(Path::new(path)) {
++            out.mounts.push(HostViewMount::File {
++                src: dir.join("empty"),
++                dest: path.into(),
++            });
++        }
++    }
++    for path in DIR_MASKS {
++        if exists(Path::new(path)) {
++            out.mounts.push(HostViewMount::Tmpfs { dest: path.into() });
++        }
++    }
++    for (rel, text) in topology_files(ids) {
++        out.files.push((PathBuf::from(rel), text));
++    }
++}
++
++/// `--overlay-system`: each read-only tree that exists, served through a
++/// read-only overlay over an empty bottom layer (overlayfs wants two
++/// layers when none is writable), so the mount table names `overlay` and
++/// two `/proc/self/fd` paths instead of the host's device and subvolume.
++/// The real tree is the top layer, so its root keeps the host's owner and
++/// mode.
++pub(super) fn overlay_mounts(
++    dir: &Path,
++    exists: &dyn Fn(&Path) -> bool,
++) -> Vec<HostViewMount> {
++    OVERLAY_TREES
++        .iter()
++        .filter(|tree| exists(Path::new(tree)))
++        .map(|tree| HostViewMount::RoOverlay {
++            lower: PathBuf::from(tree),
++            empty: dir.join("overlay-empty"),
++            dest: PathBuf::from(tree),
++        })
++        .collect()
++}
++
++/// `/proc/self/timens_offsets` text that starts the jail's
++/// `CLOCK_MONOTONIC` and `CLOCK_BOOTTIME` at one second, given their host
++/// values now. The kernel refuses an offset that makes a clock negative,
++/// hence the second.
++pub(super) fn timens_offsets(
++    monotonic: Duration,
++    boottime: Duration,
++) -> String {
++    let line = |name: &str, now: Duration| {
++        // Offset = 1 s - now, as (seconds, nanoseconds in [0, 1e9)).
++        let nanos = now.subsec_nanos();
++        let mut secs = 1 - i64::try_from(now.as_secs()).unwrap_or(i64::MAX);
++        let mut ns = 0u32;
++        if nanos > 0 {
++            secs -= 1;
++            ns = 1_000_000_000 - nanos;
++        }
++        format!("{name} {secs} {ns}\n")
++    };
++    line("monotonic", monotonic) + &line("boottime", boottime)
++}
++
++/// Whether the kernel has time namespaces (`CONFIG_TIME_NS`).
++pub(super) fn time_namespaces_available() -> bool {
++    Path::new("/proc/self/ns/time").exists()
++}
++
++#[cfg(test)]
++#[path = "host_view_extra_tests.rs"]
++mod tests;
+diff --git a/src/sandbox/host_view_extra_tests.rs b/src/sandbox/host_view_extra_tests.rs
+new file mode 100644
+index 0000000..50b51d6
+--- /dev/null
++++ b/src/sandbox/host_view_extra_tests.rs
+@@ -0,0 +1,248 @@
++use super::*;
++
++fn ids(list: &[usize]) -> BTreeSet<usize> {
++    list.iter().copied().collect()
++}
++
++fn identity() -> HostIdentity {
++    HostIdentity {
++        osrelease: "7.3.5-bentoo-dist".into(),
++        version: "#1 SMP PREEMPT_DYNAMIC Tue Nov 17 20:32:13 -03 2026".into(),
++        boot_id: "0f0e0d0c-0b0a-4908-8706-050403020100".into(),
++        etc_os_release_is_file: false,
++    }
++}
++
++fn planned(exists: &dyn Fn(&Path) -> bool) -> HostViewPlan {
++    let mut plan = HostViewPlan::default();
++    extend_plan(
++        &mut plan,
++        &identity(),
++        &ids(&[28, 29]),
++        Path::new("/v"),
++        exists,
++    );
++    plan
++}
++
++fn file<'a>(plan: &'a HostViewPlan, name: &str) -> Option<&'a str> {
++    plan.files
++        .iter()
++        .find(|(rel, _)| rel == Path::new(name))
++        .map(|(_, text)| text.as_str())
++}
++
++fn bound_from(plan: &HostViewPlan, dest: &str) -> Option<PathBuf> {
++    plan.mounts.iter().find_map(|m| match m {
++        HostViewMount::File { src, dest: d } if d == Path::new(dest) => {
++            Some(src.clone())
++        }
++        _ => None,
++    })
++}
++
++fn tmpfs_at(plan: &HostViewPlan, dest: &str) -> bool {
++    plan.mounts.iter().any(
++        |m| matches!(m, HostViewMount::Tmpfs { dest: d } if d == Path::new(dest)),
++    )
++}
++
++#[test]
++fn kernel_release_keeps_only_the_number() {
++    assert_eq!(kernel_release("7.3.5-bentoo-dist"), "7.3.5");
++    assert_eq!(kernel_release("6.1.0-13-amd64"), "6.1.0");
++    assert_eq!(kernel_release("6.8.0\n"), "6.8.0");
++    assert_eq!(kernel_release("6.9.rc1-foo"), "6.9");
++    assert_eq!(kernel_release(""), "0.0.0");
++}
++
++#[test]
++fn kernel_version_drops_the_build_date() {
++    assert_eq!(
++        kernel_version("#1 SMP PREEMPT_DYNAMIC Tue Nov 17 20:32:13 -03 2026"),
++        "#1 SMP PREEMPT_DYNAMIC"
++    );
++    assert_eq!(
++        kernel_version("#1 SMP PREEMPT_DYNAMIC Debian 6.1.76-1 (2024-02-01)"),
++        "#1 SMP PREEMPT_DYNAMIC"
++    );
++    assert_eq!(kernel_version("garbage"), "#1 SMP");
++}
++
++#[test]
++fn proc_version_names_no_builder_compiler_or_date() {
++    let plan = planned(&|_| true);
++    let text = file(&plan, "version").expect("version planned");
++    assert_eq!(text, "Linux version 7.3.5 #1 SMP PREEMPT_DYNAMIC\n");
++    assert_eq!(file(&plan, "osrelease"), Some("7.3.5\n"));
++    assert_eq!(
++        file(&plan, "kernel-version"),
++        Some("#1 SMP PREEMPT_DYNAMIC\n")
++    );
++    assert_eq!(
++        bound_from(&plan, "/proc/version"),
++        Some(PathBuf::from("/v/version"))
++    );
++    assert_eq!(
++        bound_from(&plan, "/proc/sys/kernel/osrelease"),
++        Some(PathBuf::from("/v/osrelease"))
++    );
++}
++
++#[test]
++fn os_release_is_generic_and_bound_in_usr_lib() {
++    let plan = planned(&|_| true);
++    let text = file(&plan, "os-release").unwrap();
++    assert!(text.contains("ID=linux\n"), "{text}");
++    assert!(!text.to_lowercase().contains("gentoo"));
++    assert_eq!(
++        bound_from(&plan, "/usr/lib/os-release"),
++        Some(PathBuf::from("/v/os-release"))
++    );
++    // The usual symlink is followed through /usr/lib, never bound.
++    assert_eq!(bound_from(&plan, "/etc/os-release"), None);
++
++    let mut regular = HostViewPlan::default();
++    let id = HostIdentity {
++        etc_os_release_is_file: true,
++        ..identity()
++    };
++    extend_plan(&mut regular, &id, &ids(&[0]), Path::new("/v"), &|_| true);
++    assert!(bound_from(&regular, "/etc/os-release").is_some());
++}
++
++#[test]
++fn swaps_has_the_header_only() {
++    let plan = planned(&|_| true);
++    assert_eq!(file(&plan, "swaps").unwrap().lines().count(), 1);
++    assert!(bound_from(&plan, "/proc/swaps").is_some());
++}
++
++#[test]
++fn every_mask_is_planned_and_crypttab_is_emptied() {
++    let plan = planned(&|_| true);
++    assert_eq!(file(&plan, "empty"), Some(""));
++    for path in FILE_MASKS {
++        assert_eq!(
++            bound_from(&plan, path),
++            Some(PathBuf::from("/v/empty")),
++            "{path}"
++        );
++    }
++    for path in DIR_MASKS {
++        assert!(tmpfs_at(&plan, path), "{path}");
++    }
++    assert!(FILE_MASKS.contains(&"/etc/crypttab"));
++}
++
++#[test]
++fn a_path_the_host_lacks_is_skipped() {
++    let missing = |p: &Path| {
++        !matches!(
++            p.to_str(),
++            Some(
++                "/etc/crypttab"
++                    | "/proc/pressure"
++                    | "/proc/sys/kernel/random/boot_id"
++            )
++        )
++    };
++    let plan = planned(&missing);
++    assert_eq!(bound_from(&plan, "/etc/crypttab"), None);
++    assert!(!tmpfs_at(&plan, "/proc/pressure"));
++    assert_eq!(bound_from(&plan, "/proc/sys/kernel/random/boot_id"), None);
++    assert!(bound_from(&plan, "/proc/partitions").is_some());
++
++    let nothing = planned(&|_| false);
++    assert!(nothing.mounts.is_empty(), "{:?}", nothing.mounts);
++    assert_eq!(file(&nothing, "empty"), None);
++}
++
++#[test]
++fn boot_id_is_a_v4_uuid() {
++    let id = format_boot_id([0xff; 16]);
++    assert_eq!(id.len(), 36);
++    assert_eq!(&id[14..15], "4");
++    assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
++    assert_eq!(id.matches('-').count(), 4);
++    let plan = planned(&|_| true);
++    assert_eq!(
++        file(&plan, "boot_id"),
++        Some("0f0e0d0c-0b0a-4908-8706-050403020100\n")
++    );
++}
++
++#[test]
++fn topology_gives_each_cpu_its_own_core_in_one_package() {
++    let files = topology_files(&ids(&[28, 29]));
++    let get = |name: &str| {
++        files
++            .iter()
++            .find(|(rel, _)| rel == name)
++            .map(|(_, t)| t.as_str())
++            .unwrap_or_else(|| panic!("{name} missing"))
++    };
++    assert_eq!(get("cpu/cpu28/topology/core_id"), "0\n");
++    assert_eq!(get("cpu/cpu29/topology/core_id"), "1\n");
++    assert_eq!(get("cpu/cpu29/topology/thread_siblings_list"), "29\n");
++    assert_eq!(get("cpu/cpu28/topology/core_siblings_list"), "28-29\n");
++    assert_eq!(get("cpu/cpu28/topology/physical_package_id"), "0\n");
++    assert_eq!(get("cpu/cpu29/topology/thread_siblings"), "20000000\n");
++    assert_eq!(get("cpu/cpu28/topology/core_siblings"), "30000000\n");
++    let plan = planned(&|_| true);
++    assert!(file(&plan, "cpu/cpu29/topology/package_cpus_list").is_some());
++}
++
++#[test]
++fn overlay_puts_the_real_tree_above_an_empty_layer() {
++    let only_usr = |p: &Path| p == Path::new("/usr");
++    let mounts = overlay_mounts(Path::new("/v"), &only_usr);
++    assert_eq!(
++        mounts,
++        vec![HostViewMount::RoOverlay {
++            lower: "/usr".into(),
++            empty: "/v/overlay-empty".into(),
++            dest: "/usr".into(),
++        }]
++    );
++    assert_eq!(overlay_mounts(Path::new("/v"), &|_| true).len(), 3);
++}
++
++#[test]
++fn timens_offsets_start_both_clocks_at_one_second() {
++    let text = timens_offsets(
++        Duration::new(5000, 0),
++        Duration::new(7000, 250_000_000),
++    );
++    assert_eq!(
++        text, "monotonic -4999 0\nboottime -7000 750000000\n",
++        "offset + now must be 1 s"
++    );
++    // A fresh clock (under a second) still yields a valid offset.
++    assert_eq!(
++        timens_offsets(Duration::ZERO, Duration::from_millis(500)),
++        "monotonic 1 0\nboottime 0 500000000\n"
++    );
++}
++
++#[test]
++fn live_meminfo_keeps_one_length_as_usage_moves() {
++    let host = "MemTotal: 1 kB\nMemFree: 1 kB\nMemAvailable: 1 kB\n";
++    for memory in [8u64 << 30, 512 << 30, 3 << 20] {
++        let len = synth::meminfo(memory, 0, Some(0), host).len();
++        for used in [1u64, 1 << 20, memory / 2, memory, memory * 2] {
++            assert_eq!(
++                synth::meminfo(memory, used, Some(0), host).len(),
++                len,
++                "memory {memory} used {used}"
++            );
++        }
++    }
++}
++
++#[test]
++fn cpu_mask_is_the_kernels_bitmap_format() {
++    assert_eq!(cpu_mask(&ids(&[0])), "00000001\n");
++    assert_eq!(cpu_mask(&ids(&[0, 1, 31])), "80000003\n");
++    assert_eq!(cpu_mask(&ids(&[32, 33])), "00000003,00000000\n");
++}
+diff --git a/src/sandbox/host_view_synth.rs b/src/sandbox/host_view_synth.rs
+index 97d97cd..0a90987 100644
+--- a/src/sandbox/host_view_synth.rs
++++ b/src/sandbox/host_view_synth.rs
+@@ -185,6 +185,10 @@ pub(super) fn meminfo(
+         .map(|k| (*k, true))
+         .collect();
+     }
++    // Every value is padded to the total's width: free memory never
++    // exceeds it, so the live rewrite of `MemFree`/`MemAvailable` keeps the
++    // file's length (see `host_view::live_meminfo`).
++    let w = kib(memory).to_string().len().max(8);
+     let mut out = String::new();
+     for (key, in_kb) in keys {
+         let value = match key {
+@@ -199,9 +203,9 @@ pub(super) fn meminfo(
+         };
+         let label = format!("{key}:");
+         if in_kb {
+-            out.push_str(&format!("{label:<16}{value:>8} kB\n"));
++            out.push_str(&format!("{label:<16}{value:>w$} kB\n"));
+         } else {
+-            out.push_str(&format!("{label:<16}{value:>8}\n"));
++            out.push_str(&format!("{label:<16}{value:>w$}\n"));
+         }
+     }
+     out
+diff --git a/src/sandbox/host_view_tests.rs b/src/sandbox/host_view_tests.rs
+index ebc27e1..582bf9f 100644
+--- a/src/sandbox/host_view_tests.rs
++++ b/src/sandbox/host_view_tests.rs
+@@ -50,7 +50,10 @@ fn dests(plan: &HostViewPlan) -> Vec<String> {
+         .map(|m| match m {
+             HostViewMount::File { dest, .. }
+             | HostViewMount::Dir { dest, .. }
+-            | HostViewMount::Tmpfs { dest } => dest.display().to_string(),
++            | HostViewMount::Tmpfs { dest }
++            | HostViewMount::RoOverlay { dest, .. } => {
++                dest.display().to_string()
++            }
+         })
+         .collect()
+ }
+@@ -129,6 +132,7 @@ fn explicit_cpus_win_over_affinity_and_keep_their_numbers() {
+     let request = HostViewRequest {
+         cpus: Some(pinned),
+         machine_id_file: None,
++        overlay_system: false,
+     };
+     let plan = plan(
+         &limited_host(),
+diff --git a/src/sandbox/host_view_timens.rs b/src/sandbox/host_view_timens.rs
+new file mode 100644
+index 0000000..a9c9560
+--- /dev/null
++++ b/src/sandbox/host_view_timens.rs
+@@ -0,0 +1,167 @@
++//! `--mask-host`'s time namespace: `CLOCK_BOOTTIME`, `CLOCK_MONOTONIC`
++//! and `sysinfo().uptime` count from the jail's start, not the host's boot.
++//!
++//! A time namespace can only be created by a process holding
++//! `CAP_SYS_ADMIN` in its user namespace, and its offsets only written
++//! before any process has entered it. The launcher computes the offsets
++//! (`prepare`) and hands them to the supervisor process that execs bwrap
++//! (`signals::run_supervised_exec`) in the internal variable `ENV`, since
++//! the supervision wrapper replaces bwrap's `Command` and a `pre_exec` hook
++//! set on it would be dropped. Just before the exec, the supervisor
++//! (`enter`) makes a user namespace mapping the caller's
++//! own uid and gid (nothing else, so bwrap still runs as that user and
++//! creates its own namespaces inside), then the time namespace, then
++//! writes the offsets. `execve` moves the process into its
++//! `time_for_children` namespace (Linux 5.11+), so bwrap and everything it
++//! starts see the shifted clocks. Everything is prepared in the parent: the
++//! hook itself only calls `unshare`, `open`, `write` and `close`, which are
++//! async-signal-safe.
++//!
++//! A kernel without `CONFIG_TIME_NS` has no `/proc/self/ns/time`; the
++//! launch then skips this with a warning, as `--mask-host` does for any
++//! piece the host lacks.
++
++use std::io;
++
++/// The internal variable carrying the offsets from the launcher to the
++/// supervisor; removed before bwrap runs.
++pub(crate) const ENV: &str = "AI_JAIL_TIME_NS";
++
++/// What `enter` writes.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct TimeNamespace {
++    uid_map: Vec<u8>,
++    gid_map: Vec<u8>,
++    offsets: Vec<u8>,
++}
++
++impl TimeNamespace {
++    /// The namespace for a jail starting now, or `None` when the kernel
++    /// lacks time namespaces.
++    pub fn prepare() -> Option<Self> {
++        if !super::host_view_extra::time_namespaces_available() {
++            return None;
++        }
++        let now = |clock| {
++            let mut ts = nix::libc::timespec {
++                tv_sec: 0,
++                tv_nsec: 0,
++            };
++            // SAFETY: `ts` is a valid out-pointer.
++            if unsafe { nix::libc::clock_gettime(clock, &mut ts) } != 0 {
++                return None;
++            }
++            Some(std::time::Duration::new(
++                u64::try_from(ts.tv_sec).ok()?,
++                u32::try_from(ts.tv_nsec).ok()?,
++            ))
++        };
++        let offsets = super::host_view_extra::timens_offsets(
++            now(nix::libc::CLOCK_MONOTONIC)?,
++            now(nix::libc::CLOCK_BOOTTIME)?,
++        );
++        Self::from_offsets(&offsets)
++    }
++
++    /// The offsets, as `ENV` carries them.
++    pub fn offsets(&self) -> String {
++        String::from_utf8_lossy(&self.offsets).into_owned()
++    }
++
++    /// Rebuild from `ENV`'s value, for this process's own uid and gid.
++    /// Anything but `monotonic`/`boottime` lines of two integers is
++    /// refused: the text is written to a procfs file.
++    pub fn from_offsets(text: &str) -> Option<Self> {
++        let valid = |line: &str| {
++            let mut parts = line.split(' ');
++            matches!(parts.next(), Some("monotonic" | "boottime"))
++                && parts.next().is_some_and(|s| s.parse::<i64>().is_ok())
++                && parts.next().is_some_and(|n| {
++                    n.parse::<u32>().is_ok_and(|n| n < 1_000_000_000)
++                })
++                && parts.next().is_none()
++        };
++        let lines: Vec<&str> = text.lines().collect();
++        if lines.is_empty() || !lines.iter().all(|l| valid(l)) {
++            return None;
++        }
++        let uid = nix::unistd::getuid().as_raw();
++        let gid = nix::unistd::getgid().as_raw();
++        Some(TimeNamespace {
++            uid_map: format!("{uid} {uid} 1\n").into_bytes(),
++            gid_map: format!("{gid} {gid} 1\n").into_bytes(),
++            offsets: format!("{}\n", lines.join("\n")).into_bytes(),
++        })
++    }
++
++    /// Run in the process about to exec bwrap. Async-signal-safe, so it
++    /// may also run in a `pre_exec` hook.
++    pub fn enter(&self) -> io::Result<()> {
++        use nix::libc;
++        // SAFETY: plain syscalls on values owned by `self`.
++        unsafe {
++            if libc::unshare(libc::CLONE_NEWUSER) != 0 {
++                return Err(io::Error::last_os_error());
++            }
++            write_proc(c"/proc/self/setgroups", b"deny")?;
++            write_proc(c"/proc/self/uid_map", &self.uid_map)?;
++            write_proc(c"/proc/self/gid_map", &self.gid_map)?;
++            if libc::unshare(libc::CLONE_NEWTIME) != 0 {
++                return Err(io::Error::last_os_error());
++            }
++            write_proc(c"/proc/self/timens_offsets", &self.offsets)?;
++        }
++        Ok(())
++    }
++}
++
++/// Write `data` to a procfs file in one `write`, as these files require.
++///
++/// # Safety
++/// Calls libc directly; async-signal-safe.
++unsafe fn write_proc(path: &std::ffi::CStr, data: &[u8]) -> io::Result<()> {
++    use nix::libc;
++    // SAFETY: `path` is NUL-terminated; `data` outlives the call.
++    unsafe {
++        let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
++        if fd < 0 {
++            return Err(io::Error::last_os_error());
++        }
++        let n = libc::write(fd, data.as_ptr().cast(), data.len());
++        let err = io::Error::last_os_error();
++        libc::close(fd);
++        if n < 0 || n as usize != data.len() {
++            return Err(err);
++        }
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn offsets_round_trip_through_the_variable() {
++        let text = "monotonic -4999 0\nboottime -7000 750000000\n";
++        let ns = TimeNamespace::from_offsets(text).unwrap();
++        assert_eq!(ns.offsets(), text);
++        let uid = nix::unistd::getuid().as_raw();
++        assert_eq!(ns.uid_map, format!("{uid} {uid} 1\n").into_bytes());
++    }
++
++    #[test]
++    fn anything_else_is_refused() {
++        for bad in [
++            "",
++            "realtime 1 0",
++            "monotonic 1",
++            "monotonic x 0",
++            "monotonic 1 1000000000",
++            "monotonic 1 0 extra",
++            "monotonic 1 0\n0 0 0",
++        ] {
++            assert!(TimeNamespace::from_offsets(bad).is_none(), "{bad:?}");
++        }
++    }
++}
+diff --git a/src/sandbox/host_view_uptime.rs b/src/sandbox/host_view_uptime.rs
+index 60797ea..fc375bb 100644
+--- a/src/sandbox/host_view_uptime.rs
++++ b/src/sandbox/host_view_uptime.rs
+@@ -5,6 +5,9 @@
+ //! Every write has the same length (`synth::UPTIME_LEN`) and lands at offset
+ //! 0 in one `pwrite`, so a reader sees one value or the next, never a file
+ //! that shrank or grew. The thread lives exactly as long as the view.
++//!
++//! The same thread keeps `/proc/meminfo`'s free memory current when a
++//! memory limit applies (`LiveFile`), under the same fixed-length rule.
+ 
+ use std::fs::File;
+ use std::os::unix::fs::FileExt;
+@@ -17,6 +20,19 @@ use super::host_view_synth as synth;
+ 
+ const TICK: Duration = Duration::from_secs(1);
+ 
++/// Another synthetic file rewritten every tick: `render` must always
++/// return text of one length.
++pub(super) struct LiveFile {
++    pub file: File,
++    pub render: Box<dyn Fn() -> String + Send>,
++}
++
++impl std::fmt::Debug for LiveFile {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("LiveFile").finish_non_exhaustive()
++    }
++}
++
+ /// Keeps one `/proc/uptime` file current; stopped and joined on drop.
+ #[derive(Debug)]
+ pub(super) struct UptimeTicker {
+@@ -31,6 +47,7 @@ impl UptimeTicker {
+         file: File,
+         start: Instant,
+         cpus: usize,
++        live: Option<LiveFile>,
+     ) -> Result<Self, String> {
+         let stop = Arc::new(AtomicBool::new(false));
+         let flag = Arc::clone(&stop);
+@@ -47,6 +64,10 @@ impl UptimeTicker {
+                     // A failed write leaves the last value in place; the
+                     // jail keeps running either way.
+                     let _ = file.write_all_at(text.as_bytes(), 0);
++                    if let Some(live) = &live {
++                        let text = (live.render)();
++                        let _ = live.file.write_all_at(text.as_bytes(), 0);
++                    }
+                 }
+             })
+             .map_err(|e| format!("--mask-host: cannot start uptime: {e}"))?;
+diff --git a/src/sandbox/mod.rs b/src/sandbox/mod.rs
+index 34eb3e1..114706b 100644
+--- a/src/sandbox/mod.rs
++++ b/src/sandbox/mod.rs
+@@ -64,8 +64,12 @@ pub(crate) mod bwrap;
+ #[cfg(target_os = "linux")]
+ mod host_view;
+ #[cfg(target_os = "linux")]
++mod host_view_extra;
++#[cfg(target_os = "linux")]
+ mod host_view_synth;
+ #[cfg(target_os = "linux")]
++pub(crate) mod host_view_timens;
++#[cfg(target_os = "linux")]
+ mod host_view_uptime;
+ #[cfg(target_os = "linux")]
+ mod landlock;
+@@ -1971,7 +1975,7 @@ pub fn build(
+     #[cfg(target_os = "macos")]
+     {
+         let _ = (guard, bridge_sockets);
+-        if config.mask_host {
++        if config.mask_host || config.overlay_system {
+             return Err("--mask-host is Linux-only".into());
+         }
+         let prepared = prepare_seatbelt_config(config)?;
+@@ -2007,7 +2011,7 @@ pub fn dry_run(
+     #[cfg(target_os = "macos")]
+     {
+         let _ = (guard, bridge_sockets);
+-        if config.mask_host {
++        if config.mask_host || config.overlay_system {
+             return Err("--mask-host is Linux-only".into());
+         }
+         let prepared = prepare_seatbelt_config(config)?;
+diff --git a/src/signals.rs b/src/signals.rs
+index a49d2b3..097f40d 100644
+--- a/src/signals.rs
++++ b/src/signals.rs
+@@ -217,10 +217,24 @@ pub fn run_supervised_exec(fd: i32, command: &[String]) -> Result<i32, String> {
+     if read != 1 || byte[0] != 1 {
+         return Err("Supervised execution was cancelled".into());
+     }
+-    let error = Command::new(&command[0])
+-        .args(&command[1..])
+-        .env_remove("AI_JAIL_SUPERVISED_EXEC")
+-        .exec();
++    // `--mask-host`'s time namespace, entered here because this process
++    // is the one that becomes bwrap (host_view_timens).
++    #[cfg(target_os = "linux")]
++    if let Some(text) = std::env::var_os(crate::sandbox::host_view_timens::ENV)
++    {
++        let ns = crate::sandbox::host_view_timens::TimeNamespace::from_offsets(
++            &text.to_string_lossy(),
++        )
++        .ok_or("Invalid time namespace offsets")?;
++        ns.enter()
++            .map_err(|e| format!("Cannot enter the time namespace: {e}"))?;
++    }
++    let mut exec = Command::new(&command[0]);
++    exec.args(&command[1..])
++        .env_remove("AI_JAIL_SUPERVISED_EXEC");
++    #[cfg(target_os = "linux")]
++    exec.env_remove(crate::sandbox::host_view_timens::ENV);
++    let error = exec.exec();
+     Err(format!("Cannot execute supervised sandbox: {error}"))
+ }
+ 
+diff --git a/tests/mask_host.rs b/tests/mask_host.rs
+index be38721..3853237 100644
+--- a/tests/mask_host.rs
++++ b/tests/mask_host.rs
+@@ -275,3 +275,141 @@ fn mask_host_uptime_counts_from_the_jail_start() {
+     }
+     assert_eq!(field(&out, "uptime_rc"), "0");
+ }
++
++const IDENTITY_PROBE: &str = r#"
++echo "version=$(cat /proc/version)"
++echo "osrelease=$(cat /proc/sys/kernel/osrelease)"
++echo "osid=$(. /etc/os-release; echo "$ID")"
++echo "swaps=$(wc -l < /proc/swaps)"
++echo "crypttab=$(wc -c < /etc/crypttab 2>/dev/null || echo absent)"
++echo "partitions=$(wc -c < /proc/partitions)"
++echo "sysblock=$(ls /sys/block | wc -l)"
++echo "modules=$(ls /usr/lib/modules 2>/dev/null | wc -l)"
++echo "bootid=$(cat /proc/sys/kernel/random/boot_id)"
++echo "lscpu_threads=$(lscpu 2>/dev/null | awk -F: '/^Thread\(s\) per core/ {gsub(/ /,"",$2); print $2}')"
++echo "quiet_env=${AI_JAIL_QUIET:-unset}"
++echo "procstart=$(awk '{print $22}' /proc/self/stat)"
++echo "clk_tck=$(getconf CLK_TCK)"
++"#;
++
++#[test]
++fn mask_host_hides_the_kernel_build_distribution_and_disks() {
++    require_bwrap!();
++    let out = stdout(&jail(true, IDENTITY_PROBE));
++    let release = field(&out, "osrelease");
++    assert!(
++        release.chars().all(|c| c.is_ascii_digit() || c == '.'),
++        "kernel suffix leaked: {release}"
++    );
++    let version = field(&out, "version");
++    assert!(
++        version.starts_with(&format!("Linux version {release} #")),
++        "{version:?}"
++    );
++    for leak in ["(", "@", "gcc", "clang", ":"] {
++        assert!(!version.contains(leak), "build detail in {version:?}");
++    }
++    assert_eq!(field(&out, "osid"), "linux");
++    assert_eq!(field(&out, "swaps"), "1", "{out}");
++    let crypttab = field(&out, "crypttab");
++    assert!(crypttab == "0" || crypttab == "absent", "{out}");
++    assert_eq!(field(&out, "partitions"), "0", "{out}");
++    assert_eq!(field(&out, "sysblock"), "0", "{out}");
++    assert_eq!(field(&out, "modules"), "0", "{out}");
++    let host_boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
++        .unwrap_or_default();
++    assert_ne!(field(&out, "bootid"), host_boot.trim());
++    let threads = field(&out, "lscpu_threads");
++    assert!(threads.is_empty() || threads == "1", "{out}");
++}
++
++#[test]
++fn mask_host_starts_the_boot_clock_at_the_jail() {
++    require_bwrap!();
++    if !std::path::Path::new("/proc/self/ns/time").exists() {
++        eprintln!("SKIPPED: no time namespaces in this kernel");
++        return;
++    }
++    let out = stdout(&jail(true, IDENTITY_PROBE));
++    // A process's start time is counted in ticks since boot, in the time
++    // namespace's own boot clock.
++    let start: f64 = field(&out, "procstart").parse().unwrap();
++    let tck: f64 = field(&out, "clk_tck").parse().unwrap();
++    assert!(start / tck < 60.0, "boot clock is the host's:\n{out}");
++}
++
++#[test]
++fn the_agent_does_not_inherit_the_quiet_marker() {
++    require_bwrap!();
++    let _lock = SANDBOX_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    let out = Command::new(ai_jail())
++        .args([
++            "--clean",
++            "--no-save-config",
++            "--no-ssh",
++            "--no-gpu",
++            "--no-docker",
++            "--no-display",
++            "--no-status-bar",
++            "--exec",
++            "sh",
++            "-c",
++            "echo quiet_env=${AI_JAIL_QUIET:-unset}",
++        ])
++        .output()
++        .expect("failed to spawn ai-jail");
++    assert_eq!(field(&stdout(&out), "quiet_env"), "unset");
++}
++
++#[test]
++fn overlay_system_hides_the_disk_behind_the_system_trees() {
++    require_bwrap!();
++    let _lock = SANDBOX_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    let script = r#"
++awk '$5=="/usr" || $5=="/etc" {print "src" $5 "=" $(NF-1)}' /proc/self/mountinfo
++echo "hosts=$(wc -c < /etc/hosts)"
++echo "crypttab=$(wc -c < /etc/crypttab 2>/dev/null || echo absent)"
++echo "usrmode=$(stat -c %a /usr)"
++git --version >/dev/null && echo git=ok
++"#;
++    let out = Command::new(ai_jail())
++        .args([
++            "--clean",
++            "--no-save-config",
++            "--no-ssh",
++            "--no-gpu",
++            "--no-docker",
++            "--no-display",
++            "--no-status-bar",
++            "--mask-host",
++            "--overlay-system",
++            "sh",
++            "-c",
++            script,
++        ])
++        .output()
++        .expect("failed to spawn ai-jail");
++    let text = stdout(&out);
++    assert_eq!(field(&text, "src/usr"), "overlay", "{text}");
++    assert_eq!(field(&text, "src/etc"), "overlay", "{text}");
++    // Binds made inside /etc after the base mounts still land on top.
++    assert_ne!(field(&text, "hosts"), "0", "{text}");
++    let crypttab = field(&text, "crypttab");
++    assert!(crypttab == "0" || crypttab == "absent", "{text}");
++    assert_eq!(field(&text, "usrmode"), "755", "{text}");
++    assert_eq!(field(&text, "git"), "ok", "{text}");
++}
++
++#[test]
++fn overlay_system_alone_is_refused() {
++    let out = Command::new(ai_jail())
++        .args(["--clean", "--no-save-config", "--overlay-system", "true"])
++        .output()
++        .expect("failed to spawn ai-jail");
++    assert!(!out.status.success());
++    assert!(
++        String::from_utf8_lossy(&out.stderr).contains("--mask-host"),
++        "{}",
++        String::from_utf8_lossy(&out.stderr)
++    );
++}
