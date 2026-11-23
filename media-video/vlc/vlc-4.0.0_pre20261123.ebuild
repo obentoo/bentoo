@@ -15,7 +15,7 @@ if [[ ${PV} == *9999* ]] ; then
 	EGIT_REPO_URI="https://code.videolan.org/videolan/vlc.git"
 	inherit git-r3
 else
-	COMMIT=956dda12b5d8ebe577bf82b3eadf8f88ad4816b3
+	COMMIT=5589a060d46de2619e23fedbd6f0b010a3f8bdf1
 	if [[ -n ${COMMIT} ]] ; then
 		SRC_URI="https://code.videolan.org/videolan/vlc/-/archive/${COMMIT}.tar.gz -> ${P}-${COMMIT:0:8}.tar.gz"
 		S="${WORKDIR}/${PN}-${COMMIT}"
