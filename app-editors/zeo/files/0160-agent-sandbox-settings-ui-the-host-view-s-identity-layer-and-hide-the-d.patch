@@ -1,0 +1,795 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 23 Nov 2026 12:25:58 -0300
+Subject: [PATCH] agent_sandbox, settings_ui: the host view's identity layer
+ and Hide the Disks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+docs/HOST-VIEW-EXTRA-LAYER.md §4.4, the Zeo side of step 1 (operator,
+2026-11-23: "default, plus an extra layer"; the overlay behind its own
+switch, off until a real build's cost is measured).
+
+ai-jail 3.5.0-r3 (the fork's feat/host-view-extra) adds an identity layer
+under --mask-host -- the kernel's build strings without suffix or date, a
+generic os-release, a swap table with no swap, a boot id of the jail's
+own, a time namespace that starts CLOCK_BOOTTIME and sysinfo().uptime at
+the launch, CPU topology files for lscpu -- and a new --overlay-system:
+/usr, /etc and /opt through read-only overlays, so the mount table names
+no host disk for them.
+
+What changes here:
+- probe.rs reads --overlay-system from ai-jail --help
+  (supports_overlay_system). It ships with the identity layer, so it also
+  says that layer is there; there is no flag for the layer itself, which
+  rides --mask-host.
+- host_view::host_args_for(mask_host, HostLayer, exists): under mask_host
+  with the identity layer, /proc/swaps and the boot id are no longer
+  masked (IDENTITY_LAYER_MASKS). Zeo's --mask lands after ai-jail's view,
+  so an empty mask would replace the header-only swap table and the
+  jail's own boot id. The other 0159 masks stay: older binaries need them
+  and a path masked twice costs nothing. --overlay-system follows
+  --mask-host when the project asks for it. host_args() keeps its old
+  behaviour (no layer) for callers that do not know the binary.
+- agent_sandbox.overlay_system (default false, per project like
+  mask_host). It applies only with mask_host: launch.rs asks for it as
+  `mask_host && overlay_system_for_key`. A project that asks for it from
+  an ai-jail without --overlay-system is refused
+  (LaunchCause::OverlaySystemUnsupported, cause=overlay_system_unsupported),
+  as 0146 refuses --mask-host. The settings fingerprint includes it, so
+  the restart notice fires when it changes.
+- The Agent Sandbox page's Host section: "Hide the Disks"
+  (set_project_overlay_system), disabled with "Applies only while Hide
+  the Host is on." when the host is shown; Hide the Host's note now says
+  what stays visible (the writable folders' disk and size, CPU numbers,
+  cpuid, toolchain version strings). The page's command preview passes
+  the overlay too and lists every mask (it cannot probe the binary).
+
+Why off by default: an overlay slows metadata walks (+21 % on a find
+over /usr, measured 2026-11-23); a cargo build has not been measured.
+The overlay also fails with EINVAL where the root is already an
+overlayfs stacked too deep (the lab's containers) -- ai-jail reports it
+and the jail does not start, which is why it is a choice, not a default.
+
+Tests:
+- host_view_tests: host_view_identity_layer_takes_over_swap_and_the_boot_id,
+  host_view_overlay_system_rides_mask_host_only.
+- host_view_layer_tests (new, fake ai-jail whose --help lists
+  --overlay-system or not): the overlay follows --mask-host; refused
+  without the option, naming it; off by default; not asked for without
+  the host view; swap and boot id left to the layer, kept for an older
+  binary.
+- settings_ui agent_jail_host_tests:
+  agent_jail_host_disks_follow_the_project_and_need_the_host_view, and
+  the existing switch test extended with the two new fields.
+---
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index 5a8741b..7663574 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -3238,6 +3238,9 @@
+     // On by default (operator, 2026-11-22: hide the host from the jailed agent); it also
+     // reserves the jail's cores, which its CPU files must match.
+     "mask_host": true,
++    // Also serve /usr, /etc and /opt through read-only overlays under the host view, so the
++    // mount table names no host disk for them (ai-jail --overlay-system). Slower metadata walks.
++    "overlay_system": false,
+     // Whether jailed agents load the account's claude.ai connectors, which reach their
+     // vendors through anthropic.com, past `allow_hosts`.
+     "claude_ai_connectors": false,
+diff --git a/crates/agent_sandbox/src/agent_sandbox.rs b/crates/agent_sandbox/src/agent_sandbox.rs
+index 6945ee1..2a8ff37 100644
+--- a/crates/agent_sandbox/src/agent_sandbox.rs
++++ b/crates/agent_sandbox/src/agent_sandbox.rs
+@@ -48,6 +48,8 @@ mod confirm_tests;
+ #[cfg(test)]
+ mod host_view_launch_tests;
+ #[cfg(test)]
++mod host_view_layer_tests;
++#[cfg(test)]
+ mod launch_tests;
+ #[cfg(test)]
+ mod limits_tests;
+diff --git a/crates/agent_sandbox/src/capabilities.rs b/crates/agent_sandbox/src/capabilities.rs
+index 71ebef2..4d98e14 100644
+--- a/crates/agent_sandbox/src/capabilities.rs
++++ b/crates/agent_sandbox/src/capabilities.rs
+@@ -323,6 +323,14 @@ pub fn set_project_mask_host(root: &Path, on: bool, cx: &mut App) -> Task<bool>
+     write_entry(root, "mask_host", write, cx)
+ }
+ 
++/// Sets the project's `overlay_system` (ai-jail's --overlay-system; the page's Hide the Disks);
++/// a restart applies it.
++pub fn set_project_overlay_system(root: &Path, on: bool, cx: &mut App) -> Task<bool> {
++    let write =
++        move |entry: &mut AgentSandboxProjectSettingsContent| entry.overlay_system = Some(on);
++    write_entry(root, "overlay_system", write, cx)
++}
++
+ /// Writes the project's `capabilities` through `update`, which also sees the default MCP server
+ /// list in the file (empty when the file has none, as `default.json` says). A `capabilities`
+ /// left with nothing set is removed, so a reset leaves the entry as it was.
+diff --git a/crates/agent_sandbox/src/host_view.rs b/crates/agent_sandbox/src/host_view.rs
+index 4d083f3..e5302f8 100644
+--- a/crates/agent_sandbox/src/host_view.rs
++++ b/crates/agent_sandbox/src/host_view.rs
+@@ -36,6 +36,16 @@
+ //! --show`, `df`, `lscpu`, node, python, git and cargo still run); the kernel-version files and
+ //! os-release need content, so they wait for ai-jail.
+ //!
++//! ai-jail 3.5.0-r3 adds the identity layer under `--mask-host` (§4.2): the kernel's build
++//! strings without suffix or date, a generic os-release, a swap table with no swap, its own boot
++//! id, a time namespace that starts `CLOCK_BOOTTIME` and `sysinfo().uptime` at the launch, CPU
++//! topology files. There Zeo leaves swap and the boot id to it ([`IDENTITY_LAYER_MASKS`]); the
++//! rest of [`HOST_MASKS`] stays for older binaries and costs nothing twice. Its
++//! `--overlay-system` serves `/usr`, `/etc` and `/opt` through read-only overlays, so the mount
++//! table names no host disk for them; it is a switch of its own (`agent_sandbox.overlay_system`,
++//! off by default) because an overlay slows metadata walks (+21 % on a `find` over `/usr`) and
++//! its cost on a real build has not been measured.
++//!
+ //! This hides, it does not isolate: `cpuid`, timing, `uname(2)`, `sysinfo(2)` and mount sources
+ //! stay visible short of a VM. The writable mounts' sources (the project's disk and subvolume)
+ //! stay visible by decision (operator, 2026-11-23): hiding them needs root on the host.
+@@ -80,6 +90,26 @@ pub const MACHINE_ID: &str = "/etc/machine-id";
+ /// ai-jail's option for the synthetic host view (§6.63 step 2).
+ pub const MASK_HOST_OPTION: &str = "--mask-host";
+ 
++/// ai-jail's option for read-only overlays over `/usr`, `/etc` and `/opt` under `--mask-host`
++/// (docs/HOST-VIEW-EXTRA-LAYER.md §4.2), so the mount table names no host disk for them.
++pub const OVERLAY_SYSTEM_OPTION: &str = "--overlay-system";
++
++/// Masks `--mask-host` gives better answers for once ai-jail has its identity layer (3.5.0-r3,
++/// the release that brings `--overlay-system`): a swap table with its header instead of an empty
++/// file, and a boot id of the jail's own instead of none. Zeo's `--mask` lands after ai-jail's
++/// view, so it would replace them; it is left out there.
++pub const IDENTITY_LAYER_MASKS: [&str; 2] = ["/proc/swaps", "/proc/sys/kernel/random/boot_id"];
++
++/// What the installed ai-jail's host view can do beyond `--mask-host` itself.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub struct HostLayer {
++    /// The identity layer (kernel strings, os-release, swap, boot id, a time namespace) rides
++    /// `--mask-host`; ai-jail 3.5.0-r3 and later.
++    pub identity: bool,
++    /// The project asks for `--overlay-system` (only with `mask_host`).
++    pub overlay_system: bool,
++}
++
+ /// The variable Claude Code reads to load the account's claude.ai connectors. They are reached
+ /// through `mcp-proxy.anthropic.com`, so a jail that allows `anthropic.com` would let every one
+ /// of them past `allow_hosts`; jails set it to `false` unless the project turns them on.
+@@ -89,9 +119,21 @@ pub const CONNECTORS_ENV: &str = "ENABLE_CLAUDEAI_MCP_SERVERS";
+ /// missing one and applies nothing). `exists` is the file-system check, a parameter so the rule
+ /// is tested without this machine's `/etc`.
+ pub fn host_args(mask_host: bool, exists: impl Fn(&Path) -> bool) -> Vec<String> {
++    host_args_for(mask_host, HostLayer::default(), exists)
++}
++
++/// [`host_args`] for an ai-jail whose host view has `layer`: under `mask_host`, the masks its
++/// identity layer covers are left to it, and `--overlay-system` follows `--mask-host`.
++pub fn host_args_for(
++    mask_host: bool,
++    layer: HostLayer,
++    exists: impl Fn(&Path) -> bool,
++) -> Vec<String> {
+     let mut paths: Vec<&str> = HOST_MASKS.to_vec();
+     if !mask_host {
+         paths.push(MACHINE_ID);
++    } else if layer.identity {
++        paths.retain(|path| !IDENTITY_LAYER_MASKS.contains(path));
+     }
+     let mut args = Vec::new();
+     for path in paths {
+@@ -101,6 +143,9 @@ pub fn host_args(mask_host: bool, exists: impl Fn(&Path) -> bool) -> Vec<String>
+     }
+     if mask_host {
+         args.push(MASK_HOST_OPTION.to_string());
++        if layer.overlay_system {
++            args.push(OVERLAY_SYSTEM_OPTION.to_string());
++        }
+     }
+     args
+ }
+diff --git a/crates/agent_sandbox/src/host_view_layer_tests.rs b/crates/agent_sandbox/src/host_view_layer_tests.rs
+new file mode 100644
+index 0000000..d0535e5
+--- /dev/null
++++ b/crates/agent_sandbox/src/host_view_layer_tests.rs
+@@ -0,0 +1,134 @@
++// docs/HOST-VIEW-EXTRA-LAYER.md §4.4: what a jailed start passes an ai-jail whose host view has
++// the identity layer (3.5.0-r3, which brings --overlay-system). Filter: `host_view_layer`.
++
++use gpui::TestAppContext;
++use serde_json::{Value, json};
++
++use crate::host_view::{IDENTITY_LAYER_MASKS, MASK_HOST_OPTION, OVERLAY_SYSTEM_OPTION};
++use crate::launch_tests::*;
++
++/// The fork's 3.5.0-r2 options; `layer` adds `--overlay-system`, as 3.5.0-r3 does.
++fn help(layer: bool) -> String {
++    let layer = if layer {
++        "    --overlay-system  Overlays\\n"
++    } else {
++        ""
++    };
++    format!(
++        "case \"$1\" in --help) printf '    --memory <SIZE>  Cap memory\\n    --state-root <DIR>  State on disk\\n    --cpus <LIST>  Pin CPUs\\n    --mask-host  Synthetic host view\\n{layer}' ;; *) echo 'ai-jail 3.5.0' ;; esac"
++    )
++}
++
++fn settings(f: &Fixture, project: Value) -> Value {
++    let mut value = sandbox(f, true, project, memory_off());
++    value["agent_sandbox"]["state_root"] = json!(f.base.join("state"));
++    value
++}
++
++fn before_separator(args: &[String]) -> &[String] {
++    let separator = args.iter().position(|arg| arg == "--").expect("`--`");
++    &args[..separator]
++}
++
++fn has(args: &[String], flag: &str) -> bool {
++    before_separator(args).iter().any(|arg| arg == flag)
++}
++
++#[gpui::test]
++async fn host_view_layer_passes_overlay_system_after_mask_host(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, &help(true));
++    set_user_settings(
++        settings(&f, json!({ "mask_host": true, "overlay_system": true })),
++        cx,
++    );
++    let project = project(&f, cx).await;
++    let (_, cmd) = jailed(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    let args = before_separator(&cmd.args);
++    let mask = args.iter().position(|a| a == MASK_HOST_OPTION);
++    let overlay = args.iter().position(|a| a == OVERLAY_SYSTEM_OPTION);
++    assert!(
++        mask.is_some() && overlay > mask,
++        "--overlay-system follows --mask-host: {args:?}"
++    );
++}
++
++#[gpui::test]
++async fn host_view_layer_refuses_overlay_system_without_the_option(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, &help(false));
++    set_user_settings(
++        settings(&f, json!({ "mask_host": true, "overlay_system": true })),
++        cx,
++    );
++    let project = project(&f, cx).await;
++    let text = refused(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    assert!(
++        text.contains("--overlay-system"),
++        "says what is missing: {text}"
++    );
++}
++
++/// Off by default: an older ai-jail still starts.
++#[gpui::test]
++async fn host_view_layer_overlay_is_off_by_default(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, &help(false));
++    set_user_settings(settings(&f, json!({ "mask_host": true })), cx);
++    let project = project(&f, cx).await;
++    let (_, cmd) = jailed(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    assert!(!has(&cmd.args, OVERLAY_SYSTEM_OPTION), "{:?}", cmd.args);
++}
++
++#[gpui::test]
++async fn host_view_layer_overlay_needs_the_host_view(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, &help(false));
++    set_user_settings(
++        settings(&f, json!({ "mask_host": false, "overlay_system": true })),
++        cx,
++    );
++    let project = project(&f, cx).await;
++    let (_, cmd) = jailed(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    assert!(
++        !has(&cmd.args, OVERLAY_SYSTEM_OPTION) && !has(&cmd.args, MASK_HOST_OPTION),
++        "without the host view the overlays are not asked for: {:?}",
++        cmd.args
++    );
++}
++
++/// The identity layer writes a swap table and a boot id of the jail's own; Zeo's empty masks
++/// would land on top of them, so they are left out there, and only there.
++async fn identity_masks(layer: bool, cx: &mut TestAppContext) -> Vec<String> {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, &help(layer));
++    set_user_settings(settings(&f, json!({ "mask_host": true })), cx);
++    let project = project(&f, cx).await;
++    let (_, cmd) = jailed(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    cmd.args
++}
++
++#[gpui::test]
++async fn host_view_layer_leaves_swap_and_boot_id_to_the_identity_layer(cx: &mut TestAppContext) {
++    let args = identity_masks(true, cx).await;
++    for path in IDENTITY_LAYER_MASKS {
++        assert_eq!(count(&args, "--mask", path), 0, "{path}: {args:?}");
++    }
++}
++
++#[gpui::test]
++async fn host_view_layer_keeps_swap_and_boot_id_masks_for_an_older_ai_jail(
++    cx: &mut TestAppContext,
++) {
++    let args = identity_masks(false, cx).await;
++    for path in IDENTITY_LAYER_MASKS {
++        if std::path::Path::new(path).exists() {
++            assert_eq!(count(&args, "--mask", path), 1, "{path}: {args:?}");
++        }
++    }
++}
+diff --git a/crates/agent_sandbox/src/host_view_tests.rs b/crates/agent_sandbox/src/host_view_tests.rs
+index e1c80e2..bd5a891 100644
+--- a/crates/agent_sandbox/src/host_view_tests.rs
++++ b/crates/agent_sandbox/src/host_view_tests.rs
+@@ -159,3 +159,53 @@ fn host_view_is_not_fooled_by_dot_dot_or_a_shared_prefix() {
+     let args = vec!["/w/app2/x.js".to_string()];
+     assert!(hidden_server_path(Path::new("/usr/bin/node"), &args, &roots()).is_some());
+ }
++
++/// ai-jail 3.5.0-r3's identity layer (docs/HOST-VIEW-EXTRA-LAYER.md §4.2) gives swap and the boot
++/// id better answers than an empty mask, so they are left to it under `mask_host`, and only there.
++#[test]
++fn host_view_identity_layer_takes_over_swap_and_the_boot_id() {
++    let layer = HostLayer {
++        identity: true,
++        overlay_system: false,
++    };
++    let with_layer = host_args_for(true, layer, all_exist);
++    for path in IDENTITY_LAYER_MASKS {
++        assert!(
++            !with_layer.contains(&path.to_string()),
++            "{path}: {with_layer:?}"
++        );
++    }
++    assert!(with_layer.contains(&"/etc/crypttab".to_string()));
++    let shown = host_args_for(false, layer, all_exist);
++    for path in IDENTITY_LAYER_MASKS {
++        assert!(
++            shown.contains(&path.to_string()),
++            "masked without --mask-host: {path}"
++        );
++    }
++    assert_eq!(
++        host_args(true, all_exist),
++        host_args_for(true, HostLayer::default(), all_exist)
++    );
++}
++
++#[test]
++fn host_view_overlay_system_rides_mask_host_only() {
++    let layer = HostLayer {
++        identity: true,
++        overlay_system: true,
++    };
++    let args = host_args_for(true, layer, all_exist);
++    assert_eq!(
++        &args[args.len() - 2..],
++        [
++            MASK_HOST_OPTION.to_string(),
++            OVERLAY_SYSTEM_OPTION.to_string()
++        ]
++    );
++    let shown = host_args_for(false, layer, all_exist);
++    assert!(
++        !shown.contains(&OVERLAY_SYSTEM_OPTION.to_string()),
++        "{shown:?}"
++    );
++}
+diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
+index 74c19c3..a0fa96b 100644
+--- a/crates/agent_sandbox/src/launch.rs
++++ b/crates/agent_sandbox/src/launch.rs
+@@ -213,6 +213,9 @@ pub enum LaunchCause {
+     LimitsUnsupported,
+     /// `agent_sandbox.mask_host` is on and the installed ai-jail has no `--mask-host` (§6.63).
+     MaskHostUnsupported,
++    /// `agent_sandbox.overlay_system` is on (with `mask_host`) and the installed ai-jail has no
++    /// `--overlay-system` (docs/HOST-VIEW-EXTRA-LAYER.md §4.4).
++    OverlaySystemUnsupported,
+     /// The project's state directory could not be created.
+     StateRootCreate {
+         dir: PathBuf,
+@@ -242,6 +245,7 @@ impl LaunchCause {
+             Self::InvalidMemoryEndpoint(_) => "invalid_memory_endpoint",
+             Self::LimitsUnsupported => "limits_unsupported",
+             Self::MaskHostUnsupported => "mask_host_unsupported",
++            Self::OverlaySystemUnsupported => "overlay_system_unsupported",
+             Self::StateRootCreate { .. } => "state_root_create",
+         }
+     }
+@@ -332,6 +336,10 @@ impl fmt::Display for LaunchCause {
+                 f,
+                 "The host view is on for this project (agent_sandbox.mask_host), and the installed ai-jail cannot give it (it has no --mask-host). Install sys-apps/ai-jail 3.5.0-r2 or later, or turn Hide the Host off on the Agent Sandbox page."
+             ),
++            Self::OverlaySystemUnsupported => write!(
++                f,
++                "Hide the Disks is on for this project (agent_sandbox.overlay_system), and the installed ai-jail cannot give it (it has no --overlay-system). Install sys-apps/ai-jail 3.5.0-r3 or later, or turn Hide the Disks off on the Agent Sandbox page."
++            ),
+             Self::StateRootCreate { dir, error } => write!(
+                 f,
+                 "The project's jail state folder {} could not be created: {error}.",
+@@ -583,13 +591,18 @@ impl LocalLaunch {
+         }
+         // Zeo §6.63 and §6.64: per project, as the switch and the limits are.
+         let mask_host = self.sandbox.mask_host_for_key(key.as_deref());
++        // The overlays are a layer of the host view: without it they are not asked for.
++        let overlay_system = mask_host && self.sandbox.overlay_system_for_key(key.as_deref());
+         // A synthetic host view must agree with the cores the jail runs on, so it reserves them.
+         let reserve_cpus = mask_host || self.sandbox.reserve_cpus_for_key(key.as_deref());
+         let connectors = self.sandbox.claude_ai_connectors_for_key(key.as_deref());
+         // §6.64 step 2: a project that turns Zeo's skills off gets neither their maps here nor
+         // their plugins at session/new (`agent_servers`' jail filter).
+         let skills = self.sandbox.skills_for_key(key.as_deref());
+-        let checked = match self.check(&root, &policy, mask_host, reserve_cpus).await {
++        let checked = match self
++            .check(&root, &policy, mask_host, overlay_system, reserve_cpus)
++            .await
++        {
+             Ok(checked) => checked,
+             Err(refusal) => {
+                 let (cause, version) = *refusal;
+@@ -700,6 +713,7 @@ impl LocalLaunch {
+         root: &Path,
+         policy: &ProjectPolicy,
+         mask_host: bool,
++        overlay_system: bool,
+         reserve_cpus: bool,
+     ) -> Result<Checked, Box<(LaunchCause, Option<Version>)>> {
+         let no_version = |cause| Box::new((cause, None));
+@@ -733,6 +747,9 @@ impl LocalLaunch {
+         if mask_host && !binary.supports_mask_host {
+             return Err(refuse(LaunchCause::MaskHostUnsupported));
+         }
++        if overlay_system && !binary.supports_overlay_system {
++            return Err(refuse(LaunchCause::OverlaySystemUnsupported));
++        }
+         let mut limit_args = policy.limits.jail_args();
+         // Zeo §6.63 step 3 (operator, 2026-11-22): the quota alone by default; a reserving jail
+         // is pinned to cores no other reserving jail holds, or told it shares them.
+@@ -754,7 +771,11 @@ impl LocalLaunch {
+             }
+             limit_args.extend(["--cpus".to_string(), reservation.list()]);
+         }
+-        let host_args = host_view::host_args(mask_host, Path::exists);
++        let host_layer = host_view::HostLayer {
++            identity: binary.supports_overlay_system,
++            overlay_system,
++        };
++        let host_args = host_view::host_args_for(mask_host, host_layer, Path::exists);
+ 
+         // Zeo next §6.54: each project keeps its own home, /tmp and Claude config -- its own
+         // login (operator, 2026-11-21) -- when ai-jail offers `--state-root`; otherwise the
+@@ -1157,6 +1178,7 @@ fn settings_fingerprint(
+     let mut hasher = DefaultHasher::new();
+     // §6.63, §6.64: what a restart changes for this project beyond the policy.
+     sandbox.mask_host_for_key(key).hash(&mut hasher);
++    sandbox.overlay_system_for_key(key).hash(&mut hasher);
+     sandbox.claude_ai_connectors_for_key(key).hash(&mut hasher);
+     sandbox.reserve_cpus_for_key(key).hash(&mut hasher);
+     // The skills' maps are made at start; the MCP list is read at each session/new, so a change
+diff --git a/crates/agent_sandbox/src/probe.rs b/crates/agent_sandbox/src/probe.rs
+index 2a779f3..8c87e1f 100644
+--- a/crates/agent_sandbox/src/probe.rs
++++ b/crates/agent_sandbox/src/probe.rs
+@@ -40,6 +40,10 @@ pub struct JailBinary {
+     pub supports_cpus: bool,
+     /// `--mask-host` (§6.63 step 2): the synthetic host view.
+     pub supports_mask_host: bool,
++    /// `--overlay-system` (docs/HOST-VIEW-EXTRA-LAYER.md §4.2): read-only overlays for the
++    /// system trees. It ships with the identity layer of `--mask-host` (kernel strings,
++    /// os-release, swap, boot id, a time namespace), so it also says that layer is there.
++    pub supports_overlay_system: bool,
+ }
+ 
+ /// What `--help` listed, cached with the version.
+@@ -50,6 +54,7 @@ struct HelpFlags {
+     limits: bool,
+     cpus: bool,
+     mask_host: bool,
++    overlay_system: bool,
+ }
+ 
+ impl HelpFlags {
+@@ -60,6 +65,7 @@ impl HelpFlags {
+             limits: help_lists_option(help, "--memory"),
+             cpus: help_lists_option(help, "--cpus"),
+             mask_host: help_lists_option(help, crate::host_view::MASK_HOST_OPTION),
++            overlay_system: help_lists_option(help, crate::host_view::OVERLAY_SYSTEM_OPTION),
+         }
+     }
+ 
+@@ -71,6 +77,7 @@ impl HelpFlags {
+             supports_limits: self.limits,
+             supports_cpus: self.cpus,
+             supports_mask_host: self.mask_host,
++            supports_overlay_system: self.overlay_system,
+         }
+     }
+ }
+diff --git a/crates/agent_sandbox/src/settings.rs b/crates/agent_sandbox/src/settings.rs
+index 2fd078c..8bf589a 100644
+--- a/crates/agent_sandbox/src/settings.rs
++++ b/crates/agent_sandbox/src/settings.rs
+@@ -47,6 +47,9 @@ pub struct AgentSandboxSettings {
+     pub claude_ai_connectors: bool,
+     /// `limits.reserve_cpus` for every jailed project (§6.63). Default: `false`.
+     pub reserve_cpus: bool,
++    /// ai-jail's `--overlay-system` for every jailed project that hides the host
++    /// (docs/HOST-VIEW-EXTRA-LAYER.md §4.2). Default: `false` until a build's cost is measured.
++    pub overlay_system: bool,
+     /// What every jail may use besides its project (§6.64 step 2).
+     pub capabilities: SandboxCapabilities,
+     /// Per-project overrides, keyed by the absolute root path as written.
+@@ -140,6 +143,8 @@ pub struct AgentSandboxProjectSettings {
+     pub claude_ai_connectors: Option<bool>,
+     /// The project's `limits.reserve_cpus`; `None` follows the default.
+     pub reserve_cpus: Option<bool>,
++    /// `None` follows `agent_sandbox.overlay_system`.
++    pub overlay_system: Option<bool>,
+     /// What the project's jail may use, each `Some` replacing the default (§6.64 step 2).
+     pub capabilities: ProjectCapabilities,
+ }
+@@ -214,6 +219,14 @@ impl AgentSandboxSettings {
+             .unwrap_or(self.mask_host)
+     }
+ 
++    /// Whether the project under `key` asks for read-only overlays over the system trees
++    /// (`--overlay-system`). Only meaningful with [`Self::mask_host_for_key`].
++    pub fn overlay_system_for_key(&self, key: Option<&str>) -> bool {
++        key.and_then(|key| self.projects.get(key))
++            .and_then(|entry| entry.overlay_system)
++            .unwrap_or(self.overlay_system)
++    }
++
+     /// Whether the project under `key` reserves its cores (§6.63, `limits.reserve_cpus`).
+     pub fn reserve_cpus_for_key(&self, key: Option<&str>) -> bool {
+         key.and_then(|key| self.projects.get(key))
+@@ -372,6 +385,9 @@ impl Settings for AgentSandboxSettings {
+             },
+             // default.json says true (operator, 2026-11-22); a file without it agrees.
+             mask_host: sandbox.mask_host.unwrap_or(true),
++            // default.json says false: off until a build's cost is measured (operator,
++            // 2026-11-23).
++            overlay_system: sandbox.overlay_system.unwrap_or(false),
+             claude_ai_connectors: sandbox.claude_ai_connectors.unwrap_or(false),
+             capabilities: {
+                 let defaults = SandboxCapabilities::default();
+@@ -401,6 +417,7 @@ impl Settings for AgentSandboxSettings {
+                             })
+                             .unwrap_or_default(),
+                         mask_host: project.mask_host,
++                        overlay_system: project.overlay_system,
+                         claude_ai_connectors: project.claude_ai_connectors,
+                         reserve_cpus: project
+                             .limits
+diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
+index 8cef701..b5956f9 100644
+--- a/crates/settings_content/src/settings_content.rs
++++ b/crates/settings_content/src/settings_content.rs
+@@ -398,6 +398,12 @@ pub struct AgentSandboxSettingsContent {
+     ///
+     /// Default: false
+     pub mask_host: Option<bool>,
++    /// Whether jailed projects that hide the host also serve `/usr`, `/etc` and `/opt` through
++    /// read-only overlays (ai-jail's `--overlay-system`), so the mount table names no host disk
++    /// for them. Slows metadata walks. Needs an ai-jail with `--overlay-system`.
++    ///
++    /// Default: false
++    pub overlay_system: Option<bool>,
+     /// Whether jailed agents load the account's claude.ai connectors. They reach their vendors
+     /// through anthropic.com, past `allow_hosts`.
+     ///
+@@ -456,6 +462,8 @@ pub struct AgentSandboxProjectSettingsContent {
+     pub limits: Option<AgentSandboxLimitsContent>,
+     /// This project's choice of `agent_sandbox.mask_host`. Unset follows the default.
+     pub mask_host: Option<bool>,
++    /// This project's choice of `agent_sandbox.overlay_system`. Unset follows the default.
++    pub overlay_system: Option<bool>,
+     /// This project's choice of `agent_sandbox.claude_ai_connectors`. Unset follows the default.
+     pub claude_ai_connectors: Option<bool>,
+     /// What this project's jail may use, each field replacing the default it names. An empty
+diff --git a/crates/settings_ui/src/pages/agent_jail_host.rs b/crates/settings_ui/src/pages/agent_jail_host.rs
+index 11dc350..2e740b9 100644
+--- a/crates/settings_ui/src/pages/agent_jail_host.rs
++++ b/crates/settings_ui/src/pages/agent_jail_host.rs
+@@ -2,11 +2,16 @@
+ //! --mask-host, §6.63) and "Reserve CPUs" (§6.63 step 3). Reserve CPUs used to be a button beside
+ //! the thread's lock; the operator found it out of place there and asked for it here, with the
+ //! other per-project choices. Both write the project's own entry and apply on the next start.
++//!
++//! "Hide the Disks" (ai-jail's --overlay-system, docs/HOST-VIEW-EXTRA-LAYER.md §4.4) serves the
++//! system trees through read-only overlays so the mount table names no host disk for them. A
++//! layer of the host view, so it is disabled while Hide the Host is off; off by default until a
++//! build's cost is measured.
+ 
+ use std::path::Path;
+ 
+ use agent_sandbox::AgentSandboxSettings;
+-use agent_sandbox::capabilities::set_project_mask_host;
++use agent_sandbox::capabilities::{set_project_mask_host, set_project_overlay_system};
+ use agent_sandbox::confirm::set_project_reserve_cpus;
+ use gpui::{AnyElement, App, Entity, ScrollHandle};
+ use ui::{SwitchField, ToggleState, prelude::*};
+@@ -21,6 +26,10 @@ pub(crate) struct HostSwitches {
+     /// Reserve CPUs cannot be turned off: Hide the Host's CPU files must match the cores the jail
+     /// runs on, so a masked jail always reserves (launch.rs, `mask_host || reserve_cpus`).
+     pub reserve_forced: bool,
++    /// The project's own or default `overlay_system`, shown as set even while it cannot apply.
++    pub overlay_system: bool,
++    /// Hide the Disks applies only under Hide the Host (launch.rs, `mask_host && ...`).
++    pub overlay_disabled: bool,
+ }
+ 
+ pub(crate) fn host_switches(sandbox: &AgentSandboxSettings, key: Option<&str>) -> HostSwitches {
+@@ -29,10 +38,14 @@ pub(crate) fn host_switches(sandbox: &AgentSandboxSettings, key: Option<&str>) -
+         mask_host,
+         reserve_cpus: mask_host || sandbox.reserve_cpus_for_key(key),
+         reserve_forced: mask_host,
++        overlay_system: sandbox.overlay_system_for_key(key),
++        overlay_disabled: !mask_host,
+     }
+ }
+ 
+-pub(crate) const MASK_HOST_NOTE: &str = "The jailed agent sees only the CPUs and memory its limits allow, its own cgroup and a machine id of its own, instead of this machine's. It hides; it does not isolate: a determined process can still infer the hardware. Restart the agent to apply.";
++pub(crate) const MASK_HOST_NOTE: &str = "The jailed agent sees only the CPUs and memory its limits allow, its own cgroup and a machine id of its own, instead of this machine's; with ai-jail 3.5.0-r3, also a kernel version without the build details, a generic OS name, no swap or disks, and an uptime counted from its start. Still visible: the writable folders' disk and size, the CPU numbers, cpuid and the toolchains' own version strings. It hides; it does not isolate. Restart the agent to apply.";
++pub(crate) const OVERLAY_NOTE: &str = "Serve /usr, /etc and /opt through read-only overlays, so the jail's mount table names no disk of this machine for them. File walks over those folders get slower. Needs ai-jail 3.5.0-r3. Restart the agent to apply.";
++pub(crate) const OVERLAY_DISABLED_NOTE: &str = "Applies only while Hide the Host is on.";
+ pub(crate) const RESERVE_NOTE: &str = "Pin the jail to cores of its own, none shared with another reserving jail while enough are free. Off, the CPU quota alone limits it. Restart the agent to apply.";
+ pub(crate) const RESERVE_FORCED_NOTE: &str =
+     "On while Hide the Host is on: its CPU files must match the cores the jail runs on.";
+@@ -80,6 +93,27 @@ pub(crate) fn render_host_switches(
+     )
+     .disabled(switches.reserve_forced)
+     .tab_index(0);
++    let overlay = SwitchField::new(
++        "agent-jail-overlay-system",
++        Some("Hide the Disks"),
++        Some(
++            if switches.overlay_disabled {
++                OVERLAY_DISABLED_NOTE
++            } else {
++                OVERLAY_NOTE
++            }
++            .into(),
++        ),
++        switches.overlay_system,
++        {
++            let root = root.to_path_buf();
++            move |toggle, _, cx| {
++                set_project_overlay_system(&root, *toggle == ToggleState::Selected, cx).detach();
++            }
++        },
++    )
++    .disabled(switches.overlay_disabled)
++    .tab_index(0);
+     v_flex()
+         .gap_2()
+         .child(Label::new("Host"))
+@@ -90,6 +124,13 @@ pub(crate) fn render_host_switches(
+             mask_host,
+             cx,
+         ))
++        .child(reveal(
++            state,
++            "agent-jail-overlay-system",
++            scroll_handle,
++            overlay,
++            cx,
++        ))
+         .child(reveal(
+             state,
+             "agent-jail-reserve-cpus",
+diff --git a/crates/settings_ui/src/pages/agent_jail_host_tests.rs b/crates/settings_ui/src/pages/agent_jail_host_tests.rs
+index 798d342..5130a3d 100644
+--- a/crates/settings_ui/src/pages/agent_jail_host_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_host_tests.rs
+@@ -24,6 +24,7 @@ fn sandbox(
+         mask_host,
+         claude_ai_connectors: false,
+         reserve_cpus,
++        overlay_system: false,
+         capabilities: Default::default(),
+         projects: BTreeMap::from([("/p".to_string(), project)]),
+     }
+@@ -38,6 +39,8 @@ fn agent_jail_host_switches_follow_the_project_then_the_default() {
+             mask_host: true,
+             reserve_cpus: true,
+             reserve_forced: true,
++            overlay_system: false,
++            overlay_disabled: false,
+         },
+         "the default hides the host, which reserves"
+     );
+@@ -56,6 +59,8 @@ fn agent_jail_host_switches_follow_the_project_then_the_default() {
+             mask_host: false,
+             reserve_cpus: true,
+             reserve_forced: false,
++            overlay_system: false,
++            overlay_disabled: true,
+         },
+         "the project's own choices replace the defaults"
+     );
+@@ -65,6 +70,36 @@ fn agent_jail_host_switches_follow_the_project_then_the_default() {
+             mask_host: false,
+             reserve_cpus: false,
+             reserve_forced: false,
++            overlay_system: false,
++            overlay_disabled: true,
+         }
+     );
+ }
++
++#[test]
++fn agent_jail_host_disks_follow_the_project_and_need_the_host_view() {
++    let on = sandbox(
++        true,
++        false,
++        AgentSandboxProjectSettings {
++            overlay_system: Some(true),
++            ..AgentSandboxProjectSettings::default()
++        },
++    );
++    let switches = host_switches(&on, Some("/p"));
++    assert!(switches.overlay_system && !switches.overlay_disabled);
++    let host_shown = sandbox(
++        true,
++        false,
++        AgentSandboxProjectSettings {
++            mask_host: Some(false),
++            overlay_system: Some(true),
++            ..AgentSandboxProjectSettings::default()
++        },
++    );
++    let switches = host_switches(&host_shown, Some("/p"));
++    assert!(
++        switches.overlay_system && switches.overlay_disabled,
++        "kept as set, but disabled while the host is shown"
++    );
++}
+diff --git a/crates/settings_ui/src/pages/agent_jail_page.rs b/crates/settings_ui/src/pages/agent_jail_page.rs
+index 6364e79..e3b13c2 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page.rs
+@@ -891,9 +891,14 @@ pub(crate) fn render_agent_jail_page(
+                 } else {
+                     Vec::new()
+                 },
+-                // Rendering reads no file system, so every mask is listed.
+-                host_args: agent_sandbox::host_view::host_args(
++                // Rendering reads no file system, so every mask is listed; the identity layer
++                // is not assumed, so the masks it would replace are listed too.
++                host_args: agent_sandbox::host_view::host_args_for(
+                     sandbox.mask_host_for_key(key),
++                    agent_sandbox::host_view::HostLayer {
++                        identity: false,
++                        overlay_system: sandbox.overlay_system_for_key(key),
++                    },
+                     |_| true,
+                 ),
+             };
+diff --git a/crates/settings_ui/src/pages/agent_jail_page_tests.rs b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+index 06ef208..c510fd3 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+@@ -617,6 +617,7 @@ mod page {
+             mask_host: false,
+             claude_ai_connectors: false,
+             reserve_cpus: false,
++            overlay_system: false,
+             capabilities: Default::default(),
+             projects: Default::default(),
+         };

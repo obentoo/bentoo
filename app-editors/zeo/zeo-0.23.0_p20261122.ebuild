@@ -1773,7 +1773,7 @@ RDEPEND="
 	!app-editors/zed
 	!app-editors/zed-bin
 	!app-editors/zeo-bin
-	ai-jail? ( >=sys-apps/ai-jail-3.5.0-r2 )
+	ai-jail? ( >=sys-apps/ai-jail-3.5.0-r3 )
 	browser-extension? ( www-plugins/zeo-browser )
 	claude-agent-acp-plus? ( >=dev-util/claude-agent-acp-plus-0.26.0 )
 	claude-agent-acp-tui? ( dev-util/claude-agent-acp-tui )
@@ -2370,6 +2370,9 @@ src_prepare() {
 			"${FILESDIR}/0158-agent-sandbox-settings-ui-hide-the-host-on-by-default-reserve-cpus-mov.patch"
 			# 0159: every jail also masks crypttab, swap, disks, NUMA and the kernel's details. On 0158.
 			"${FILESDIR}/0159-agent-sandbox-a-jail-also-hides-the-disks-names-swap-and-the-kernel-s.patch"
+			# 0160: ai-jail 3.5.0-r3's identity layer takes over swap and the boot id; Hide the
+			# Disks passes --overlay-system (off by default). On 0159.
+			"${FILESDIR}/0160-agent-sandbox-settings-ui-the-host-view-s-identity-layer-and-hide-the-d.patch"
 		)
 	fi
 
