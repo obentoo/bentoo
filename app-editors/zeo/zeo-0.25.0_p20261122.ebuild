@@ -2376,6 +2376,11 @@ src_prepare() {
 			# 0161: Hide the Kernel passes --syscall-view (uname/sysinfo from ai-jail; off by
 			# default; needs ai-jail 3.5.0-r4). On 0160.
 			"${FILESDIR}/0161-agent-sandbox-settings-ui-hide-the-kernel-uname-and-sysinfo-from-ai-jai.patch"
+			# 0162: a Secrets page -- tokens and API keys in the system keyring under azukari's
+			# attributes, shown by their last three characters. On 0161.
+			"${FILESDIR}/0162-settings-ui-secret-vault-a-secrets-page-the-vault-s-first-slice.patch"
+			# 0163: Hide the Disks on by default; skipped on an ai-jail without the option. On 0162.
+			"${FILESDIR}/0163-agent-sandbox-hide-the-disks-on-by-default-skipped-on-an-older-ai-jail.patch"
 		)
 	fi
 

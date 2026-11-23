@@ -1,0 +1,232 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Mon, 23 Nov 2026 18:56:36 -0300
+Subject: [PATCH] agent_sandbox: Hide the Disks on by default, skipped on an
+ older ai-jail
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Operator, 2026-11-23: a cargo build inside a jail measured no cost from
+--overlay-system (18.0 s plain, 17.2 s with the overlays, three runs each,
+btrfs), so docs/HOST-VIEW-EXTRA-LAYER.md §4.4's rule (on when under 5 %)
+turns agent_sandbox.overlay_system on by default (default.json and the
+settings fallback).
+
+A default must not stop a jail that started yesterday: on an ai-jail
+without --overlay-system the default is skipped with a warn line
+(event=overlay_system_skipped) instead of refusing. A project that set
+overlay_system itself on the Agent Sandbox page is still refused there
+(overlay_system_unsupported), as 0160 did: it asked for something it
+cannot have. AgentSandboxSettings::overlay_system_set_by_project tells the
+two apart; only a project's entry counts, since default.json always
+carries the key.
+
+Tests: host_view_layer_overlay_is_on_by_default (an ai-jail with the
+option gets it unasked) and
+host_view_layer_default_overlay_is_skipped_on_an_older_ai_jail (replaces
+..._is_off_by_default); the refusal test keeps the project's own setting; 0161's syscall test now
+expects --overlay-system beside --syscall-view.
+---
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index 2216bad..d86b0ed 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -3239,8 +3239,9 @@
+     // reserves the jail's cores, which its CPU files must match.
+     "mask_host": true,
+     // Also serve /usr, /etc and /opt through read-only overlays under the host view, so the
+-    // mount table names no host disk for them (ai-jail --overlay-system). Slower metadata walks.
+-    "overlay_system": false,
++    // mount table names no host disk for them (ai-jail --overlay-system). On by default: a cargo
++    // build measured no cost (operator, 2026-11-23); skipped on an ai-jail without the option.
++    "overlay_system": true,
+     // Also answer uname(2) and sysinfo(2) from ai-jail under the host view, so the kernel
+     // release, memory and uptime they report match it (ai-jail --syscall-view).
+     "syscall_view": false,
+diff --git a/crates/agent_sandbox/src/host_view.rs b/crates/agent_sandbox/src/host_view.rs
+index 48f5dfd..f160b16 100644
+--- a/crates/agent_sandbox/src/host_view.rs
++++ b/crates/agent_sandbox/src/host_view.rs
+@@ -42,9 +42,10 @@
+ //! topology files. There Zeo leaves swap and the boot id to it ([`IDENTITY_LAYER_MASKS`]); the
+ //! rest of [`HOST_MASKS`] stays for older binaries and costs nothing twice. Its
+ //! `--overlay-system` serves `/usr`, `/etc` and `/opt` through read-only overlays, so the mount
+-//! table names no host disk for them; it is a switch of its own (`agent_sandbox.overlay_system`,
+-//! off by default) because an overlay slows metadata walks (+21 % on a `find` over `/usr`) and
+-//! its cost on a real build has not been measured.
++//! table names no host disk for them; it is a switch of its own (`agent_sandbox.overlay_system`),
++//! on by default since a cargo build in a jail measured no cost (18.0 s plain, 17.2 s with the
++//! overlays, 2026-11-23), although a `find` over `/usr` is +21 %. The default is skipped on an
++//! ai-jail without the option; a project that sets it is refused there.
+ //!
+ //! ai-jail's `--syscall-view` (§4.3) goes further: a seccomp user-notify filter sends `uname(2)`
+ //! and `sysinfo(2)` to ai-jail outside the jail, which answers with the cleaned kernel strings
+diff --git a/crates/agent_sandbox/src/host_view_layer_tests.rs b/crates/agent_sandbox/src/host_view_layer_tests.rs
+index 0530e47..98d835c 100644
+--- a/crates/agent_sandbox/src/host_view_layer_tests.rs
++++ b/crates/agent_sandbox/src/host_view_layer_tests.rs
+@@ -79,9 +79,21 @@ async fn host_view_layer_refuses_overlay_system_without_the_option(cx: &mut Test
+     );
+ }
+ 
+-/// Off by default: an older ai-jail still starts.
++/// On by default (operator, 2026-11-23): an ai-jail with the option gets it unasked.
+ #[gpui::test]
+-async fn host_view_layer_overlay_is_off_by_default(cx: &mut TestAppContext) {
++async fn host_view_layer_overlay_is_on_by_default(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, &help(true));
++    set_user_settings(settings(&f, json!({ "mask_host": true })), cx);
++    let project = project(&f, cx).await;
++    let (_, cmd) = jailed(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    assert!(has(&cmd.args, OVERLAY_SYSTEM_OPTION), "{:?}", cmd.args);
++}
++
++/// The default is skipped on an ai-jail without the option: it still starts.
++#[gpui::test]
++async fn host_view_layer_default_overlay_is_skipped_on_an_older_ai_jail(cx: &mut TestAppContext) {
+     init(cx);
+     let f = fixture("ai-jail 3.5.0");
+     write_script(&f.ai_jail, &help(false));
+@@ -157,8 +169,8 @@ async fn host_view_layer_passes_syscall_view_under_mask_host(cx: &mut TestAppCon
+     let syscalls = args.iter().position(|a| a == SYSCALL_VIEW_OPTION);
+     assert!(mask.is_some() && syscalls > mask, "{args:?}");
+     assert!(
+-        !has(&cmd.args, OVERLAY_SYSTEM_OPTION),
+-        "off by default: {args:?}"
++        has(&cmd.args, OVERLAY_SYSTEM_OPTION),
++        "on by default (0163): {args:?}"
+     );
+ }
+ 
+diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
+index b1a02c6..d21a1cf 100644
+--- a/crates/agent_sandbox/src/launch.rs
++++ b/crates/agent_sandbox/src/launch.rs
+@@ -601,6 +601,7 @@ impl LocalLaunch {
+         let mask_host = self.sandbox.mask_host_for_key(key.as_deref());
+         // The overlays are a layer of the host view: without it they are not asked for.
+         let overlay_system = mask_host && self.sandbox.overlay_system_for_key(key.as_deref());
++        let overlay_required = self.sandbox.overlay_system_set_by_project(key.as_deref());
+         let syscall_view = mask_host && self.sandbox.syscall_view_for_key(key.as_deref());
+         // A synthetic host view must agree with the cores the jail runs on, so it reserves them.
+         let reserve_cpus = mask_host || self.sandbox.reserve_cpus_for_key(key.as_deref());
+@@ -613,7 +614,7 @@ impl LocalLaunch {
+                 &root,
+                 &policy,
+                 mask_host,
+-                overlay_system,
++                (overlay_system, overlay_required),
+                 syscall_view,
+                 reserve_cpus,
+             )
+@@ -729,7 +730,7 @@ impl LocalLaunch {
+         root: &Path,
+         policy: &ProjectPolicy,
+         mask_host: bool,
+-        overlay_system: bool,
++        (overlay_system, overlay_required): (bool, bool),
+         syscall_view: bool,
+         reserve_cpus: bool,
+     ) -> Result<Checked, Box<(LaunchCause, Option<Version>)>> {
+@@ -764,9 +765,20 @@ impl LocalLaunch {
+         if mask_host && !binary.supports_mask_host {
+             return Err(refuse(LaunchCause::MaskHostUnsupported));
+         }
+-        if overlay_system && !binary.supports_overlay_system {
+-            return Err(refuse(LaunchCause::OverlaySystemUnsupported));
+-        }
++        // On by default since 0.25.0: the default is skipped on an ai-jail without the option,
++        // a project's own choice of it refuses the start, as a limit does.
++        let overlay_system = if overlay_system && !binary.supports_overlay_system {
++            if overlay_required {
++                return Err(refuse(LaunchCause::OverlaySystemUnsupported));
++            }
++            log::warn!(
++                "agent_sandbox event=overlay_system_skipped reason=unsupported version={}",
++                binary.version
++            );
++            false
++        } else {
++            overlay_system
++        };
+         if syscall_view && !binary.supports_syscall_view {
+             return Err(refuse(LaunchCause::SyscallViewUnsupported));
+         }
+diff --git a/crates/agent_sandbox/src/settings.rs b/crates/agent_sandbox/src/settings.rs
+index b9cb61e..00876e8 100644
+--- a/crates/agent_sandbox/src/settings.rs
++++ b/crates/agent_sandbox/src/settings.rs
+@@ -48,7 +48,8 @@ pub struct AgentSandboxSettings {
+     /// `limits.reserve_cpus` for every jailed project (§6.63). Default: `false`.
+     pub reserve_cpus: bool,
+     /// ai-jail's `--overlay-system` for every jailed project that hides the host
+-    /// (docs/HOST-VIEW-EXTRA-LAYER.md §4.2). Default: `false` until a build's cost is measured.
++    /// (docs/HOST-VIEW-EXTRA-LAYER.md §4.2). Default: `true` since a cargo build measured no cost
++    /// (operator, 2026-11-23).
+     pub overlay_system: bool,
+     /// ai-jail's `--syscall-view` for every jailed project that hides the host (§4.3).
+     /// Default: `false` until it has run in daily use.
+@@ -232,6 +233,14 @@ impl AgentSandboxSettings {
+             .unwrap_or(self.overlay_system)
+     }
+ 
++    /// The project's own `overlay_system`, if it set one: a project that asks for the overlays is
++    /// refused by an ai-jail without them, while the default only is skipped there.
++    pub fn overlay_system_set_by_project(&self, key: Option<&str>) -> bool {
++        key.and_then(|key| self.projects.get(key))
++            .and_then(|entry| entry.overlay_system)
++            .unwrap_or(false)
++    }
++
+     /// Whether the project under `key` asks for `uname`/`sysinfo` answered by ai-jail
+     /// (`--syscall-view`). Only meaningful with [`Self::mask_host_for_key`].
+     pub fn syscall_view_for_key(&self, key: Option<&str>) -> bool {
+@@ -398,9 +407,9 @@ impl Settings for AgentSandboxSettings {
+             },
+             // default.json says true (operator, 2026-11-22); a file without it agrees.
+             mask_host: sandbox.mask_host.unwrap_or(true),
+-            // default.json says false: off until a build's cost is measured (operator,
+-            // 2026-11-23).
+-            overlay_system: sandbox.overlay_system.unwrap_or(false),
++            // default.json says true: a cargo build in a jail measured no cost (18.0 s plain,
++            // 17.2 s with the overlays), so §4.4's rule turns it on (operator, 2026-11-23).
++            overlay_system: sandbox.overlay_system.unwrap_or(true),
+             // default.json says false: off until it has run in daily use (§4.4).
+             syscall_view: sandbox.syscall_view.unwrap_or(false),
+             claude_ai_connectors: sandbox.claude_ai_connectors.unwrap_or(false),
+diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
+index d358f69..d7162da 100644
+--- a/crates/settings_content/src/settings_content.rs
++++ b/crates/settings_content/src/settings_content.rs
+@@ -400,9 +400,10 @@ pub struct AgentSandboxSettingsContent {
+     pub mask_host: Option<bool>,
+     /// Whether jailed projects that hide the host also serve `/usr`, `/etc` and `/opt` through
+     /// read-only overlays (ai-jail's `--overlay-system`), so the mount table names no host disk
+-    /// for them. Slows metadata walks. Needs an ai-jail with `--overlay-system`.
++    /// for them. Needs an ai-jail with `--overlay-system`; without one the default is skipped and
++    /// a project's own choice of it refuses the start.
+     ///
+-    /// Default: false
++    /// Default: true
+     pub overlay_system: Option<bool>,
+     /// Whether jailed projects that hide the host also get `uname(2)` and `sysinfo(2)` answered
+     /// by ai-jail (`--syscall-view`), so the kernel release, memory, load and uptime they report
+diff --git a/crates/settings_ui/src/pages/agent_jail_host.rs b/crates/settings_ui/src/pages/agent_jail_host.rs
+index f902ee0..ed68c4a 100644
+--- a/crates/settings_ui/src/pages/agent_jail_host.rs
++++ b/crates/settings_ui/src/pages/agent_jail_host.rs
+@@ -5,8 +5,8 @@
+ //!
+ //! "Hide the Disks" (ai-jail's --overlay-system, docs/HOST-VIEW-EXTRA-LAYER.md §4.4) serves the
+ //! system trees through read-only overlays so the mount table names no host disk for them. A
+-//! layer of the host view, so it is disabled while Hide the Host is off; off by default until a
+-//! build's cost is measured.
++//! layer of the host view, so it is disabled while Hide the Host is off; on by default since a
++//! cargo build measured no cost (operator, 2026-11-23).
+ 
+ use std::path::Path;
+ 
