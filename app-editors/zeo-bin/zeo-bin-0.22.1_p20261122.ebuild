@@ -39,9 +39,9 @@ KEYWORDS="-* ~amd64"
 # integration patches are compiled in either way, and these decide whether what
 # they talk to is pulled in -- the two ACP adapters, for claude-code-ide
 # (patch 0002) the claude CLI that connects to the IDE server in Zeo-spawned
-# terminals, and for ai-jail (patches 0057, 0141, 0144, 0146, 0150, 0152; in the
-# binary since 0.19.2) the sandbox the agents are started in, which needs ai-jail's 3.5.0-r1
-# options (3.5.0-r2 for agent_sandbox.mask_host, which is refused without it).
+# terminals, and for ai-jail (patches 0057, 0141, 0144, 0146, 0150, 0152, 0158, 0159; in the
+# binary since 0.19.2) the sandbox the agents are started in, which needs ai-jail 3.5.0-r2:
+# agent_sandbox.mask_host is on by default since 0.22.0 (0158), and refused without --mask-host.
 IUSE="+ai-jail +claude-agent-acp-plus +claude-agent-acp-tui +claude-code-ide"
 # Never bindist: redistributing this binary is the reason the package exists.
 RESTRICT="mirror strip"
@@ -71,7 +71,7 @@ RDEPEND="
 		media-fonts/noto
 		media-fonts/ubuntu-font-family
 	)
-	ai-jail? ( >=sys-apps/ai-jail-3.5.0-r1 )
+	ai-jail? ( >=sys-apps/ai-jail-3.5.0-r2 )
 	claude-agent-acp-plus? ( >=dev-util/claude-agent-acp-plus-0.26.0 )
 	claude-agent-acp-tui? ( dev-util/claude-agent-acp-tui )
 	claude-code-ide? ( dev-util/claude-code )
