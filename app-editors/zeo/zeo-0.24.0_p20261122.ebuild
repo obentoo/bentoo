@@ -1773,7 +1773,7 @@ RDEPEND="
 	!app-editors/zed
 	!app-editors/zed-bin
 	!app-editors/zeo-bin
-	ai-jail? ( >=sys-apps/ai-jail-3.5.0-r3 )
+	ai-jail? ( >=sys-apps/ai-jail-3.5.0-r4 )
 	browser-extension? ( www-plugins/zeo-browser )
 	claude-agent-acp-plus? ( >=dev-util/claude-agent-acp-plus-0.26.0 )
 	claude-agent-acp-tui? ( dev-util/claude-agent-acp-tui )
@@ -2373,6 +2373,9 @@ src_prepare() {
 			# 0160: ai-jail 3.5.0-r3's identity layer takes over swap and the boot id; Hide the
 			# Disks passes --overlay-system (off by default). On 0159.
 			"${FILESDIR}/0160-agent-sandbox-settings-ui-the-host-view-s-identity-layer-and-hide-the-d.patch"
+			# 0161: Hide the Kernel passes --syscall-view (uname/sysinfo from ai-jail; off by
+			# default; needs ai-jail 3.5.0-r4). On 0160.
+			"${FILESDIR}/0161-agent-sandbox-settings-ui-hide-the-kernel-uname-and-sysinfo-from-ai-jai.patch"
 		)
 	fi
 
