@@ -161,6 +161,8 @@ real-tree half of `check-profile-matrix.sh`'s suite is
 `check-profile-matrix.sh --staged` runs from `.git/hooks/pre-commit`, but only
 when the commit stages a path under `profiles/`, `layers/` or
 `metadata/layout.conf`; every other commit pays nothing for it.
+The same hook runs `bentoo overlay autoupdate --lint` when the commit stages
+`.autoupdate/packages.toml`, and prints SKIP when bentoolkit is not on PATH.
 Run `--full` by hand after a batch of layer edits, before you push them:
 the hook resolves 6 reference presets, `--full` all 27.
 

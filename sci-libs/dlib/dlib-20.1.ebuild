@@ -3,8 +3,10 @@
 
 EAPI=8
 
-# Mirrored from ::gentoo only to add python3_15: no code change is needed
-# for it. Drop this copy once ::gentoo lists python3_15.
+# Based on ::gentoo's 20.0.1 ebuild, bumped ahead of ::gentoo to 20.1; python3_15
+# added. No other change. Drop this copy once ::gentoo ships >=20.1 with python3_15.
+# BENTOO-DIVERGENCE: KEYWORDS - ~amd64 only: a bump past ::gentoo is no longer a mirror,
+# so it follows the overlay baseline (amd64, x86-64-v3).
 # BENTOO-DIVERGENCE: IUSE - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: REQUIRED_USE - python3_15 added to PYTHON_COMPAT, nothing else.
 # BENTOO-DIVERGENCE: DEPEND - python3_15 added to PYTHON_COMPAT, nothing else.
@@ -22,7 +24,7 @@ SRC_URI="https://github.com/davisking/dlib/archive/v${PV}.tar.gz -> ${P}.tar.gz"
 
 LICENSE="Boost-1.0"
 SLOT="0/${PV}"
-KEYWORDS="~amd64 ~arm64 ~ppc64 ~x86"
+KEYWORDS="~amd64"
 IUSE="cblas cuda debug examples ffmpeg gif jpeg lapack mkl png python sqlite test webp X cpu_flags_x86_avx cpu_flags_x86_sse2 cpu_flags_x86_sse4_1"
 REQUIRED_USE="python? ( png ${PYTHON_REQUIRED_USE} )"
 RESTRICT="!test? ( test )"
