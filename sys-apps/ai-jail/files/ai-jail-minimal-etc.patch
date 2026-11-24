@@ -1,0 +1,983 @@
+--minimal-etc for ai-jail 3.5.0 (from the fork's feat/minimal-etc, merged into
+the Zeo stack zeo/ebuild-350-r5): with --mask-host, /etc is a tmpfs holding
+only an allowlist of the host's entries programs read at run time (accounts,
+name service, TLS roots, time zone and locale, the linker cache, shell
+startup, system git/npm configuration, Gentoo's python-exec, java-config-2
+and eselect, Claude Code's managed settings), each bound read-only or, for a
+symlink, recreated with its target text; the tmpfs is remounted read-only
+after every other mount. --mask-host's masks of entries left out are
+dropped. Opt-in, Linux only, never saved; refused without --mask-host. Must
+follow ai-jail-syscall-view.patch.
+
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 1f7d91b..56eb693 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -178,7 +178,7 @@ There are regression tests in `src/config.rs` that parse old config file formats
+ 
+ The bwrap command mounts are order-dependent. The sequence in `sandbox/bwrap.rs` must be:
+ 
+-1. Base mounts (`/usr`, `/etc`, `/opt`, `/sys`, `/dev`, `/proc`, `/tmp`, `/run`)
++1. Base mounts (`/usr`, `/etc`, `/opt`, `/sys`, `/dev`, `/proc`, `/tmp`, `/run`). Under `--mask-host --minimal-etc` the `/etc` bind is replaced in place by a tmpfs and its allowlisted entries, so the hosts and resolv.conf binds that follow still land on it; a `--remount-ro /etc` is emitted after every discovered group, because later groups (the host view, ssh's `ssh_config.d` tmpfs) may create mount points inside it
+ 2. Sensitive /sys masks (tmpfs over `/sys/firmware`, `/sys/kernel/security`, etc.)
+ 3. GPU devices, then KVM device (`--kvm`, `/dev/kvm`)
+ 4. Docker socket
+diff --git a/README.md b/README.md
+index d48a6ee..2c00fd4 100644
+--- a/README.md
++++ b/README.md
+@@ -906,6 +906,23 @@ sandbox's own task count (so `getconf _PHYS_PAGES` agrees with
+ dies, they fail with `ENOSYS`, and bwrap ends the sandbox with it anyway.
+ Only the native architecture is trapped.
+ 
++`--minimal-etc` (with `--mask-host`) replaces the read-only bind of the host's
++whole `/etc` with a tmpfs holding only what programs read at run time:
++accounts (`passwd`, `group`, `shells`), name service (`nsswitch.conf`,
++`hosts`, `resolv.conf`, `host.conf`, `gai.conf`, `protocols`, `services`),
++the time zone and locale, the dynamic linker's cache, TLS roots (`ssl`, `pki`,
++`ca-certificates`), shell startup (`profile*`, `env.d`, `environment`, `bash`,
++`bash.bashrc`, `inputrc`), `terminfo`, `mime.types`, the system `gitconfig`
++and `npmrc`, interpreter selection (Gentoo's `python-exec`, `java-config-2`,
++`eselect`; Debian's `alternatives`), Claude Code's managed settings
++(`claude-code`), `mtab` and `os-release`. An entry the host lacks is skipped;
++a symlink is recreated with its target text, so it resolves inside the
++sandbox. Everything else -- `hostname`, `fstab`, `ssh/`, the package
++manager's configuration, every service's -- is absent rather than masked, and
++the tmpfs is remounted read-only once the binds inside it are made. With
++`--overlay-system`, the entries bound into it still name the host's disk in
++`/proc/self/mountinfo`; `/etc` itself reads `tmpfs`.
++
+ The allowed CPUs are the `--cpus` set, else the process's affinity
+ (`taskset`), trimmed to the cgroup's `cpu.max` rounded up to whole CPUs; the
+ memory limit is the smallest `memory.max` from the sandbox's cgroup up to the
+@@ -1064,6 +1081,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
+ --mask-host                     hardware view sized to the sandbox's limits (Linux; not saved; see Hiding the host)
+ --overlay-system                with --mask-host: /usr, /etc, /opt through read-only overlays (Linux; not saved)
+ --syscall-view                  with --mask-host: uname(2) and sysinfo(2) answered by ai-jail (Linux; not saved)
++--minimal-etc                   with --mask-host: /etc holds only a run-time allowlist (Linux; not saved)
+ --browser[=hard|soft]           isolated browser profile (needs --network --display)
+ --dry-run                       print the backend invocation
+ --init                          write configuration and exit
+diff --git a/docs/CLI_TUI_PARITY.md b/docs/CLI_TUI_PARITY.md
+index 70abd46..f24b51f 100644
+--- a/docs/CLI_TUI_PARITY.md
++++ b/docs/CLI_TUI_PARITY.md
+@@ -93,8 +93,8 @@ or integration rather than saved sandbox authority.
+ - Host view: `--mask-host` (a per-run choice made by the caller --
+   typically a wrapper such as an editor -- not saved authority: no
+   configuration key, refused on macOS; it only narrows what the sandbox
+-  reads), and `--overlay-system` and `--syscall-view` with it (the same per-run
+-  choice; each refused without `--mask-host`)
++  reads), and `--overlay-system`, `--syscall-view` and `--minimal-etc` with it
++  (the same per-run choice; each refused without `--mask-host`)
+ - Backward-compatible rejected option: `--allow-tcp-port`
+ 
+ ## Release rule
+diff --git a/docs/USER_GUIDE.md b/docs/USER_GUIDE.md
+index 24ba04c..6807a33 100644
+--- a/docs/USER_GUIDE.md
++++ b/docs/USER_GUIDE.md
+@@ -666,6 +666,16 @@ sandbox's host name, its age as uptime, no load, memory sized to `--memory`.
+ Each of those calls costs a round trip to ai-jail; only the native
+ architecture is trapped.
+ 
++`--minimal-etc` (with `--mask-host` only; never saved) makes `/etc` a
++read-only tmpfs holding only the host entries programs read at run time --
++accounts, name service, TLS roots, time zone and locale, the linker cache,
++shell startup, the system git and npm configuration, interpreter selection
++(`python-exec`, `java-config-2`, `eselect`, `alternatives`) and Claude Code's
++`managed-settings.json` -- so `hostname`, `fstab`, `ssh/` and every service's
++configuration are absent. Symlinks are recreated and resolve inside the
++sandbox. The full list, with the reason for each entry, is in
++`src/sandbox/minimal_etc.rs`.
++
+ A nested sandbox can no longer mount its own `/proc` under `--mask-host`; with
+ ai-jail's default Landlock and seccomp a nested sandbox is refused anyway, so
+ this matters only under `--no-landlock --no-seccomp`. The `cpuid` instruction,
+diff --git a/src/cli.rs b/src/cli.rs
+index 8ce3b9f..3b7745b 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -216,6 +216,9 @@ OPTIONS:
+     --syscall-view                 With --mask-host: answer uname(2) and sysinfo(2) from
+                                    ai-jail, so the kernel release, memory, load and uptime
+                                    they report match the host view (Linux; never saved)
++    --minimal-etc                  With --mask-host: /etc is a read-only tmpfs holding only
++                                   what programs read at run time (accounts, name service,
++                                   TLS roots, time zone, shell startup) (Linux; never saved)
+     --clean                        Ignore saved and legacy project policy, start fresh
+     --dry-run                      Print the sandbox command without executing
+     --init                         Create/update external per-project config and exit
+@@ -294,6 +297,7 @@ pub struct CliArgs {
+     pub mask_host: bool,
+     pub overlay_system: bool,
+     pub syscall_view: bool,
++    pub minimal_etc: bool,
+     /// Internal: the helper's end of the `--syscall-view` socket pair.
+     pub syscall_view_fd: Option<i32>,
+     pub agent_state: Option<bool>,
+@@ -590,6 +594,9 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
+             Long("syscall-view") => {
+                 args.syscall_view = true;
+             }
++            Long("minimal-etc") => {
++                args.minimal_etc = true;
++            }
+             Long("syscall-view-fd") => {
+                 if !args.landlock_exec {
+                     return Err(
+@@ -1253,6 +1260,7 @@ const SANDBOX_LONG_FLAGS: &[&str] = &[
+     "--mask-host",
+     "--overlay-system",
+     "--syscall-view",
++    "--minimal-etc",
+     "--x11",
+     "--no-x11",
+     "--host-shm",
+@@ -1305,6 +1313,7 @@ const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
+     "mask_host",
+     "overlay_system",
+     "syscall_view",
++    "minimal_etc",
+ ];
+ 
+ /// Names already missing from docs/USER_GUIDE.md at upstream v3.3.0
+@@ -3096,6 +3105,15 @@ mod tests {
+         assert!(args.mask_host && args.overlay_system);
+     }
+ 
++    #[test]
++    fn parse_minimal_etc() {
++        assert!(!parse_test(&["claude"]).unwrap().minimal_etc);
++        let args =
++            parse_test(&["--mask-host", "--minimal-etc", "claude"]).unwrap();
++        assert!(args.mask_host && args.minimal_etc);
++        assert!(HELP.contains("--minimal-etc"));
++    }
++
+     #[test]
+     fn parse_syscall_view_and_its_internal_fd() {
+         let args =
+diff --git a/src/config.rs b/src/config.rs
+index fdc2b41..f492da7 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -199,6 +199,10 @@ pub struct Config {
+     /// `--mask-host`. Runtime only, never saved.
+     #[serde(default, skip)]
+     pub syscall_view: bool,
++    /// `--minimal-etc`: `/etc` as a tmpfs holding an allowlist of the
++    /// host's entries, under `--mask-host`. Runtime only, never saved.
++    #[serde(default, skip)]
++    pub minimal_etc: bool,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub command: Vec<String>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+@@ -2662,6 +2666,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
+     config.mask_host = cli.mask_host;
+     config.overlay_system = cli.overlay_system;
+     config.syscall_view = cli.syscall_view;
++    config.minimal_etc = cli.minimal_etc;
+ 
+     expand_user_paths(&mut config);
+ 
+@@ -4990,6 +4995,7 @@ no_gpu = true
+             mask_host: false,
+             overlay_system: false,
+             syscall_view: false,
++            minimal_etc: false,
+             command: vec!["claude".into()],
+             rw_maps: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
+             ro_maps: vec![PathBuf::from("/opt/data")],
+@@ -8394,6 +8400,7 @@ hide_dotdirs = [".my_secrets"]
+             mask_host: false,
+             overlay_system: false,
+             syscall_view: false,
++            minimal_etc: false,
+             command: vec!["codex".into()],
+             rw_maps: vec![PathBuf::from("/tmp/shared")],
+             ro_maps: vec![],
+diff --git a/src/config_store.rs b/src/config_store.rs
+index f3f5125..a03e020 100644
+--- a/src/config_store.rs
++++ b/src/config_store.rs
+@@ -1200,6 +1200,7 @@ pub(crate) fn save_project_grants(
+     grants.mask_host = false;
+     grants.overlay_system = false;
+     grants.syscall_view = false;
++    grants.minimal_etc = false;
+     doc.directory_grants = approved_directory_grants.to_vec();
+     doc.grants = grants;
+     doc.approved_env_names = approved_env_names;
+@@ -1525,6 +1526,7 @@ const CONFIG_FIELD_POLICY: &[ConfigFieldPolicy] = &[
+     excluded_policy!("mask_host", Restriction),
+     excluded_policy!("overlay_system", Restriction),
+     excluded_policy!("syscall_view", Restriction),
++    excluded_policy!("minimal_etc", Restriction),
+     static_policy!("command", Authority, Command),
+     static_policy!("rw_maps", Authority, RwMaps),
+     static_policy!("ro_maps", Authority, RoMaps),
+@@ -2338,6 +2340,7 @@ mod tests {
+         expected_excluded!("mask_host", Restriction),
+         expected_excluded!("overlay_system", Restriction),
+         expected_excluded!("syscall_view", Restriction),
++        expected_excluded!("minimal_etc", Restriction),
+         expected_authority!("command", Authority, Command, ["command claude"]),
+         expected_authority!(
+             "rw_maps",
+@@ -2462,6 +2465,9 @@ mod tests {
+             "syscall_view" => {
+                 config.syscall_view = true;
+             }
++            "minimal_etc" => {
++                config.minimal_etc = true;
++            }
+             "command" => {
+                 config.command =
+                     vec!["claude".into(), "--token=top-secret".into()];
+diff --git a/src/main.rs b/src/main.rs
+index 4ec642b..a7f2f01 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -357,6 +357,9 @@ fn validate_overlay_system(config: &config::Config) -> Result<(), String> {
+     if config.syscall_view && !config.mask_host {
+         return Err("--syscall-view requires --mask-host".into());
+     }
++    if config.minimal_etc && !config.mask_host {
++        return Err("--minimal-etc requires --mask-host".into());
++    }
+     Ok(())
+ }
+ 
+@@ -2928,6 +2931,21 @@ mod tests {
+         };
+         let error = validate_overlay_system(&syscalls).unwrap_err();
+         assert!(error.contains("--syscall-view"), "{error}");
++        let etc = Config {
++            minimal_etc: true,
++            ..Config::default()
++        };
++        let error = validate_overlay_system(&etc).unwrap_err();
++        assert!(
++            error.contains("--minimal-etc requires --mask-host"),
++            "{error}"
++        );
++        let etc_masked = Config {
++            minimal_etc: true,
++            mask_host: true,
++            ..Config::default()
++        };
++        assert!(validate_overlay_system(&etc_masked).is_ok());
+         assert!(validate_overlay_system(&Config::default()).is_ok());
+     }
+ 
+diff --git a/src/sandbox/bwrap.rs b/src/sandbox/bwrap.rs
+index 5ac3f2a..68cd51c 100644
+--- a/src/sandbox/bwrap.rs
++++ b/src/sandbox/bwrap.rs
+@@ -74,6 +74,11 @@ enum Mount {
+         layers: Vec<PathBuf>,
+         dest: PathBuf,
+     },
++    /// Make an earlier mount point read-only (`--minimal-etc`'s tmpfs,
++    /// once every mount inside it is made).
++    RemountRo {
++        dest: PathBuf,
++    },
+ }
+ 
+ impl Mount {
+@@ -109,7 +114,8 @@ impl Mount {
+             | Mount::Tmpfs { dest }
+             | Mount::Symlink { dest, .. }
+             | Mount::Overlay { dest, .. }
+-            | Mount::RoOverlay { dest, .. } => dest,
++            | Mount::RoOverlay { dest, .. }
++            | Mount::RemountRo { dest } => dest,
+         }
+     }
+ 
+@@ -145,6 +151,9 @@ impl Mount {
+             Mount::Tmpfs { dest } => {
+                 vec!["--tmpfs".into(), dest.display().to_string()]
+             }
++            Mount::RemountRo { dest } => {
++                vec!["--remount-ro".into(), dest.display().to_string()]
++            }
+             Mount::Symlink { src, dest } => {
+                 vec![
+                     "--symlink".into(),
+@@ -270,6 +279,10 @@ struct MountSet {
+     /// inside the sandbox. Applied last so it sits on top of the
+     /// project mount that contains it.
+     overlay_hide: Vec<Mount>,
++    /// `--minimal-etc`: `--remount-ro /etc`, after every group, since a
++    /// later bind under `/etc` (the host view's, ssh's tmpfs) may need to
++    /// create its mount point in the tmpfs first.
++    etc_seal: Vec<Mount>,
+ }
+ 
+ impl MountSet {
+@@ -291,7 +304,7 @@ impl MountSet {
+             .chain(self.extra.iter())
+             .chain(self.extra_inside.iter())
+     }
+-    fn ordered_mounts(&self) -> [&[Mount]; 30] {
++    fn ordered_mounts(&self) -> [&[Mount]; 31] {
+         [
+             &self.base,
+             &self.sys_masks,
+@@ -323,6 +336,7 @@ impl MountSet {
+             &self.mask,
+             &self.deny,
+             &self.overlay_hide,
++            &self.etc_seal,
+         ]
+     }
+ 
+@@ -713,8 +727,13 @@ fn host_view_request(config: &Config) -> super::host_view::HostViewRequest {
+ fn apply_host_view(
+     mount_set: &mut MountSet,
+     view: &super::host_view::HostView,
++    minimal_etc: bool,
+ ) {
+     use super::host_view::HostViewMount;
++    // First, so the overlay below finds no /etc bind to replace.
++    if minimal_etc {
++        apply_minimal_etc(mount_set, Path::new("/etc"));
++    }
+     // An overlay replaces the base bind of its tree in place: appended
+     // after it, it would cover the binds made inside that tree since
+     // (/etc/hosts, resolv.conf) and the view's own masks.
+@@ -734,6 +753,13 @@ fn apply_host_view(
+         .mounts()
+         .iter()
+         .filter(|m| !matches!(m, HostViewMount::RoOverlay { .. }))
++        .filter(|m| {
++            let (HostViewMount::File { dest, .. }
++            | HostViewMount::Dir { dest, .. }
++            | HostViewMount::Tmpfs { dest }
++            | HostViewMount::RoOverlay { dest, .. }) = m;
++            !minimal_etc || super::minimal_etc::keeps_host_view_mount(dest)
++        })
+         .map(|m| match m {
+             HostViewMount::File { src, dest } => Mount::FileRoBind {
+                 src: src.clone(),
+@@ -752,6 +778,34 @@ fn apply_host_view(
+     mount_set.unshare_cgroup = true;
+ }
+ 
++/// `--minimal-etc`: replace the base bind of `/etc` with a tmpfs holding
++/// the allowlisted entries of `host_etc`, in place, so the binds the base
++/// makes inside `/etc` after it (hosts, resolv.conf) still land on top.
++/// A host without `/etc` is left alone.
++fn apply_minimal_etc(mount_set: &mut MountSet, host_etc: &Path) {
++    use super::minimal_etc::EtcEntry;
++    let etc = Path::new("/etc");
++    let Some(at) = mount_set
++        .base
++        .iter()
++        .position(|m| matches!(m, Mount::RoBind { dest, .. } if dest == etc))
++    else {
++        return;
++    };
++    let mut mounts = vec![Mount::Tmpfs { dest: etc.into() }];
++    mounts.extend(super::minimal_etc::entries(host_etc).into_iter().map(
++        |entry| match entry {
++            EtcEntry::Dir { src, dest } => Mount::RoBind { src, dest },
++            EtcEntry::File { src, dest } => Mount::FileRoBind { src, dest },
++            EtcEntry::Symlink { target, dest } => {
++                Mount::Symlink { src: target, dest }
++            }
++        },
++    ));
++    mount_set.base.splice(at..=at, mounts);
++    mount_set.etc_seal = vec![Mount::RemountRo { dest: etc.into() }];
++}
++
+ impl Drop for SandboxGuard {
+     fn drop(&mut self) {
+         let _ = std::fs::remove_file(&self.hosts_path);
+@@ -1666,7 +1720,11 @@ pub fn build(
+     let mut mount_set =
+         discover_mounts_full(config, project_dir, &sources, verbose)?;
+     if config.mask_host {
+-        apply_host_view(&mut mount_set, guard.host_view(config, true)?);
++        apply_host_view(
++            &mut mount_set,
++            guard.host_view(config, true)?,
++            config.minimal_etc,
++        );
+         if verbose {
+             crate::output::verbose(
+                 "Host view: synthetic CPU, memory and load files, own cgroup, no DMI (--mask-host)",
+@@ -1981,7 +2039,7 @@ fn build_dry_run_args_forwarded(
+     let mut mount_set =
+         discover_mounts_full(config, project_dir, sources, verbose)?;
+     if let Some(view) = host_view {
+-        apply_host_view(&mut mount_set, view);
++        apply_host_view(&mut mount_set, view, config.minimal_etc);
+     }
+     let map_args = mounted_map_args(mount_set.landlock_map_mounts());
+     let lockdown = config.lockdown_enabled();
+@@ -2336,6 +2394,8 @@ fn discover_mounts_full(
+         mask: mask_mounts,
+         deny: deny_mounts,
+         overlay_hide: overlay_hide_v,
++        // Filled by apply_minimal_etc under --minimal-etc.
++        etc_seal: Vec::new(),
+         // Filled by apply_host_view under --mask-host.
+         host_view: Vec::new(),
+         unshare_cgroup: false,
+@@ -5461,6 +5521,113 @@ mod tests {
+         assert!(!plain.iter().any(|a| a == "/proc/cpuinfo"));
+     }
+ 
++    #[test]
++    fn minimal_etc_replaces_the_etc_bind_in_place() {
++        let host_etc = std::env::temp_dir()
++            .join(format!("ai-jail-bwrap-minimal-etc-{}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&host_etc);
++        std::fs::create_dir_all(host_etc.join("ssl")).unwrap();
++        std::fs::write(host_etc.join("passwd"), "root:x:0:0::/:/bin/sh\n")
++            .unwrap();
++        std::fs::write(host_etc.join("hostname"), "host\n").unwrap();
++        std::os::unix::fs::symlink(
++            "../usr/share/zoneinfo/UTC",
++            host_etc.join("localtime"),
++        )
++        .unwrap();
++        let mut set = MountSet {
++            base: vec![
++                Mount::RoBind {
++                    src: "/usr".into(),
++                    dest: "/usr".into(),
++                },
++                Mount::RoBind {
++                    src: "/etc".into(),
++                    dest: "/etc".into(),
++                },
++                Mount::FileRoBind {
++                    src: "/tmp/hosts".into(),
++                    dest: "/etc/hosts".into(),
++                },
++            ],
++            ..MountSet::default()
++        };
++        apply_minimal_etc(&mut set, &host_etc);
++        let _ = std::fs::remove_dir_all(&host_etc);
++        let args = set.all_mount_args();
++        let at = |needle: &[&str]| {
++            args.windows(needle.len())
++                .position(|w| w == needle)
++                .unwrap_or_else(|| panic!("{needle:?} missing from {args:?}"))
++        };
++        let tmpfs = at(&["--tmpfs", "/etc"]);
++        let passwd = at(&[
++            "--ro-bind",
++            &host_etc.join("passwd").display().to_string(),
++            "/etc/passwd",
++        ]);
++        let ssl = at(&[
++            "--ro-bind",
++            &host_etc.join("ssl").display().to_string(),
++            "/etc/ssl",
++        ]);
++        let localtime =
++            at(&["--symlink", "../usr/share/zoneinfo/UTC", "/etc/localtime"]);
++        let hosts = at(&["--ro-bind", "/tmp/hosts", "/etc/hosts"]);
++        let seal = at(&["--remount-ro", "/etc"]);
++        assert!(at(&["--ro-bind", "/usr", "/usr"]) < tmpfs);
++        for entry in [passwd, ssl, localtime] {
++            assert!(tmpfs < entry && entry < hosts, "{args:?}");
++        }
++        assert_eq!(seal, args.len() - 2, "the seal comes last: {args:?}");
++        assert!(!args.iter().any(|a| a == "/etc/hostname"), "{args:?}");
++        assert!(
++            !args.windows(3).any(|w| w == ["--ro-bind", "/etc", "/etc"]),
++            "{args:?}"
++        );
++    }
++
++    #[test]
++    fn minimal_etc_without_an_etc_bind_changes_nothing() {
++        let mut set = MountSet::default();
++        apply_minimal_etc(&mut set, Path::new("/etc"));
++        assert!(set.all_mount_args().is_empty());
++    }
++
++    #[test]
++    fn minimal_etc_drops_the_host_view_masks_of_absent_entries() {
++        let guard =
++            SandboxGuard::test_with_hosts(PathBuf::from("/tmp/test-hosts"));
++        let config = Config {
++            mask_host: true,
++            minimal_etc: true,
++            ..minimal_test_config()
++        };
++        let sources = MountSources::from_guard(&guard);
++        let view = guard.host_view(&config, false).unwrap();
++        let args = build_dry_run_args_forwarded(
++            &config,
++            &std::env::temp_dir(),
++            &sources,
++            false,
++            None,
++            &crate::sandbox::BridgeSockets::default(),
++            Some(view),
++        )
++        .unwrap();
++        assert!(args.windows(2).any(|w| w == ["--tmpfs", "/etc"]));
++        assert!(args.windows(2).any(|w| w == ["--remount-ro", "/etc"]));
++        for absent in ["/etc/crypttab", "/etc/portage", "/etc/gentoo-release"] {
++            assert!(!args.iter().any(|a| a == absent), "{absent}: {args:?}");
++        }
++        // The view's own machine-id still lands on top of the tmpfs.
++        if Path::new("/etc/machine-id").is_file() {
++            let tmpfs = args.iter().position(|a| a == "/etc").unwrap();
++            let id = args.iter().position(|a| a == "/etc/machine-id").unwrap();
++            assert!(id > tmpfs, "{args:?}");
++        }
++    }
++
+     #[test]
+     fn filtered_lockdown_forces_placeholder_env() {
+         // Under lockdown the env_pass path never runs, so phantom
+diff --git a/src/sandbox/minimal_etc.rs b/src/sandbox/minimal_etc.rs
+new file mode 100644
+index 0000000..cc4fb6d
+--- /dev/null
++++ b/src/sandbox/minimal_etc.rs
+@@ -0,0 +1,152 @@
++//! `--minimal-etc`: `/etc` as a tmpfs holding only what programs read at
++//! run time.
++//!
++//! The base mounts bind the host's whole `/etc` read-only. Most of it is
++//! configuration for services the sandbox never runs, and much of it names
++//! the host: `hostname`, `fstab`, `crypttab`, `ssh/` (the host keys' public
++//! halves), `NetworkManager/`, `libvirt/`, `portage/`, the package manager's
++//! world. `--mask-host` masks a handful of those; this replaces the tree
++//! with an allowlist, so an entry nobody listed is simply absent.
++//!
++//! Each listed entry the host has is carried over as what it is: a
++//! directory or a regular file is bound read-only, a symlink is recreated
++//! with its target text, so it resolves inside the sandbox's own view
++//! (`localtime` into `/usr/share/zoneinfo`, `os-release` into the
++//! `/usr/lib/os-release` `--mask-host` rewrites, a systemd-resolved
++//! `resolv.conf` into the `/run` copy the base mounts make). Anything else
++//! (a socket, a FIFO, a device, a target that is not UTF-8) is skipped.
++//!
++//! The list was measured on a Gentoo desktop, not guessed: git, Node and
++//! Python TLS, cargo, rustc, java, Claude Code and a bash login shell each
++//! ran inside `--mask-host --minimal-etc`.
++
++use std::path::{Path, PathBuf};
++
++/// The host's `/etc` entries the sandbox keeps, by name. Why each one:
++pub(super) const ALLOWLIST: &[&str] = &[
++    // Accounts: getpwuid(3) for `~`, `id`, git's author fallback, ssh.
++    "passwd",
++    "group",
++    "shells",
++    // Name service: glibc's resolver reads all four.
++    "nsswitch.conf",
++    "host.conf",
++    "gai.conf",
++    "hosts",
++    "resolv.conf",
++    // getservbyname(3) / getprotobyname(3): curl, Python's socket, Java.
++    "protocols",
++    "services",
++    // Time zone: Debian keeps the name in `timezone`, glibc reads
++    // `localtime`.
++    "localtime",
++    "timezone",
++    // The default locale for shells (Gentoo, systemd).
++    "locale.conf",
++    // The dynamic linker's cache; ld.so.conf(.d) for `ldconfig -p` and
++    // build tools that read the search path.
++    "ld.so.cache",
++    "ld.so.conf",
++    "ld.so.conf.d",
++    // TLS roots: OpenSSL's `ssl/certs` (a symlink farm into
++    // /usr/share/ca-certificates on Gentoo and Debian), the Fedora/Arch
++    // `pki/` trust store, and the bundle's configuration.
++    "ssl",
++    "pki",
++    "ca-certificates",
++    "ca-certificates.conf",
++    // Shell startup: login shells source profile, profile.env (Gentoo's
++    // generated environment, from env.d) and profile.d; bash reads its
++    // own directory (Gentoo) or bash.bashrc (Debian); readline reads
++    // inputrc.
++    "profile",
++    "profile.d",
++    "profile.env",
++    "env.d",
++    "environment",
++    "bash",
++    "bash.bashrc",
++    "inputrc",
++    // Debian's terminfo overrides; file(1)'s and Python's mimetypes table.
++    "terminfo",
++    "mime.types",
++    // System-wide git and npm configuration.
++    "gitconfig",
++    "npmrc",
++    // Gentoo's interpreter selection: python-exec picks the python3
++    // behind /usr/bin/python3, java-config the JVM behind /usr/bin/java,
++    // eselect the rest. Debian's alternatives are symlinks into /etc.
++    "python-exec",
++    "java-config-2",
++    "eselect",
++    "alternatives",
++    // Claude Code's managed settings (`claude-code/managed-settings.json`):
++    // without them an organisation's policy silently stops applying.
++    "claude-code",
++    // A symlink to /proc/self/mounts that df(1) and mount(8) read.
++    "mtab",
++    // A symlink into /usr/lib on most distributions, where `--mask-host`
++    // puts a generic one; a regular file is rewritten by `--mask-host`.
++    "os-release",
++];
++
++/// `--mask-host` binds its own `machine-id` (a fresh id per launch); it is
++/// not on the list, so the host's never reaches the sandbox first.
++const MASK_HOST_OWN: &[&str] = &["machine-id"];
++
++/// One entry of the minimal `/etc`, its destination under the sandbox's
++/// `/etc`.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(super) enum EtcEntry {
++    Dir { src: PathBuf, dest: PathBuf },
++    File { src: PathBuf, dest: PathBuf },
++    Symlink { target: String, dest: PathBuf },
++}
++
++/// The entries of `host_etc` on the allowlist, in its order, with
++/// destinations under `/etc`. `host_etc` is a parameter so tests can lay
++/// out a fake tree.
++pub(super) fn entries(host_etc: &Path) -> Vec<EtcEntry> {
++    let etc = Path::new("/etc");
++    ALLOWLIST
++        .iter()
++        .filter_map(|name| {
++            let src = host_etc.join(name);
++            let dest = etc.join(name);
++            let meta = std::fs::symlink_metadata(&src).ok()?;
++            let kind = meta.file_type();
++            if kind.is_symlink() {
++                let target = std::fs::read_link(&src).ok()?;
++                Some(EtcEntry::Symlink {
++                    target: target.to_str()?.to_string(),
++                    dest,
++                })
++            } else if kind.is_dir() {
++                Some(EtcEntry::Dir { src, dest })
++            } else if kind.is_file() {
++                Some(EtcEntry::File { src, dest })
++            } else {
++                None
++            }
++        })
++        .collect()
++}
++
++/// Whether a mount `--mask-host` makes at `dest` still belongs on top of
++/// the minimal `/etc`. Its masks of entries the list leaves out
++/// (`crypttab`, `portage`, the release files) would create them, empty,
++/// in the tmpfs: the name alone tells which distribution this is.
++pub(super) fn keeps_host_view_mount(dest: &Path) -> bool {
++    let Ok(rest) = dest.strip_prefix("/etc") else {
++        return true;
++    };
++    let Some(first) = rest.components().next() else {
++        return true;
++    };
++    let name = first.as_os_str();
++    ALLOWLIST.iter().chain(MASK_HOST_OWN).any(|n| name == *n)
++}
++
++#[cfg(test)]
++#[path = "minimal_etc_tests.rs"]
++mod tests;
+diff --git a/src/sandbox/minimal_etc_tests.rs b/src/sandbox/minimal_etc_tests.rs
+new file mode 100644
+index 0000000..084b5aa
+--- /dev/null
++++ b/src/sandbox/minimal_etc_tests.rs
+@@ -0,0 +1,157 @@
++use super::*;
++
++/// A fake host `/etc` under the temp dir, removed on drop.
++struct FakeEtc(PathBuf);
++
++impl FakeEtc {
++    fn new(tag: &str) -> Self {
++        let dir = std::env::temp_dir()
++            .join(format!("ai-jail-minimal-etc-{tag}-{}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&dir);
++        std::fs::create_dir_all(&dir).unwrap();
++        FakeEtc(dir)
++    }
++
++    fn file(&self, name: &str) -> &Self {
++        std::fs::write(self.0.join(name), "x\n").unwrap();
++        self
++    }
++
++    fn dir(&self, name: &str) -> &Self {
++        std::fs::create_dir_all(self.0.join(name)).unwrap();
++        self
++    }
++
++    fn link(&self, name: &str, target: &str) -> &Self {
++        std::os::unix::fs::symlink(target, self.0.join(name)).unwrap();
++        self
++    }
++}
++
++impl Drop for FakeEtc {
++    fn drop(&mut self) {
++        let _ = std::fs::remove_dir_all(&self.0);
++    }
++}
++
++#[test]
++fn files_directories_and_symlinks_keep_their_kind() {
++    let etc = FakeEtc::new("kinds");
++    etc.file("passwd")
++        .dir("ssl")
++        .link("localtime", "../usr/share/zoneinfo/UTC")
++        .link("resolv.conf", "/run/systemd/resolve/stub-resolv.conf");
++    let got = entries(&etc.0);
++    assert!(got.contains(&EtcEntry::File {
++        src: etc.0.join("passwd"),
++        dest: PathBuf::from("/etc/passwd"),
++    }));
++    assert!(got.contains(&EtcEntry::Dir {
++        src: etc.0.join("ssl"),
++        dest: PathBuf::from("/etc/ssl"),
++    }));
++    // The target text is kept verbatim, relative or absolute: it resolves
++    // in the sandbox's view, never the host's.
++    assert!(got.contains(&EtcEntry::Symlink {
++        target: "../usr/share/zoneinfo/UTC".into(),
++        dest: PathBuf::from("/etc/localtime"),
++    }));
++    assert!(got.contains(&EtcEntry::Symlink {
++        target: "/run/systemd/resolve/stub-resolv.conf".into(),
++        dest: PathBuf::from("/etc/resolv.conf"),
++    }));
++    assert_eq!(got.len(), 4);
++}
++
++#[test]
++fn an_entry_off_the_list_or_missing_is_left_out() {
++    let etc = FakeEtc::new("unlisted");
++    etc.file("hostname")
++        .file("shadow")
++        .file("gshadow")
++        .file("sudoers")
++        .file("fstab")
++        .file("crypttab")
++        .file("machine-id")
++        .dir("ssh")
++        .dir("portage")
++        .file("group");
++    let got = entries(&etc.0);
++    assert_eq!(
++        got,
++        vec![EtcEntry::File {
++            src: etc.0.join("group"),
++            dest: PathBuf::from("/etc/group"),
++        }]
++    );
++}
++
++#[test]
++fn a_dangling_symlink_is_recreated_not_followed() {
++    let etc = FakeEtc::new("dangling");
++    etc.link("mtab", "../proc/self/mounts");
++    assert_eq!(
++        entries(&etc.0),
++        vec![EtcEntry::Symlink {
++            target: "../proc/self/mounts".into(),
++            dest: PathBuf::from("/etc/mtab"),
++        }]
++    );
++}
++
++#[test]
++fn a_special_file_is_skipped() {
++    let etc = FakeEtc::new("special");
++    let fifo = std::ffi::CString::new(
++        etc.0.join("hosts").as_os_str().as_encoded_bytes(),
++    )
++    .unwrap();
++    // SAFETY: a valid NUL-terminated path; mkfifo only creates a node.
++    assert_eq!(unsafe { nix::libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
++    assert!(entries(&etc.0).is_empty());
++}
++
++#[test]
++fn the_list_never_names_secrets_or_the_host() {
++    for name in [
++        "shadow",
++        "gshadow",
++        "sudoers",
++        "sudoers.d",
++        "hostname",
++        "machine-id",
++        "ssh",
++        "crypttab",
++        "fstab",
++        "portage",
++        "NetworkManager",
++    ] {
++        assert!(!ALLOWLIST.contains(&name), "{name} must stay out");
++    }
++    let mut sorted = ALLOWLIST.to_vec();
++    sorted.sort_unstable();
++    sorted.dedup();
++    assert_eq!(sorted.len(), ALLOWLIST.len(), "duplicate entry");
++}
++
++#[test]
++fn host_view_masks_of_absent_entries_are_dropped() {
++    for kept in [
++        "/etc/machine-id",
++        "/etc/os-release",
++        "/etc/ssl/certs/x.pem",
++        "/proc/cpuinfo",
++        "/usr/lib/os-release",
++        "/etcetera",
++    ] {
++        assert!(keeps_host_view_mount(Path::new(kept)), "{kept}");
++    }
++    for dropped in [
++        "/etc/crypttab",
++        "/etc/gentoo-release",
++        "/etc/lsb-release",
++        "/etc/portage",
++    ] {
++        assert!(!keeps_host_view_mount(Path::new(dropped)), "{dropped}");
++    }
++}
+diff --git a/src/sandbox/mod.rs b/src/sandbox/mod.rs
+index 4ccb1e6..be813d5 100644
+--- a/src/sandbox/mod.rs
++++ b/src/sandbox/mod.rs
+@@ -70,6 +70,8 @@ mod host_view_synth;
+ #[cfg(target_os = "linux")]
+ pub(crate) mod host_view_timens;
+ #[cfg(target_os = "linux")]
++mod minimal_etc;
++#[cfg(target_os = "linux")]
+ mod syscall_view;
+ 
+ /// In the helper: install `--syscall-view`'s notify filter and hand its
+@@ -1984,7 +1986,11 @@ pub fn build(
+     #[cfg(target_os = "macos")]
+     {
+         let _ = (guard, bridge_sockets);
+-        if config.mask_host || config.overlay_system || config.syscall_view {
++        if config.mask_host
++            || config.overlay_system
++            || config.syscall_view
++            || config.minimal_etc
++        {
+             return Err("--mask-host is Linux-only".into());
+         }
+         let prepared = prepare_seatbelt_config(config)?;
+@@ -2020,7 +2026,11 @@ pub fn dry_run(
+     #[cfg(target_os = "macos")]
+     {
+         let _ = (guard, bridge_sockets);
+-        if config.mask_host || config.overlay_system || config.syscall_view {
++        if config.mask_host
++            || config.overlay_system
++            || config.syscall_view
++            || config.minimal_etc
++        {
+             return Err("--mask-host is Linux-only".into());
+         }
+         let prepared = prepare_seatbelt_config(config)?;
+diff --git a/tests/mask_host.rs b/tests/mask_host.rs
+index 3853237..aa391f9 100644
+--- a/tests/mask_host.rs
++++ b/tests/mask_host.rs
+@@ -413,3 +413,73 @@ fn overlay_system_alone_is_refused() {
+         String::from_utf8_lossy(&out.stderr)
+     );
+ }
++
++#[test]
++fn minimal_etc_keeps_only_the_allowlist_and_the_tools_working() {
++    require_bwrap!();
++    let _lock = SANDBOX_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    let script = r#"
++echo "count=$(ls -A /etc | wc -l)"
++for f in passwd hosts hostname fstab crypttab portage shadow; do
++  if [ -e /etc/$f ] || [ -L /etc/$f ]; then echo "$f=present"; else echo "$f=absent"; fi
++done
++echo "hosts_size=$(wc -c < /etc/hosts)"
++echo "user=$(id -un 2>/dev/null || echo none)"
++echo "src=$(awk '$5=="/etc" {print $(NF-2)}' /proc/self/mountinfo | tail -1)"
++touch /etc/probe 2>/dev/null && echo writable=yes || echo writable=no
++if [ -L /etc/localtime ]; then [ -e /etc/localtime ] && echo tz=ok || echo tz=dangling; else echo tz=ok; fi
++git --version >/dev/null && echo git=ok
++sh -lc 'echo login=ok'
++"#;
++    let out = Command::new(ai_jail())
++        .args([
++            "--clean",
++            "--no-save-config",
++            "--no-ssh",
++            "--no-gpu",
++            "--no-docker",
++            "--no-display",
++            "--no-status-bar",
++            "--mask-host",
++            "--minimal-etc",
++            "sh",
++            "-c",
++            script,
++        ])
++        .output()
++        .expect("failed to spawn ai-jail");
++    let text = stdout(&out);
++    let host_count = std::fs::read_dir("/etc").map_or(0, Iterator::count);
++    let count: usize = field(&text, "count").parse().unwrap();
++    assert!(count < host_count || host_count < 40, "{count}: {text}");
++    for absent in ["hostname", "fstab", "crypttab", "portage", "shadow"] {
++        assert_eq!(field(&text, absent), "absent", "{absent}: {text}");
++    }
++    if std::path::Path::new("/etc/passwd").exists() {
++        assert_eq!(field(&text, "passwd"), "present", "{text}");
++        assert_ne!(field(&text, "user"), "none", "{text}");
++    }
++    // Binds made inside /etc after the tmpfs still land on it.
++    assert_eq!(field(&text, "hosts"), "present", "{text}");
++    assert_ne!(field(&text, "hosts_size"), "0", "{text}");
++    assert_eq!(field(&text, "src"), "tmpfs", "{text}");
++    assert_eq!(field(&text, "writable"), "no", "{text}");
++    assert_eq!(field(&text, "tz"), "ok", "{text}");
++    assert_eq!(field(&text, "git"), "ok", "{text}");
++    assert_eq!(field(&text, "login"), "ok", "{text}");
++}
++
++#[test]
++fn minimal_etc_alone_is_refused() {
++    let out = Command::new(ai_jail())
++        .args(["--clean", "--no-save-config", "--minimal-etc", "true"])
++        .output()
++        .expect("failed to spawn ai-jail");
++    assert!(!out.status.success());
++    assert!(
++        String::from_utf8_lossy(&out.stderr)
++            .contains("--minimal-etc requires --mask-host"),
++        "{}",
++        String::from_utf8_lossy(&out.stderr)
++    );
++}
