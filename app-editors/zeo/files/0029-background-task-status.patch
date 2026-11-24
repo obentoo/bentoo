@@ -75,10 +75,10 @@ handle_session_update.
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index bc88449..a4c2619 100644
+index 0925fa7..22f3343 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -3969,6 +3969,15 @@ impl AccountUsage {
+@@ -4050,6 +4050,15 @@ impl AccountUsage {
  /// forwards the SDK's `rate_limit_event` here instead of dropping it.
  const CLAUDE_RATE_LIMIT_META_KEY: &str = "_claude/rateLimit";
  
@@ -94,15 +94,15 @@ index bc88449..a4c2619 100644
  pub const TOKEN_USAGE_WARNING_THRESHOLD: f32 = 0.8;
  
  impl TokenUsage {
-@@ -4075,6 +4084,7 @@ pub struct AcpThread {
-     reported_usage: Option<ReportedTokenUsage>,
+@@ -4157,6 +4166,7 @@ pub struct AcpThread {
      token_usage: Option<TokenUsage>,
+     usage_meta: Option<acp_v2::Meta>,
      account_usage: AccountUsage,
 +    background_task_count: usize,
      cost: Option<SessionCost>,
      prompt_capabilities: acp_v2::PromptCapabilities,
      available_commands: Vec<acp_v2::AvailableCommand>,
-@@ -4230,6 +4240,7 @@ pub enum AcpThreadEvent {
+@@ -4312,6 +4322,7 @@ pub enum AcpThreadEvent {
      NoticesUpdated,
      TokenUsageUpdated(OutputTokensUpdate),
      AccountUsageUpdated,
@@ -110,7 +110,7 @@ index bc88449..a4c2619 100644
      EntryUpdated(usize),
      EntriesRemoved(Range<usize>),
      ToolAuthorizationRequested(PermissionRequestId),
-@@ -4371,6 +4382,7 @@ impl AcpThread {
+@@ -4453,6 +4464,7 @@ impl AcpThread {
                  | AcpThreadEvent::NoticesUpdated
                  | AcpThreadEvent::TokenUsageUpdated(_)
                  | AcpThreadEvent::AccountUsageUpdated
@@ -118,15 +118,15 @@ index bc88449..a4c2619 100644
                  | AcpThreadEvent::EntryUpdated(_)
                  | AcpThreadEvent::Retry(_)
                  | AcpThreadEvent::SubagentSpawned(_)
-@@ -4426,6 +4438,7 @@ impl AcpThread {
-             connection,
+@@ -4509,6 +4521,7 @@ impl AcpThread {
              token_usage: None,
+             usage_meta: None,
              account_usage: AccountUsage::default(),
 +            background_task_count: 0,
              cost: None,
              prompt_capabilities,
              available_commands: Vec::new(),
-@@ -5291,6 +5304,12 @@ impl AcpThread {
+@@ -5376,6 +5389,12 @@ impl AcpThread {
          (!self.account_usage.is_empty()).then_some(&self.account_usage)
      }
  
@@ -139,7 +139,7 @@ index bc88449..a4c2619 100644
      pub fn cost(&self) -> Option<&SessionCost> {
          self.cost.as_ref()
      }
-@@ -5466,6 +5485,22 @@ impl AcpThread {
+@@ -5551,6 +5570,22 @@ impl AcpThread {
                  self.push_notice(notices::from_v1(notice).map_err(acp_v1::Error::from)?, cx);
              }
              acp_v1::SessionUpdate::SessionInfoUpdate(info_update) => {
@@ -162,7 +162,7 @@ index bc88449..a4c2619 100644
                  self.update_session_info(info_update, cx);
              }
              acp_v1::SessionUpdate::AvailableCommandsUpdate(acp_v1::AvailableCommandsUpdate {
-@@ -23503,6 +23538,136 @@ mod tests {
+@@ -23717,6 +23752,136 @@ mod tests {
          );
      }
  
@@ -312,7 +312,7 @@ index dc596f9..80cdc37 100644
              | AcpThreadEvent::SubagentSpawned(_)
              | AcpThreadEvent::SubagentAssociationUpdated
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index 49d297c..0383915 100644
+index 2687850..2bde649 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -350,6 +350,7 @@ impl Conversation {
@@ -331,7 +331,7 @@ index 49d297c..0383915 100644
          | AcpThreadEvent::PromptCapabilitiesUpdated
          | AcpThreadEvent::AvailableCommandsUpdated(_)
          | AcpThreadEvent::ModeUpdated(_)
-@@ -2417,6 +2419,10 @@ impl ConversationView {
+@@ -2418,6 +2420,10 @@ impl ConversationView {
                      });
                  }
              }
@@ -632,7 +632,7 @@ index e9d55f8..b5c1302 100644
 +#[path = "sidebar_pinned_background_tests.rs"]
 +mod background;
 diff --git a/crates/sidebar/src/sidebar_tests.rs b/crates/sidebar/src/sidebar_tests.rs
-index 33b3462..e36b308 100644
+index 3c45f99..92d2d71 100644
 --- a/crates/sidebar/src/sidebar_tests.rs
 +++ b/crates/sidebar/src/sidebar_tests.rs
 @@ -1316,6 +1316,7 @@ pub(super) fn visible_entries_as_strings(

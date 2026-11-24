@@ -17,9 +17,9 @@ CRATES="
 	adler2@2.0.1
 	adler32@1.2.0
 	aes@0.8.4
-	agent-client-protocol-derive@5.4.0
-	agent-client-protocol-schema@1.19.0
-	agent-client-protocol@5.4.0
+	agent-client-protocol-derive@5.5.1
+	agent-client-protocol-schema@1.21.2
+	agent-client-protocol@5.5.1
 	ahash@0.8.12
 	aho-corasick@1.1.3
 	aliasable@0.1.3
@@ -1551,7 +1551,7 @@ declare -A GIT_CRATES=(
 # rewrites the date and EGIT_COMMIT; a second version variable it could not
 # keep current would leave a new tarball under an old, already-manifested name).
 
-EGIT_COMMIT="f126950f9d3b62666f97437ae5d4ccac2272c4db"
+EGIT_COMMIT="c31063a050c987da77bf48053132600b91d383b0"
 # LLVM 23 only, so it is the default slot: llvm-r2 would always prefer slot 22
 # (its newest stable) whenever 22 is listed. RUST_NEEDS_LLVM ties the Rust slot
 # to it. RUST_MIN_VER is the newest stable Rust, 1.100.0, past upstream's
@@ -1773,7 +1773,7 @@ RDEPEND="
 	!app-editors/zed
 	!app-editors/zed-bin
 	!app-editors/zeo-bin
-	ai-jail? ( >=sys-apps/ai-jail-3.5.0-r4 )
+	ai-jail? ( >=sys-apps/ai-jail-3.5.0-r5 )
 	browser-extension? ( www-plugins/zeo-browser )
 	claude-agent-acp-plus? ( >=dev-util/claude-agent-acp-plus-0.26.0 )
 	claude-agent-acp-tui? ( dev-util/claude-agent-acp-tui )
@@ -2326,6 +2326,12 @@ src_prepare() {
 			"${FILESDIR}/0155-agent-ui-markdown-files-get-the-composer-s-block-look-and-quotation-hi.patch"
 			# 0156: the tasks card's Open turns into Back; the eye's preview on the panel background.
 			"${FILESDIR}/0156-agent-ui-the-tasks-card-s-open-turns-into-back-and-the-eye-s-content-s.patch"
+			# 0164: a row of Subagents Awaiting Permission opens that subagent's thread. On 0072.
+			"${FILESDIR}/0164-agent-ui-a-row-of-subagents-awaiting-permission-opens-that-subagent-s.patch"
+			# 0166: Stop Generation and Stop Subagent ask first. On 0072.
+			"${FILESDIR}/0166-agent-ui-stop-generation-and-stop-subagent-ask-first-in-a-modal.patch"
+			# 0167: archiving a thread with work running asks first. On 0029/0072.
+			"${FILESDIR}/0167-sidebar-archiving-a-thread-with-work-running-asks-first-instead-of-ref.patch"
 		)
 	fi
 
@@ -2381,6 +2387,10 @@ src_prepare() {
 			"${FILESDIR}/0162-settings-ui-secret-vault-a-secrets-page-the-vault-s-first-slice.patch"
 			# 0163: Hide the Disks on by default; skipped on an ai-jail without the option. On 0162.
 			"${FILESDIR}/0163-agent-sandbox-hide-the-disks-on-by-default-skipped-on-an-older-ai-jail.patch"
+			# 0165: Pause freezes the jail and Resume goes on; Stop asks first. On 0141.
+			"${FILESDIR}/0165-agent-sandbox-pause-freezes-the-jail-and-resume-goes-on-stop-asks-firs.patch"
+			# 0168: Hide the System Config (ai-jail --minimal-etc). On 0161.
+			"${FILESDIR}/0168-agent-sandbox-hide-the-system-config-etc-as-an-allowlist-under-the-hos.patch"
 		)
 	fi
 

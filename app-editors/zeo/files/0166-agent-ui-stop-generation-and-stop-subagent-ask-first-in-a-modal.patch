@@ -1,0 +1,301 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 00:16:29 -0300
+Subject: [PATCH] agent_ui: Stop Generation and Stop Subagent ask first, in a
+ modal
+
+Operator ask of 2026-11-23: every interruption the operator starts asks for
+a confirmation in a modal, as skipping a question card already does
+(decline_elicitation, "Skip this question?"). A stray click on Stop, or an
+Escape meant for something else, ended a turn that could not be resumed
+where it was.
+
+ThreadView::confirm_interruption is the one prompt for all of them:
+window.prompt at Warning with a confirming label and "Keep Going", the
+interruption run only on the confirming answer, and one prompt at a time
+(interrupt_confirmation_open), so a second click or Escape while it is open
+does nothing. Each answer is logged as agent_ui event=interrupt_confirmation
+with the session and the outcome.
+
+- Stop Generation -- the composer's button, Escape in the composer
+  (MessageEditorEvent::Cancel) and menu::Cancel on the thread -- goes through
+  confirm_cancel_generation: "Stop generation?" while a turn runs; with no
+  turn running it does what cancel_generation always did.
+- Stop Subagent, on the subagent's card and on its title bar, goes through
+  confirm_stop_subagent: "Stop this subagent?".
+
+Untouched on purpose: the cancellations nobody clicks -- the browser
+channel's stop, the agent panel's cancel_thread, a jail restart, the
+terminal-stop setting -- and the tasks card's Stop, which already asks
+("Stop this task?").
+
+Tests (conversation_view.rs): test_escape_cancels_generation_from_
+conversation_focus and _from_editor_focus now expect the prompt, a turn
+still Generating under it, and Idle after "Stop";
+test_escape_then_keep_going_leaves_the_turn_running answers "Keep Going",
+sends a second Escape while the prompt is open (no second prompt) and finds
+the turn still running; test_first_message_to_an_acp_subagent_shows_its_card
+expects no cancel before "Stop Subagent" and the child's cancel after it.
+Red: all four fail without the change. agent_ui suite 2124/2124 with 0167.
+---
+
+diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
+index 063aab7..e51facb 100644
+--- a/crates/agent_ui/src/conversation_view.rs
++++ b/crates/agent_ui/src/conversation_view.rs
+@@ -16786,11 +16786,55 @@ pub(crate) mod tests {
+ 
+         cx.run_until_parked();
+ 
++        // Operator ask of 2026-11-23: Escape asks first, and the turn stops on "Stop".
++        assert!(
++            cx.has_pending_prompt(),
++            "Escape asks before it stops the turn"
++        );
++        setup.thread.read_with(cx, |thread, _cx| {
++            assert_eq!(thread.status(), ThreadStatus::Generating);
++        });
++        cx.simulate_prompt_answer("Stop");
++        cx.run_until_parked();
++
+         setup.thread.read_with(cx, |thread, _cx| {
+             assert_eq!(thread.status(), ThreadStatus::Idle);
+         });
+     }
+ 
++    /// Operator ask of 2026-11-23: "Keep Going" leaves the turn running.
++    #[gpui::test]
++    async fn test_escape_then_keep_going_leaves_the_turn_running(cx: &mut TestAppContext) {
++        init_test(cx);
++
++        let (setup, cx) = setup_generating_thread(cx).await;
++
++        let focus_handle = setup
++            .conversation_view
++            .read_with(cx, |view, cx| view.focus_handle(cx));
++        cx.update(|window, cx| {
++            window.focus(&focus_handle, cx);
++        });
++        setup.conversation_view.update_in(cx, |_, window, cx| {
++            window.dispatch_action(menu::Cancel.boxed_clone(), cx);
++        });
++        cx.run_until_parked();
++        assert!(cx.has_pending_prompt());
++
++        // A second Escape while the prompt is open opens no second prompt.
++        setup.conversation_view.update_in(cx, |_, window, cx| {
++            window.dispatch_action(menu::Cancel.boxed_clone(), cx);
++        });
++        cx.run_until_parked();
++
++        cx.simulate_prompt_answer("Keep Going");
++        cx.run_until_parked();
++        assert!(!cx.has_pending_prompt(), "one prompt, answered once");
++        setup.thread.read_with(cx, |thread, _cx| {
++            assert_eq!(thread.status(), ThreadStatus::Generating);
++        });
++    }
++
+     #[gpui::test]
+     async fn test_escape_cancels_generation_from_editor_focus(cx: &mut TestAppContext) {
+         init_test(cx);
+@@ -16810,6 +16854,10 @@ pub(crate) mod tests {
+ 
+         cx.run_until_parked();
+ 
++        assert!(cx.has_pending_prompt(), "Escape in the composer asks first");
++        cx.simulate_prompt_answer("Stop");
++        cx.run_until_parked();
++
+         setup.thread.read_with(cx, |thread, _cx| {
+             assert_eq!(thread.status(), ThreadStatus::Idle);
+         });
+@@ -22244,6 +22292,11 @@ pub(crate) mod tests {
+             .expect("a running subagent that advertises cancel can be stopped");
+         cx.simulate_click(stop.center(), gpui::Modifiers::default());
+         cx.run_until_parked();
++        // Operator ask of 2026-11-23: Stop Subagent asks first; nothing is cancelled before.
++        assert!(cx.has_pending_prompt(), "Stop Subagent asks first");
++        assert!(connection.take_cancel_calls().is_empty());
++        cx.simulate_prompt_answer("Stop Subagent");
++        cx.run_until_parked();
+         assert_eq!(
+             connection.take_cancel_calls(),
+             vec![acp_v2::SessionId::new("child")],
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 5956b74..e9652d5 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -814,6 +814,9 @@ pub struct ThreadView {
+     /// Questions whose "Skip this question?" prompt is open, so a second
+     /// Decline on the same card opens no second prompt.
+     open_decline_confirmations: HashSet<ElicitationEntryId>,
++    /// An interruption prompt (Stop Generation, Stop Subagent) is on screen, so a second click,
++    /// Escape or Cancel opens no second one (operator ask of 2026-11-23).
++    interrupt_confirmation_open: bool,
+     question_queue: QuestionQueue,
+     /// The pending question card is minimized to its bar (Zeo next proposal §5.5). Per
+     /// thread, and back to open once no question is pending, so the next one shows.
+@@ -1385,6 +1388,7 @@ impl ThreadView {
+             new_server_version_available: None,
+             elicitation_form_states: HashMap::default(),
+             open_decline_confirmations: HashSet::default(),
++            interrupt_confirmation_open: false,
+             question_queue: QuestionQueue::default(),
+             question_card_minimized: false,
+             auto_scroll_paused_at: None,
+@@ -1510,7 +1514,7 @@ impl ThreadView {
+             MessageEditorEvent::SendImmediately => self.interrupt_and_send(window, cx),
+             MessageEditorEvent::Cancel => {
+                 if !self.close_thread_search(window, cx) {
+-                    self.cancel_generation(cx);
++                    self.confirm_cancel_generation(window, cx);
+                 }
+             }
+             MessageEditorEvent::Focus => {
+@@ -2868,6 +2872,90 @@ impl ThreadView {
+         );
+     }
+ 
++    /// Operator ask of 2026-11-23: every interruption the operator starts asks first, in a
++    /// modal, as skipping a question card does (`decline_elicitation`). `interrupt` runs only on
++    /// the confirming answer; a prompt already open makes this a no-op.
++    pub(crate) fn confirm_interruption(
++        &mut self,
++        message: &'static str,
++        detail: &'static str,
++        confirm_label: &'static str,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++        interrupt: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
++    ) {
++        if self.interrupt_confirmation_open {
++            return;
++        }
++        self.interrupt_confirmation_open = true;
++        let answer = window.prompt(
++            PromptLevel::Warning,
++            message,
++            Some(detail),
++            &[confirm_label, "Keep Going"],
++            cx,
++        );
++        cx.spawn_in(window, async move |this, cx| {
++            // Index 0 confirms; `Err` is a prompt whose sender was dropped, which keeps going.
++            let confirmed = matches!(answer.await, Ok(0));
++            this.update(cx, |this, cx| {
++                this.interrupt_confirmation_open = false;
++                log::info!(
++                    "agent_ui event=interrupt_confirmation session_id={} message={message:?} \
++                     outcome={}",
++                    this.session_id,
++                    if confirmed { "confirmed" } else { "kept" }
++                );
++                if confirmed {
++                    interrupt(this, cx);
++                }
++            })
++            .log_err();
++        })
++        .detach();
++    }
++
++    /// Stop Generation from the operator -- the button, Escape in the composer, `menu::Cancel` --
++    /// asks first while a turn runs; with nothing running it does what it always did.
++    pub(crate) fn confirm_cancel_generation(
++        &mut self,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        if self.thread.read(cx).status() != ThreadStatus::Generating {
++            self.cancel_generation(cx);
++            return;
++        }
++        self.confirm_interruption(
++            "Stop generation?",
++            "The agent stops this turn. What it already did stays.",
++            "Stop",
++            window,
++            cx,
++            |this, cx| this.cancel_generation(cx),
++        );
++    }
++
++    /// Stop Subagent from the operator, on the subagent's card or its title bar, asks first.
++    fn confirm_stop_subagent(
++        &mut self,
++        thread: Entity<AcpThread>,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        self.confirm_interruption(
++            "Stop this subagent?",
++            "The subagent stops where it is. What it already did stays.",
++            "Stop Subagent",
++            window,
++            cx,
++            move |this, cx| {
++                telemetry::event!("Subagent Stopped");
++                this.cancel_thread(&thread, cx).detach();
++            },
++        );
++    }
++
+     pub fn cancel_generation(&mut self, cx: &mut Context<Self>) {
+         self.thread_retry_status.take();
+         self.thread_error.take();
+@@ -6089,9 +6177,12 @@ impl ThreadView {
+                                                     .icon_color(Color::Error)
+                                                     .tooltip(Tooltip::text("Stop Subagent"))
+                                                     .on_click(cx.listener(
+-                                                        move |this, _, _, cx| {
+-                                                            this.cancel_thread(&thread, cx)
+-                                                                .detach();
++                                                        move |this, _, window, cx| {
++                                                            this.confirm_stop_subagent(
++                                                                thread.clone(),
++                                                                window,
++                                                                cx,
++                                                            );
+                                                         },
+                                                     )),
+                                             ),
+@@ -7535,7 +7626,9 @@ impl ThreadView {
+                         cx,
+                     )
+                 })
+-                .on_click(cx.listener(|this, _event, _, cx| this.cancel_generation(cx)))
++                .on_click(cx.listener(|this, _event, window, cx| {
++                    this.confirm_cancel_generation(window, cx)
++                }))
+                 .into_any_element()
+         } else {
+             let send_icon = if is_generating {
+@@ -14368,9 +14461,12 @@ impl ThreadView {
+                                             .map(|view| view.read(cx).thread.clone()),
+                                         |this, thread| {
+                                             this.on_click(cx.listener(
+-                                                move |this, _event, _window, cx| {
+-                                                    telemetry::event!("Subagent Stopped");
+-                                                    this.cancel_thread(&thread, cx).detach();
++                                                move |this, _event, window, cx| {
++                                                    this.confirm_stop_subagent(
++                                                        thread.clone(),
++                                                        window,
++                                                        cx,
++                                                    );
+                                                 },
+                                             ))
+                                         },
+@@ -15968,9 +16064,9 @@ impl Render for ThreadView {
+         v_flex()
+             .key_context("AcpThread")
+             .track_focus(&self.focus_handle)
+-            .on_action(cx.listener(|this, _: &menu::Cancel, _, cx| {
++            .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
+                 if this.parent_session_id.is_none() {
+-                    this.cancel_generation(cx);
++                    this.confirm_cancel_generation(window, cx);
+                 }
+             }))
+             .on_action(cx.listener(

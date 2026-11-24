@@ -1,0 +1,173 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 23 Nov 2026 23:11:18 -0300
+Subject: [PATCH] agent_ui: a row of Subagents Awaiting Permission opens that
+ subagent's thread
+
+Operator ask of 2026-11-23: the bar pinned at the foot of the agent
+panel's message area lists the subagents waiting for a permission, and
+clicking one did not open the thread asking. Upstream's row reads
+"Scroll to Subagent" and only scrolls the parent's transcript to the
+child's card; the prompt itself lives in the child's thread, so the
+operator had to find the card and open it from there.
+
+The row now reads "Open Subagent Thread" and brings that child's thread
+forward through ConversationView::navigate_to_thread, the call the
+subagent title bar's Minimize already uses the other way. The scroll
+stays as the fallback for a child this conversation holds no thread view
+for, so a click never does nothing. collect_subagent_items_for_sessions,
+whose only caller is this bar, now returns each row's session id beside
+its label and entry.
+
+Test, in 0072's rfd_surfaces_tests.rs:
+test_permission_bar_row_opens_the_waiting_subagent_thread -- two
+children, one with a pending permission; clicking its row leaves that
+child's thread active in the conversation. Red without the change: the
+active thread stayed the parent's ("0" instead of "alpha"). The bar's
+own tests (0072) and the other rfd_surfaces tests pass unchanged.
+---
+
+diff --git a/crates/agent_ui/src/conversation_view/subagent_card/rfd_surfaces_tests.rs b/crates/agent_ui/src/conversation_view/subagent_card/rfd_surfaces_tests.rs
+index 48135a3..54fc0a0 100644
+--- a/crates/agent_ui/src/conversation_view/subagent_card/rfd_surfaces_tests.rs
++++ b/crates/agent_ui/src/conversation_view/subagent_card/rfd_surfaces_tests.rs
+@@ -482,3 +482,59 @@ fn waiting_card_full_screen_follows_the_latest_entries() {
+     );
+     assert_eq!(card(SubagentStatus::Completed).fullscreen_entry(), Some(0));
+ }
++
++// ── Operator ask of 2026-11-23 — the bar opens the thread that waits ────────
++
++/// Clicking a row of the "Subagents Awaiting Permission" bar brings the child's own thread
++/// forward, where its permission prompt is, instead of only scrolling the parent to the child's
++/// card (upstream's "Scroll to Subagent").
++#[gpui::test]
++async fn test_permission_bar_row_opens_the_waiting_subagent_thread(cx: &mut TestAppContext) {
++    let mut rig = rig(cx).await;
++    let alpha = rig.spawn_child("alpha", "Alpha", true);
++    let _bravo = rig.spawn_child("bravo", "Bravo", true);
++    let alpha_card = rig.message("to-alpha", "alpha", false);
++    let _bravo_card = rig.message("to-bravo", "bravo", false);
++
++    let (_request_id, _outcome) = rig.cx.update(|_, cx| {
++        alpha.update(cx, |thread, cx| {
++            thread
++                .request_tool_call_authorization_with_id(
++                    acp_v1::ToolCall::new(acp_v1::ToolCallId::new("alpha-call"), "Edit a file")
++                        .kind(acp_v1::ToolKind::Edit)
++                        .into(),
++                    PermissionOptions::Flat(vec![acp_v2::PermissionOption::new(
++                        acp_v2::PermissionOptionId::new("allow"),
++                        "Allow",
++                        acp_v2::PermissionOptionKind::AllowOnce,
++                    )]),
++                    acp_thread::AuthorizationKind::PermissionGrant,
++                    cx,
++                )
++                .expect("the request installs")
++        })
++    });
++    rig.cx.run_until_parked();
++    rig.draw();
++    let row = rig
++        .cx
++        .debug_bounds(permission_row(alpha_card))
++        .expect("Alpha is listed in the bar");
++
++    rig.cx
++        .simulate_click(row.center(), gpui::Modifiers::default());
++    rig.cx.run_until_parked();
++
++    let shown = rig.panel.read_with(&rig.cx, |panel, cx| {
++        let conversation = panel.active_thread_view_for_tests()?;
++        conversation
++            .read(cx)
++            .active_thread()
++            .map(|view| view.read(cx).thread.read(cx).session_id().clone())
++    });
++    assert_eq!(
++        shown,
++        Some(acp_v2::SessionId::new("alpha")),
++        "the click shows Alpha's thread, the one waiting for permission"
++    );
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index bf381de..5956b74 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -4827,7 +4827,7 @@ impl ThreadView {
+         parent: Option<&AcpThread>,
+         awaiting_session_ids: &[acp_v2::SessionId],
+         cx: &App,
+-    ) -> Vec<(SharedString, usize)> {
++    ) -> Vec<(SharedString, usize, acp_v2::SessionId)> {
+         let tool_calls_by_session: HashMap<_, _> = entries
+             .iter()
+             .enumerate()
+@@ -4865,7 +4865,10 @@ impl ThreadView {
+ 
+         awaiting_session_ids
+             .iter()
+-            .filter_map(|session_id| tool_calls_by_session.get(session_id).cloned())
++            .filter_map(|session_id| {
++                let (label, entry_ix) = tool_calls_by_session.get(session_id).cloned()?;
++                Some((label, entry_ix, session_id.clone()))
++            })
+             .collect()
+     }
+ 
+@@ -5146,7 +5149,7 @@ impl ThreadView {
+                 )
+                 .child(
+                     v_flex().children(subagent_items.into_iter().enumerate().map(
+-                        |(ix, (label, entry_ix))| {
++                        |(ix, (label, entry_ix, subagent_session_id))| {
+                             let is_last = ix == item_count - 1;
+                             let group = format!("group-{}", entry_ix);
+ 
+@@ -5183,17 +5186,39 @@ impl ThreadView {
+                                 )
+                                 .child(
+                                     div().visible_on_hover(&group).child(
+-                                        Label::new("Scroll to Subagent")
++                                        Label::new("Open Subagent Thread")
+                                             .size(LabelSize::Small)
+                                             .color(Color::Muted)
+                                             .truncate(),
+                                     ),
+                                 )
+-                                .on_click(cx.listener(move |this, _, _, cx| {
+-                                    this.list_state.scroll_to(ListOffset {
+-                                        item_ix: entry_ix,
+-                                        offset_in_item: px(0.0),
+-                                    });
++                                // Operator ask of 2026-11-23: the row opens the waiting child's
++                                // own thread, where its prompt is. Upstream only scrolled the
++                                // parent to the child's card; that stays the fallback for a child
++                                // with no thread view of its own here.
++                                .on_click(cx.listener(move |this, _, window, cx| {
++                                    let opened = this
++                                        .server_view
++                                        .update(cx, |server_view, cx| {
++                                            let has_view = server_view
++                                                .thread_view(&subagent_session_id)
++                                                .is_some();
++                                            if has_view {
++                                                server_view.navigate_to_thread(
++                                                    subagent_session_id.clone(),
++                                                    window,
++                                                    cx,
++                                                );
++                                            }
++                                            has_view
++                                        })
++                                        .unwrap_or(false);
++                                    if !opened {
++                                        this.list_state.scroll_to(ListOffset {
++                                            item_ix: entry_ix,
++                                            offset_in_item: px(0.0),
++                                        });
++                                    }
+                                     cx.notify();
+                                 }))
+                         },

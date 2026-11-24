@@ -41,7 +41,7 @@ window and values above 1 are read as percentages.
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index cff6870..646044e 100644
+index 2eb60dc..3ded3ff 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
 @@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
@@ -53,7 +53,7 @@ index cff6870..646044e 100644
  use std::error::Error;
  use std::fmt::{Formatter, Write};
  use std::ops::Range;
-@@ -3693,6 +3693,206 @@ pub struct SessionCost {
+@@ -3774,6 +3774,206 @@ pub struct SessionCost {
      pub meta: Option<acp_v2::Meta>,
  }
  
@@ -260,15 +260,15 @@ index cff6870..646044e 100644
  pub const TOKEN_USAGE_WARNING_THRESHOLD: f32 = 0.8;
  
  impl TokenUsage {
-@@ -3798,6 +3998,7 @@ pub struct AcpThread {
-     subagent_outcomes: Vec<(usize, acp_v2::StateUpdate)>,
+@@ -3880,6 +4080,7 @@ pub struct AcpThread {
      reported_usage: Option<ReportedTokenUsage>,
      token_usage: Option<TokenUsage>,
+     usage_meta: Option<acp_v2::Meta>,
 +    account_usage: AccountUsage,
      cost: Option<SessionCost>,
      prompt_capabilities: acp_v2::PromptCapabilities,
      available_commands: Vec<acp_v2::AvailableCommand>,
-@@ -3952,6 +4153,7 @@ pub enum AcpThreadEvent {
+@@ -4034,6 +4235,7 @@ pub enum AcpThreadEvent {
      TitleUpdated,
      NoticesUpdated,
      TokenUsageUpdated(OutputTokensUpdate),
@@ -276,7 +276,7 @@ index cff6870..646044e 100644
      EntryUpdated(usize),
      EntriesRemoved(Range<usize>),
      ToolAuthorizationRequested(PermissionRequestId),
-@@ -4092,6 +4294,7 @@ impl AcpThread {
+@@ -4174,6 +4376,7 @@ impl AcpThread {
                  | AcpThreadEvent::TitleUpdated
                  | AcpThreadEvent::NoticesUpdated
                  | AcpThreadEvent::TokenUsageUpdated(_)
@@ -284,15 +284,15 @@ index cff6870..646044e 100644
                  | AcpThreadEvent::EntryUpdated(_)
                  | AcpThreadEvent::Retry(_)
                  | AcpThreadEvent::SubagentSpawned(_)
-@@ -4146,6 +4349,7 @@ impl AcpThread {
-             reported_usage: None,
+@@ -4229,6 +4432,7 @@ impl AcpThread {
              connection,
              token_usage: None,
+             usage_meta: None,
 +            account_usage: AccountUsage::default(),
              cost: None,
              prompt_capabilities,
              available_commands: Vec::new(),
-@@ -5002,6 +5206,15 @@ impl AcpThread {
+@@ -5087,6 +5291,15 @@ impl AcpThread {
          Ok(())
      }
  
@@ -308,15 +308,17 @@ index cff6870..646044e 100644
      pub fn cost(&self) -> Option<&SessionCost> {
          self.cost.as_ref()
      }
-@@ -6312,9 +6525,20 @@ impl AcpThread {
+@@ -6400,9 +6613,22 @@ impl AcpThread {
                  });
              }
          }
 +        // The account quota rides in `_meta` on the same notification. Absent for
 +        // every agent but the Claude adapter, so its absence is the normal case
-+        // and must stay silent.
-+        let account_changed = update
-+            .meta
++        // and must stay silent. Read from `usage_meta`, not `update.meta`: since
++        // Zed c31063a0 a v1 report sets `usage_meta` itself and reaches here with
++        // no metadata, and a v2 one is merged into it above.
++        let account_changed = self
++            .usage_meta
 +            .as_ref()
 +            .and_then(|meta| meta.get(CLAUDE_RATE_LIMIT_META_KEY))
 +            .is_some_and(|payload| self.account_usage.ingest(payload));
@@ -329,7 +331,7 @@ index cff6870..646044e 100644
      }
  
      pub fn update_retry_status(&mut self, status: RetryStatus, cx: &mut Context<Self>) {
-@@ -8811,6 +9035,198 @@ fn update_markdown_in_place(markdown: &Entity<Markdown>, text: &str, cx: &mut Ap
+@@ -8908,6 +9134,198 @@ fn update_markdown_in_place(markdown: &Entity<Markdown>, text: &str, cx: &mut Ap
  
  #[cfg(test)]
  mod tests {
@@ -526,8 +528,8 @@ index cff6870..646044e 100644
 +        );
 +    }
      use super::*;
+     use agent_client_protocol::schema::IndexMap as AcpIndexMap;
      use anyhow::anyhow;
-     use futures::stream::StreamExt as _;
 diff --git a/crates/agent_ui/src/agent_diff.rs b/crates/agent_ui/src/agent_diff.rs
 index 61151ee..dc596f9 100644
 --- a/crates/agent_ui/src/agent_diff.rs
@@ -541,7 +543,7 @@ index 61151ee..dc596f9 100644
              | AcpThreadEvent::SubagentSpawned(_)
              | AcpThreadEvent::SubagentAssociationUpdated
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index c6b3a98..b5fa8ae 100644
+index 6e75570..c550ae1 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -349,6 +349,7 @@ impl Conversation {
@@ -560,7 +562,7 @@ index c6b3a98..b5fa8ae 100644
          | AcpThreadEvent::PromptCapabilitiesUpdated
          | AcpThreadEvent::AvailableCommandsUpdated(_)
          | AcpThreadEvent::ModeUpdated(_)
-@@ -2415,6 +2417,13 @@ impl ConversationView {
+@@ -2416,6 +2418,13 @@ impl ConversationView {
                      });
                  }
              }
@@ -575,7 +577,7 @@ index c6b3a98..b5fa8ae 100644
                  if let Some(thread_view) = self.thread_view(&session_id) {
                      let available_skills = thread
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 6a5ceea..22ff5ad 100644
+index 96a5d52..2cd1ad7 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -9,10 +9,10 @@ use agent_client_protocol::v2::schema as acp_v2;
@@ -593,7 +595,7 @@ index 6a5ceea..22ff5ad 100644
  };
  use agent::{
      SandboxStatusKey, SandboxStatusRefresh, SkillLoadingIssue, SkillLoadingIssueKind,
-@@ -6077,6 +6077,32 @@ impl ThreadView {
+@@ -6102,6 +6102,32 @@ impl ThreadView {
          let input_max_label = crate::humanize_token_count(max_input_tokens);
          let output_max_label = crate::humanize_token_count(max_output_tokens);
  
@@ -626,7 +628,7 @@ index 6a5ceea..22ff5ad 100644
          let build_tooltip = {
              move |_window: &mut Window, cx: &mut App| {
                  let percentage = percentage.clone();
-@@ -6089,8 +6115,11 @@ impl ThreadView {
+@@ -6114,8 +6140,11 @@ impl ThreadView {
                  let project_entry_ids = project_entry_ids.clone();
                  let workspace = workspace.clone();
                  let cost_label = cost_label.clone();
@@ -638,7 +640,7 @@ index 6a5ceea..22ff5ad 100644
                      used,
                      max,
                      input_tokens: input_tokens_label,
-@@ -7203,8 +7232,23 @@ impl Render for ResponseSpeedTooltip {
+@@ -7228,8 +7257,23 @@ impl Render for ResponseSpeedTooltip {
      }
  }
  
@@ -662,7 +664,7 @@ index 6a5ceea..22ff5ad 100644
      used: String,
      max: String,
      input_tokens: String,
-@@ -7232,6 +7276,8 @@ impl Render for TokenUsageTooltip {
+@@ -7257,6 +7301,8 @@ impl Render for TokenUsageTooltip {
          let output_max = self.output_max.clone();
          let show_split = self.show_split;
          let cost_label = self.cost_label.clone();
@@ -671,7 +673,7 @@ index 6a5ceea..22ff5ad 100644
          let global_agents_md_loaded = self.global_agents_md_loaded;
          let project_rules_count = self.project_rules_count;
          let project_entry_ids = self.project_entry_ids.clone();
-@@ -7294,6 +7340,68 @@ impl Render for TokenUsageTooltip {
+@@ -7319,6 +7365,68 @@ impl Render for TokenUsageTooltip {
                              .child(Label::new(cost_label)),
                      )
                  })

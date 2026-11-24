@@ -1,0 +1,334 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 00:16:29 -0300
+Subject: [PATCH] sidebar: archiving a thread with work running asks first
+ instead of refusing
+
+Operator ask of 2026-11-23, with 0166: archiving a thread that has
+something running asks for a confirmation in a modal. Until now the sidebar
+refused it -- upstream ignores the archive of a Running thread, 0029 refused
+one with background tasks and 0072 one with a running subagent, with a toast
+naming why -- and the row menu's Archive Thread did not ask at all.
+
+Sidebar::confirm_archive_running_thread asks "Archive a thread that is still
+working?", naming what runs (ARCHIVE_REFUSED_SUBAGENTS, ARCHIVE_REFUSED_TASKS,
+or ARCHIVE_CONFIRM_TURN for the thread's own turn) and saying that work it
+started in the background may keep running until the agent ends it -- the
+archive stops the turn, through AgentPanel::cancel_thread, and nothing here
+can promise more. "Archive" stops the turn and archives; "Keep It" leaves
+both. Logged as sidebar event=archive_running_thread with the outcome.
+
+Every way to archive goes through it: ArchiveSelectedThread (the refusal is
+gone), the row menu's Archive Thread and the row's archive button, now
+through archive_thread_or_ask, which asks only for a thread whose status is
+Running, WaitingForConfirmation, Unconfirmed, Background or
+WaitingForAnswer. The button is drawn again for a Background row, since the
+action no longer refuses it.
+
+Tests (sidebar_child_background_tests.rs, R4.3 revised): a running child
+asks, "Keep It" keeps the row, "Archive" archives it; a waiting child and
+background tasks ask; an idle thread archives without asking. Red: the three
+asking tests fail without the change. sidebar suite green with 0166.
+---
+
+diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
+index 62b9ca2..696ef70 100644
+--- a/crates/sidebar/src/sidebar.rs
++++ b/crates/sidebar/src/sidebar.rs
+@@ -33,9 +33,9 @@ use feature_flags::{
+ };
+ use gpui::{
+     Action as _, AnyElement, App, ClickEvent, Context, Decorations, DismissEvent, Entity, EntityId,
+-    ExternalPaths, FocusHandle, Focusable, KeyContext, ListState, Modifiers, Pixels, Render,
+-    SharedString, Task, TaskExt, WeakEntity, Window, WindowBackgroundAppearance, WindowHandle,
+-    linear_color_stop, linear_gradient, list, prelude::*, px,
++    ExternalPaths, FocusHandle, Focusable, KeyContext, ListState, Modifiers, Pixels, PromptLevel,
++    Render, SharedString, Task, TaskExt, WeakEntity, Window, WindowBackgroundAppearance,
++    WindowHandle, linear_color_stop, linear_gradient, list, prelude::*, px,
+ };
+ use itertools::Itertools;
+ use language_model::LanguageModelRegistry;
+@@ -6135,6 +6135,90 @@ impl Sidebar {
+         self.archive_thread_in_loaded_workspace(session_id, metadata, thread_entry, window, cx);
+     }
+ 
++    /// Operator ask of 2026-11-23: archiving a thread whose turn, subagents or background tasks
++    /// still run asks first, in a modal, as stopping a turn does. On "Archive" the turn is
++    /// stopped and the thread archived; "Keep It" leaves both alone.
++    fn confirm_archive_running_thread(
++        &mut self,
++        session_id: acp::SessionId,
++        thread_id: ThreadId,
++        workspace: ThreadEntryWorkspace,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        let reason = match &workspace {
++            ThreadEntryWorkspace::Open(workspace) => {
++                archive_refusal_reason(workspace, &session_id, cx)
++            }
++            ThreadEntryWorkspace::Closed { .. } => None,
++        }
++        .unwrap_or(ARCHIVE_CONFIRM_TURN);
++        let detail = format!(
++            "{reason}. Archiving stops its current turn; work it started in the background may \
++             keep running until the agent ends it."
++        );
++        let answer = window.prompt(
++            PromptLevel::Warning,
++            "Archive a thread that is still working?",
++            Some(&detail),
++            &["Archive", "Keep It"],
++            cx,
++        );
++        cx.spawn_in(window, async move |this, cx| {
++            // Index 0 is "Archive"; `Err` is a prompt whose sender was dropped, which keeps it.
++            let confirmed = matches!(answer.await, Ok(0));
++            log::info!(
++                "sidebar event=archive_running_thread session_id={session_id} outcome={}",
++                if confirmed { "archived" } else { "kept" }
++            );
++            if !confirmed {
++                return;
++            }
++            this.update_in(cx, |this, window, cx| {
++                if let ThreadEntryWorkspace::Open(workspace) = &workspace
++                    && let Some(panel) = workspace.read(cx).panel::<AgentPanel>(cx)
++                {
++                    panel.update(cx, |panel, cx| panel.cancel_thread(&thread_id, cx));
++                }
++                this.archive_thread(&session_id, window, cx);
++            })
++            .log_err();
++        })
++        .detach();
++    }
++
++    /// The archive of the row menu and of the row's button: through the confirmation when the
++    /// thread has work running, straight to the archive otherwise.
++    fn archive_thread_or_ask(
++        &mut self,
++        session_id: &acp::SessionId,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        let (_, thread_entry) = self.thread_to_archive(session_id, cx);
++        match thread_entry {
++            Some(thread)
++                if matches!(
++                    thread.status,
++                    AgentThreadStatus::Running
++                        | AgentThreadStatus::WaitingForConfirmation
++                        | AgentThreadStatus::Unconfirmed
++                        | AgentThreadStatus::Background
++                        | AgentThreadStatus::WaitingForAnswer
++                ) =>
++            {
++                self.confirm_archive_running_thread(
++                    session_id.clone(),
++                    thread.metadata.thread_id,
++                    thread.workspace.clone(),
++                    window,
++                    cx,
++                );
++            }
++            _ => self.archive_thread(session_id, window, cx),
++        }
++    }
++
+     fn thread_to_archive(
+         &self,
+         session_id: &acp::SessionId,
+@@ -6525,22 +6609,16 @@ impl Sidebar {
+                     | AgentThreadStatus::Unconfirmed
+                     | AgentThreadStatus::Background
+                     | AgentThreadStatus::WaitingForAnswer => {
+-                        // A refusal for work the row does not show as the root's own says
+-                        // why, or the thread would seem idle and still refuse (R4.3).
+-                        if let (ThreadEntryWorkspace::Open(workspace), Some(session_id)) =
+-                            (&thread.workspace, thread.metadata.session_id.as_ref())
+-                            && let Some(reason) = archive_refusal_reason(workspace, session_id, cx)
+-                        {
+-                            log::info!(
+-                                "sidebar: archive of session {session_id} refused: {reason}"
++                        // Operator ask of 2026-11-23: a thread with work running is archived
++                        // after a confirmation instead of refused; the prompt says what runs.
++                        if let Some(session_id) = thread.metadata.session_id.clone() {
++                            self.confirm_archive_running_thread(
++                                session_id,
++                                thread.metadata.thread_id,
++                                thread.workspace.clone(),
++                                window,
++                                cx,
+                             );
+-                            workspace.update(cx, |workspace, cx| {
+-                                workspace.show_toast(
+-                                    Toast::new(NotificationId::named(reason.into()), reason)
+-                                        .autohide(),
+-                                    cx,
+-                                );
+-                            });
+                         }
+                         return;
+                     }
+@@ -7297,9 +7375,6 @@ impl Sidebar {
+                                 })
+                                 .into_any_element(),
+                         ),
+-                        // No archive button while background tasks run, as a running thread
+-                        // shows none: the archive action refuses it.
+-                        None if thread.status == AgentThreadStatus::Background => None,
+                         None => Some(
+                             IconButton::new("archive-thread", IconName::Archive)
+                                 .hover_background(button_hover_bg)
+@@ -7320,7 +7395,7 @@ impl Sidebar {
+                                     let session_id = session_id_for_delete.clone();
+                                     cx.listener(move |this, _, window, cx| {
+                                         if let Some(ref session_id) = session_id {
+-                                            this.archive_thread(session_id, window, cx);
++                                            this.archive_thread_or_ask(session_id, window, cx);
+                                         }
+                                     })
+                                 })
+@@ -7547,7 +7622,7 @@ impl Sidebar {
+                             move |window, cx| {
+                                 sidebar
+                                     .update(cx, |sidebar, cx| {
+-                                        sidebar.archive_thread(&session_id, window, cx);
++                                        sidebar.archive_thread_or_ask(&session_id, window, cx);
+                                     })
+                                     .ok();
+                             }
+@@ -9177,6 +9252,8 @@ impl Render for Sidebar {
+ /// R4.3's reasons, shown as the toast's text and its id.
+ pub(crate) const ARCHIVE_REFUSED_SUBAGENTS: &str = "This thread has running subagents";
+ pub(crate) const ARCHIVE_REFUSED_TASKS: &str = "This thread has running tasks";
++/// What the archive confirmation names when only the thread's own turn runs.
++pub(crate) const ARCHIVE_CONFIRM_TURN: &str = "This thread is still working";
+ 
+ fn all_thread_infos_for_workspace(
+     workspace: &Entity<Workspace>,
+diff --git a/crates/sidebar/src/sidebar_child_background_tests.rs b/crates/sidebar/src/sidebar_child_background_tests.rs
+index 55c6ca0..1075e2b 100644
+--- a/crates/sidebar/src/sidebar_child_background_tests.rs
++++ b/crates/sidebar/src/sidebar_child_background_tests.rs
+@@ -341,63 +341,69 @@ async fn test_child_background_running_root_stays_running(cx: &mut TestAppContex
+     assert_eq!(rig.status(cx), AgentThreadStatus::Running);
+ }
+ 
+-// ── R4.3 — archive refused while a child runs; allowed once it is idle ──────
++// ── R4.3, revised by the operator on 2026-11-23 — archiving a thread with work running asks
++// first, in a modal, instead of refusing; "Keep It" keeps it, "Archive" archives it ──────────
+ 
+ #[gpui::test]
+-async fn test_child_background_archive_is_refused_while_a_child_runs(cx: &mut TestAppContext) {
++async fn test_child_background_archive_asks_while_a_child_runs(cx: &mut TestAppContext) {
+     let (rig, cx) = rig(true, cx).await;
+     let child = rig.spawn_child("child", cx);
+     report(&child, running(), cx);
++    assert_eq!(rig.status(cx), AgentThreadStatus::Background);
+ 
+-    assert!(
+-        rig.refusals(cx).is_empty(),
+-        "precondition: no refusal shown"
+-    );
+     rig.archive(cx);
+     assert!(
+-        rig.is_listed(cx),
+-        "archiving is refused while a child runs, as 0029 refuses it for background work"
+-    );
+-    assert_eq!(rig.status(cx), AgentThreadStatus::Background);
+-    assert_eq!(
+-        rig.refusals(cx),
+-        vec![SUBAGENTS_REASON.to_string()],
+-        "the refusal says why: running subagents, not running tasks"
++        cx.has_pending_prompt(),
++        "archiving a thread whose child runs asks first"
+     );
++    assert!(rig.refusals(cx).is_empty(), "no refusal toast any more");
++    cx.simulate_prompt_answer("Keep It");
++    cx.run_until_parked();
++    assert!(rig.is_listed(cx), "Keep It leaves the thread where it was");
++
++    rig.archive(cx);
++    assert!(cx.has_pending_prompt());
++    cx.simulate_prompt_answer("Archive");
++    cx.run_until_parked();
++    assert!(!rig.is_listed(cx), "Archive archives it");
+     assert_eq!(crate::ARCHIVE_REFUSED_SUBAGENTS, SUBAGENTS_REASON);
++}
+ 
+-    // Converse: the child ends, and the same action archives the thread, refusing nothing.
++/// Converse: with the child idle, the same action archives without asking.
++#[gpui::test]
++async fn test_child_background_archive_of_an_idle_thread_does_not_ask(cx: &mut TestAppContext) {
++    let (rig, cx) = rig(true, cx).await;
++    let child = rig.spawn_child("child", cx);
++    report(&child, running(), cx);
+     report(&child, idle(), cx);
+     assert_ne!(rig.status(cx), AgentThreadStatus::Background);
+-    let shown_before = rig.refusals(cx).len();
+     rig.archive(cx);
+     assert!(
+-        !rig.is_listed(cx),
+-        "with no child running, archive is allowed again"
+-    );
+-    assert!(
+-        rig.refusals(cx).len() <= shown_before,
+-        "an allowed archive shows no new refusal"
++        !cx.has_pending_prompt(),
++        "nothing runs, so nothing to confirm"
+     );
++    assert!(!rig.is_listed(cx));
+ }
+ 
+-/// A Waiting child refuses archive too.
++/// A Waiting child asks too.
+ #[gpui::test]
+-async fn test_child_background_archive_is_refused_while_a_child_waits(cx: &mut TestAppContext) {
++async fn test_child_background_archive_asks_while_a_child_waits(cx: &mut TestAppContext) {
+     let (rig, cx) = rig(true, cx).await;
+     let child = rig.spawn_child("child", cx);
+     report(&child, waiting(), cx);
+     rig.archive(cx);
+-    assert!(rig.is_listed(cx), "a waiting child refuses archive");
+-    assert_eq!(rig.refusals(cx), vec![SUBAGENTS_REASON.to_string()]);
++    assert!(
++        cx.has_pending_prompt(),
++        "a waiting child asks before archiving"
++    );
++    cx.simulate_prompt_answer("Keep It");
++    cx.run_until_parked();
++    assert!(rig.is_listed(cx));
+ }
+ 
+-/// 0029's refusal for background tasks (no child at all) shows the TASKS reason, through the
+-/// same mechanism, never the subagents one.
++/// 0029's background tasks (no child at all) ask through the same confirmation.
+ #[gpui::test]
+-async fn test_child_background_archive_refused_for_background_tasks_says_tasks(
+-    cx: &mut TestAppContext,
+-) {
++async fn test_child_background_archive_asks_for_background_tasks(cx: &mut TestAppContext) {
+     let (rig, cx) = rig(true, cx).await;
+     let mut meta = serde_json::Map::new();
+     meta.insert(
+@@ -419,12 +425,13 @@ async fn test_child_background_archive_refused_for_background_tasks_says_tasks(
+     );
+ 
+     rig.archive(cx);
+-    assert!(rig.is_listed(cx), "0029 still refuses it");
+-    assert_eq!(
+-        rig.refusals(cx),
+-        vec![TASKS_REASON.to_string()],
+-        "the refusal says why: running tasks"
++    assert!(
++        cx.has_pending_prompt(),
++        "running tasks ask before archiving"
+     );
++    cx.simulate_prompt_answer("Keep It");
++    cx.run_until_parked();
++    assert!(rig.is_listed(cx), "Keep It keeps the thread");
+     assert_eq!(crate::ARCHIVE_REFUSED_TASKS, TASKS_REASON);
+ }
+ 

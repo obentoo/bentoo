@@ -1,0 +1,515 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Mon, 23 Nov 2026 23:41:09 -0300
+Subject: [PATCH] agent_sandbox: Pause freezes the jail and Resume goes on;
+ Stop asks first
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Operator report of 2026-11-23: "pausing" a thread ended it with "Agent
+connection lost" and, on reconnect, "Resource not found: <session>". The
+button pressed was the kill switch of 0141 (§6.53): stop_jail sends ai-jail
+SIGTERM, which ends the agent and everything it started. The session had
+never been prompted, so Claude Code had written no transcript in the jail's
+config dir (/var/tmp/zeo-jail/<project>/claude/projects/<cwd>/ held only
+memory/), and every resume answered "No conversation found" -- Claude Agent
+(Plus) maps that to resourceNotFound when the session is not live in the
+restarted adapter. Nothing was lost that time, but a stop is never a pause.
+
+What the operator asked for is a pause that loses nothing, and the jail can
+already do it: the disk watchdog (§6.54) freezes ai-jail's systemd scope
+through cgroup.freeze and Resume thaws it. Zeo's default limits (8G memory,
+CPUQuota 400%, TasksMax 4096) make ai-jail create that scope, so a frozen
+jail keeps every process, its memory and its open connections, and goes on
+where it stopped.
+
+- A Pause button (DebugPause) sits beside the lock of a running jail, next to
+  Stop. LaunchRegistry::pause_by_operator freezes the scope of the launch's
+  ai-jail process and, only when that worked, marks the launch paused and
+  remembers that the operator paused it (operator_paused, cleared on resume
+  and with the launch). pause_by_operator_with takes the freeze as a
+  parameter, which is what the tests replace.
+- The paused controls read "Paused" for the operator's pause and keep "Paused:
+  disk quota" for the watchdog's, with Resume and Stop as before; the watchdog
+  already counts the quota again from a resume, whoever paused.
+- Stop, beside the lock and in the paused controls, now asks "Stop the agent?"
+  first: everything in the jail ends, and the prompt names Pause as the way to
+  keep it.
+
+A failed freeze (no ai-jail scope, e.g. a host without a systemd user manager)
+is logged as agent_sandbox event=operator_pause outcome=failed and leaves the
+jail running; nothing claims a pause.
+
+Tests: agent_sandbox operator_pause_tests.rs -- a freeze that works marks the
+launch paused by the operator and Resume clears it; a failed freeze marks
+nothing; a launch with no ai-jail process freezes nothing. agent_ui
+agent_jail_status_pause_tests.rs -- Pause is drawn for a running jail; an
+operator pause reads "Paused", not the disk label, and offers no second
+Pause; a click on Stop raises the confirmation and Cancel leaves the launch
+alone (the record's pid is above any pid_max, so no real process can ever be
+signalled). Red: without the UI half the three agent_ui tests fail; the
+registry tests need the new API to build at all. agent_sandbox and agent_ui
+suites: 1959/1959.
+---
+
+diff --git a/crates/agent_sandbox/src/agent_sandbox.rs b/crates/agent_sandbox/src/agent_sandbox.rs
+index 2a8ff37..009afe2 100644
+--- a/crates/agent_sandbox/src/agent_sandbox.rs
++++ b/crates/agent_sandbox/src/agent_sandbox.rs
+@@ -56,6 +56,8 @@ mod limits_tests;
+ #[cfg(test)]
+ mod memory_tests;
+ #[cfg(test)]
++mod operator_pause_tests;
++#[cfg(test)]
+ mod probe_tests;
+ #[cfg(test)]
+ mod roundtrip_tests;
+diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
+index d21a1cf..64b838e 100644
+--- a/crates/agent_sandbox/src/launch.rs
++++ b/crates/agent_sandbox/src/launch.rs
+@@ -1355,6 +1355,9 @@ pub struct LaunchRegistry {
+     launches: Vec<(LaunchId, LaunchRecord)>,
+     /// The cores each live launch reserved (§6.63); removed with the launch.
+     cpu_reservations: HashMap<LaunchId, CpuReservation>,
++    /// The paused launches the operator paused, as opposed to the disk watchdog (operator,
++    /// 2026-11-23); cleared on resume and with the launch.
++    operator_paused: Vec<LaunchId>,
+ }
+ 
+ impl Global for LaunchRegistry {}
+@@ -1424,6 +1427,60 @@ impl LaunchRegistry {
+         {
+             record.paused = paused;
+         }
++        if !paused && cx.has_global::<Self>() {
++            cx.global_mut::<Self>()
++                .operator_paused
++                .retain(|launch| *launch != id);
++        }
++    }
++
++    /// Pauses launch `id` for the operator (ask of 2026-11-23): `freeze` gets the ai-jail
++    /// process, and only a freeze that worked marks the launch paused. Nothing is lost -- the
++    /// processes keep their memory -- and `set_paused(id, false)` after a thaw resumes it.
++    pub fn pause_by_operator_with(
++        id: LaunchId,
++        cx: &mut App,
++        freeze: impl FnOnce(u32) -> std::io::Result<()>,
++    ) -> std::io::Result<()> {
++        let pid = Self::launch(id, cx)
++            .and_then(|record| record.jail_pid)
++            .ok_or_else(|| {
++                std::io::Error::new(
++                    std::io::ErrorKind::NotFound,
++                    "the jail's process is not known",
++                )
++            })?;
++        match freeze(pid) {
++            Ok(()) => {
++                log::info!("agent_sandbox event=operator_pause pid={pid} outcome=frozen");
++                Self::set_paused(id, true, cx);
++                let registry = cx.default_global::<Self>();
++                if !registry.operator_paused.contains(&id) {
++                    registry.operator_paused.push(id);
++                }
++                Ok(())
++            }
++            Err(error) => {
++                log::warn!(
++                    "agent_sandbox event=operator_pause pid={pid} outcome=failed error={error}"
++                );
++                Err(error)
++            }
++        }
++    }
++
++    /// [`Self::pause_by_operator_with`] freezing ai-jail's systemd scope.
++    pub fn pause_by_operator(id: LaunchId, cx: &mut App) -> std::io::Result<()> {
++        Self::pause_by_operator_with(id, cx, |pid| {
++            crate::control::jail_scope_dir(pid)
++                .and_then(|scope| crate::control::set_frozen(&scope, true))
++        })
++    }
++
++    /// Whether launch `id` is paused because the operator paused it.
++    pub fn paused_by_operator(id: LaunchId, cx: &App) -> bool {
++        cx.try_global::<Self>()
++            .is_some_and(|registry| registry.operator_paused.contains(&id))
+     }
+ 
+     /// Records the ai-jail process of launch `id` (Zeo next §6.54).
+@@ -1447,6 +1504,7 @@ impl LaunchRegistry {
+             }
+             registry.launches.retain(|(launch, _)| *launch != id);
+             registry.cpu_reservations.remove(&id);
++            registry.operator_paused.retain(|launch| *launch != id);
+         }
+     }
+ 
+diff --git a/crates/agent_sandbox/src/operator_pause_tests.rs b/crates/agent_sandbox/src/operator_pause_tests.rs
+new file mode 100644
+index 0000000..2f89ef3
+--- /dev/null
++++ b/crates/agent_sandbox/src/operator_pause_tests.rs
+@@ -0,0 +1,99 @@
++// Operator ask of 2026-11-23: Pause freezes the jail and Resume goes on with nothing lost; the
++// kill switch stays the way to end it. Filter: `operator_pause`.
++use std::io;
++use std::path::PathBuf;
++
++use gpui::TestAppContext;
++use project::agent_server_store::AgentId;
++
++use crate::launch::{LaunchRecord, LaunchRegistry, MemoryPort, Reason};
++
++fn running(pid: Option<u32>) -> LaunchRecord {
++    LaunchRecord {
++        agent_id: AgentId::new("Test"),
++        project_root: PathBuf::from("/w/app"),
++        reason: Reason::On,
++        ai_jail_version: Some(semver::Version::parse("3.5.0").expect("version")),
++        ai_jail_path: None,
++        rw_maps: Vec::new(),
++        allow_hosts: Vec::new(),
++        forward_ports: Vec::new(),
++        memory_port: MemoryPort::Off,
++        settings_fingerprint: 0,
++        memory_fingerprint: 0,
++        settings_key: None,
++        jail_pid: pid,
++        paused: false,
++        claude_config_dir: None,
++        ai_jail_missing: false,
++    }
++}
++
++#[gpui::test]
++fn operator_pause_freezes_the_jail_and_marks_who_paused_it(cx: &mut TestAppContext) {
++    let id = cx.update(|cx| LaunchRegistry::register(running(Some(4242)), cx));
++    let mut frozen = Vec::new();
++    let result = cx.update(|cx| {
++        LaunchRegistry::pause_by_operator_with(id, cx, |pid| {
++            frozen.push(pid);
++            Ok(())
++        })
++    });
++    assert!(result.is_ok());
++    assert_eq!(
++        frozen,
++        vec![4242],
++        "the jail's own process is the one frozen"
++    );
++    let record = cx
++        .update(|cx| LaunchRegistry::launch(id, cx))
++        .expect("registered");
++    assert!(record.paused, "a paused jail shows as paused");
++    assert!(
++        cx.update(|cx| LaunchRegistry::paused_by_operator(id, cx)),
++        "and as paused by the operator, not by the disk quota"
++    );
++
++    cx.update(|cx| LaunchRegistry::set_paused(id, false, cx));
++    assert!(
++        !cx.update(|cx| LaunchRegistry::paused_by_operator(id, cx)),
++        "Resume clears who paused it"
++    );
++}
++
++/// Hostile: a freeze that fails leaves the jail running and says so; nothing claims a pause.
++#[gpui::test]
++fn operator_pause_that_cannot_freeze_does_not_mark_a_pause(cx: &mut TestAppContext) {
++    let id = cx.update(|cx| LaunchRegistry::register(running(Some(4242)), cx));
++    let result = cx.update(|cx| {
++        LaunchRegistry::pause_by_operator_with(id, cx, |_| {
++            Err(io::Error::new(io::ErrorKind::NotFound, "no ai-jail scope"))
++        })
++    });
++    assert!(result.is_err());
++    let record = cx
++        .update(|cx| LaunchRegistry::launch(id, cx))
++        .expect("registered");
++    assert!(!record.paused);
++    assert!(!cx.update(|cx| LaunchRegistry::paused_by_operator(id, cx)));
++}
++
++/// Hostile: a launch whose ai-jail process is not known yet has nothing to freeze.
++#[gpui::test]
++fn operator_pause_without_a_jail_process_freezes_nothing(cx: &mut TestAppContext) {
++    let id = cx.update(|cx| LaunchRegistry::register(running(None), cx));
++    let mut called = false;
++    let result = cx.update(|cx| {
++        LaunchRegistry::pause_by_operator_with(id, cx, |_| {
++            called = true;
++            Ok(())
++        })
++    });
++    assert!(result.is_err());
++    assert!(!called);
++    assert!(
++        !cx.update(|cx| LaunchRegistry::launch(id, cx))
++            .unwrap()
++            .paused
++    );
++}
+diff --git a/crates/agent_ui/src/agent_jail_status.rs b/crates/agent_ui/src/agent_jail_status.rs
+index 3e56895..77d506b 100644
+--- a/crates/agent_ui/src/agent_jail_status.rs
++++ b/crates/agent_ui/src/agent_jail_status.rs
+@@ -213,6 +213,7 @@ fn list_line(label: &str, items: impl Iterator<Item = String>) -> SharedString {
+ pub fn render_jail_status_button(
+     summary: JailStatusSummary,
+     on_restart: Option<Box<dyn Fn(&mut Window, &mut App)>>,
++    on_pause: Option<Box<dyn Fn(&mut Window, &mut App)>>,
+     on_stop: Option<Box<dyn Fn(&mut Window, &mut App)>>,
+ ) -> AnyElement {
+     let JailStatusSummary {
+@@ -256,6 +257,19 @@ pub fn render_jail_status_button(
+                     );
+                 }),
+         )
++        // Operator ask of 2026-11-23: Pause freezes the jail -- every process keeps its memory --
++        // so Resume goes on with nothing lost. The kill switch beside it ends the jail.
++        .when_some(on_pause, |this, on_pause| {
++            this.child(
++                IconButton::new("agent-jail-pause", IconName::DebugPause)
++                    .icon_size(IconSize::Small)
++                    .icon_color(Color::Muted)
++                    .tooltip(Tooltip::text(
++                        "Pause Agent: freeze the jail; Resume goes on with nothing lost",
++                    ))
++                    .on_click(move |_, window, cx| on_pause(window, cx)),
++            )
++        })
+         // Zeo next §6.53/§6.54: the kill switch, beside the lock of a running jail.
+         .when_some(on_stop, |this, on_stop| {
+             this.child(
+@@ -276,24 +290,41 @@ pub fn render_jail_status_button(
+ /// what the operator can do about it.
+ pub const PAUSED_LABEL: &str = "Paused: disk quota";
+ 
++/// A jail the operator paused with Pause (ask of 2026-11-23).
++pub const OPERATOR_PAUSED_LABEL: &str = "Paused";
++
+ /// The paused state beside the lock: the label, Resume and Stop.
+ pub fn render_jail_paused(
++    by_operator: bool,
+     on_resume: Box<dyn Fn(&mut Window, &mut App)>,
+     on_stop: Box<dyn Fn(&mut Window, &mut App)>,
+ ) -> AnyElement {
++    let (label, selector, resume_tooltip) = if by_operator {
++        (
++            OPERATOR_PAUSED_LABEL,
++            "agent-jail-paused-operator",
++            "Let the agent go on where it stopped",
++        )
++    } else {
++        (
++            PAUSED_LABEL,
++            "agent-jail-paused-disk",
++            "Let the agent go on; it may grow by the quota again from here",
++        )
++    };
+     h_flex()
+         .gap_1()
+         .child(
+-            Label::new(PAUSED_LABEL)
+-                .size(LabelSize::Small)
+-                .color(Color::Warning),
++            div().debug_selector(move || selector.into()).child(
++                Label::new(label)
++                    .size(LabelSize::Small)
++                    .color(Color::Warning),
++            ),
+         )
+         .child(
+             Button::new("agent-jail-resume", "Resume")
+                 .label_size(LabelSize::Small)
+-                .tooltip(Tooltip::text(
+-                    "Let the agent go on; it may grow by the quota again from here",
+-                ))
++                .tooltip(Tooltip::text(resume_tooltip))
+                 .on_click(move |_, window, cx| on_resume(window, cx)),
+         )
+         .child(
+diff --git a/crates/agent_ui/src/agent_jail_status_pause_tests.rs b/crates/agent_ui/src/agent_jail_status_pause_tests.rs
+new file mode 100644
+index 0000000..245dd79
+--- /dev/null
++++ b/crates/agent_ui/src/agent_jail_status_pause_tests.rs
+@@ -0,0 +1,88 @@
++// Operator ask of 2026-11-23: beside the lock of a running jail, Pause freezes it and Resume goes
++// on with nothing lost; Stop still ends it, now after a confirmation. Filter: `pause::`.
++use gpui::UpdateGlobal as _;
++use settings::SettingsStore;
++
++use super::*;
++
++/// The sandbox settings of now (the same helper as `icon::sandbox_settings`, which is private).
++fn sandbox_settings(value: serde_json::Value, cx: &mut TestAppContext) {
++    cx.update(|cx| {
++        SettingsStore::update_global(cx, |store, cx| {
++            store
++                .set_user_settings(&value.to_string(), cx)
++                .result()
++                .expect("settings");
++        })
++    });
++}
++
++/// Above any pid_max the kernel allows (2^22), so no real process can ever be signalled here,
++/// even by a Stop that skipped its confirmation.
++const NO_SUCH_PID: u32 = 4_194_399;
++
++fn running_jail() -> LaunchRecord {
++    let mut record = record("/w/app", Reason::On, Some("3.5.0"));
++    record.jail_pid = Some(NO_SUCH_PID);
++    record
++}
++
++async fn jailed_window(cx: &mut TestAppContext) -> (Win, agent_sandbox::launch::LaunchId) {
++    let fs = init(cx);
++    sandbox_settings(json!({ "agent_sandbox": { "enabled": true } }), cx);
++    let id = cx.update(|cx| LaunchRegistry::register(running_jail(), cx));
++    let win = window_with_stub_thread(&fs, &["/w/app"], cx).await;
++    win.cx.run_until_parked();
++    (win, id)
++}
++
++#[gpui::test]
++async fn a_running_jail_offers_pause_beside_stop(cx: &mut TestAppContext) {
++    let (mut win, _) = jailed_window(cx).await;
++    assert!(
++        win.cx.debug_bounds("ICON-DebugPause").is_some(),
++        "Pause is drawn for a jail whose process runs"
++    );
++    assert!(win.cx.debug_bounds("ICON-Stop").is_some(), "Stop stays");
++}
++
++#[gpui::test]
++async fn an_operator_pause_reads_paused_and_offers_resume(cx: &mut TestAppContext) {
++    let (mut win, id) = jailed_window(cx).await;
++    win.cx
++        .update(|_, cx| LaunchRegistry::pause_by_operator_with(id, cx, |_| Ok(())))
++        .expect("the stub freeze succeeds");
++    win.cx.update(|window, _| window.refresh());
++    win.cx.run_until_parked();
++    assert!(
++        win.cx.debug_bounds("agent-jail-paused-operator").is_some(),
++        "the operator's pause says Paused, not the disk quota's label"
++    );
++    assert!(win.cx.debug_bounds("agent-jail-paused-disk").is_none());
++    assert!(
++        win.cx.debug_bounds("ICON-DebugPause").is_none(),
++        "a paused jail offers Resume, not Pause again"
++    );
++}
++
++/// Hostile: Stop ends everything in the jail, so a click only asks; Cancel leaves it running.
++#[gpui::test]
++async fn stop_asks_before_it_ends_the_jail(cx: &mut TestAppContext) {
++    let (mut win, id) = jailed_window(cx).await;
++    let stop = win.cx.debug_bounds("ICON-Stop").expect("Stop is drawn");
++    win.cx
++        .simulate_click(stop.center(), gpui::Modifiers::default());
++    win.cx.run_until_parked();
++    assert!(
++        win.cx.has_pending_prompt(),
++        "Stop asks for a confirmation first"
++    );
++    win.cx.simulate_prompt_answer("Cancel");
++    win.cx.run_until_parked();
++    assert!(
++        win.cx
++            .update(|_, cx| LaunchRegistry::launch(id, cx))
++            .is_some(),
++        "Cancel leaves the launch as it was"
++    );
++}
+diff --git a/crates/agent_ui/src/agent_jail_status_tests.rs b/crates/agent_ui/src/agent_jail_status_tests.rs
+index 146ecc8..8050593 100644
+--- a/crates/agent_ui/src/agent_jail_status_tests.rs
++++ b/crates/agent_ui/src/agent_jail_status_tests.rs
+@@ -619,3 +619,6 @@ fn agent_jail_status_a_missing_ai_jail_disables_the_lock() {
+     assert!(!installed.unavailable, "with ai-jail the lock stays usable");
+     assert!(!has(&installed.lines, "needs ai-jail"));
+ }
++
++#[path = "agent_jail_status_pause_tests.rs"]
++mod pause;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 1529afe..95134a5 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -7115,19 +7115,50 @@ impl ThreadView {
+             }
+             agent_sandbox::control::stop_jail(pid).log_err();
+         };
++        // Operator ask of 2026-11-23: Stop ends everything in the jail, so it asks first; Pause
++        // is the way to stop for a while with nothing lost.
++        let confirm_stop = move |pid: u32, paused: bool, window: &mut Window, cx: &mut App| {
++            let answer = window.prompt(
++                PromptLevel::Warning,
++                "Stop the agent?",
++                Some(
++                    "Everything running in the jail ends now. Pause keeps it instead, with \
++                     nothing lost.",
++                ),
++                &["Stop", "Cancel"],
++                cx,
++            );
++            cx.spawn(async move |_| {
++                if answer.await == Ok(0) {
++                    stop(pid, paused);
++                }
++            })
++            .detach();
++        };
+         let paused = record.paused;
+         let on_stop = record
+             .jail_pid
+             .map(|pid| -> Box<dyn Fn(&mut Window, &mut App)> {
+-                Box::new(move |_window, _cx| stop(pid, paused))
++                Box::new(move |window, cx| confirm_stop(pid, paused, window, cx))
+             });
++        let launch_id = agent_sandbox::LaunchRegistry::get_with_id(&self.agent_id, &root, cx)
++            .map(|(launch_id, _)| launch_id);
++        let on_pause = match (record.paused, record.jail_pid, launch_id) {
++            (false, Some(_), Some(launch_id)) => {
++                Some(Box::new(move |_window: &mut Window, cx: &mut App| {
++                    agent_sandbox::LaunchRegistry::pause_by_operator(launch_id, cx).log_err();
++                }) as Box<dyn Fn(&mut Window, &mut App)>)
++            }
++            _ => None,
++        };
+         let button = crate::agent_jail_status::render_jail_status_button(
+             summary,
+             Some(self.restart_agent_for_jail()),
++            on_pause,
+             on_stop,
+         );
+-        // §6.54: the disk watchdog paused the jail; Resume thaws it and lets the watch count the
+-        // quota again from now.
++        // §6.54: the disk watchdog, or the operator's Pause, paused the jail; Resume thaws it and
++        // lets the watch count the quota again from now.
+         let paused_controls = match (record.paused, record.jail_pid) {
+             (true, Some(pid)) => agent_sandbox::LaunchRegistry::get_with_id(
+                 &self.agent_id,
+@@ -7136,13 +7167,14 @@ impl ThreadView {
+             )
+             .map(|(launch_id, _)| {
+                 crate::agent_jail_status::render_jail_paused(
++                    agent_sandbox::LaunchRegistry::paused_by_operator(launch_id, cx),
+                     Box::new(move |_window, cx| {
+                         agent_sandbox::control::jail_scope_dir(pid)
+                             .and_then(|scope| agent_sandbox::control::set_frozen(&scope, false))
+                             .log_err();
+                         agent_sandbox::LaunchRegistry::set_paused(launch_id, false, cx);
+                     }),
+-                    Box::new(move |_window, _cx| stop(pid, true)),
++                    Box::new(move |window, cx| confirm_stop(pid, true, window, cx)),
+                 )
+             }),
+             _ => None,

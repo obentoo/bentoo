@@ -46,7 +46,7 @@ sub-thread inherited the first turn's two messages).
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index 556641d..daa313d 100644
+index 75fd6e7..9b7bcc2 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
 @@ -437,6 +437,19 @@ pub struct AssistantMessage {
@@ -70,10 +70,10 @@ index 556641d..daa313d 100644
          format!(
              "## Assistant\n\n{}\n\n",
 diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
-index 7e8242c..e7b9c7d 100644
+index 50bb4e2..1cf6190 100644
 --- a/crates/acp_thread/src/connection.rs
 +++ b/crates/acp_thread/src/connection.rs
-@@ -182,6 +182,29 @@ pub trait AgentConnection {
+@@ -194,6 +194,29 @@ pub trait AgentConnection {
          Task::ready(Err(anyhow::Error::msg("Forking sessions is not supported")))
      }
  
@@ -104,7 +104,7 @@ index 7e8242c..e7b9c7d 100644
      /// version 2). Unsupported unless the connection overrides it.
      fn fetch_task_output(
 diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
-index 510d914..48d2b73 100644
+index 762c189..fcb3ebf 100644
 --- a/crates/agent_servers/src/acp/v1.rs
 +++ b/crates/agent_servers/src/acp/v1.rs
 @@ -66,6 +66,10 @@ const CLAUDE_USAGE_CAPABILITY: &str = "_claude/usage";
@@ -118,7 +118,7 @@ index 510d914..48d2b73 100644
  /// The most `_claude/tasks/output` serves; the adapter clamps to the same value.
  const CLAUDE_TASKS_OUTPUT_MAX_BYTES: u64 = 1_048_576;
  async fn close_session_and_drain(
-@@ -654,6 +658,128 @@ fn client_capabilities_for_agent(agent_id: &AgentId, acp_beta: bool) -> acp::Cli
+@@ -666,6 +670,128 @@ fn client_capabilities_for_agent(agent_id: &AgentId) -> acp::ClientCapabilities
  }
  
  impl AcpConnection {
@@ -247,7 +247,7 @@ index 510d914..48d2b73 100644
      /// Binds supported v2 client handlers to the existing foreground owners.
      /// This does not change the protocol used by the connection's transport.
      pub fn with_v2_client_ingress<Handler: HandleDispatchFrom<Agent>>(
-@@ -1888,10 +2014,17 @@ impl SessionDirectories {
+@@ -1929,10 +2055,17 @@ impl SessionDirectories {
          self,
          session_id: acp_v2::SessionId,
          mcp_servers: Vec<acp::McpServer>,
@@ -267,7 +267,7 @@ index 510d914..48d2b73 100644
      }
  }
  
-@@ -2086,9 +2219,6 @@ impl AgentConnection for AcpConnection {
+@@ -2127,9 +2260,6 @@ impl AgentConnection for AcpConnection {
          self.agent_supports_session_fork()
      }
  
@@ -277,7 +277,7 @@ index 510d914..48d2b73 100644
      fn fork_session(
          self: Rc<Self>,
          session_id: &acp_v2::SessionId,
-@@ -2096,100 +2226,29 @@ impl AgentConnection for AcpConnection {
+@@ -2137,100 +2267,29 @@ impl AgentConnection for AcpConnection {
          work_dirs: PathList,
          cx: &mut App,
      ) -> Task<Result<Entity<AcpThread>>> {
@@ -450,10 +450,10 @@ index 83ae6f6..b4ff2d9 100644
  // PARENT, its directories and the project's MCP servers; the thread returned and registered is
  // the ANSWERED id's, a new thread beside the parent's, not the parent's.
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 4ed4cb4..2d4de66 100644
+index 277dd47..8589b2c 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
-@@ -8857,7 +8857,7 @@ impl ThreadView {
+@@ -8883,7 +8883,7 @@ impl ThreadView {
              v_flex()
                  .w_full()
                  .child(primary)
@@ -462,7 +462,7 @@ index 4ed4cb4..2d4de66 100644
                  .into_any_element()
          } else {
              primary
-@@ -8877,7 +8877,7 @@ impl ThreadView {
+@@ -8903,7 +8903,7 @@ impl ThreadView {
                  .child(primary)
                  .children(unsent_cards)
                  .when(!is_assistant, |this| {
@@ -471,7 +471,7 @@ index 4ed4cb4..2d4de66 100644
                  })
                  .when_some(comments_editor, |this, editor| {
                      this.child(Self::render_feedback_feedback_editor(editor, cx))
-@@ -9136,6 +9136,7 @@ impl ThreadView {
+@@ -9162,6 +9162,7 @@ impl ThreadView {
      fn render_thread_controls(
          &self,
          is_thread_bottom: bool,
@@ -479,7 +479,7 @@ index 4ed4cb4..2d4de66 100644
          cx: &Context<Self>,
      ) -> impl IntoElement {
          if is_thread_bottom && self.is_last_turn_in_progress(cx) {
-@@ -9267,7 +9268,11 @@ impl ThreadView {
+@@ -9293,7 +9294,11 @@ impl ThreadView {
          // unavailable, or simply not the last turn. Rendering
          // the row regardless leaves an invisible band of padding exactly where
          // the buttons used to be.
@@ -491,7 +491,7 @@ index 4ed4cb4..2d4de66 100644
              && last_turn_clock.is_none()
              && last_turn_tokens_label.is_none()
              && session_clock.is_none()
-@@ -9293,33 +9298,34 @@ impl ThreadView {
+@@ -9319,33 +9324,34 @@ impl ThreadView {
              .justify_between()
              .opacity(0.4)
              .hover(|s| s.opacity(1.))

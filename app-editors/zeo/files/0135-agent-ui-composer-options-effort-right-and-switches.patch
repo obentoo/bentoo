@@ -67,7 +67,7 @@ that stay submenus.
 ---
 
 diff --git a/crates/agent_ui/src/config_options.rs b/crates/agent_ui/src/config_options.rs
-index 219f1cb..465dfa4 100644
+index 16b2a03..544f93d 100644
 --- a/crates/agent_ui/src/config_options.rs
 +++ b/crates/agent_ui/src/config_options.rs
 @@ -9,15 +9,15 @@ use fs::Fs;
@@ -82,14 +82,14 @@ index 219f1cb..465dfa4 100644
  use picker::{Picker, PickerDelegate};
  use settings::{AgentConfigOptionValue, SettingsStore};
  use ui::{
--    ContextMenu, ContextMenuEntry, ElevationIndex, IconButton, KeyBinding, ListItem,
+-    ContextMenu, ContextMenuEntry, ElevationIndex, IconButton, KeyBinding, LabelLike, ListItem,
 -    ListItemSpacing, PopoverMenu, PopoverMenuHandle, Tooltip, prelude::*,
-+    ContextMenu, ElevationIndex, IconButton, KeyBinding, ListItem, ListItemSpacing, PopoverMenu,
-+    PopoverMenuHandle, Tooltip, prelude::*,
++    ContextMenu, ElevationIndex, IconButton, KeyBinding, LabelLike, ListItem, ListItemSpacing,
++    PopoverMenu, PopoverMenuHandle, Tooltip, prelude::*,
  };
  use unicode_segmentation::UnicodeSegmentation;
  use util::ResultExt as _;
-@@ -36,6 +36,8 @@ use crate::{
+@@ -38,6 +38,8 @@ use crate::{
  
  const PICKER_THRESHOLD: usize = 5;
  
@@ -98,7 +98,7 @@ index 219f1cb..465dfa4 100644
  fn toolbar_category(
      option: &acp::SessionConfigOption,
  ) -> Option<&acp::SessionConfigOptionCategory> {
-@@ -100,7 +102,9 @@ fn split_config_options(
+@@ -102,7 +104,9 @@ fn split_config_options(
          return (options, Vec::new());
      }
  
@@ -109,7 +109,7 @@ index 219f1cb..465dfa4 100644
          .iter()
          .filter_map(|category| {
              let index = options
-@@ -117,6 +121,8 @@ pub struct ConfigOptionsView {
+@@ -119,6 +123,8 @@ pub struct ConfigOptionsView {
      selectors: Vec<Entity<ConfigOptionSelector>>,
      has_overflow: bool,
      overflow_menu: PopoverMenuHandle<ContextMenu>,
@@ -118,7 +118,7 @@ index 219f1cb..465dfa4 100644
      agent_server: Rc<dyn AgentServer>,
      fs: Arc<dyn Fs>,
      _refresh_task: Task<()>,
-@@ -150,6 +156,7 @@ impl ConfigOptionsView {
+@@ -152,6 +158,7 @@ impl ConfigOptionsView {
              selectors,
              has_overflow,
              overflow_menu: PopoverMenuHandle::default(),
@@ -126,7 +126,7 @@ index 219f1cb..465dfa4 100644
              agent_server,
              fs,
              _refresh_task: refresh_task,
-@@ -375,7 +382,14 @@ impl ConfigOptionsView {
+@@ -377,7 +384,14 @@ impl ConfigOptionsView {
      fn rebuild_selectors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
          // Config option updates can mutate option values for existing IDs (for example,
          // reasoning levels after a model switch). Rebuild to refresh cached picker entries.
@@ -142,7 +142,7 @@ index 219f1cb..465dfa4 100644
          for selector in &self.selectors {
              if let Some(handle) = &selector.read(cx).picker_handle {
                  handle.clone().hide(cx);
-@@ -388,6 +402,12 @@ impl ConfigOptionsView {
+@@ -390,6 +404,12 @@ impl ConfigOptionsView {
              window,
              cx,
          );
@@ -155,7 +155,7 @@ index 219f1cb..465dfa4 100644
          cx.notify();
      }
  
-@@ -417,7 +437,7 @@ impl ConfigOptionsView {
+@@ -419,7 +439,7 @@ impl ConfigOptionsView {
      }
  
      fn build_overflow_menu(
@@ -164,10 +164,11 @@ index 219f1cb..465dfa4 100644
          window: &mut Window,
          cx: &mut App,
      ) -> Option<Entity<ContextMenu>> {
-@@ -427,33 +447,29 @@ impl ConfigOptionsView {
+@@ -429,34 +449,29 @@ impl ConfigOptionsView {
              return None;
          }
  
+-        let format = self.config_options.description_format();
 -        Some(ContextMenu::build(window, cx, |mut menu, _, cx| {
 +        let view_config_options = self.config_options.clone();
 +        let view_agent_server = self.agent_server.clone();
@@ -208,7 +209,7 @@ index 219f1cb..465dfa4 100644
 -                            })
 -                            .when_some(option.description, |entry, description| {
 -                                entry.documentation_aside(documentation_aside_side(cx), move |_| {
--                                    Label::new(description.clone()).into_any_element()
+-                                    crate::ui::description(&description, format)
 -                                })
 -                            });
 -                        menu = menu.item(entry);
@@ -216,7 +217,7 @@ index 219f1cb..465dfa4 100644
                      acp::SessionConfigKind::Select(select) => {
                          let label = find_option_name(&select.options, &select.current_value)
                              .map_or_else(
-@@ -494,7 +510,9 @@ impl ConfigOptionsView {
+@@ -497,7 +512,9 @@ impl ConfigOptionsView {
                  }
              }
              menu
@@ -227,7 +228,7 @@ index 219f1cb..465dfa4 100644
      }
  
      fn render_overflow_menu(&self, cx: &Context<Self>) -> PopoverMenu<ContextMenu> {
-@@ -524,15 +542,17 @@ impl Render for ConfigOptionsView {
+@@ -527,15 +544,17 @@ impl Render for ConfigOptionsView {
              .min_w_0()
              .flex_wrap()
              .gap_1()
@@ -248,7 +249,7 @@ index 219f1cb..465dfa4 100644
      }
  }
  
-@@ -554,13 +574,12 @@ impl ConfigOptionSelector {
+@@ -557,13 +576,12 @@ impl ConfigOptionSelector {
          cx: &mut Context<Self>,
      ) -> Self {
          let read_only = config_options.is_read_only();
@@ -265,16 +266,16 @@ index 219f1cb..465dfa4 100644
              );
          let (picker_handle, picker) =
              if !read_only && matches!(&option.kind, acp::SessionConfigKind::Select(_)) {
-@@ -665,6 +684,8 @@ impl Render for ConfigOptionSelector {
+@@ -672,6 +690,8 @@ impl Render for ConfigOptionSelector {
                  let show_manual_badge = shows_manual_mode_badge_for_option(&option);
  
                  let option_category = option.category.clone();
 +                let is_effort =
 +                    option_category == Some(acp::SessionConfigOptionCategory::ThoughtLevel);
                  let option_name = option.name;
-                 let option_description: Option<SharedString> = option.description.map(Into::into);
+                 let option_description = option.description;
  
-@@ -730,12 +751,14 @@ impl Render for ConfigOptionSelector {
+@@ -738,12 +758,14 @@ impl Render for ConfigOptionSelector {
                      content.into_any()
                  });
  
@@ -291,7 +292,7 @@ index 219f1cb..465dfa4 100644
                          cx,
                      )
                      .with_handle(picker_handle)
-@@ -1611,7 +1634,8 @@ mod tests {
+@@ -1623,7 +1645,8 @@ mod tests {
                  .map(|option| option.config_id.to_string())
                  .collect::<Vec<_>>()
          };
@@ -301,7 +302,7 @@ index 219f1cb..465dfa4 100644
          assert_eq!(
              ids(overflow),
              ["extra-mode", "another-model", "speed-select", "tools"]
-@@ -1724,13 +1748,12 @@ mod tests {
+@@ -1736,13 +1759,12 @@ mod tests {
              .expect("Agent Options button");
          cx.simulate_click(overflow.center(), Modifiers::default());
          draw_menu_frames(cx);
@@ -318,7 +319,7 @@ index 219f1cb..465dfa4 100644
          draw_menu_frames(cx);
          assert!(cx.update(|window, cx| view.read(cx).overflow_menu.is_focused(window, cx)));
          cx.dispatch_action(menu::SelectLast);
-@@ -1758,7 +1781,8 @@ mod tests {
+@@ -1775,7 +1797,8 @@ mod tests {
          // upstream saved both as defaults here.
          assert!(agent_server.saved_defaults.lock().is_empty());
  
@@ -328,7 +329,7 @@ index 219f1cb..465dfa4 100644
          draw_menu_frames(cx);
          assert!(cx.update(|window, cx| view.read(cx).overflow_menu.is_focused(window, cx)));
          cx.dispatch_action(menu::SelectLast);
-@@ -1779,6 +1803,120 @@ mod tests {
+@@ -1796,6 +1819,120 @@ mod tests {
          );
      }
  
@@ -449,7 +450,7 @@ index 219f1cb..465dfa4 100644
      fn option_names(options: Vec<ConfigOptionValue>) -> Vec<String> {
          options.into_iter().map(|option| option.name).collect()
      }
-@@ -2399,6 +2537,7 @@ mod tests {
+@@ -2416,6 +2553,7 @@ mod tests {
              selectors: Vec::new(),
              has_overflow: false,
              overflow_menu: PopoverMenuHandle::default(),
@@ -459,10 +460,10 @@ index 219f1cb..465dfa4 100644
              _refresh_task: Task::ready(()),
 diff --git a/crates/agent_ui/src/config_options/switch_row.rs b/crates/agent_ui/src/config_options/switch_row.rs
 new file mode 100644
-index 0000000..05a86a5
+index 0000000..bebb2ff
 --- /dev/null
 +++ b/crates/agent_ui/src/config_options/switch_row.rs
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,222 @@
 +//! Zeo: the Agent Options menu draws an on/off option as a row with a switch.
 +//!
 +//! An agent offers an on/off choice in two shapes: a boolean option, or a select
@@ -479,7 +480,7 @@ index 0000000..05a86a5
 +use acp_thread::AgentSessionConfigOptions;
 +use agent_client_protocol::v2::schema as acp;
 +use gpui::{App, Window};
-+use ui::{ContextMenuItem, Switch, Tooltip, prelude::*};
++use ui::{ContextMenuItem, Switch, prelude::*};
 +
 +use super::set_config_option_for_thread;
 +
@@ -570,6 +571,8 @@ index 0000000..05a86a5
 +) -> ContextMenuItem {
 +    let name = SharedString::from(option.name.clone());
 +    let description = option.description.clone().map(SharedString::from);
++    // Markdown when the agent says so, as upstream's own description tooltips (#67306).
++    let format = config_options.description_format();
 +    let config_id = option.config_id.clone();
 +    let element_id = SharedString::from(format!("config-switch-{}", option.config_id));
 +    ContextMenuItem::CustomEntry {
@@ -589,7 +592,7 @@ index 0000000..05a86a5
 +                                .when(!state.can_toggle, |label| label.color(Color::Muted)),
 +                        )
 +                        .when_some(description.clone(), |this, description| {
-+                            this.tooltip(Tooltip::text(description))
++                            this.tooltip(crate::ui::description_tooltip(description, format))
 +                        }),
 +                )
 +                // No click handler of its own: a click on the switch reaches the row,

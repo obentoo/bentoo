@@ -1,0 +1,657 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 06:12:36 -0300
+Subject: [PATCH] agent_sandbox: Hide the System Config -- /etc as an allowlist
+ under the host view
+
+Bug 13 of the operator's list of 2026-11-23: the jail could still see the
+system above its project. Asked what should not be visible, the operator
+named the system itself, /usr and /etc. The host view already hides the
+disks, kernel and identity (0158-0161); /etc was still the host's whole
+configuration, 227 entries on this machine.
+
+ai-jail 3.5.0-r5 brings --minimal-etc (fork branch feat/minimal-etc): under
+--mask-host, /etc is a tmpfs holding only an allowlist of the host's entries
+-- 34 here: accounts (passwd, group), name service and DNS, certificates
+(ssl, ca-certificates), time zone, the library loader, the shell's startup,
+Gentoo's python-exec, eselect and java-config-2, Claude Code's managed
+settings -- remounted read-only. Measured there with real bwrap: git,
+Node/Python/curl over HTTPS, cargo, rustc, java, claude --version, bash -lc,
+date and id all work with it, as without it.
+
+/usr and /opt stay as they are: the toolchains live there (node, git,
+cargo; here /opt/bin/claude, rust-bin and the JDKs), and the host view
+already hides /usr/src and the kernel's modules.
+
+Zeo passes it like Hide the Kernel (0161):
+- agent_sandbox.minimal_etc, default false in default.json and in code --
+  off until it has run in daily use, since a tool that reads another /etc
+  file would fail -- and per project, set by the Agent Sandbox page's new
+  Hide the System Config switch (disabled, with the same note, while Hide
+  the Host is off).
+- The probe reads --minimal-etc from ai-jail --help; host_args_for adds it
+  after --mask-host, only under mask_host.
+- On an ai-jail without the option the start is refused,
+  minimal_etc_unsupported, naming the option and the -r5 it needs, rather
+  than starting a jail that shows all of /etc while the switch says hidden.
+- The setting is part of the launch fingerprint, so changing it asks for a
+  restart. The ebuild's ai-jail RDEPEND moves to >=3.5.0-r5.
+
+Tests: agent_sandbox minimal_etc_tests.rs -- the option rides --mask-host
+only; it is passed when the project asks; off by default; refused, naming
+--minimal-etc, on an ai-jail without it; not passed without the host view.
+settings_ui -- the switch follows the project, then the default, and is
+disabled while the host is shown. Red: with the option's push and the
+refusal disabled, the three behaviour tests fail (the two converse ones pass
+either way). agent_sandbox, settings_ui and settings_content: 401/401.
+---
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index 47215d2..7564653 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -3208,6 +3208,10 @@
+     // Also answer uname(2) and sysinfo(2) from ai-jail under the host view, so the kernel
+     // release, memory and uptime they report match it (ai-jail --syscall-view).
+     "syscall_view": false,
++    // Also make /etc a list of the host's entries the tools need (passwd, DNS, certificates,
++    // time zone, the loader, the shell's startup) instead of all of it, under the host view
++    // (ai-jail --minimal-etc). Off until it has run in daily use.
++    "minimal_etc": false,
+     // Whether jailed agents load the account's claude.ai connectors, which reach their
+     // vendors through anthropic.com, past `allow_hosts`.
+     "claude_ai_connectors": false,
+diff --git a/crates/agent_sandbox/src/agent_sandbox.rs b/crates/agent_sandbox/src/agent_sandbox.rs
+index 009afe2..b72d007 100644
+--- a/crates/agent_sandbox/src/agent_sandbox.rs
++++ b/crates/agent_sandbox/src/agent_sandbox.rs
+@@ -56,6 +56,8 @@ mod limits_tests;
+ #[cfg(test)]
+ mod memory_tests;
+ #[cfg(test)]
++mod minimal_etc_tests;
++#[cfg(test)]
+ mod operator_pause_tests;
+ #[cfg(test)]
+ mod probe_tests;
+diff --git a/crates/agent_sandbox/src/capabilities.rs b/crates/agent_sandbox/src/capabilities.rs
+index be16694..c590935 100644
+--- a/crates/agent_sandbox/src/capabilities.rs
++++ b/crates/agent_sandbox/src/capabilities.rs
+@@ -338,6 +338,13 @@ pub fn set_project_syscall_view(root: &Path, on: bool, cx: &mut App) -> Task<boo
+     write_entry(root, "syscall_view", write, cx)
+ }
+ 
++/// Sets the project's `minimal_etc` (ai-jail's --minimal-etc; the page's Hide the System
++/// Config); a restart applies it.
++pub fn set_project_minimal_etc(root: &Path, on: bool, cx: &mut App) -> Task<bool> {
++    let write = move |entry: &mut AgentSandboxProjectSettingsContent| entry.minimal_etc = Some(on);
++    write_entry(root, "minimal_etc", write, cx)
++}
++
+ /// Writes the project's `capabilities` through `update`, which also sees the default MCP server
+ /// list in the file (empty when the file has none, as `default.json` says). A `capabilities`
+ /// left with nothing set is removed, so a reset leaves the entry as it was.
+diff --git a/crates/agent_sandbox/src/host_view.rs b/crates/agent_sandbox/src/host_view.rs
+index f160b16..f2c5970 100644
+--- a/crates/agent_sandbox/src/host_view.rs
++++ b/crates/agent_sandbox/src/host_view.rs
+@@ -106,6 +106,10 @@ pub const OVERLAY_SYSTEM_OPTION: &str = "--overlay-system";
+ /// those calls report agree with the host view's files.
+ pub const SYSCALL_VIEW_OPTION: &str = "--syscall-view";
+ 
++/// ai-jail's option that makes `/etc` a tmpfs holding only an allowlist of the host's entries
++/// under `--mask-host` (3.5.0-r5; bug 13 of the operator's list of 2026-11-23).
++pub const MINIMAL_ETC_OPTION: &str = "--minimal-etc";
++
+ /// Masks `--mask-host` gives better answers for once ai-jail has its identity layer (3.5.0-r3,
+ /// the release that brings `--overlay-system`): a swap table with its header instead of an empty
+ /// file, and a boot id of the jail's own instead of none. Zeo's `--mask` lands after ai-jail's
+@@ -122,6 +126,8 @@ pub struct HostLayer {
+     pub overlay_system: bool,
+     /// The project asks for `--syscall-view` (only with `mask_host`).
+     pub syscall_view: bool,
++    /// The project asks for `--minimal-etc` (only with `mask_host`).
++    pub minimal_etc: bool,
+ }
+ 
+ /// The variable Claude Code reads to load the account's claude.ai connectors. They are reached
+@@ -163,6 +169,9 @@ pub fn host_args_for(
+         if layer.syscall_view {
+             args.push(SYSCALL_VIEW_OPTION.to_string());
+         }
++        if layer.minimal_etc {
++            args.push(MINIMAL_ETC_OPTION.to_string());
++        }
+     }
+     args
+ }
+diff --git a/crates/agent_sandbox/src/host_view_tests.rs b/crates/agent_sandbox/src/host_view_tests.rs
+index 770d7fd..c4efeb9 100644
+--- a/crates/agent_sandbox/src/host_view_tests.rs
++++ b/crates/agent_sandbox/src/host_view_tests.rs
+@@ -168,6 +168,7 @@ fn host_view_identity_layer_takes_over_swap_and_the_boot_id() {
+         identity: true,
+         overlay_system: false,
+         syscall_view: false,
++        minimal_etc: false,
+     };
+     let with_layer = host_args_for(true, layer, all_exist);
+     for path in IDENTITY_LAYER_MASKS {
+@@ -196,6 +197,7 @@ fn host_view_overlay_system_rides_mask_host_only() {
+         identity: true,
+         overlay_system: true,
+         syscall_view: true,
++        minimal_etc: false,
+     };
+     let args = host_args_for(true, layer, all_exist);
+     assert_eq!(
+diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
+index 64b838e..8235fcc 100644
+--- a/crates/agent_sandbox/src/launch.rs
++++ b/crates/agent_sandbox/src/launch.rs
+@@ -219,6 +219,9 @@ pub enum LaunchCause {
+     /// `agent_sandbox.syscall_view` is on (with `mask_host`) and the installed ai-jail has no
+     /// `--syscall-view` (docs/HOST-VIEW-EXTRA-LAYER.md §4.3).
+     SyscallViewUnsupported,
++    /// `agent_sandbox.minimal_etc` is on (with `mask_host`) and the installed ai-jail has no
++    /// `--minimal-etc` (3.5.0-r5).
++    MinimalEtcUnsupported,
+     /// The project's state directory could not be created.
+     StateRootCreate {
+         dir: PathBuf,
+@@ -250,6 +253,7 @@ impl LaunchCause {
+             Self::MaskHostUnsupported => "mask_host_unsupported",
+             Self::OverlaySystemUnsupported => "overlay_system_unsupported",
+             Self::SyscallViewUnsupported => "syscall_view_unsupported",
++            Self::MinimalEtcUnsupported => "minimal_etc_unsupported",
+             Self::StateRootCreate { .. } => "state_root_create",
+         }
+     }
+@@ -348,6 +352,10 @@ impl fmt::Display for LaunchCause {
+                 f,
+                 "Hide the Kernel is on for this project (agent_sandbox.syscall_view), and the installed ai-jail cannot give it (it has no --syscall-view). Install sys-apps/ai-jail 3.5.0-r4 or later, or turn Hide the Kernel off on the Agent Sandbox page."
+             ),
++            Self::MinimalEtcUnsupported => write!(
++                f,
++                "Hide the System Config is on for this project (agent_sandbox.minimal_etc), and the installed ai-jail cannot give it (it has no --minimal-etc). Install sys-apps/ai-jail 3.5.0-r5 or later, or turn Hide the System Config off on the Agent Sandbox page."
++            ),
+             Self::StateRootCreate { dir, error } => write!(
+                 f,
+                 "The project's jail state folder {} could not be created: {error}.",
+@@ -603,6 +611,7 @@ impl LocalLaunch {
+         let overlay_system = mask_host && self.sandbox.overlay_system_for_key(key.as_deref());
+         let overlay_required = self.sandbox.overlay_system_set_by_project(key.as_deref());
+         let syscall_view = mask_host && self.sandbox.syscall_view_for_key(key.as_deref());
++        let minimal_etc = mask_host && self.sandbox.minimal_etc_for_key(key.as_deref());
+         // A synthetic host view must agree with the cores the jail runs on, so it reserves them.
+         let reserve_cpus = mask_host || self.sandbox.reserve_cpus_for_key(key.as_deref());
+         let connectors = self.sandbox.claude_ai_connectors_for_key(key.as_deref());
+@@ -615,7 +624,7 @@ impl LocalLaunch {
+                 &policy,
+                 mask_host,
+                 (overlay_system, overlay_required),
+-                syscall_view,
++                (syscall_view, minimal_etc),
+                 reserve_cpus,
+             )
+             .await
+@@ -731,7 +740,7 @@ impl LocalLaunch {
+         policy: &ProjectPolicy,
+         mask_host: bool,
+         (overlay_system, overlay_required): (bool, bool),
+-        syscall_view: bool,
++        (syscall_view, minimal_etc): (bool, bool),
+         reserve_cpus: bool,
+     ) -> Result<Checked, Box<(LaunchCause, Option<Version>)>> {
+         let no_version = |cause| Box::new((cause, None));
+@@ -782,6 +791,9 @@ impl LocalLaunch {
+         if syscall_view && !binary.supports_syscall_view {
+             return Err(refuse(LaunchCause::SyscallViewUnsupported));
+         }
++        if minimal_etc && !binary.supports_minimal_etc {
++            return Err(refuse(LaunchCause::MinimalEtcUnsupported));
++        }
+         let mut limit_args = policy.limits.jail_args();
+         // Zeo §6.63 step 3 (operator, 2026-11-22): the quota alone by default; a reserving jail
+         // is pinned to cores no other reserving jail holds, or told it shares them.
+@@ -807,6 +819,7 @@ impl LocalLaunch {
+             identity: binary.supports_overlay_system,
+             overlay_system,
+             syscall_view,
++            minimal_etc,
+         };
+         let host_args = host_view::host_args_for(mask_host, host_layer, Path::exists);
+ 
+@@ -1213,6 +1226,7 @@ fn settings_fingerprint(
+     sandbox.mask_host_for_key(key).hash(&mut hasher);
+     sandbox.overlay_system_for_key(key).hash(&mut hasher);
+     sandbox.syscall_view_for_key(key).hash(&mut hasher);
++    sandbox.minimal_etc_for_key(key).hash(&mut hasher);
+     sandbox.claude_ai_connectors_for_key(key).hash(&mut hasher);
+     sandbox.reserve_cpus_for_key(key).hash(&mut hasher);
+     // The skills' maps are made at start; the MCP list is read at each session/new, so a change
+diff --git a/crates/agent_sandbox/src/minimal_etc_tests.rs b/crates/agent_sandbox/src/minimal_etc_tests.rs
+new file mode 100644
+index 0000000..ac7ffe3
+--- /dev/null
++++ b/crates/agent_sandbox/src/minimal_etc_tests.rs
+@@ -0,0 +1,119 @@
++// Bug 13 of the operator's list of 2026-11-23: the jail should not see the host's system
++// configuration. ai-jail 3.5.0-r5's --minimal-etc (under --mask-host) makes /etc a tmpfs holding
++// only an allowlist of the host's entries; Zeo passes it for `agent_sandbox.minimal_etc`, the
++// Agent Sandbox page's Hide the System Config. Filter: `minimal_etc`.
++
++use gpui::TestAppContext;
++use serde_json::{Value, json};
++
++use crate::host_view::{HostLayer, MASK_HOST_OPTION, MINIMAL_ETC_OPTION, host_args_for};
++use crate::launch_tests::*;
++
++/// ai-jail 3.5.0-r4's options; `minimal_etc` adds `--minimal-etc`, as 3.5.0-r5 does.
++fn help(minimal_etc: bool) -> String {
++    let extra = if minimal_etc {
++        "    --minimal-etc  Allowlisted /etc\\n"
++    } else {
++        ""
++    };
++    format!(
++        "case \"$1\" in --help) printf '    --memory <SIZE>  Cap memory\\n    --state-root <DIR>  State on disk\\n    --cpus <LIST>  Pin CPUs\\n    --mask-host  Synthetic host view\\n    --overlay-system  Overlays\\n    --syscall-view  Syscalls\\n{extra}' ;; *) echo 'ai-jail 3.5.0' ;; esac"
++    )
++}
++
++fn settings(f: &Fixture, project: Value) -> Value {
++    let mut value = sandbox(f, true, project, memory_off());
++    value["agent_sandbox"]["state_root"] = json!(f.base.join("state"));
++    value
++}
++
++/// Whether the jailed command's own options (before `--`) carry `option`.
++fn has(args: &[String], option: &str) -> bool {
++    let end = args
++        .iter()
++        .position(|arg| arg == "--")
++        .unwrap_or(args.len());
++    args[..end].iter().any(|arg| arg == option)
++}
++
++fn all_exist(_: &std::path::Path) -> bool {
++    true
++}
++
++#[test]
++fn minimal_etc_rides_mask_host_only() {
++    let layer = HostLayer {
++        identity: true,
++        minimal_etc: true,
++        ..HostLayer::default()
++    };
++    let args = host_args_for(true, layer, all_exist);
++    let mask = args.iter().position(|a| a == MASK_HOST_OPTION);
++    let etc = args.iter().position(|a| a == MINIMAL_ETC_OPTION);
++    assert!(mask.is_some() && etc > mask, "{args:?}");
++    let shown = host_args_for(false, layer, all_exist);
++    assert!(
++        !shown.contains(&MINIMAL_ETC_OPTION.to_string()),
++        "no host view, no minimal /etc: {shown:?}"
++    );
++}
++
++#[gpui::test]
++async fn minimal_etc_is_passed_when_the_project_asks(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, &help(true));
++    set_user_settings(
++        settings(&f, json!({ "mask_host": true, "minimal_etc": true })),
++        cx,
++    );
++    let project = project(&f, cx).await;
++    let (_, cmd) = jailed(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    assert!(has(&cmd.args, MINIMAL_ETC_OPTION), "{:?}", cmd.args);
++}
++
++/// Off by default: the switch is new and stays off until it has run in daily use.
++#[gpui::test]
++async fn minimal_etc_is_off_by_default(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, &help(true));
++    set_user_settings(settings(&f, json!({ "mask_host": true })), cx);
++    let project = project(&f, cx).await;
++    let (_, cmd) = jailed(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    assert!(!has(&cmd.args, MINIMAL_ETC_OPTION), "{:?}", cmd.args);
++}
++
++/// Hostile: an ai-jail without the option refuses the start and says what is missing, rather
++/// than starting a jail that shows the whole /etc while the switch says it is hidden.
++#[gpui::test]
++async fn minimal_etc_refuses_an_ai_jail_without_the_option(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, &help(false));
++    set_user_settings(
++        settings(&f, json!({ "mask_host": true, "minimal_etc": true })),
++        cx,
++    );
++    let project = project(&f, cx).await;
++    let text = refused(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    assert!(
++        text.contains("--minimal-etc"),
++        "says what is missing: {text}"
++    );
++}
++
++/// Hostile: without the host view there is nothing to hide /etc for; it is not passed.
++#[gpui::test]
++async fn minimal_etc_needs_the_host_view(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, &help(true));
++    set_user_settings(
++        settings(&f, json!({ "mask_host": false, "minimal_etc": true })),
++        cx,
++    );
++    let project = project(&f, cx).await;
++    let (_, cmd) = jailed(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    assert!(!has(&cmd.args, MINIMAL_ETC_OPTION), "{:?}", cmd.args);
++}
+diff --git a/crates/agent_sandbox/src/probe.rs b/crates/agent_sandbox/src/probe.rs
+index 1998aaa..73720fc 100644
+--- a/crates/agent_sandbox/src/probe.rs
++++ b/crates/agent_sandbox/src/probe.rs
+@@ -47,6 +47,8 @@ pub struct JailBinary {
+     /// `--syscall-view` (docs/HOST-VIEW-EXTRA-LAYER.md §4.3): `uname(2)` and `sysinfo(2)`
+     /// answered by ai-jail, matching the host view.
+     pub supports_syscall_view: bool,
++    /// `--minimal-etc` (3.5.0-r5): `/etc` as an allowlist of the host's entries.
++    pub supports_minimal_etc: bool,
+ }
+ 
+ /// What `--help` listed, cached with the version.
+@@ -59,6 +61,7 @@ struct HelpFlags {
+     mask_host: bool,
+     overlay_system: bool,
+     syscall_view: bool,
++    minimal_etc: bool,
+ }
+ 
+ impl HelpFlags {
+@@ -71,6 +74,7 @@ impl HelpFlags {
+             mask_host: help_lists_option(help, crate::host_view::MASK_HOST_OPTION),
+             overlay_system: help_lists_option(help, crate::host_view::OVERLAY_SYSTEM_OPTION),
+             syscall_view: help_lists_option(help, crate::host_view::SYSCALL_VIEW_OPTION),
++            minimal_etc: help_lists_option(help, crate::host_view::MINIMAL_ETC_OPTION),
+         }
+     }
+ 
+@@ -84,6 +88,7 @@ impl HelpFlags {
+             supports_mask_host: self.mask_host,
+             supports_overlay_system: self.overlay_system,
+             supports_syscall_view: self.syscall_view,
++            supports_minimal_etc: self.minimal_etc,
+         }
+     }
+ }
+diff --git a/crates/agent_sandbox/src/settings.rs b/crates/agent_sandbox/src/settings.rs
+index 00876e8..c43bce3 100644
+--- a/crates/agent_sandbox/src/settings.rs
++++ b/crates/agent_sandbox/src/settings.rs
+@@ -54,6 +54,10 @@ pub struct AgentSandboxSettings {
+     /// ai-jail's `--syscall-view` for every jailed project that hides the host (§4.3).
+     /// Default: `false` until it has run in daily use.
+     pub syscall_view: bool,
++    /// ai-jail's `--minimal-etc` for every jailed project that hides the host: `/etc` holds only
++    /// an allowlist of the host's entries (bug 13 of the operator's list of 2026-11-23). Default:
++    /// `false` until it has run in daily use.
++    pub minimal_etc: bool,
+     /// What every jail may use besides its project (§6.64 step 2).
+     pub capabilities: SandboxCapabilities,
+     /// Per-project overrides, keyed by the absolute root path as written.
+@@ -151,6 +155,8 @@ pub struct AgentSandboxProjectSettings {
+     pub overlay_system: Option<bool>,
+     /// `None` follows `agent_sandbox.syscall_view`.
+     pub syscall_view: Option<bool>,
++    /// `None` follows `agent_sandbox.minimal_etc`.
++    pub minimal_etc: Option<bool>,
+     /// What the project's jail may use, each `Some` replacing the default (§6.64 step 2).
+     pub capabilities: ProjectCapabilities,
+ }
+@@ -249,6 +255,14 @@ impl AgentSandboxSettings {
+             .unwrap_or(self.syscall_view)
+     }
+ 
++    /// Whether the project under `key` asks for an allowlisted `/etc` (`--minimal-etc`). Only
++    /// meaningful with [`Self::mask_host_for_key`].
++    pub fn minimal_etc_for_key(&self, key: Option<&str>) -> bool {
++        key.and_then(|key| self.projects.get(key))
++            .and_then(|entry| entry.minimal_etc)
++            .unwrap_or(self.minimal_etc)
++    }
++
+     /// Whether the project under `key` reserves its cores (§6.63, `limits.reserve_cpus`).
+     pub fn reserve_cpus_for_key(&self, key: Option<&str>) -> bool {
+         key.and_then(|key| self.projects.get(key))
+@@ -412,6 +426,8 @@ impl Settings for AgentSandboxSettings {
+             overlay_system: sandbox.overlay_system.unwrap_or(true),
+             // default.json says false: off until it has run in daily use (§4.4).
+             syscall_view: sandbox.syscall_view.unwrap_or(false),
++            // default.json says false: off until it has run in daily use.
++            minimal_etc: sandbox.minimal_etc.unwrap_or(false),
+             claude_ai_connectors: sandbox.claude_ai_connectors.unwrap_or(false),
+             capabilities: {
+                 let defaults = SandboxCapabilities::default();
+@@ -443,6 +459,7 @@ impl Settings for AgentSandboxSettings {
+                         mask_host: project.mask_host,
+                         overlay_system: project.overlay_system,
+                         syscall_view: project.syscall_view,
++                        minimal_etc: project.minimal_etc,
+                         claude_ai_connectors: project.claude_ai_connectors,
+                         reserve_cpus: project
+                             .limits
+diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
+index ce47fab..51287f2 100644
+--- a/crates/settings_content/src/settings_content.rs
++++ b/crates/settings_content/src/settings_content.rs
+@@ -407,6 +407,12 @@ pub struct AgentSandboxSettingsContent {
+     ///
+     /// Default: false
+     pub syscall_view: Option<bool>,
++    /// Whether jailed projects that hide the host see only an allowlist of the host's `/etc`
++    /// (accounts, DNS, certificates, time zone, the loader, the shell's startup) instead of all
++    /// of it (ai-jail's `--minimal-etc`). Needs an ai-jail with `--minimal-etc`.
++    ///
++    /// Default: false
++    pub minimal_etc: Option<bool>,
+     /// Whether jailed agents load the account's claude.ai connectors. They reach their vendors
+     /// through anthropic.com, past `allow_hosts`.
+     ///
+@@ -469,6 +475,8 @@ pub struct AgentSandboxProjectSettingsContent {
+     pub overlay_system: Option<bool>,
+     /// This project's choice of `agent_sandbox.syscall_view`. Unset follows the default.
+     pub syscall_view: Option<bool>,
++    /// This project's choice of `agent_sandbox.minimal_etc`. Unset follows the default.
++    pub minimal_etc: Option<bool>,
+     /// This project's choice of `agent_sandbox.claude_ai_connectors`. Unset follows the default.
+     pub claude_ai_connectors: Option<bool>,
+     /// What this project's jail may use, each field replacing the default it names. An empty
+diff --git a/crates/settings_ui/src/pages/agent_jail_host.rs b/crates/settings_ui/src/pages/agent_jail_host.rs
+index ed68c4a..8a4897c 100644
+--- a/crates/settings_ui/src/pages/agent_jail_host.rs
++++ b/crates/settings_ui/src/pages/agent_jail_host.rs
+@@ -12,7 +12,8 @@ use std::path::Path;
+ 
+ use agent_sandbox::AgentSandboxSettings;
+ use agent_sandbox::capabilities::{
+-    set_project_mask_host, set_project_overlay_system, set_project_syscall_view,
++    set_project_mask_host, set_project_minimal_etc, set_project_overlay_system,
++    set_project_syscall_view,
+ };
+ use agent_sandbox::confirm::set_project_reserve_cpus;
+ use gpui::{AnyElement, App, Entity, ScrollHandle};
+@@ -35,6 +36,9 @@ pub(crate) struct HostSwitches {
+     /// The project's own or default `syscall_view` (Hide the Kernel); like Hide the Disks, it
+     /// applies only under Hide the Host, so `overlay_disabled` disables it too.
+     pub syscall_view: bool,
++    /// The project's own or default `minimal_etc` (Hide the System Config); it applies only
++    /// under Hide the Host too, so `overlay_disabled` disables it.
++    pub minimal_etc: bool,
+ }
+ 
+ pub(crate) fn host_switches(sandbox: &AgentSandboxSettings, key: Option<&str>) -> HostSwitches {
+@@ -46,6 +50,7 @@ pub(crate) fn host_switches(sandbox: &AgentSandboxSettings, key: Option<&str>) -
+         overlay_system: sandbox.overlay_system_for_key(key),
+         overlay_disabled: !mask_host,
+         syscall_view: sandbox.syscall_view_for_key(key),
++        minimal_etc: sandbox.minimal_etc_for_key(key),
+     }
+ }
+ 
+@@ -53,6 +58,7 @@ pub(crate) const MASK_HOST_NOTE: &str = "The jailed agent sees only the CPUs and
+ pub(crate) const OVERLAY_NOTE: &str = "Serve /usr, /etc and /opt through read-only overlays, so the jail's mount table names no disk of this machine for them. File walks over those folders get slower. Needs ai-jail 3.5.0-r3. Restart the agent to apply.";
+ pub(crate) const OVERLAY_DISABLED_NOTE: &str = "Applies only while Hide the Host is on.";
+ pub(crate) const SYSCALL_VIEW_NOTE: &str = "Answer uname and sysinfo from ai-jail, so the kernel version, memory, load and uptime they report match the hidden host instead of this machine's. Each of those calls makes a round trip to ai-jail. Needs ai-jail 3.5.0-r4. Restart the agent to apply.";
++pub(crate) const MINIMAL_ETC_NOTE: &str = "Show the jail only the parts of /etc its tools need -- accounts, DNS, certificates, time zone, the library loader and the shell's startup -- instead of all of this machine's configuration. /usr and /opt stay: the toolchains live there. A tool that reads another /etc file may fail. Needs ai-jail 3.5.0-r5. Restart the agent to apply.";
+ pub(crate) const RESERVE_NOTE: &str = "Pin the jail to cores of its own, none shared with another reserving jail while enough are free. Off, the CPU quota alone limits it. Restart the agent to apply.";
+ pub(crate) const RESERVE_FORCED_NOTE: &str =
+     "On while Hide the Host is on: its CPU files must match the cores the jail runs on.";
+@@ -142,6 +148,27 @@ pub(crate) fn render_host_switches(
+     )
+     .disabled(switches.overlay_disabled)
+     .tab_index(0);
++    let system_config = SwitchField::new(
++        "agent-jail-minimal-etc",
++        Some("Hide the System Config"),
++        Some(
++            if switches.overlay_disabled {
++                OVERLAY_DISABLED_NOTE
++            } else {
++                MINIMAL_ETC_NOTE
++            }
++            .into(),
++        ),
++        switches.minimal_etc,
++        {
++            let root = root.to_path_buf();
++            move |toggle, _, cx| {
++                set_project_minimal_etc(&root, *toggle == ToggleState::Selected, cx).detach();
++            }
++        },
++    )
++    .disabled(switches.overlay_disabled)
++    .tab_index(0);
+     v_flex()
+         .gap_2()
+         .child(Label::new("Host"))
+@@ -166,6 +193,13 @@ pub(crate) fn render_host_switches(
+             syscalls,
+             cx,
+         ))
++        .child(reveal(
++            state,
++            "agent-jail-minimal-etc",
++            scroll_handle,
++            system_config,
++            cx,
++        ))
+         .child(reveal(
+             state,
+             "agent-jail-reserve-cpus",
+diff --git a/crates/settings_ui/src/pages/agent_jail_host_tests.rs b/crates/settings_ui/src/pages/agent_jail_host_tests.rs
+index ba95bf4..707add7 100644
+--- a/crates/settings_ui/src/pages/agent_jail_host_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_host_tests.rs
+@@ -26,6 +26,7 @@ fn sandbox(
+         reserve_cpus,
+         overlay_system: false,
+         syscall_view: false,
++        minimal_etc: false,
+         capabilities: Default::default(),
+         projects: BTreeMap::from([("/p".to_string(), project)]),
+     }
+@@ -43,6 +44,7 @@ fn agent_jail_host_switches_follow_the_project_then_the_default() {
+             overlay_system: false,
+             overlay_disabled: false,
+             syscall_view: false,
++            minimal_etc: false,
+         },
+         "the default hides the host, which reserves"
+     );
+@@ -64,6 +66,7 @@ fn agent_jail_host_switches_follow_the_project_then_the_default() {
+             overlay_system: false,
+             overlay_disabled: true,
+             syscall_view: false,
++            minimal_etc: false,
+         },
+         "the project's own choices replace the defaults"
+     );
+@@ -76,6 +79,7 @@ fn agent_jail_host_switches_follow_the_project_then_the_default() {
+             overlay_system: false,
+             overlay_disabled: true,
+             syscall_view: false,
++            minimal_etc: false,
+         }
+     );
+ }
+@@ -131,3 +135,37 @@ fn agent_jail_host_kernel_follows_the_project_and_needs_the_host_view() {
+     );
+     assert!(host_switches(&shown, Some("/p")).overlay_disabled);
+ }
++
++/// Bug 13 of the operator's list of 2026-11-23: Hide the System Config follows the project, then
++/// the default, and applies only under Hide the Host.
++#[test]
++fn agent_jail_host_system_config_follows_the_project_and_needs_the_host_view() {
++    let on = sandbox(
++        true,
++        false,
++        AgentSandboxProjectSettings {
++            minimal_etc: Some(true),
++            ..AgentSandboxProjectSettings::default()
++        },
++    );
++    let switches = host_switches(&on, Some("/p"));
++    assert!(switches.minimal_etc && !switches.overlay_disabled);
++    assert!(
++        !host_switches(&sandbox(true, false, Default::default()), Some("/p")).minimal_etc,
++        "off by default"
++    );
++    let shown = sandbox(
++        true,
++        false,
++        AgentSandboxProjectSettings {
++            mask_host: Some(false),
++            minimal_etc: Some(true),
++            ..AgentSandboxProjectSettings::default()
++        },
++    );
++    let switches = host_switches(&shown, Some("/p"));
++    assert!(
++        switches.minimal_etc && switches.overlay_disabled,
++        "kept as set, but disabled while the host is shown"
++    );
++}
+diff --git a/crates/settings_ui/src/pages/agent_jail_page.rs b/crates/settings_ui/src/pages/agent_jail_page.rs
+index 0dbfd3b..4e34a2d 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page.rs
+@@ -899,6 +899,7 @@ pub(crate) fn render_agent_jail_page(
+                         identity: false,
+                         overlay_system: sandbox.overlay_system_for_key(key),
+                         syscall_view: sandbox.syscall_view_for_key(key),
++                        minimal_etc: sandbox.minimal_etc_for_key(key),
+                     },
+                     |_| true,
+                 ),
+diff --git a/crates/settings_ui/src/pages/agent_jail_page_tests.rs b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+index fbc9b36..e57e026 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+@@ -619,6 +619,7 @@ mod page {
+             reserve_cpus: false,
+             overlay_system: false,
+             syscall_view: false,
++            minimal_etc: false,
+             capabilities: Default::default(),
+             projects: Default::default(),
+         };

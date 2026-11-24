@@ -97,7 +97,7 @@ the same title stay two rows: identity is the child session id. 13 tests
 ---
 
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
-index a4c2619..0751e1d 100644
+index 22f3343..bd051ae 100644
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
 @@ -9,6 +9,7 @@ pub mod elicitation;
@@ -117,7 +117,7 @@ index a4c2619..0751e1d 100644
  use std::{fmt::Display, mem, path::PathBuf, sync::Arc};
  pub use submission::*;
  use task::{Shell, ShellBuilder};
-@@ -3978,6 +3979,134 @@ const CLAUDE_RATE_LIMIT_META_KEY: &str = "_claude/rateLimit";
+@@ -4059,6 +4060,134 @@ const CLAUDE_RATE_LIMIT_META_KEY: &str = "_claude/rateLimit";
  /// `background_tasks_changed` level here, as `{ "count": n, "tasks": [...] }`.
  const CLAUDE_BACKGROUND_TASKS_META_KEY: &str = "_claude/backgroundTasks";
  
@@ -252,8 +252,8 @@ index a4c2619..0751e1d 100644
  pub const TOKEN_USAGE_WARNING_THRESHOLD: f32 = 0.8;
  
  impl TokenUsage {
-@@ -4085,6 +4214,10 @@ pub struct AcpThread {
-     token_usage: Option<TokenUsage>,
+@@ -4167,6 +4296,10 @@ pub struct AcpThread {
+     usage_meta: Option<acp_v2::Meta>,
      account_usage: AccountUsage,
      background_task_count: usize,
 +    tasks: Vec<AgentTask>,
@@ -263,7 +263,7 @@ index a4c2619..0751e1d 100644
      cost: Option<SessionCost>,
      prompt_capabilities: acp_v2::PromptCapabilities,
      available_commands: Vec<acp_v2::AvailableCommand>,
-@@ -4241,6 +4374,11 @@ pub enum AcpThreadEvent {
+@@ -4323,6 +4456,11 @@ pub enum AcpThreadEvent {
      TokenUsageUpdated(OutputTokensUpdate),
      AccountUsageUpdated,
      BackgroundTasksUpdated,
@@ -275,7 +275,7 @@ index a4c2619..0751e1d 100644
      EntryUpdated(usize),
      EntriesRemoved(Range<usize>),
      ToolAuthorizationRequested(PermissionRequestId),
-@@ -4383,6 +4521,8 @@ impl AcpThread {
+@@ -4465,6 +4603,8 @@ impl AcpThread {
                  | AcpThreadEvent::TokenUsageUpdated(_)
                  | AcpThreadEvent::AccountUsageUpdated
                  | AcpThreadEvent::BackgroundTasksUpdated
@@ -284,8 +284,8 @@ index a4c2619..0751e1d 100644
                  | AcpThreadEvent::EntryUpdated(_)
                  | AcpThreadEvent::Retry(_)
                  | AcpThreadEvent::SubagentSpawned(_)
-@@ -4439,6 +4579,8 @@ impl AcpThread {
-             token_usage: None,
+@@ -4522,6 +4662,8 @@ impl AcpThread {
+             usage_meta: None,
              account_usage: AccountUsage::default(),
              background_task_count: 0,
 +            tasks: Vec::new(),
@@ -293,7 +293,7 @@ index a4c2619..0751e1d 100644
              cost: None,
              prompt_capabilities,
              available_commands: Vec::new(),
-@@ -4945,6 +5087,9 @@ impl AcpThread {
+@@ -5028,6 +5170,9 @@ impl AcpThread {
                  }
                  _ => false,
              })
@@ -303,7 +303,7 @@ index a4c2619..0751e1d 100644
      }
  
      pub fn forget_submission(&mut self, id: SubmissionId, cx: &mut Context<Self>) {
-@@ -5310,6 +5455,89 @@ impl AcpThread {
+@@ -5395,6 +5540,89 @@ impl AcpThread {
          self.background_task_count
      }
  
@@ -393,7 +393,7 @@ index a4c2619..0751e1d 100644
      pub fn cost(&self) -> Option<&SessionCost> {
          self.cost.as_ref()
      }
-@@ -5501,6 +5729,22 @@ impl AcpThread {
+@@ -5586,6 +5814,22 @@ impl AcpThread {
                      self.background_task_count = count;
                      cx.emit(AcpThreadEvent::BackgroundTasksUpdated);
                  }
@@ -416,7 +416,7 @@ index a4c2619..0751e1d 100644
                  self.update_session_info(info_update, cx);
              }
              acp_v1::SessionUpdate::AvailableCommandsUpdate(acp_v1::AvailableCommandsUpdate {
-@@ -8994,6 +9238,9 @@ impl AcpThread {
+@@ -9093,6 +9337,9 @@ impl AcpThread {
      }
  
      pub fn emit_load_error(&mut self, error: LoadError, cx: &mut Context<Self>) {
@@ -426,7 +426,7 @@ index a4c2619..0751e1d 100644
          cx.emit(AcpThreadEvent::LoadError(error));
      }
  
-@@ -27909,4 +28156,7 @@ mod tests {
+@@ -28158,4 +28405,7 @@ mod tests {
          request.await.expect("turn should complete");
          assert_eq!(cx.active_idle_sleep_preventions(), 0);
      }
@@ -1347,10 +1347,10 @@ index 0000000..5062ed9
 +    }
 +}
 diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
-index d02b072..8b7f0b7 100644
+index 9ba47e2..9b29387 100644
 --- a/crates/acp_thread/src/connection.rs
 +++ b/crates/acp_thread/src/connection.rs
-@@ -164,6 +164,31 @@ pub trait AgentConnection {
+@@ -176,6 +176,31 @@ pub trait AgentConnection {
          Task::ready(Err(anyhow::Error::msg("Closing sessions is not supported")))
      }
  
@@ -2232,7 +2232,7 @@ index 0000000..3b4d6ad
 +  ]
 +}
 diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
-index f25f8cd..100630b 100644
+index ad142b7..2d91aec 100644
 --- a/crates/agent_servers/src/acp/v1.rs
 +++ b/crates/agent_servers/src/acp/v1.rs
 @@ -17,7 +17,7 @@ use acp_thread::{
@@ -2300,7 +2300,7 @@ index f25f8cd..100630b 100644
      auth_methods: Vec<acp_v2::AuthMethod>,
      auth_status: Option<Rc<ConnectionAuthStatus>>,
      agent_server_store: WeakEntity<AgentServerStore>,
-@@ -754,6 +780,7 @@ impl AcpConnection {
+@@ -767,6 +793,7 @@ impl AcpConnection {
              agent_version,
              sessions,
              pending_sessions: RefCell::new(HashMap::default()),
@@ -2308,7 +2308,7 @@ index f25f8cd..100630b 100644
              agent_capabilities: response.agent_capabilities,
              accepts_subagent_updates,
              request_elicitations,
-@@ -801,6 +828,7 @@ impl AcpConnection {
+@@ -814,6 +841,7 @@ impl AcpConnection {
              connection,
              sessions,
              pending_sessions: RefCell::new(HashMap::default()),
@@ -2316,7 +2316,7 @@ index f25f8cd..100630b 100644
              auth_methods: vec![],
              auth_status: None,
              agent_server_store,
-@@ -915,6 +943,7 @@ impl AcpConnection {
+@@ -944,6 +972,7 @@ impl AcpConnection {
          cx: &mut App,
      ) {
          if self.pending_sessions.borrow().contains_key(&session_id)
@@ -2324,7 +2324,7 @@ index f25f8cd..100630b 100644
              || !self
                  .sessions
                  .borrow()
-@@ -971,6 +1000,18 @@ impl AcpConnection {
+@@ -1000,6 +1029,18 @@ impl AcpConnection {
                  .is_some()
      }
  
@@ -2343,7 +2343,7 @@ index f25f8cd..100630b 100644
      /// `rpc_call` gets a receiver that resolves once its response has been applied, and
      /// holds the agent's later messages until then (see `ordered_response`). With
      /// `replays_history`, the response ends a history replay.
-@@ -2077,6 +2118,130 @@ impl AgentConnection for AcpConnection {
+@@ -2136,6 +2177,130 @@ impl AgentConnection for AcpConnection {
          Ok(())
      }
  
@@ -2406,7 +2406,7 @@ index f25f8cd..100630b 100644
 +                .update(cx, |thread, cx| thread.interrupt_running_tasks(cx))
 +                .ok();
 +            if let Some(this) = this.upgrade() {
-+                this.remove_session(&session_id, thread.entity_id());
++                this.remove_session(&session_id, thread.entity_id(), cx);
 +                this.closing_sessions.borrow_mut().remove(&session_id);
 +            }
 +            result
@@ -2474,7 +2474,7 @@ index f25f8cd..100630b 100644
      fn request_elicitations(&self) -> Option<Entity<ElicitationStore>> {
          Some(self.request_elicitations.clone())
      }
-@@ -2407,6 +2572,26 @@ pub mod test_support {
+@@ -2469,6 +2634,26 @@ pub mod test_support {
              self.inner.cancel(session_id, cx)
          }
  
@@ -2501,7 +2501,7 @@ index f25f8cd..100630b 100644
          fn request_elicitations(&self) -> Option<Entity<ElicitationStore>> {
              self.inner.request_elicitations()
          }
-@@ -10392,6 +10577,8 @@ exit 7
+@@ -10503,6 +10688,8 @@ exit 7
          cx.update(|_| ());
          cx.run_until_parked();
      }
@@ -3123,7 +3123,7 @@ index e5dfb0e..b8e0ee7 100644
      async fn test_cleanup_retained_threads_preserves_idle_non_loadable_threads(
          cx: &mut TestAppContext,
 diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
-index d8503ba..f30a7a7 100644
+index f33ae1c..0cb706a 100644
 --- a/crates/agent_ui/src/conversation_view.rs
 +++ b/crates/agent_ui/src/conversation_view.rs
 @@ -367,6 +367,8 @@ impl Conversation {
@@ -3144,7 +3144,7 @@ index d8503ba..f30a7a7 100644
          | AcpThreadEvent::PromptCapabilitiesUpdated
          | AcpThreadEvent::AvailableCommandsUpdated(_)
          | AcpThreadEvent::ModeUpdated(_)
-@@ -2469,6 +2473,8 @@ impl ConversationView {
+@@ -2470,6 +2474,8 @@ impl ConversationView {
              // sidebar: the agent panel observes every conversation view, active or not,
              // and asks the sidebar to rebuild, which re-reads the thread's status.
              AcpThreadEvent::BackgroundTasksUpdated => {}
@@ -3154,19 +3154,20 @@ index d8503ba..f30a7a7 100644
                  // A redraw is all this needs: the account section is built from the thread
                  // when the tooltip opens, so there is no per-turn state to recompute.
 diff --git a/crates/agent_ui/src/conversation_view/subagent_card.rs b/crates/agent_ui/src/conversation_view/subagent_card.rs
-index bc5436d..28a8c49 100644
+index af6eb21..3678a09 100644
 --- a/crates/agent_ui/src/conversation_view/subagent_card.rs
 +++ b/crates/agent_ui/src/conversation_view/subagent_card.rs
 @@ -1,3 +1,4 @@
 +use acp_thread::subagent_rows::SubagentRowStatus;
  use acp_thread::{
      AcpThread, AgentThreadEntry, MessageIdentity, SessionMessage, SessionMessageSide, ToolCall,
-     ToolCallContent, ToolCallStatus,
-@@ -129,31 +130,15 @@ impl SubagentStatus {
+     ToolCallStatus,
+@@ -130,32 +131,21 @@ impl SubagentStatus {
              acp_v2::StateUpdate::Running(_) | acp_v2::StateUpdate::RequiresAction(_) => {
                  (Self::Running, None)
              }
 -            acp_v2::StateUpdate::Idle(idle) => match &idle.stop_reason {
+-                Some(acp_v2::StopReason::EndTurn) => (Self::Completed, None),
 -                Some(acp_v2::StopReason::Cancelled) => (Self::Canceled, None),
 -                Some(acp_v2::StopReason::Error(error)) => (
 -                    Self::Failed,
@@ -3189,14 +3190,20 @@ index bc5436d..28a8c49 100644
 -                    Self::Failed,
 -                    Some("The subagent's model refused to continue.".into()),
 -                ),
--                _ => (Self::Completed, None),
+-                _ => (Self::Idle, None),
 -            },
 +            acp_v2::StateUpdate::Idle(idle) => {
 +                let (outcome, error) = acp_thread::subagent_rows::idle_outcome(idle);
 +                let status = match outcome {
 +                    SubagentRowStatus::Canceled => Self::Canceled,
 +                    SubagentRowStatus::Failed => Self::Failed,
-+                    _ => Self::Completed,
++                    // Only an explicit successful stop reason earns the success
++                    // indicator here (upstream #67291); the task feed still counts
++                    // any other idle as done.
++                    _ if matches!(idle.stop_reason, Some(acp_v2::StopReason::EndTurn)) => {
++                        Self::Completed
++                    }
++                    _ => Self::Idle,
 +                };
 +                (status, error)
 +            }

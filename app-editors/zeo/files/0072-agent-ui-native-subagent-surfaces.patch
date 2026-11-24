@@ -56,10 +56,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
-index 188a3bf..09578c4 100644
+index 71ca7cf..f4eeb27 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -16743,6 +16743,7 @@ dependencies = [
+@@ -16745,6 +16745,7 @@ dependencies = [
   "ui",
   "unicode-segmentation",
   "util",
@@ -68,7 +68,7 @@ index 188a3bf..09578c4 100644
   "zed_actions",
  ]
 diff --git a/crates/agent_ui/src/conversation_view/subagent_card.rs b/crates/agent_ui/src/conversation_view/subagent_card.rs
-index 28a8c49..7ea5fd9 100644
+index 3678a09..c20387c 100644
 --- a/crates/agent_ui/src/conversation_view/subagent_card.rs
 +++ b/crates/agent_ui/src/conversation_view/subagent_card.rs
 @@ -9,6 +9,9 @@ use std::{fmt, ops::Range};
@@ -147,7 +147,7 @@ index 28a8c49..7ea5fd9 100644
      Completed,
      Failed,
      Canceled,
-@@ -127,9 +172,10 @@ impl SubagentStatus {
+@@ -128,9 +173,10 @@ impl SubagentStatus {
              return (Self::Unknown, None);
          };
          match state {
@@ -161,7 +161,7 @@ index 28a8c49..7ea5fd9 100644
              acp_v2::StateUpdate::Idle(idle) => {
                  let (outcome, error) = acp_thread::subagent_rows::idle_outcome(idle);
                  let status = match outcome {
-@@ -256,7 +302,8 @@ impl SubagentCardState {
+@@ -263,7 +309,8 @@ impl SubagentCardState {
              label_wins: true,
              status,
              error,
@@ -171,21 +171,15 @@ index 28a8c49..7ea5fd9 100644
              entries,
          }
      }
-@@ -271,9 +318,10 @@ impl SubagentCardState {
-         title.unwrap_or_else(|| match self.status {
+@@ -279,6 +326,7 @@ impl SubagentCardState {
              SubagentStatus::Canceled => "Subagent Canceled".into(),
              SubagentStatus::Failed => "Subagent Failed".into(),
--            SubagentStatus::Running | SubagentStatus::Completed | SubagentStatus::Unknown => {
--                "Spawning Agent…".into()
--            }
-+            SubagentStatus::Running
+             SubagentStatus::Running
 +            | SubagentStatus::Waiting
-+            | SubagentStatus::Completed
-+            | SubagentStatus::Unknown => "Spawning Agent…".into(),
-         })
-     }
- 
-@@ -403,7 +451,8 @@ mod tests {
+             | SubagentStatus::Completed
+             | SubagentStatus::Unknown
+             | SubagentStatus::Idle => "Spawning Agent…".into(),
+@@ -406,7 +454,8 @@ mod tests {
                  Some(acp_v2::StateUpdate::RequiresAction(
                      acp_v2::RequiresActionStateUpdate::new(),
                  )),
@@ -195,7 +189,7 @@ index 28a8c49..7ea5fd9 100644
                  None,
              ),
              (
-@@ -504,3 +553,11 @@ mod tests {
+@@ -514,3 +563,11 @@ mod tests {
          );
      }
  }
@@ -913,7 +907,7 @@ index 0000000..aa13140
 +    let _ = rig.panel.clone();
 +}
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index f4df332..b9ac8c2 100644
+index 26909cb..c12d78e 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -62,7 +62,8 @@ use super::elicitation::{
@@ -926,7 +920,7 @@ index f4df332..b9ac8c2 100644
  };
  use super::*;
  
-@@ -4728,6 +4729,7 @@ impl ThreadView {
+@@ -4753,6 +4754,7 @@ impl ThreadView {
  
      fn collect_subagent_items_for_sessions(
          entries: &[AgentThreadEntry],
@@ -934,7 +928,7 @@ index f4df332..b9ac8c2 100644
          awaiting_session_ids: &[acp_v2::SessionId],
          cx: &App,
      ) -> Vec<(SharedString, usize)> {
-@@ -4748,6 +4750,23 @@ impl ThreadView {
+@@ -4773,6 +4775,23 @@ impl ThreadView {
                  Some((info.session_id.clone(), (subagent_summary, entry_ix)))
              })
              .collect();
@@ -958,7 +952,7 @@ index f4df332..b9ac8c2 100644
  
          awaiting_session_ids
              .iter()
-@@ -5000,8 +5019,12 @@ impl ThreadView {
+@@ -5025,8 +5044,12 @@ impl ThreadView {
  
          let thread = self.thread.read(cx);
          let entries = thread.entries();
@@ -973,7 +967,7 @@ index f4df332..b9ac8c2 100644
  
          if subagent_items.is_empty() {
              return None;
-@@ -5035,6 +5058,7 @@ impl ThreadView {
+@@ -5060,6 +5083,7 @@ impl ThreadView {
                              h_flex()
                                  .cursor_pointer()
                                  .id(format!("subagent-permission-{}", entry_ix))
@@ -981,7 +975,7 @@ index f4df332..b9ac8c2 100644
                                  .group(&group)
                                  .p_1()
                                  .pl_2()
-@@ -8579,10 +8603,15 @@ impl ThreadView {
+@@ -8605,10 +8629,15 @@ impl ThreadView {
  
          let comments_editor = self.thread_feedback.comments_editor.clone();
  
@@ -997,7 +991,7 @@ index f4df332..b9ac8c2 100644
                  .when(!is_assistant, |this| {
                      this.child(self.render_thread_controls(true, cx))
                  })
-@@ -10378,6 +10407,32 @@ impl ThreadView {
+@@ -10404,6 +10433,32 @@ impl ThreadView {
          }
      }
  
@@ -1030,7 +1024,7 @@ index f4df332..b9ac8c2 100644
      /// How this conversation names another of its sessions, or `None` when it has no thread
      /// for that session.
      pub(super) fn session_participant_label(
-@@ -13508,6 +13563,15 @@ impl ThreadView {
+@@ -13543,6 +13598,15 @@ impl ThreadView {
                  SubagentStatus::Running => SpinnerLabel::new()
                      .size(LabelSize::Small)
                      .into_any_element(),
@@ -1046,7 +1040,7 @@ index f4df332..b9ac8c2 100644
                  SubagentStatus::Canceled => {
                      div()
                          .id(status_icon)
-@@ -13798,6 +13862,9 @@ impl ThreadView {
+@@ -13869,6 +13933,9 @@ impl ThreadView {
          match card_id {
              SubagentCardId::ToolCall(id) => state.is_tool_call_expanded(id),
              SubagentCardId::SessionMessage(id) => state.is_session_message_card_expanded(id),
@@ -1056,7 +1050,7 @@ index f4df332..b9ac8c2 100644
          }
      }
  
-@@ -13810,6 +13877,9 @@ impl ThreadView {
+@@ -13881,6 +13948,9 @@ impl ThreadView {
          self.entry_view_state.update(cx, |state, _| match card_id {
              SubagentCardId::ToolCall(id) => state.toggle_tool_call_expansion(id),
              SubagentCardId::SessionMessage(id) => state.toggle_session_message_card_expansion(id),
@@ -1066,7 +1060,7 @@ index f4df332..b9ac8c2 100644
          });
          self.is_subagent_card_expanded(card_id, cx)
      }
-@@ -17526,3 +17596,9 @@ pub(crate) fn reset_fast_mode_warnings(cx: &mut App) {
+@@ -17616,3 +17686,9 @@ pub(crate) fn reset_fast_mode_warnings(cx: &mut App) {
      })
      .detach();
  }
@@ -1657,7 +1651,7 @@ index 0000000..48ae393
 +    assert_eq!(rig.status(cx), AgentThreadStatus::Background);
 +}
 diff --git a/crates/sidebar/src/sidebar_tests.rs b/crates/sidebar/src/sidebar_tests.rs
-index 48a3896..f3c2f87 100644
+index 16513f5..0ffb87c 100644
 --- a/crates/sidebar/src/sidebar_tests.rs
 +++ b/crates/sidebar/src/sidebar_tests.rs
 @@ -18415,7 +18415,14 @@ fn test_thread_row_status_precedence() {

@@ -177,13 +177,24 @@ the settings withdraws both offers at the next connection.
 Zeo 0.16.0_p20261119 (Zed 7279c76e): acp_beta_connect_tests hands
 connect() a ResolvedAgentServerCommand without an installation lease,
 the type upstream 07278edd gave it.
+
+SUBAGENTS AND PLAN ARE STABLE UPSTREAM (Zed c31063a0, 2026-11-23)
+
+Upstream d3bba51492 (zed#67291, agent-client-protocol 5.5.1, schema 1.21.2)
+made both capabilities stable: crates/agent_servers/src/acp/v1.rs:550-551 now
+offers clientCapabilities.subagents and .plan to every v1 agent, whatever
+acp-beta says. So the two paragraphs above that say turning the flag off
+withdraws the subagents and plan offers no longer hold. What acp-beta still
+decides is the protocol: off, the next connection is one v1 initialize with no
+v2 attempt. acp_beta_connect_tests now expects the subagents offer with the
+flag off, and its test is renamed connect_with_acp_beta_off_offers_v1_only.
 ---
 
 diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
-index 7725569..ac891da 100644
+index 20fbafc..873527e 100644
 --- a/crates/agent_servers/src/acp.rs
 +++ b/crates/agent_servers/src/acp.rs
-@@ -1613,3 +1613,7 @@ done
+@@ -1706,3 +1706,7 @@ done
          }
      }
  }
@@ -193,14 +204,15 @@ index 7725569..ac891da 100644
 +mod acp_beta_connect;
 diff --git a/crates/agent_servers/src/acp/acp_beta_connect_tests.rs b/crates/agent_servers/src/acp/acp_beta_connect_tests.rs
 new file mode 100644
-index 0000000..a2e59c5
+index 0000000..e6d8c00
 --- /dev/null
 +++ b/crates/agent_servers/src/acp/acp_beta_connect_tests.rs
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,228 @@
 +// Story 064, task 8.1 (connection half) — with `acp-beta` switched off in the settings'
-+// `feature_flags` map, the next agent connection is ACP v1 without the subagents capability, as
-+// upstream connects a non-staff user (R7.2, R7.3); with it on (the default, R7.1) Zed negotiates v2
-+// first. Module path: `acp::acp_beta_connect`. Wired at the end of
++// `feature_flags` map, the next agent connection is ACP v1, as upstream connects a non-staff user
++// (R7.2, R7.3); with it on (the default, R7.1) Zed negotiates v2 first. Since Zed c31063a0
++// (zed#67291, schema 1.21.2) v1 offers the subagents and plan capabilities whatever the flag says,
++// so off no longer withdraws the subagents offer: these tests pin that it is still made. Module path: `acp::acp_beta_connect`. Wired at the end of
 +// `crates/agent_servers/src/acp.rs`, after `mod selection_tests`, as
 +//
 +//     #[cfg(all(test, unix))]
@@ -210,8 +222,8 @@ index 0000000..a2e59c5
 +// Validation filter: `cargo test -p agent_servers connect` (names start `connect_`).
 +//
 +// Contract: `connect` (acp.rs) reads `cx.has_flag::<AcpBetaFeatureFlag>()` once per connection
-+// and tries v2 only when it is on; `v1::connect` offers `clientCapabilities.subagents` only when
-+// it is on (`client_capabilities_for_agent`). design.md §Feature flag switch: the flag reads the
++// and tries v2 only when it is on; `v1::connect` offers `clientCapabilities.subagents` either way
++// (`client_capabilities_for_agent`, stable upstream since c31063a0). design.md §Feature flag switch: the flag reads the
 +// settings map for `acp-beta`, so the switch applies to the next connection.
 +// Note for task 8.1: `selection_tests::set_beta` asserts the flag is on whatever it is asked
 +// (0001's comment); once the switch works that helper must assert `enabled` again, as upstream.
@@ -219,7 +231,7 @@ index 0000000..a2e59c5
 +//
 +// The agent is a `/bin/sh` script, as in `selection_tests`, that traces each start, each
 +// initialize's protocol version and whether a v1 initialize offered subagents. Hostile first:
-+// off must give exactly one v1 initialize and no subagents offer; the converse — the default
++// off must give exactly one v1 initialize, no v2 attempt (it still offers subagents); the converse — the default
 +// with a v1-only agent — must show the offer on its v1 retry, which proves the trace can see an
 +// offer at all (an offer the detector cannot see would make the first test pass vacuously); then
 +// the switch between two connections, and the default's v2.
@@ -345,10 +357,10 @@ index 0000000..a2e59c5
 +    connection.clone().downcast::<AcpV2Connection>().is_some()
 +}
 +
-+// ── Hostile: off is v1, and no subagents are offered ───────────────────────
++// ── Hostile: off is v1, with no v2 attempt ─────────────────────────────────
 +
 +#[gpui::test]
-+async fn connect_with_acp_beta_off_offers_v1_without_subagents(cx: &mut TestAppContext) {
++async fn connect_with_acp_beta_off_offers_v1_only(cx: &mut TestAppContext) {
 +    connect_beta_init(cx);
 +    let directory = tempfile::tempdir().expect("working directory");
 +    let project = Project::example([directory.path()], &mut cx.to_async()).await;
@@ -360,8 +372,8 @@ index 0000000..a2e59c5
 +
 +    assert_eq!(
 +        lines,
-+        ["initialize 1"],
-+        "one v1 initialize, no v2 attempt and no subagents offer"
++        ["initialize 1", "subagents offered"],
++        "one v1 initialize and no v2 attempt; subagents are stable on v1 since c31063a0"
 +    );
 +    assert!(!connect_beta_is_v2(&connection), "a v1 connection");
 +    connection.shutdown();
@@ -408,7 +420,11 @@ index 0000000..a2e59c5
 +        "a live connection is not renegotiated by the switch"
 +    );
 +    let (second, lines) = connect_beta_once(&project, &trace, true, cx).await;
-+    assert_eq!(lines, ["initialize 1"], "the next connection is v1");
++    assert_eq!(
++        lines,
++        ["initialize 1", "subagents offered"],
++        "the next connection is v1"
++    );
 +    assert!(!connect_beta_is_v2(&second));
 +
 +    connect_beta_setting(None, cx);
