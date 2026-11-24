@@ -3,7 +3,10 @@
 
 EAPI=8
 
-PYTHON_COMPAT=( python3_{12..14} )
+# python3_15 added (::gentoo stops at 3.14). The python deps that also stop
+# there (pycxx, matplotlib, pivy) are mirrored in this overlay with it. The
+# IUSE/REQUIRED_USE/DEPEND/RDEPEND tags below already cover the axes it touches.
+PYTHON_COMPAT=( python3_{12..15} )
 
 # BENTOO-DIVERGENCE: INHERIT - everything ::gentoo inherits except branding,
 # whose blurb is "Branding variables with Gentoo defaults". bentoo ships its
@@ -53,6 +56,8 @@ IUSE+=" addonmgr assembly +bim cam cloud fem idf inspection +mesh openscad point
 # passes $(usex techdraw). With the workbench always present the constraint is
 # satisfied by construction; restoring it would reference a flag that does not
 # exist and kill the ebuild outright.
+# test? excludes python3_15: the tests need sci-libs/vtk[python], whose
+# PYTHON_COMPAT stops at 3.14 in ::gentoo.
 REQUIRED_USE="
 	${PYTHON_REQUIRED_USE}
 	bim? ( mesh )
@@ -64,6 +69,7 @@ REQUIRED_USE="
 	mesh? ( smesh )
 	openscad? ( mesh )
 	reverse? ( mesh points )
+	test? ( !python_single_target_python3_15 )
 "
 # Draft Workbench needs BIM
 # TechDraw is always ON (required by Draft which is always ON)
@@ -74,6 +80,10 @@ RESTRICT="!test? ( test )"
 # if vtk[cuda], we use cuda
 # BENTOO-DIVERGENCE: RDEPEND - openssl and curl, behind USE=cloud below.
 # BENTOO-DIVERGENCE: DEPEND - same pair, through RDEPEND.
+# netgen upper bound: the vendored salomesmesh NETGENPlugin uses the pre-6.2.2605
+# netgen::Segment API (public epgeominfo, si, edgenr); newer netgen fails to
+# compile it. Same bound as ::gentoo. Upstream: FreeCAD/FreeCAD#32105,
+# obentoo/bentoo#107.
 RDEPEND="
 	${PYTHON_DEPS}
 	dev-cpp/tbb:=
@@ -113,7 +123,7 @@ RDEPEND="
 		virtual/opengl
 		spacenav? ( dev-libs/libspnav[X?] )
 	)
-	netgen? ( media-gfx/netgen[opencascade] )
+	netgen? ( <media-gfx/netgen-6.2.2605[opencascade] )
 	openscad? ( $(python_gen_cond_dep 'dev-python/ply[${PYTHON_USEDEP}]') )
 	pcl? ( sci-libs/pcl:= )
 	smesh? (
@@ -128,7 +138,7 @@ DEPEND="${RDEPEND}
 		$(python_gen_impl_dep '-debug')
 		$(python_gen_cond_dep '
 			sci-libs/vtk[python,${PYTHON_SINGLE_USEDEP}]
-		' )
+		' python3_{12..14} )
 		gui? (
 			$(python_gen_cond_dep '
 				dev-python/pyside:6[tools(-),${PYTHON_USEDEP}]
