@@ -9,7 +9,7 @@ CRATES="
 	ahash@0.8.12
 	aho-corasick@1.1.3
 	allocator-api2@0.2.21
-	annotate-snippets@0.12.16
+	annotate-snippets@0.12.17
 	anstream@1.0.0
 	anstyle-parse@1.0.0
 	anstyle-query@1.1.4
@@ -88,11 +88,11 @@ CRATES="
 	etcetera@0.11.0
 	event-listener-strategy@0.5.4
 	event-listener@5.4.2
-	fancy-regex@0.19.0
+	fancy-regex@0.20.2
 	fastrand@2.3.0
 	filetime@0.2.26
 	find-msvc-tools@0.1.12
-	flate2@1.1.10
+	flate2@1.1.11
 	fluent-uri@0.3.2
 	fluent-uri@0.4.1
 	fnv@1.0.7
@@ -125,9 +125,9 @@ CRATES="
 	hex@0.4.3
 	http-body-util@0.1.3
 	http-body@1.0.1
-	http-cache-reqwest@1.0.0-alpha.9
+	http-cache-reqwest@1.0.0-alpha.10
 	http-cache-semantics@3.0.0
-	http-cache@1.0.0-alpha.8
+	http-cache@1.0.0-alpha.9
 	http-serde@2.1.1
 	http@1.5.0
 	httparse@1.10.1
@@ -146,7 +146,7 @@ CRATES="
 	id-arena@2.3.0
 	idna@1.1.0
 	idna_adapter@1.2.1
-	ignore@0.4.33
+	ignore@0.4.34
 	indexmap@2.14.2
 	indicatif@0.18.6
 	indoc@2.0.8
@@ -161,9 +161,9 @@ CRATES="
 	jni@0.21.1
 	jobserver@0.1.34
 	js-sys@0.3.85
-	jsonschema-regex@0.59.0
-	jsonschema-value@0.59.0
-	jsonschema@0.59.0
+	jsonschema-regex@0.61.2
+	jsonschema-value@0.61.2
+	jsonschema@0.61.2
 	lazy_static@1.5.0
 	leb128fmt@0.1.0
 	libc@0.2.185
@@ -234,7 +234,7 @@ CRATES="
 	redox_syscall@0.5.18
 	ref-cast-impl@1.0.25
 	ref-cast@1.0.25
-	referencing@0.59.0
+	referencing@0.61.2
 	reflink-copy@0.1.30
 	regex-automata@0.4.18
 	regex-syntax@0.8.11
@@ -250,7 +250,7 @@ CRATES="
 	rustls-platform-verifier-android@0.1.1
 	rustls-platform-verifier@0.6.1
 	rustls-webpki@0.103.16
-	rustls@0.23.34
+	rustls@0.23.46
 	rustversion@1.0.22
 	ryu@1.0.20
 	same-file@1.0.6
@@ -275,7 +275,7 @@ CRATES="
 	sharded-slab@0.1.7
 	shlex@2.0.1
 	similar@2.7.0
-	similar@3.2.0
+	similar@3.2.1
 	slab@0.4.11
 	smallvec@1.15.1
 	socket2@0.6.3
@@ -334,7 +334,7 @@ CRATES="
 	tree-sitter-bash@0.25.1
 	tree-sitter-language@0.1.9
 	tree-sitter-yaml@0.7.2
-	tree-sitter@0.27.1
+	tree-sitter@0.27.2
 	try-lock@0.2.5
 	typenum@1.20.1
 	typomania@0.2.0
@@ -430,7 +430,7 @@ CRATES="
 	wit-bindgen@0.51.0
 	wit-component@0.244.0
 	wit-parser@0.244.0
-	woodruffw-trough-tree-sitter-powershell@0.1.2
+	woodruffw-trough-tree-sitter-powershell@0.1.6
 	writeable@0.6.1
 	xattr@1.6.1
 	xxhash-rust@0.8.18
