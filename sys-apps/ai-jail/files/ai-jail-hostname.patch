@@ -1,0 +1,894 @@
+--hostname for ai-jail 3.5.0 (from the fork's feat/hostname, merged into the
+Zeo stack zeo/ebuild-350-r6): the sandbox's host name is NAME instead of
+ai-sandbox, one DNS label, and one name reaches everything that reads one --
+bwrap's UTS namespace, the sandbox's /etc/hosts, a new /etc/hostname bound
+over the host's (which named this machine even under --mask-host) and, with
+--syscall-view, uname(2). The /etc/hostname bind is there with or without the
+option. Runtime only, never saved; needs no --mask-host. Must follow
+ai-jail-minimal-etc.patch.
+
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 56eb693..a2f5080 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -178,7 +178,7 @@ There are regression tests in `src/config.rs` that parse old config file formats
+ 
+ The bwrap command mounts are order-dependent. The sequence in `sandbox/bwrap.rs` must be:
+ 
+-1. Base mounts (`/usr`, `/etc`, `/opt`, `/sys`, `/dev`, `/proc`, `/tmp`, `/run`). Under `--mask-host --minimal-etc` the `/etc` bind is replaced in place by a tmpfs and its allowlisted entries, so the hosts and resolv.conf binds that follow still land on it; a `--remount-ro /etc` is emitted after every discovered group, because later groups (the host view, ssh's `ssh_config.d` tmpfs) may create mount points inside it
++1. Base mounts (`/usr`, `/etc`, `/opt`, `/sys`, `/dev`, `/proc`, `/tmp`, `/run`). Under `--mask-host --minimal-etc` the `/etc` bind is replaced in place by a tmpfs and its allowlisted entries, so the hosts and resolv.conf binds that follow still land on it, as does the sandbox's `/etc/hostname` (naming `--hostname`, or `ai-sandbox`), bound last in the base; a `--remount-ro /etc` is emitted after every discovered group, because later groups (the host view, ssh's `ssh_config.d` tmpfs) may create mount points inside it
+ 2. Sensitive /sys masks (tmpfs over `/sys/firmware`, `/sys/kernel/security`, etc.)
+ 3. GPU devices, then KVM device (`--kvm`, `/dev/kvm`)
+ 4. Docker socket
+diff --git a/README.md b/README.md
+index 2c00fd4..05f9ca4 100644
+--- a/README.md
++++ b/README.md
+@@ -923,6 +923,17 @@ the tmpfs is remounted read-only once the binds inside it are made. With
+ `--overlay-system`, the entries bound into it still name the host's disk in
+ `/proc/self/mountinfo`; `/etc` itself reads `tmpfs`.
+ 
++`--hostname NAME` gives the sandbox a host name other than `ai-sandbox`, so a
++caller can make each project look like a machine of its own. One name
++everywhere the sandbox can read one: `uname -n` and `hostname` (bwrap's UTS
++namespace), the sandbox's `/etc/hosts`, an `/etc/hostname` bound over the
++host's, and `uname(2)` under `--syscall-view`. That `/etc/hostname` is new for
++every sandbox: the host's, bound with the rest of `/etc`, named this machine,
++so even without `--hostname` it now reads `ai-sandbox`. The name must be one
++DNS label -- 1 to 63 lowercase letters, digits and hyphens, not starting or
++ending with a hyphen -- and is refused otherwise. It needs no `--mask-host`,
++is never saved, and is ignored on macOS.
++
+ The allowed CPUs are the `--cpus` set, else the process's affinity
+ (`taskset`), trimmed to the cgroup's `cpu.max` rounded up to whole CPUs; the
+ memory limit is the smallest `memory.max` from the sandbox's cgroup up to the
+@@ -1082,6 +1093,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
+ --overlay-system                with --mask-host: /usr, /etc, /opt through read-only overlays (Linux; not saved)
+ --syscall-view                  with --mask-host: uname(2) and sysinfo(2) answered by ai-jail (Linux; not saved)
+ --minimal-etc                   with --mask-host: /etc holds only a run-time allowlist (Linux; not saved)
++--hostname NAME                 the sandbox's host name, one DNS label (default ai-sandbox; Linux; not saved)
+ --browser[=hard|soft]           isolated browser profile (needs --network --display)
+ --dry-run                       print the backend invocation
+ --init                          write configuration and exit
+diff --git a/docs/CLI_TUI_PARITY.md b/docs/CLI_TUI_PARITY.md
+index f24b51f..0cc0fe1 100644
+--- a/docs/CLI_TUI_PARITY.md
++++ b/docs/CLI_TUI_PARITY.md
+@@ -95,6 +95,11 @@ or integration rather than saved sandbox authority.
+   configuration key, refused on macOS; it only narrows what the sandbox
+   reads), and `--overlay-system`, `--syscall-view` and `--minimal-etc` with it
+   (the same per-run choice; each refused without `--mask-host`)
++- Host name: `--hostname` NAME (a per-run choice made by the caller, like
++  the host view -- an editor that gives each project a stable name of its
++  own; no configuration key, ignored on macOS, which has no UTS namespace;
++  refused unless one DNS label). It needs no `--mask-host`: it only
++  replaces `ai-sandbox`, and it narrows nothing
+ - Backward-compatible rejected option: `--allow-tcp-port`
+ 
+ ## Release rule
+diff --git a/docs/USER_GUIDE.md b/docs/USER_GUIDE.md
+index 6807a33..a31af52 100644
+--- a/docs/USER_GUIDE.md
++++ b/docs/USER_GUIDE.md
+@@ -676,6 +676,13 @@ configuration are absent. Symlinks are recreated and resolve inside the
+ sandbox. The full list, with the reason for each entry, is in
+ `src/sandbox/minimal_etc.rs`.
+ 
++`--hostname NAME` (never saved; needs no `--mask-host`) names the sandbox
++instead of `ai-sandbox`: `uname -n`, `/etc/hosts`, an `/etc/hostname` bound
++over the host's and, under `--syscall-view`, `uname(2)` all read it. The
++sandbox gets that `/etc/hostname` either way, so the host's own name no longer
++shows through it. The name is one DNS label -- lowercase letters, digits and
++hyphens, at most 63 -- and anything else is refused.
++
+ A nested sandbox can no longer mount its own `/proc` under `--mask-host`; with
+ ai-jail's default Landlock and seccomp a nested sandbox is refused anyway, so
+ this matters only under `--no-landlock --no-seccomp`. The `cpuid` instruction,
+diff --git a/src/cli.rs b/src/cli.rs
+index 3b7745b..a9bf04a 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -219,6 +219,9 @@ OPTIONS:
+     --minimal-etc                  With --mask-host: /etc is a read-only tmpfs holding only
+                                    what programs read at run time (accounts, name service,
+                                    TLS roots, time zone, shell startup) (Linux; never saved)
++    --hostname <NAME>              The jail's host name, one DNS label: uname, /etc/hosts,
++                                   /etc/hostname and --syscall-view all read it (Linux;
++                                   never saved; default ai-sandbox)
+     --clean                        Ignore saved and legacy project policy, start fresh
+     --dry-run                      Print the sandbox command without executing
+     --init                         Create/update external per-project config and exit
+@@ -298,6 +301,7 @@ pub struct CliArgs {
+     pub overlay_system: bool,
+     pub syscall_view: bool,
+     pub minimal_etc: bool,
++    pub hostname: Option<String>,
+     /// Internal: the helper's end of the `--syscall-view` socket pair.
+     pub syscall_view_fd: Option<i32>,
+     pub agent_state: Option<bool>,
+@@ -597,6 +601,10 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
+             Long("minimal-etc") => {
+                 args.minimal_etc = true;
+             }
++            Long("hostname") => {
++                let val = parser.value().map_err(|e| e.to_string())?;
++                args.hostname = Some(val.to_string_lossy().into_owned());
++            }
+             Long("syscall-view-fd") => {
+                 if !args.landlock_exec {
+                     return Err(
+@@ -1261,6 +1269,7 @@ const SANDBOX_LONG_FLAGS: &[&str] = &[
+     "--overlay-system",
+     "--syscall-view",
+     "--minimal-etc",
++    "--hostname",
+     "--x11",
+     "--no-x11",
+     "--host-shm",
+@@ -1314,6 +1323,7 @@ const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
+     "overlay_system",
+     "syscall_view",
+     "minimal_etc",
++    "hostname",
+ ];
+ 
+ /// Names already missing from docs/USER_GUIDE.md at upstream v3.3.0
+@@ -3105,6 +3115,16 @@ mod tests {
+         assert!(args.mask_host && args.overlay_system);
+     }
+ 
++    #[test]
++    fn parse_hostname() {
++        assert_eq!(parse_test(&["claude"]).unwrap().hostname, None);
++        let args =
++            parse_test(&["--hostname", "desktop-k3f9a2", "claude"]).unwrap();
++        assert_eq!(args.hostname.as_deref(), Some("desktop-k3f9a2"));
++        assert_eq!(args.command, vec!["claude".to_string()]);
++        assert!(HELP.contains("--hostname"));
++    }
++
+     #[test]
+     fn parse_minimal_etc() {
+         assert!(!parse_test(&["claude"]).unwrap().minimal_etc);
+diff --git a/src/config.rs b/src/config.rs
+index f492da7..531c01b 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -203,6 +203,10 @@ pub struct Config {
+     /// host's entries, under `--mask-host`. Runtime only, never saved.
+     #[serde(default, skip)]
+     pub minimal_etc: bool,
++    /// `--hostname`: the jail's host name (`ai-sandbox` without it).
++    /// Runtime only, never saved: a caller passes it on every launch.
++    #[serde(default, skip)]
++    pub hostname: Option<String>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub command: Vec<String>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+@@ -2667,6 +2671,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
+     config.overlay_system = cli.overlay_system;
+     config.syscall_view = cli.syscall_view;
+     config.minimal_etc = cli.minimal_etc;
++    config.hostname = cli.hostname.clone();
+ 
+     expand_user_paths(&mut config);
+ 
+@@ -4996,6 +5001,7 @@ no_gpu = true
+             overlay_system: false,
+             syscall_view: false,
+             minimal_etc: false,
++            hostname: None,
+             command: vec!["claude".into()],
+             rw_maps: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
+             ro_maps: vec![PathBuf::from("/opt/data")],
+@@ -8401,6 +8407,7 @@ hide_dotdirs = [".my_secrets"]
+             overlay_system: false,
+             syscall_view: false,
+             minimal_etc: false,
++            hostname: None,
+             command: vec!["codex".into()],
+             rw_maps: vec![PathBuf::from("/tmp/shared")],
+             ro_maps: vec![],
+diff --git a/src/config_store.rs b/src/config_store.rs
+index a03e020..fea39ce 100644
+--- a/src/config_store.rs
++++ b/src/config_store.rs
+@@ -1201,6 +1201,7 @@ pub(crate) fn save_project_grants(
+     grants.overlay_system = false;
+     grants.syscall_view = false;
+     grants.minimal_etc = false;
++    grants.hostname = None;
+     doc.directory_grants = approved_directory_grants.to_vec();
+     doc.grants = grants;
+     doc.approved_env_names = approved_env_names;
+@@ -1527,6 +1528,7 @@ const CONFIG_FIELD_POLICY: &[ConfigFieldPolicy] = &[
+     excluded_policy!("overlay_system", Restriction),
+     excluded_policy!("syscall_view", Restriction),
+     excluded_policy!("minimal_etc", Restriction),
++    excluded_policy!("hostname", Preference),
+     static_policy!("command", Authority, Command),
+     static_policy!("rw_maps", Authority, RwMaps),
+     static_policy!("ro_maps", Authority, RoMaps),
+@@ -2341,6 +2343,7 @@ mod tests {
+         expected_excluded!("overlay_system", Restriction),
+         expected_excluded!("syscall_view", Restriction),
+         expected_excluded!("minimal_etc", Restriction),
++        expected_excluded!("hostname", Preference),
+         expected_authority!("command", Authority, Command, ["command claude"]),
+         expected_authority!(
+             "rw_maps",
+@@ -2468,6 +2471,9 @@ mod tests {
+             "minimal_etc" => {
+                 config.minimal_etc = true;
+             }
++            "hostname" => {
++                config.hostname = Some("desktop-k3f9a2".into());
++            }
+             "command" => {
+                 config.command =
+                     vec!["claude".into(), "--token=top-secret".into()];
+diff --git a/src/main.rs b/src/main.rs
+index a7f2f01..c837878 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -360,6 +360,11 @@ fn validate_overlay_system(config: &config::Config) -> Result<(), String> {
+     if config.minimal_etc && !config.mask_host {
+         return Err("--minimal-etc requires --mask-host".into());
+     }
++    // Unlike the layers above, a name needs no --mask-host: it only replaces
++    // `ai-sandbox`. It is refused when it is not one DNS label.
++    if let Some(name) = &config.hostname {
++        sandbox::hostname::validate(name)?;
++    }
+     Ok(())
+ }
+ 
+@@ -2005,7 +2010,9 @@ fn run(
+     let egress_stats = std::sync::Arc::new(egress_log::EgressStats::default());
+ 
+     // Prepare sandbox resources (temp hosts file on Linux, no-op on macOS)
+-    let guard = sandbox::prepare()?;
++    let guard = sandbox::prepare(sandbox::hostname::jail_hostname(
++        launch_runner.config(),
++    ))?;
+ 
+     // Filtered egress: the CONNECT proxy runs as threads in this
+     // supervisor process. On Linux the sandbox reaches it through the
+@@ -2946,6 +2953,17 @@ mod tests {
+             ..Config::default()
+         };
+         assert!(validate_overlay_system(&etc_masked).is_ok());
++        let named = Config {
++            hostname: Some("desktop-k3f9a2".into()),
++            ..Config::default()
++        };
++        assert!(validate_overlay_system(&named).is_ok(), "no --mask-host");
++        let dotted = Config {
++            hostname: Some("evil.example".into()),
++            ..Config::default()
++        };
++        let error = validate_overlay_system(&dotted).unwrap_err();
++        assert!(error.contains("--hostname"), "{error}");
+         assert!(validate_overlay_system(&Config::default()).is_ok());
+     }
+ 
+diff --git a/src/sandbox/bwrap.rs b/src/sandbox/bwrap.rs
+index 68cd51c..905d014 100644
+--- a/src/sandbox/bwrap.rs
++++ b/src/sandbox/bwrap.rs
+@@ -353,6 +353,7 @@ impl MountSet {
+     fn isolation_args(
+         &self,
+         project_dir: &Path,
++        hostname: &str,
+         lockdown: bool,
+         network_enabled: bool,
+         inherit_env: bool,
+@@ -366,7 +367,7 @@ impl MountSet {
+             "--unshare-uts".into(),
+             "--unshare-ipc".into(),
+             "--hostname".into(),
+-            super::syscall_view::JAIL_HOSTNAME.into(),
++            hostname.into(),
+         ];
+ 
+         if lockdown || should_use_new_session() {
+@@ -566,6 +567,8 @@ fn login_name_env(env_pass: &[String]) -> Vec<(&'static str, String)> {
+ 
+ struct MountSources<'a> {
+     hosts_mount: (&'a Path, &'a Path),
++    /// The sandbox's `/etc/hostname` and the host path it covers.
++    hostname_mount: Option<(&'a Path, &'a Path)>,
+     resolv_mount: Option<(&'a Path, &'a Path)>,
+     resolv_intermediate_mount: Option<(&'a Path, &'a Path)>,
+     empty_path: &'a Path,
+@@ -581,6 +584,7 @@ impl<'a> MountSources<'a> {
+     fn from_guard(guard: &'a SandboxGuard) -> Self {
+         Self {
+             hosts_mount: guard.hosts_mount(),
++            hostname_mount: guard.hostname_mount(),
+             resolv_mount: guard.resolv_mount(),
+             resolv_intermediate_mount: guard.resolv_intermediate_mount(),
+             empty_path: guard.empty_path(),
+@@ -598,6 +602,7 @@ impl<'a> MountSources<'a> {
+     ) -> Self {
+         Self {
+             hosts_mount,
++            hostname_mount: None,
+             resolv_mount,
+             resolv_intermediate_mount: None,
+             empty_path,
+@@ -610,6 +615,10 @@ impl<'a> MountSources<'a> {
+ 
+ pub struct SandboxGuard {
+     hosts_path: PathBuf,
++    /// The jail's host name (`--hostname`, or `ai-sandbox`).
++    hostname: String,
++    /// The sandbox's `/etc/hostname` and the host path it covers.
++    hostname_file: Option<(PathBuf, PathBuf)>,
+     /// Where to mount the private hosts file inside the sandbox.
+     /// If /etc/hosts is a symlink (e.g. NixOS), this is the symlink
+     /// target so the symlink inherited from --ro-bind /etc resolves.
+@@ -648,6 +657,12 @@ impl SandboxGuard {
+         (&self.hosts_path, &self.hosts_dest)
+     }
+ 
++    fn hostname_mount(&self) -> Option<(&Path, &Path)> {
++        self.hostname_file
++            .as_ref()
++            .map(|(src, dest)| (src.as_path(), dest.as_path()))
++    }
++
+     fn resolv_mount(&self) -> Option<(&Path, &Path)> {
+         match (&self.resolv_path, &self.resolv_dest) {
+             (Some(src), Some(dest)) => Some((src, dest)),
+@@ -679,7 +694,7 @@ impl SandboxGuard {
+             return Ok(supervisor);
+         }
+         let supervisor = super::syscall_view::Supervisor::start(
+-            super::syscall_view::answers_for_host(),
++            super::syscall_view::answers_for_host(&self.hostname),
+             std::time::Instant::now(),
+         )?;
+         Ok(self.syscall_view.get_or_init(|| supervisor))
+@@ -809,6 +824,9 @@ fn apply_minimal_etc(mount_set: &mut MountSet, host_etc: &Path) {
+ impl Drop for SandboxGuard {
+     fn drop(&mut self) {
+         let _ = std::fs::remove_file(&self.hosts_path);
++        if let Some((ref p, _)) = self.hostname_file {
++            let _ = std::fs::remove_file(p);
++        }
+         if let Some(ref p) = self.resolv_path {
+             let _ = std::fs::remove_file(p);
+         }
+@@ -824,6 +842,8 @@ impl SandboxGuard {
+         SandboxGuard {
+             hosts_path: path,
+             hosts_dest: PathBuf::from("/etc/hosts"),
++            hostname: super::hostname::DEFAULT_HOSTNAME.into(),
++            hostname_file: None,
+             resolv_path: None,
+             resolv_dest: None,
+             resolv_intermediate_dest: None,
+@@ -1125,6 +1145,15 @@ fn trusted_binary_metadata(
+ }
+ 
+ fn new_hosts_file() -> Result<(PathBuf, std::fs::File), String> {
++    new_private_file("bwrap-hosts", "temp hosts file")
++}
++
++/// An owner-only tempfile named `<prefix>.<pid>.<nonce>.<attempt>`, created
++/// exclusively so no other process can have placed it first.
++fn new_private_file(
++    prefix: &str,
++    what: &str,
++) -> Result<(PathBuf, std::fs::File), String> {
+     let tmp = std::env::temp_dir();
+ 
+     for attempt in 0..128_u32 {
+@@ -1132,7 +1161,7 @@ fn new_hosts_file() -> Result<(PathBuf, std::fs::File), String> {
+             .duration_since(UNIX_EPOCH)
+             .map_or(0, |d| d.as_nanos());
+         let name =
+-            format!("bwrap-hosts.{}.{}.{}", std::process::id(), nonce, attempt);
++            format!("{prefix}.{}.{}.{}", std::process::id(), nonce, attempt);
+         let path = tmp.join(name);
+ 
+         match OpenOptions::new().create_new(true).write(true).open(&path) {
+@@ -1145,7 +1174,7 @@ fn new_hosts_file() -> Result<(PathBuf, std::fs::File), String> {
+             }
+             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+             Err(e) => {
+-                return Err(format!("Failed to create temp hosts file: {e}"));
++                return Err(format!("Failed to create {what}: {e}"));
+             }
+         }
+     }
+@@ -1171,13 +1200,12 @@ pub fn check() -> Result<(), String> {
+     }
+ }
+ 
+-pub fn prepare() -> Result<SandboxGuard, String> {
++pub fn prepare(hostname: &str) -> Result<SandboxGuard, String> {
+     let (path, mut file) = new_hosts_file()?;
+     let hosts_dest = resolved_hosts_dest();
+-    let contents =
+-        b"127.0.0.1 localhost ai-sandbox\n::1       localhost ai-sandbox\n";
++    let contents = super::hostname::hosts_contents(hostname);
+ 
+-    file.write_all(contents)
++    file.write_all(contents.as_bytes())
+         .map_err(|e| format!("Failed to create temp hosts file: {e}"))?;
+     file.sync_all()
+         .map_err(|e| format!("Failed to sync temp hosts file: {e}"))?;
+@@ -1187,10 +1215,13 @@ pub fn prepare() -> Result<SandboxGuard, String> {
+     let empty_path = new_empty_file()?;
+     let deny_file_path = new_deny_file()?;
+     let deny_dir_path = new_deny_dir()?;
++    let hostname_file = new_hostname_file(hostname)?;
+ 
+     Ok(SandboxGuard {
+         hosts_path: path,
+         hosts_dest,
++        hostname: hostname.to_string(),
++        hostname_file,
+         resolv_path,
+         resolv_dest,
+         resolv_intermediate_dest,
+@@ -1202,6 +1233,26 @@ pub fn prepare() -> Result<SandboxGuard, String> {
+     })
+ }
+ 
++/// The sandbox's `/etc/hostname`, naming the jail, with the path it covers.
++/// The host's, bound with the rest of `/etc`, named this machine. `None`
++/// when the host has no `/etc/hostname`: nothing would show it.
++fn new_hostname_file(
++    hostname: &str,
++) -> Result<Option<(PathBuf, PathBuf)>, String> {
++    let Ok(dest) = std::fs::canonicalize("/etc/hostname") else {
++        return Ok(None);
++    };
++    let (path, mut file) =
++        new_private_file("ai-jail-hostname", "temp hostname file")?;
++    file.write_all(super::hostname::hostname_contents(hostname).as_bytes())
++        .and_then(|()| file.sync_all())
++        .map_err(|e| {
++            let _ = std::fs::remove_file(&path);
++            format!("Failed to write temp hostname file: {e}")
++        })?;
++    Ok(Some((path, dest)))
++}
++
+ fn resolved_hosts_dest() -> PathBuf {
+     std::fs::canonicalize("/etc/hosts")
+         .unwrap_or_else(|_| PathBuf::from("/etc/hosts"))
+@@ -1766,6 +1817,7 @@ pub fn build(
+ 
+     opt_args.extend(mount_set.isolation_args(
+         project_dir,
++        super::hostname::jail_hostname(config),
+         lockdown,
+         config.network_enabled(),
+         config.inherit_env_enabled(),
+@@ -2064,6 +2116,7 @@ fn build_dry_run_args_forwarded(
+ 
+     args.extend(mount_set.isolation_args(
+         project_dir,
++        super::hostname::jail_hostname(config),
+         lockdown,
+         config.network_enabled(),
+         config.inherit_env_enabled(),
+@@ -2314,12 +2367,24 @@ fn discover_mounts_full(
+         (vec![], vec![])
+     };
+     let mut mounts = MountSet {
+-        base: discover_base(
+-            sources.hosts_mount,
+-            sources.resolv_mount,
+-            sources.resolv_intermediate_mount,
+-            verbose,
+-        ),
++        base: {
++            let mut base = discover_base(
++                sources.hosts_mount,
++                sources.resolv_mount,
++                sources.resolv_intermediate_mount,
++                verbose,
++            );
++            // Last in the base, like /etc/hosts after the /etc bind it
++            // covers: --minimal-etc and --overlay-system replace that bind
++            // in place, so this still lands on top of either.
++            if let Some((src, dest)) = sources.hostname_mount {
++                base.push(Mount::FileRoBind {
++                    src: src.into(),
++                    dest: dest.into(),
++                });
++            }
++            base
++        },
+         sys_masks: {
+             let mut masks = discover_sys_masks(lockdown);
+             if (!display_mounts.is_empty() || !systemd_mounts.is_empty())
+@@ -8672,6 +8737,7 @@ mod tests {
+ 
+         let args = set.isolation_args(
+             Path::new("/home/u/project"),
++            "ai-sandbox",
+             false,
+             true,
+             false,
+@@ -8949,12 +9015,58 @@ mod tests {
+ 
+     #[test]
+     fn prepare_creates_private_hosts_file() {
+-        let guard = prepare().unwrap();
++        let guard = prepare("ai-sandbox").unwrap();
+         let meta = std::fs::metadata(guard.hosts_path()).unwrap();
+         let mode = meta.permissions().mode() & 0o777;
+         assert_eq!(mode, 0o600);
+     }
+ 
++    #[test]
++    fn prepare_names_the_jail_in_hosts_and_hostname() {
++        let guard = prepare("desktop-k3f9a2").unwrap();
++        let hosts = std::fs::read_to_string(guard.hosts_path()).unwrap();
++        assert!(hosts.contains("localhost desktop-k3f9a2"), "{hosts}");
++        assert!(!hosts.contains("ai-sandbox"), "{hosts}");
++        match guard.hostname_mount() {
++            Some((src, dest)) => {
++                assert_eq!(
++                    std::fs::read_to_string(src).unwrap(),
++                    "desktop-k3f9a2\n"
++                );
++                assert_eq!(
++                    dest,
++                    std::fs::canonicalize("/etc/hostname").unwrap()
++                );
++                let mode = std::fs::metadata(src).unwrap().permissions().mode();
++                assert_eq!(mode & 0o777, 0o600, "owner-only, like hosts");
++            }
++            None => assert!(
++                std::fs::canonicalize("/etc/hostname").is_err(),
++                "only a host without /etc/hostname gets none"
++            ),
++        }
++        let src = guard.hostname_mount().map(|(src, _)| src.to_path_buf());
++        drop(guard);
++        if let Some(src) = src {
++            assert!(!src.exists(), "the guard removes it");
++        }
++    }
++
++    #[test]
++    fn isolation_args_give_bwrap_the_jail_name() {
++        let set = MountSet::default();
++        let args = set.isolation_args(
++            Path::new("/home/u/project"),
++            "desktop-k3f9a2",
++            false,
++            true,
++            false,
++            &[],
++        );
++        let at = args.iter().position(|a| a == "--hostname").unwrap();
++        assert_eq!(args[at + 1], "desktop-k3f9a2");
++    }
++
+     #[test]
+     fn new_session_when_not_interactive() {
+         // --new-session is only used when stdin is not a terminal.
+diff --git a/src/sandbox/hostname.rs b/src/sandbox/hostname.rs
+new file mode 100644
+index 0000000..43b1a01
+--- /dev/null
++++ b/src/sandbox/hostname.rs
+@@ -0,0 +1,55 @@
++//! The jail's host name: `--hostname NAME`, or `ai-sandbox` without it.
++//!
++//! One name everywhere the jail can read one: the UTS namespace bwrap
++//! creates (`--hostname`), the sandbox's `/etc/hosts`, an `/etc/hostname`
++//! over the host's (which, bound with the rest of `/etc`, named this
++//! machine), and `uname(2)` under `--syscall-view`. A caller that wants
++//! each project to look like a different machine passes a name per project.
++
++use crate::config::Config;
++
++/// The name a jail gets when none is asked for.
++pub(crate) const DEFAULT_HOSTNAME: &str = "ai-sandbox";
++
++/// The longest label DNS allows, and what `new_utsname` can hold (64).
++const MAX_LEN: usize = 63;
++
++/// The jail's host name for `config`.
++pub(crate) fn jail_hostname(config: &Config) -> &str {
++    config.hostname.as_deref().unwrap_or(DEFAULT_HOSTNAME)
++}
++
++/// A single DNS label (RFC 1123): 1 to 63 lowercase ASCII letters, digits
++/// and hyphens, not starting or ending with a hyphen. Anything else could
++/// break `/etc/hosts` or name a domain, so it is refused, not cleaned.
++pub(crate) fn validate(name: &str) -> Result<(), String> {
++    let well_formed = !name.is_empty()
++        && name.len() <= MAX_LEN
++        && !name.starts_with('-')
++        && !name.ends_with('-')
++        && name
++            .bytes()
++            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
++    if well_formed {
++        Ok(())
++    } else {
++        Err(format!(
++            "--hostname {name:?}: a host name is 1 to {MAX_LEN} lowercase letters, \
++             digits and hyphens, not starting or ending with a hyphen"
++        ))
++    }
++}
++
++/// The sandbox's `/etc/hosts`: loopback for localhost and the jail's name.
++pub(crate) fn hosts_contents(name: &str) -> String {
++    format!("127.0.0.1 localhost {name}\n::1       localhost {name}\n")
++}
++
++/// The sandbox's `/etc/hostname`.
++pub(crate) fn hostname_contents(name: &str) -> String {
++    format!("{name}\n")
++}
++
++#[cfg(test)]
++#[path = "hostname_tests.rs"]
++mod tests;
+diff --git a/src/sandbox/hostname_tests.rs b/src/sandbox/hostname_tests.rs
+new file mode 100644
+index 0000000..6c2d592
+--- /dev/null
++++ b/src/sandbox/hostname_tests.rs
+@@ -0,0 +1,47 @@
++use super::*;
++
++#[test]
++fn hostname_defaults_to_ai_sandbox() {
++    assert_eq!(jail_hostname(&Config::default()), "ai-sandbox");
++    let named = Config {
++        hostname: Some("desktop-k3f9a2".into()),
++        ..Config::default()
++    };
++    assert_eq!(jail_hostname(&named), "desktop-k3f9a2");
++}
++
++#[test]
++fn hostname_accepts_a_dns_label() {
++    for name in ["a", "desktop-k3f9a2", "ws1", &"x".repeat(63)] {
++        assert!(validate(name).is_ok(), "{name}");
++    }
++}
++
++#[test]
++fn hostname_refuses_what_is_not_one_label() {
++    for name in [
++        "",
++        "-lead",
++        "trail-",
++        "Upper",
++        "dotted.name",
++        "with space",
++        "new\nline",
++        "tab\t",
++        "ünïcode",
++        &"x".repeat(64),
++    ] {
++        let error = validate(name).expect_err(name);
++        assert!(error.contains("--hostname"), "{error}");
++    }
++}
++
++#[test]
++fn hostname_files_name_the_jail() {
++    let hosts = hosts_contents("desktop-k3f9a2");
++    assert_eq!(
++        hosts,
++        "127.0.0.1 localhost desktop-k3f9a2\n::1       localhost desktop-k3f9a2\n"
++    );
++    assert_eq!(hostname_contents("desktop-k3f9a2"), "desktop-k3f9a2\n");
++}
+diff --git a/src/sandbox/mod.rs b/src/sandbox/mod.rs
+index be813d5..e0d4c43 100644
+--- a/src/sandbox/mod.rs
++++ b/src/sandbox/mod.rs
+@@ -69,6 +69,7 @@ mod host_view_extra;
+ mod host_view_synth;
+ #[cfg(target_os = "linux")]
+ pub(crate) mod host_view_timens;
++pub(crate) mod hostname;
+ #[cfg(target_os = "linux")]
+ mod minimal_etc;
+ #[cfg(target_os = "linux")]
+@@ -1849,13 +1850,16 @@ pub fn check() -> Result<(), String> {
+     }
+ }
+ 
+-pub fn prepare() -> Result<SandboxGuard, String> {
++/// `hostname` is the jail's host name ([`hostname::jail_hostname`]);
++/// macOS has no UTS namespace to give it.
++pub fn prepare(hostname: &str) -> Result<SandboxGuard, String> {
+     #[cfg(target_os = "linux")]
+     {
+-        bwrap::prepare()
++        bwrap::prepare(hostname)
+     }
+     #[cfg(target_os = "macos")]
+     {
++        let _ = hostname;
+         Ok(seatbelt::SandboxGuard)
+     }
+ }
+diff --git a/src/sandbox/syscall_view.rs b/src/sandbox/syscall_view.rs
+index fe43a7e..a399a54 100644
+--- a/src/sandbox/syscall_view.rs
++++ b/src/sandbox/syscall_view.rs
+@@ -37,9 +37,6 @@ use nix::libc;
+ /// The internal flag that carries the helper's end of the socket pair.
+ pub(crate) const FD_FLAG: &str = "--syscall-view-fd";
+ 
+-/// The jail's host name, as bwrap's `--hostname` sets it.
+-pub(crate) const JAIL_HOSTNAME: &str = "ai-sandbox";
+-
+ #[cfg(target_arch = "x86_64")]
+ const NATIVE_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
+ #[cfg(target_arch = "aarch64")]
+@@ -58,6 +55,8 @@ const POLL: Duration = Duration::from_millis(200);
+ /// What the jail is told.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub(crate) struct Answers {
++    /// The jail's host name, as bwrap's `--hostname` sets it.
++    pub hostname: String,
+     pub release: String,
+     pub version: String,
+     pub machine: String,
+@@ -74,7 +73,7 @@ pub(super) fn utsname_bytes(a: &Answers) -> [u8; UTSNAME_LEN] {
+     let mut out = [0u8; UTSNAME_LEN];
+     for (i, value) in [
+         "Linux",
+-        JAIL_HOSTNAME,
++        a.hostname.as_str(),
+         a.release.as_str(),
+         a.version.as_str(),
+         a.machine.as_str(),
+@@ -424,7 +423,7 @@ fn answer_one(
+ 
+ /// The answers for this host, from the same cleaning as the host view's
+ /// files and the jail's cgroup limits.
+-pub(crate) fn answers_for_host() -> Answers {
++pub(crate) fn answers_for_host(hostname: &str) -> Answers {
+     let identity = super::host_view_extra::HostIdentity::read(String::new());
+     let snap = super::host_view::HostSnapshot::read();
+     // SAFETY: zeroed utsname is valid; uname fills it.
+@@ -439,6 +438,7 @@ pub(crate) fn answers_for_host() -> Answers {
+         }
+     };
+     Answers {
++        hostname: hostname.to_string(),
+         release: super::host_view_extra::kernel_release(&identity.osrelease),
+         version: super::host_view_extra::kernel_version(&identity.version),
+         machine,
+diff --git a/src/sandbox/syscall_view_tests.rs b/src/sandbox/syscall_view_tests.rs
+index c81c9d4..9dfde42 100644
+--- a/src/sandbox/syscall_view_tests.rs
++++ b/src/sandbox/syscall_view_tests.rs
+@@ -2,6 +2,7 @@ use super::*;
+ 
+ fn answers() -> Answers {
+     Answers {
++        hostname: "ai-sandbox".into(),
+         release: "7.3.5".into(),
+         version: "#1 SMP PREEMPT_DYNAMIC".into(),
+         machine: "x86_64".into(),
+@@ -29,6 +30,15 @@ fn utsname_names_the_jail_and_the_cleaned_kernel() {
+     assert_eq!(field(&bytes, 5), "(none)");
+ }
+ 
++#[test]
++fn utsname_answers_the_name_given_with_hostname() {
++    let a = Answers {
++        hostname: "desktop-k3f9a2".into(),
++        ..answers()
++    };
++    assert_eq!(field(&utsname_bytes(&a), 1), "desktop-k3f9a2");
++}
++
+ #[test]
+ fn utsname_cuts_a_long_value_and_keeps_its_terminator() {
+     let a = Answers {
+diff --git a/tests/mask_host.rs b/tests/mask_host.rs
+index aa391f9..8d2e153 100644
+--- a/tests/mask_host.rs
++++ b/tests/mask_host.rs
+@@ -420,10 +420,11 @@ fn minimal_etc_keeps_only_the_allowlist_and_the_tools_working() {
+     let _lock = SANDBOX_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+     let script = r#"
+ echo "count=$(ls -A /etc | wc -l)"
+-for f in passwd hosts hostname fstab crypttab portage shadow; do
++for f in passwd hosts fstab crypttab portage shadow; do
+   if [ -e /etc/$f ] || [ -L /etc/$f ]; then echo "$f=present"; else echo "$f=absent"; fi
+ done
+ echo "hosts_size=$(wc -c < /etc/hosts)"
++echo "etc_hostname=$(cat /etc/hostname 2>/dev/null || echo none)"
+ echo "user=$(id -un 2>/dev/null || echo none)"
+ echo "src=$(awk '$5=="/etc" {print $(NF-2)}' /proc/self/mountinfo | tail -1)"
+ touch /etc/probe 2>/dev/null && echo writable=yes || echo writable=no
+@@ -452,9 +453,13 @@ sh -lc 'echo login=ok'
+     let host_count = std::fs::read_dir("/etc").map_or(0, Iterator::count);
+     let count: usize = field(&text, "count").parse().unwrap();
+     assert!(count < host_count || host_count < 40, "{count}: {text}");
+-    for absent in ["hostname", "fstab", "crypttab", "portage", "shadow"] {
++    for absent in ["fstab", "crypttab", "portage", "shadow"] {
+         assert_eq!(field(&text, absent), "absent", "{absent}: {text}");
+     }
++    // Not the host's: the sandbox's own, bound over the tmpfs.
++    if std::path::Path::new("/etc/hostname").exists() {
++        assert_eq!(field(&text, "etc_hostname"), "ai-sandbox", "{text}");
++    }
+     if std::path::Path::new("/etc/passwd").exists() {
+         assert_eq!(field(&text, "passwd"), "present", "{text}");
+         assert_ne!(field(&text, "user"), "none", "{text}");
+@@ -483,3 +488,60 @@ fn minimal_etc_alone_is_refused() {
+         String::from_utf8_lossy(&out.stderr)
+     );
+ }
++
++#[test]
++fn hostname_names_the_jail_everywhere_it_reads_one() {
++    require_bwrap!();
++    let _lock = SANDBOX_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
++    let script = r#"
++echo "uts=$(uname -n)"
++echo "etc_hostname=$(cat /etc/hostname 2>/dev/null || echo none)"
++grep -q ' desktop-k3f9a2$' /etc/hosts && echo hosts=named || echo hosts=other
++"#;
++    let out = Command::new(ai_jail())
++        .args([
++            "--clean",
++            "--no-save-config",
++            "--no-ssh",
++            "--no-gpu",
++            "--no-docker",
++            "--no-display",
++            "--no-status-bar",
++            "--mask-host",
++            "--syscall-view",
++            "--hostname",
++            "desktop-k3f9a2",
++            "sh",
++            "-c",
++            script,
++        ])
++        .output()
++        .expect("failed to spawn ai-jail");
++    let text = stdout(&out);
++    // uname(2) here is answered by --syscall-view, so both halves agree.
++    assert_eq!(field(&text, "uts"), "desktop-k3f9a2", "{text}");
++    assert_eq!(field(&text, "hosts"), "named", "{text}");
++    if std::path::Path::new("/etc/hostname").exists() {
++        assert_eq!(field(&text, "etc_hostname"), "desktop-k3f9a2", "{text}");
++    }
++}
++
++#[test]
++fn hostname_that_is_not_one_label_is_refused() {
++    let out = Command::new(ai_jail())
++        .args([
++            "--clean",
++            "--no-save-config",
++            "--hostname",
++            "evil.example",
++            "true",
++        ])
++        .output()
++        .expect("failed to spawn ai-jail");
++    assert!(!out.status.success());
++    assert!(
++        String::from_utf8_lossy(&out.stderr).contains("--hostname"),
++        "{}",
++        String::from_utf8_lossy(&out.stderr)
++    );
++}
