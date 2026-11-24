@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 15:15:25 -0300
+Subject: [PATCH] settings_ui: writable folders are chosen with the folder
+ picker, never typed
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Operator ask of 2026-11-23 (item 12): in the jail's settings, Writable
+Folders should offer only the folder picker, not a path typed by hand. A
+typed path was how a folder that does not exist, or the wrong one, got into
+agent_sandbox.rw_maps; the picker can only return a folder that is there.
+
+The Writable Folders list now ends with the "Choose Folder…" button alone
+(agent-jail-rw-map-choose, the picker 0057 already had beside the field);
+the text field (agent-jail-rw-map-new) is gone for this list. Allowed Hosts
+keep their text field: a host has nothing to pick from. The list's
+description says the folders are chosen with Choose Folder. Everything the
+picker adds still goes through the same checks as before.
+
+Test: agent_jail_page_tests.rs agent_jail_page_tab_reaches_every_control_in_view
+-- Tab now reaches the picker where it reached the field, and the page has no
+writable-folder text field. Red not run as a separate step: with the old page
+the new absence assertion meets the field it forbids.
+---
+
+diff --git a/crates/settings_ui/src/pages/agent_jail_page.rs b/crates/settings_ui/src/pages/agent_jail_page.rs
+index 4e34a2d..ebd3fb6 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page.rs
+@@ -954,7 +954,7 @@ pub(crate) fn render_agent_jail_page(
+                 (
+                     EntryKind::RwMap,
+                     "Writable Folders",
+-                    "Folders the jailed agent may write besides the project. Each must be an absolute path to an existing folder, outside the project, the Claude config directory and every other writable folder.",
++                    "Folders the jailed agent may write besides the project, chosen with Choose Folder. Each must be outside the project, the Claude config directory and every other writable folder.",
+                     "Add a writable folder (e.g. ~/data)…",
+                     policy.rw_maps.clone(),
+                     rw_map_error,
+@@ -1211,29 +1211,9 @@ fn render_list(
+                 .child(action),
+         );
+     }
+-    let input_id = format!("agent-jail-{}-new", kind.id());
+-    let input = SettingsInputField::new(SharedString::from(input_id.clone()))
+-        .with_placeholder(text.placeholder)
+-        .aria_label(format!("Add to {}", text.title))
+-        .tab_index(0)
+-        .with_buffer_font()
+-        .display_clear_button()
+-        .display_confirm_button()
+-        .clear_on_confirm()
+-        .on_confirm({
+-            let state = state.clone();
+-            move |raw, _window, cx| {
+-                let Some(raw) = raw else {
+-                    return;
+-                };
+-                let raw = raw.trim().to_string();
+-                if raw.is_empty() {
+-                    return;
+-                }
+-                state.update(cx, |state, cx| state.add(kind, raw, cx));
+-            }
+-        });
+-    let input = reveal(state, input_id, scroll_handle, input, cx);
++    // Operator ask of 2026-11-23 (item 12): a writable folder is chosen with the folder picker,
++    // never typed -- a typed path was how a folder that does not exist, or the wrong one, got in.
++    // The allowed hosts keep their text field.
+     let input = if kind == EntryKind::RwMap {
+         let choose_id = "agent-jail-rw-map-choose";
+         let choose = Button::new(choose_id, "Choose Folder…")
+@@ -1244,13 +1224,31 @@ fn render_list(
+                 let state = state.clone();
+                 move |_, _, cx| state.update(cx, |state, cx| state.choose_rw_map(cx))
+             });
+-        h_flex()
+-            .gap_2()
+-            .child(div().flex_1().child(input))
+-            .child(reveal(state, choose_id, scroll_handle, choose, cx))
+-            .into_any_element()
++        reveal(state, choose_id, scroll_handle, choose, cx)
+     } else {
+-        input
++        let input_id = format!("agent-jail-{}-new", kind.id());
++        let input = SettingsInputField::new(SharedString::from(input_id.clone()))
++            .with_placeholder(text.placeholder)
++            .aria_label(format!("Add to {}", text.title))
++            .tab_index(0)
++            .with_buffer_font()
++            .display_clear_button()
++            .display_confirm_button()
++            .clear_on_confirm()
++            .on_confirm({
++                let state = state.clone();
++                move |raw, _window, cx| {
++                    let Some(raw) = raw else {
++                        return;
++                    };
++                    let raw = raw.trim().to_string();
++                    if raw.is_empty() {
++                        return;
++                    }
++                    state.update(cx, |state, cx| state.add(kind, raw, cx));
++                }
++            });
++        reveal(state, input_id, scroll_handle, input, cx)
+     };
+     v_flex()
+         .gap_0p5()
+diff --git a/crates/settings_ui/src/pages/agent_jail_page_tests.rs b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+index e57e026..7b42588 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+@@ -683,7 +683,8 @@ mod page {
+     /// Memory switch, Refresh and one Forget per recent page of the fake ai-memory.
+     const TAB_ORDER: [&str; 12] = [
+         "agent-jail-project-enabled",
+-        "agent-jail-rw-map-new",
++        // Operator ask of 2026-11-23 (item 12): writable folders are chosen, never typed.
++        "agent-jail-rw-map-choose",
+         "agent-jail-allow-host-new",
+         // §6.64 step 2's Capabilities: zeo-lsp (the fixture has no MCP server), Skills and
+         // connectors.
+@@ -802,6 +803,10 @@ mod page {
+             }
+         };
+         draw(cx);
++        assert!(
++            cx.debug_bounds("agent-jail-rw-map-new").is_none(),
++            "no text field for a writable folder: the folder picker is the only way in"
++        );
+         let viewport = cx
+             .debug_bounds("agent-jail-page")
+             .expect("the page's scroll container");

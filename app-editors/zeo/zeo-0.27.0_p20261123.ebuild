@@ -2332,6 +2332,12 @@ src_prepare() {
 			"${FILESDIR}/0166-agent-ui-stop-generation-and-stop-subagent-ask-first-in-a-modal.patch"
 			# 0167: archiving a thread with work running asks first. On 0029/0072.
 			"${FILESDIR}/0167-sidebar-archiving-a-thread-with-work-running-asks-first-instead-of-ref.patch"
+			# 0169: the /btw answer has a Copy button. On 0115.
+			"${FILESDIR}/0169-agent-ui-the-btw-answer-has-a-copy-button.patch"
+			# 0172: a Zeo badge on the settings and pages Zeo added. On 0151.
+			"${FILESDIR}/0172-settings-ui-a-zeo-badge-marks-the-settings-and-pages-zeo-added.patch"
+			# 0176: the /btw answer at the thread's text size. On 0169.
+			"${FILESDIR}/0176-agent-ui-the-btw-answer-is-drawn-at-the-thread-s-text-size.patch"
 		)
 	fi
 
@@ -2391,6 +2397,16 @@ src_prepare() {
 			"${FILESDIR}/0165-agent-sandbox-pause-freezes-the-jail-and-resume-goes-on-stop-asks-firs.patch"
 			# 0168: Hide the System Config (ai-jail --minimal-etc). On 0161.
 			"${FILESDIR}/0168-agent-sandbox-hide-the-system-config-etc-as-an-allowlist-under-the-hos.patch"
+			# 0170: writable folders are chosen with the folder picker. On 0057.
+			"${FILESDIR}/0170-settings-ui-writable-folders-are-chosen-with-the-folder-picker-never-t.patch"
+			# 0171: the restart notice has a Restart Agent button. On 0170.
+			"${FILESDIR}/0171-settings-ui-the-jail-s-restart-notice-has-a-restart-agent-button.patch"
+			# 0173: the jail's pages carry the Zeo badge. On 0172.
+			"${FILESDIR}/0173-settings-ui-the-jail-s-pages-carry-the-zeo-badge-too.patch"
+			# 0174: the open lock opens a small modal: the switch and Advanced. On 0171.
+			"${FILESDIR}/0174-agent-ui-the-open-lock-opens-a-small-modal-the-switch-and-advanced.patch"
+			# 0175: a hidden-host jail is named for its project (ai-jail --hostname). On 0168.
+			"${FILESDIR}/0175-agent-sandbox-a-jail-that-hides-the-host-is-named-for-its-project.patch"
 		)
 	fi
 

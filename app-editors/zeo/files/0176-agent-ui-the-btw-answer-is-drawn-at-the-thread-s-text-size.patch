@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 19:02:32 -0300
+Subject: [PATCH] agent_ui: the /btw answer is drawn at the thread's text size
+
+Operator ask of 2026-11-23 (item 6, second half): the /btw answer did not
+look like the thread's answers, and nobody could say what differed. An Xvfb
+proof with the same Markdown in both places measured it on 2026-11-24: same
+family and the same 25 px line pitch, but the /btw text 14.2 % wider -- 16 px
+against the thread's 14 px at the default sizes, and still 8/7 with
+agent_ui_font_size at 20.
+
+Both go through ThreadView::render_markdown with
+MarkdownStyle::themed(MarkdownFont::Agent), and that style sets no size on
+its container: the Markdown's text takes the size of the element around it.
+Each assistant message's container applies `text_ui` (TextSize::Default,
+0.875rem); the side-question card's answer container applied nothing and
+inherited 1rem. It now applies `text_ui` too.
+
+Test: no GPUI test reads a laid-out text size here; the Xvfb proof is the
+check -- before, the same line was 409 px in the card against 358 px in the
+thread (Red); after, the two are equal (docs/assets/zeo-batch-0270-2026-11-24
+in the hub). The side-question suites still run.
+---
+
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+index 8b4a5ba..175eab8 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+@@ -253,8 +253,12 @@ impl ThreadView {
+                 .into_any_element(),
+             SideQuestionState::Answered { markdown, .. } => {
+                 let style = MarkdownStyle::themed(MarkdownFont::Agent, window, cx);
++                // The thread's messages take their size from `text_ui` on their container
++                // (`TextSize::Default`, 0.875rem), not from the Markdown style; without it the
++                // answer inherited 1rem and read 8/7 larger (operator ask 6 of 2026-11-23).
+                 div()
+                     .w_full()
++                    .text_ui(cx)
+                     .max_h(px(SIDE_ANSWER_MAX_HEIGHT))
+                     .child(
+                         div()

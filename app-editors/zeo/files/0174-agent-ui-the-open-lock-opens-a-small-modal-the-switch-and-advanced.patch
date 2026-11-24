@@ -1,0 +1,377 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 17:40:27 -0300
+Subject: [PATCH] agent_ui: the open lock opens a small modal -- the switch and
+ Advanced
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Operator ask of 2026-11-23 (item 15): clicking the lock of an agent started
+outside the jail opened the whole Agent Sandbox page -- folders, hosts,
+limits, host view, capabilities -- when all the operator wanted was to turn
+the jail on for this project. The decision (2026-11-24): before the jail is
+on, the lock shows only this project's on/off switch, plus "Advanced…" for
+the full page.
+
+AgentJailQuickModal (agent_jail_quick_modal.rs) is a workspace modal with
+the project's path, the switch "Run agents in ai-jail for this project" and
+Advanced. The switch writes through agent_sandbox::confirm::
+set_project_enabled -- the page's own path: only `enabled` changes, and
+turning it off asks first -- and reads the setting of now as the lock does
+(launch::jailed_on_next_start), redrawn on every settings change. Its hint
+says the change applies on a restart; the lock then turns amber and a click
+restarts, as since §6.50. Advanced opens the page and closes the modal.
+
+render_jail_status_button takes `on_open`, what a click does when nothing is
+pending; the thread view passes the modal only for Reason::Off. A jail
+already on keeps opening the page, a pending change keeps the restart, and
+a missing ai-jail keeps the lock disabled.
+
+Logs: agent_sandbox event=quick_modal_toggle on=<bool>.
+
+Tests: agent_jail_quick_modal_tests.rs -- the open lock opens the modal and
+not the page, Advanced opens the page and closes it, and the switch follows
+a setting saved elsewhere. agent_jail_status_closed_lock_opens_the_agent_
+sandbox_page still holds for a jail that is on.
+---
+
+diff --git a/crates/agent_ui/src/agent_jail_quick_modal.rs b/crates/agent_ui/src/agent_jail_quick_modal.rs
+new file mode 100644
+index 0000000..c03576a
+--- /dev/null
++++ b/crates/agent_ui/src/agent_jail_quick_modal.rs
+@@ -0,0 +1,134 @@
++//! The lock's small modal (operator ask 15 of 2026-11-23): clicking the lock of an agent started
++//! outside the jail opened the whole Agent Sandbox page -- folders, hosts, limits, host view,
++//! capabilities -- when all the operator wanted was to turn the jail on. The modal holds only
++//! this project's switch and "Advanced…", which opens the full page. A jail already on keeps the
++//! old click (the page), and a pending change keeps the restart.
++
++use std::path::PathBuf;
++
++use agent_sandbox::{AgentSandboxSettings, LaunchRegistry, launch};
++use gpui::{
++    App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Render, Subscription, Window,
++};
++use project::agent_server_store::AgentId;
++use settings::{Settings as _, SettingsStore};
++use ui::{SwitchField, ToggleState, prelude::*};
++use workspace::ModalView;
++
++pub const QUICK_MODAL_TITLE: &str = "Agent Sandbox";
++pub const QUICK_SWITCH_LABEL: &str = "Run agents in ai-jail for this project";
++pub const QUICK_SWITCH_HINT: &str =
++    "Applies when the agent restarts: click the lock again once it turns amber.";
++pub const QUICK_ADVANCED: &str = "Advanced\u{2026}";
++
++pub struct AgentJailQuickModal {
++    agent_id: AgentId,
++    root: PathBuf,
++    focus_handle: FocusHandle,
++    _settings: Subscription,
++}
++
++impl AgentJailQuickModal {
++    pub fn new(agent_id: AgentId, root: PathBuf, cx: &mut Context<Self>) -> Self {
++        Self {
++            agent_id,
++            root,
++            focus_handle: cx.focus_handle(),
++            // The switch shows the setting of now: a change saved from here, or from the page in
++            // another window, redraws it.
++            _settings: cx.observe_global::<SettingsStore>(|_, cx| cx.notify()),
++        }
++    }
++
++    /// Whether the next start of this thread's agent would be jailed, as the lock reads it.
++    pub fn jail_on(&self, cx: &App) -> bool {
++        LaunchRegistry::get(&self.agent_id, &self.root, cx)
++            .and_then(|record| {
++                launch::jailed_on_next_start(&record, AgentSandboxSettings::get_global(cx))
++            })
++            .unwrap_or(false)
++    }
++
++    fn open_advanced(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        window.dispatch_action(
++            Box::new(zed_actions::OpenSettingsAt {
++                path: zed_actions::AGENT_JAIL_SETTINGS_PATH.to_string(),
++                target: None,
++            }),
++            cx,
++        );
++        cx.emit(DismissEvent);
++    }
++}
++
++impl ModalView for AgentJailQuickModal {}
++
++impl EventEmitter<DismissEvent> for AgentJailQuickModal {}
++
++impl Focusable for AgentJailQuickModal {
++    fn focus_handle(&self, _cx: &App) -> FocusHandle {
++        self.focus_handle.clone()
++    }
++}
++
++impl Render for AgentJailQuickModal {
++    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++        let root = self.root.clone();
++        let switch = SwitchField::new(
++            "agent-jail-quick-switch",
++            Some(QUICK_SWITCH_LABEL),
++            Some(QUICK_SWITCH_HINT.into()),
++            self.jail_on(cx),
++            move |toggle, window, cx| {
++                log::info!(
++                    "agent_sandbox event=quick_modal_toggle on={}",
++                    *toggle == ToggleState::Selected
++                );
++                // The page's own path: only `enabled` is written, and turning off asks first.
++                agent_sandbox::confirm::set_project_enabled(
++                    &root,
++                    *toggle == ToggleState::Selected,
++                    window,
++                    cx,
++                )
++                .detach();
++            },
++        )
++        .tab_index(0);
++        v_flex()
++            .key_context("AgentJailQuickModal")
++            .debug_selector(|| "agent-jail-quick-modal".into())
++            .track_focus(&self.focus_handle)
++            .on_action(cx.listener(|_, _: &menu::Cancel, _, cx| cx.emit(DismissEvent)))
++            .elevation_3(cx)
++            .w(rems(30.))
++            .p_3()
++            .gap_2()
++            .child(Label::new(QUICK_MODAL_TITLE))
++            .child(
++                Label::new(self.root.to_string_lossy().into_owned())
++                    .size(LabelSize::Small)
++                    .color(Color::Muted)
++                    .buffer_font(cx),
++            )
++            .child(
++                div()
++                    .debug_selector(|| "agent-jail-quick-switch".into())
++                    .child(switch),
++            )
++            .child(
++                h_flex().justify_end().child(
++                    div()
++                        .debug_selector(|| "agent-jail-quick-advanced".into())
++                        .child(
++                            Button::new("agent-jail-quick-advanced", QUICK_ADVANCED)
++                                .label_size(LabelSize::Small)
++                                .tab_index(0_isize)
++                                .on_click(cx.listener(|this, _, window, cx| {
++                                    this.open_advanced(window, cx)
++                                })),
++                        ),
++                ),
++            )
++    }
++}
+diff --git a/crates/agent_ui/src/agent_jail_quick_modal_tests.rs b/crates/agent_ui/src/agent_jail_quick_modal_tests.rs
+new file mode 100644
+index 0000000..2936b08
+--- /dev/null
++++ b/crates/agent_ui/src/agent_jail_quick_modal_tests.rs
+@@ -0,0 +1,99 @@
++// Operator ask 15 of 2026-11-23: the open lock of an agent started outside the jail opens a
++// small modal -- this project's switch and Advanced -- instead of the whole Agent Sandbox page.
++// Filter: `quick_modal::`.
++use gpui::UpdateGlobal as _;
++use settings::SettingsStore;
++
++use crate::agent_jail_quick_modal::AgentJailQuickModal;
++
++use super::*;
++
++/// The sandbox settings of now (the same helper as `icon::sandbox_settings`, which is private).
++fn sandbox_settings(value: serde_json::Value, cx: &mut TestAppContext) {
++    cx.update(|cx| {
++        SettingsStore::update_global(cx, |store, cx| {
++            store
++                .set_user_settings(&value.to_string(), cx)
++                .result()
++                .expect("settings");
++        })
++    });
++}
++
++fn record_opened_pages(cx: &mut TestAppContext) -> Arc<Mutex<Vec<String>>> {
++    let opened: Arc<Mutex<Vec<String>>> = Arc::default();
++    cx.update({
++        let opened = opened.clone();
++        move |cx| {
++            cx.on_action(move |action: &zed_actions::OpenSettingsAt, _| {
++                opened.lock().push(action.path.clone());
++            });
++        }
++    });
++    opened
++}
++
++fn quick_modal(win: &mut Win) -> Option<Entity<AgentJailQuickModal>> {
++    win.workspace.read_with(&mut win.cx, |workspace, cx| {
++        workspace.active_modal::<AgentJailQuickModal>(cx)
++    })
++}
++
++#[gpui::test]
++async fn quick_modal_opens_from_the_open_lock_instead_of_the_page(cx: &mut TestAppContext) {
++    let fs = init(cx);
++    cx.update(|cx| LaunchRegistry::register(record("/w/app", Reason::Off, None), cx));
++    let opened = record_opened_pages(cx);
++    let mut win = window_with_stub_thread(&fs, &["/w/app"], cx).await;
++    win.cx.run_until_parked();
++    let lock = win
++        .cx
++        .debug_bounds("ICON-LockOff")
++        .expect("the open lock is drawn");
++    win.cx
++        .simulate_click(lock.center(), gpui::Modifiers::default());
++    win.cx.run_until_parked();
++
++    let modal = quick_modal(&mut win).expect("the small modal is open");
++    assert!(opened.lock().is_empty(), "the page did not open");
++    assert!(
++        !modal.read_with(&mut win.cx, |modal, cx| modal.jail_on(cx)),
++        "its switch shows the jail off, as the settings have it"
++    );
++    assert!(win.cx.debug_bounds("agent-jail-quick-switch").is_some());
++
++    let advanced = win
++        .cx
++        .debug_bounds("agent-jail-quick-advanced")
++        .expect("Advanced is drawn");
++    win.cx
++        .simulate_click(advanced.center(), gpui::Modifiers::default());
++    win.cx.run_until_parked();
++    assert_eq!(
++        opened.lock().clone(),
++        vec![zed_actions::AGENT_JAIL_SETTINGS_PATH.to_string()],
++        "Advanced opens the full page"
++    );
++    assert!(quick_modal(&mut win).is_none(), "and closes the modal");
++}
++
++#[gpui::test]
++async fn quick_modal_switch_follows_the_setting(cx: &mut TestAppContext) {
++    let fs = init(cx);
++    cx.update(|cx| LaunchRegistry::register(record("/w/app", Reason::Off, None), cx));
++    let mut win = window_with_stub_thread(&fs, &["/w/app"], cx).await;
++    win.cx.run_until_parked();
++    let lock = win.cx.debug_bounds("ICON-LockOff").expect("open lock");
++    win.cx
++        .simulate_click(lock.center(), gpui::Modifiers::default());
++    win.cx.run_until_parked();
++    let modal = quick_modal(&mut win).expect("modal");
++
++    // Saved from anywhere -- here, the page in another window.
++    sandbox_settings(json!({ "agent_sandbox": { "enabled": true } }), &mut win.cx);
++    win.cx.run_until_parked();
++    assert!(
++        modal.read_with(&mut win.cx, |modal, cx| modal.jail_on(cx)),
++        "the switch reads the setting of now"
++    );
++}
+diff --git a/crates/agent_ui/src/agent_jail_status.rs b/crates/agent_ui/src/agent_jail_status.rs
+index 77d506b..7ad0d39 100644
+--- a/crates/agent_ui/src/agent_jail_status.rs
++++ b/crates/agent_ui/src/agent_jail_status.rs
+@@ -209,10 +209,12 @@ fn list_line(label: &str, items: impl Iterator<Item = String>) -> SharedString {
+ /// The toolbar button for `summary`: the lock, its tooltip and a divider, like
+ /// `ThreadView::render_sandbox_status`. A click opens the Agent Sandbox settings page (R5.5).
+ /// The icon; `on_restart` is what a click does while a change is pending (§6.50) -- otherwise
+-/// the click opens the sandbox settings, as before.
++/// `on_open`, the lock's small modal of an agent outside the jail (ask 15 of 2026-11-23), or,
++/// without one, the sandbox settings page, as before.
+ pub fn render_jail_status_button(
+     summary: JailStatusSummary,
+     on_restart: Option<Box<dyn Fn(&mut Window, &mut App)>>,
++    on_open: Option<Box<dyn Fn(&mut Window, &mut App)>>,
+     on_pause: Option<Box<dyn Fn(&mut Window, &mut App)>>,
+     on_stop: Option<Box<dyn Fn(&mut Window, &mut App)>>,
+ ) -> AnyElement {
+@@ -248,6 +250,10 @@ pub fn render_jail_status_button(
+                         on_restart(window, cx);
+                         return;
+                     }
++                    if let Some(on_open) = &on_open {
++                        on_open(window, cx);
++                        return;
++                    }
+                     window.dispatch_action(
+                         Box::new(zed_actions::OpenSettingsAt {
+                             path: zed_actions::AGENT_JAIL_SETTINGS_PATH.to_string(),
+diff --git a/crates/agent_ui/src/agent_jail_status_tests.rs b/crates/agent_ui/src/agent_jail_status_tests.rs
+index 8050593..64ec4c5 100644
+--- a/crates/agent_ui/src/agent_jail_status_tests.rs
++++ b/crates/agent_ui/src/agent_jail_status_tests.rs
+@@ -622,3 +622,6 @@ fn agent_jail_status_a_missing_ai_jail_disables_the_lock() {
+ 
+ #[path = "agent_jail_status_pause_tests.rs"]
+ mod pause;
++
++#[path = "agent_jail_quick_modal_tests.rs"]
++mod quick_modal;
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index d33d8cd..2332ba9 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -2,6 +2,7 @@ mod agent_configuration;
+ pub mod agent_connection_store;
+ mod agent_diff;
+ mod agent_jail_login;
++pub mod agent_jail_quick_modal;
+ mod agent_jail_restart;
+ pub mod agent_jail_status;
+ mod agent_panel;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index a268983..d7a3805 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -7151,9 +7151,14 @@ impl ThreadView {
+             }
+             _ => None,
+         };
++        // Ask 15 of 2026-11-23: an agent started outside the jail opens the small modal -- this
++        // project's switch and Advanced -- instead of the whole page.
++        let on_open = (record.reason == agent_sandbox::launch::Reason::Off)
++            .then(|| self.open_jail_quick_modal(root.clone()));
+         let button = crate::agent_jail_status::render_jail_status_button(
+             summary,
+             Some(self.restart_agent_for_jail()),
++            on_open,
+             on_pause,
+             on_stop,
+         );
+@@ -7199,6 +7204,22 @@ impl ThreadView {
+         )
+     }
+ 
++    /// Opens the lock's small modal for `root` (ask 15 of 2026-11-23).
++    fn open_jail_quick_modal(&self, root: PathBuf) -> Box<dyn Fn(&mut Window, &mut App)> {
++        let workspace = self.workspace.clone();
++        let agent_id = self.agent_id.clone();
++        Box::new(move |window, cx| {
++            let (agent_id, root) = (agent_id.clone(), root.clone());
++            workspace
++                .update(cx, |workspace, cx| {
++                    workspace.toggle_modal(window, cx, |_window, cx| {
++                        crate::agent_jail_quick_modal::AgentJailQuickModal::new(agent_id, root, cx)
++                    });
++                })
++                .log_err();
++        })
++    }
++
+     /// Restarts the agent so a changed sandbox setting applies (§6.50). The thread is resumed
+     /// on the new process; a turn in progress would be cut, so that case asks first.
+     pub(crate) fn restart_agent_for_jail(&self) -> Box<dyn Fn(&mut Window, &mut App)> {

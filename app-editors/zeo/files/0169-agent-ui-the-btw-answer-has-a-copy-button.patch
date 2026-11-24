@@ -1,0 +1,146 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 14:30:52 -0300
+Subject: [PATCH] agent_ui: the /btw answer has a Copy button
+
+Operator ask of 2026-11-23 (item 6): copy the content of a /btw answer.
+The side question card (0115) showed the answer as Markdown with no way to
+take it out but selecting it by hand.
+
+An answered card now has a Copy icon beside Dismiss, with the tooltip "Copy
+Answer"; it writes the answer's own Markdown -- as the agent wrote it, links
+and code fences included -- to the clipboard. A card still asking, a usage
+note or a failure has no answer, so it shows no Copy.
+SideQuestionState::answer_text is what both the button and the test read.
+
+The same ask said the answer's font should be the agent panel's. The card
+already renders the answer with MarkdownStyle::themed(MarkdownFont::Agent),
+the style an assistant message uses (same family, size, colour and line
+height); this patch does not change it, and the difference the operator saw
+is left to a side-by-side proof.
+
+Test: side_question_card_tests.rs only_an_answered_card_has_text_to_copy --
+Answered gives the Markdown source; Asking, Note and Failed give none. Red: it
+does not build without answer_text. side_question tests 11/11.
+---
+
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+index 246a8f7..8b4a5ba 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+@@ -9,7 +9,9 @@
+ //! An agent that does not advertise `_claude/btw` gets the text as before, as a prompt.
+ 
+ use acp_thread::{SIDE_QUESTION_MAX_CHARS, SideAnswer};
+-use gpui::{AnyElement, Context, Entity, ScrollHandle, SharedString, Task, Window, px};
++use gpui::{
++    AnyElement, App, ClipboardItem, Context, Entity, ScrollHandle, SharedString, Task, Window, px,
++};
+ use markdown::{Markdown, MarkdownFont, MarkdownStyle};
+ use ui::{
+     Icon, IconButton, IconName, IconSize, Label, LabelSize, ScrollAxes, Scrollbars, Tooltip,
+@@ -66,6 +68,17 @@ enum SideQuestionState {
+     Failed(SharedString),
+ }
+ 
++impl SideQuestionState {
++    /// The answer as the agent wrote it, for Copy (operator ask of 2026-11-23, item 6); a card
++    /// still asking, a usage note or a failure has none.
++    fn answer_text(&self, cx: &App) -> Option<String> {
++        match self {
++            Self::Answered { markdown, .. } => Some(markdown.read(cx).source().to_string()),
++            Self::Asking | Self::Note(_) | Self::Failed(_) => None,
++        }
++    }
++}
++
+ /// The open card, with the request that fills it. Replacing the card drops the request's task,
+ /// so a late answer to an earlier question never lands in a newer card.
+ pub(crate) struct SideQuestionCard {
+@@ -174,6 +187,7 @@ impl ThreadView {
+         cx: &mut Context<Self>,
+     ) -> Option<AnyElement> {
+         let card = self.side_question_card.as_ref()?;
++        let answer_text = card.state.answer_text(cx);
+ 
+         let header = h_flex()
+             .w_full()
+@@ -197,15 +211,31 @@ impl ThreadView {
+                     ),
+             )
+             .child(
+-                IconButton::new("side-question-dismiss", IconName::Close)
+-                    .icon_size(IconSize::Small)
+-                    .icon_color(Color::Muted)
+-                    .aria_label("Dismiss the side question")
+-                    .tooltip(Tooltip::text("Dismiss"))
+-                    .on_click(cx.listener(|this, _, _, cx| {
+-                        this.side_question_card = None;
+-                        cx.notify();
+-                    })),
++                h_flex()
++                    .gap_0p5()
++                    .children(answer_text.map(|text| {
++                        div().debug_selector(|| "side-question-copy".into()).child(
++                            IconButton::new("side-question-copy", IconName::Copy)
++                                .icon_size(IconSize::Small)
++                                .icon_color(Color::Muted)
++                                .aria_label("Copy the answer")
++                                .tooltip(Tooltip::text("Copy Answer"))
++                                .on_click(move |_, _, cx| {
++                                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
++                                }),
++                        )
++                    }))
++                    .child(
++                        IconButton::new("side-question-dismiss", IconName::Close)
++                            .icon_size(IconSize::Small)
++                            .icon_color(Color::Muted)
++                            .aria_label("Dismiss the side question")
++                            .tooltip(Tooltip::text("Dismiss"))
++                            .on_click(cx.listener(|this, _, _, cx| {
++                                this.side_question_card = None;
++                                cx.notify();
++                            })),
++                    ),
+             );
+ 
+         let body = match &card.state {
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/side_question_card_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/side_question_card_tests.rs
+index 6af7a38..d5a2573 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/side_question_card_tests.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/side_question_card_tests.rs
+@@ -55,3 +55,33 @@ fn a_question_longer_than_the_agent_takes_is_refused_here() {
+         Some(SideQuestionInvocation::Ask(_))
+     ));
+ }
++
++/// Operator ask of 2026-11-23 (item 6): the answer can be copied; nothing else on the card can,
++/// since a card still asking, a usage note or a failure has no answer to copy.
++#[gpui::test]
++fn only_an_answered_card_has_text_to_copy(cx: &mut gpui::TestAppContext) {
++    use super::SideQuestionState;
++    use gpui::AppContext as _;
++    let markdown =
++        cx.new(|cx| markdown::Markdown::new("**Yes**, it is `safe`.".into(), None, None, cx));
++    let answered = SideQuestionState::Answered {
++        markdown,
++        fallback_model: None,
++    };
++    cx.update(|cx| {
++        assert_eq!(
++            answered.answer_text(cx).as_deref(),
++            Some("**Yes**, it is `safe`."),
++            "the answer's own Markdown, as the agent wrote it"
++        );
++        assert_eq!(SideQuestionState::Asking.answer_text(cx), None);
++        assert_eq!(
++            SideQuestionState::Note("usage".into()).answer_text(cx),
++            None
++        );
++        assert_eq!(
++            SideQuestionState::Failed("boom".into()).answer_text(cx),
++            None
++        );
++    });
++}

@@ -1,0 +1,522 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 17:59:05 -0300
+Subject: [PATCH] agent_sandbox: a jail that hides the host is named for its
+ project
+
+Operator ask of 2026-11-23 (item 5): every jail was `ai-sandbox`, so two
+projects looked like the same machine and both said "sandbox". The decision
+(2026-11-24): a stable name per project that looks like an ordinary
+machine's -- `desktop-` and six lowercase letters or digits.
+
+jail_hostname.rs hashes (SHA-256) a secret kept on this machine with the
+project's canonical root. The name is the same on every start of the
+project and says nothing about its path: without the secret, nobody can
+tell which folder a name belongs to, or that two names are this machine's.
+The secret is 32 bytes from /dev/urandom in
+<data dir>/agent_sandbox/hostname.key (0600, directory 0700), made on first
+use with create_new so two Zeos racing keep one file; a file of another size
+is refused rather than replaced, since replacing it would rename every
+project. sha2 rather than std's hasher: its output may change between Rust
+releases, and a name must not change with the toolchain.
+
+The launch passes `--hostname <name>` when the project hides the host
+(mask_host) and the installed ai-jail lists the option (probe
+supports_hostname, ai-jail 3.5.0-r6). ai-jail gives the name to the UTS
+namespace, /etc/hosts, /etc/hostname and, under Hide the Kernel, uname(2),
+so the answers agree. An older ai-jail starts as before, as `ai-sandbox` --
+it hides as much, only less individually -- and an unreadable secret skips
+the option the same way; both are logged. The secret's path reaches the
+launch through LaunchEnv, so tests keep it in their fixture. The Hide the
+Host note says the jail gets a host name of its own.
+
+Logs: agent_sandbox event=hostname_secret_created, event=hostname_skipped
+reason=unsupported|secret.
+
+Tests: jail_hostname_tests.rs -- the name is one DNS label of the chosen
+shape, stable per project and different across projects and secrets; the
+secret is made once, owner-only, and kept; a damaged secret is never replaced
+and skips the option; and, through the launch, a hidden-host jail is named
+and keeps its name, while an older ai-jail or a shown host gets no option and
+no secret.
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 57b6a8b..98d2193 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -398,6 +398,7 @@ dependencies = [
+  "serde_json",
+  "serde_json_lenient",
+  "settings",
++ "sha2",
+  "shlex 2.0.1",
+  "smol",
+  "tempfile",
+diff --git a/crates/agent_sandbox/Cargo.toml b/crates/agent_sandbox/Cargo.toml
+index de5d8f1..e1fc37a 100644
+--- a/crates/agent_sandbox/Cargo.toml
++++ b/crates/agent_sandbox/Cargo.toml
+@@ -28,6 +28,7 @@ semver.workspace = true
+ serde.workspace = true
+ serde_json.workspace = true
+ settings.workspace = true
++sha2.workspace = true
+ shlex.workspace = true
+ smol.workspace = true
+ toml.workspace = true
+diff --git a/crates/agent_sandbox/src/agent_sandbox.rs b/crates/agent_sandbox/src/agent_sandbox.rs
+index 9e2895b..e20dc3f 100644
+--- a/crates/agent_sandbox/src/agent_sandbox.rs
++++ b/crates/agent_sandbox/src/agent_sandbox.rs
+@@ -12,6 +12,7 @@ pub mod control;
+ pub mod cpu_reserve;
+ pub mod disk_watch;
+ pub mod host_view;
++pub mod jail_hostname;
+ pub mod launch;
+ pub mod memory;
+ pub mod probe;
+@@ -51,6 +52,8 @@ mod host_view_launch_tests;
+ #[cfg(test)]
+ mod host_view_layer_tests;
+ #[cfg(test)]
++mod jail_hostname_tests;
++#[cfg(test)]
+ mod launch_tests;
+ #[cfg(test)]
+ mod limits_tests;
+diff --git a/crates/agent_sandbox/src/jail_hostname.rs b/crates/agent_sandbox/src/jail_hostname.rs
+new file mode 100644
+index 0000000..0d60926
+--- /dev/null
++++ b/crates/agent_sandbox/src/jail_hostname.rs
+@@ -0,0 +1,112 @@
++//! A host name per project for jails that hide the host (operator ask 5 of 2026-11-23). Every
++//! jail was `ai-sandbox`, so two projects looked like the same machine and both said "sandbox";
++//! the operator chose a stable name per project that looks like an ordinary machine's
++//! (`desktop-` and six letters or digits, 2026-11-24).
++//!
++//! The name is a hash of a secret kept on this machine and the project's canonical root, so it
++//! is the same on every start of the project and says nothing about its path: without the
++//! secret, nobody can tell which folder a name belongs to, or that two names are this
++//! machine's. ai-jail gives it to the UTS namespace, `/etc/hosts`, `/etc/hostname` and, under
++//! Hide the Kernel, `uname(2)` (`--hostname`, ai-jail 3.5.0-r6).
++
++use std::fs;
++use std::io::{self, Read as _, Write as _};
++use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
++use std::path::{Path, PathBuf};
++
++use sha2::{Digest as _, Sha256};
++
++/// ai-jail's option (3.5.0-r6).
++pub const HOSTNAME_OPTION: &str = "--hostname";
++
++/// What every name starts with: what an ordinary workstation is often called.
++const PREFIX: &str = "desktop-";
++/// Characters after the prefix: 36^6, about two billion names.
++const SUFFIX_LEN: usize = 6;
++const ALPHABET: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
++const SECRET_LEN: usize = 32;
++
++/// The secret's file, beside Zeo's other data; never inside a jail.
++pub fn secret_path() -> PathBuf {
++    paths::data_dir().join("agent_sandbox").join("hostname.key")
++}
++
++/// The name of the project at `canonical_root`, from `secret`.
++pub fn hostname_for(secret: &[u8], canonical_root: &Path) -> String {
++    let mut hasher = Sha256::new();
++    hasher.update(b"zeo-jail-hostname\0");
++    hasher.update(secret);
++    hasher.update(b"\0");
++    hasher.update(canonical_root.as_os_str().as_encoded_bytes());
++    let digest = hasher.finalize();
++    let mut name = String::from(PREFIX);
++    // A byte mod 36 leans slightly towards the first letters; for a name, that is harmless.
++    name.extend(
++        digest
++            .iter()
++            .take(SUFFIX_LEN)
++            .map(|byte| ALPHABET[usize::from(*byte) % ALPHABET.len()] as char),
++    );
++    name
++}
++
++/// The secret at `path`, made on first use: 32 bytes from the kernel's random source in an
++/// owner-only file. A file of any other size is refused rather than replaced, since replacing it
++/// would rename every project.
++pub fn load_or_create_secret(path: &Path) -> io::Result<Vec<u8>> {
++    match fs::read(path) {
++        Ok(secret) if secret.len() == SECRET_LEN => return Ok(secret),
++        Ok(other) => {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidData,
++                format!(
++                    "{} holds {} bytes, not {SECRET_LEN}",
++                    path.display(),
++                    other.len()
++                ),
++            ));
++        }
++        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
++        Err(error) => return Err(error),
++    }
++    let mut secret = vec![0u8; SECRET_LEN];
++    fs::File::open("/dev/urandom")?.read_exact(&mut secret)?;
++    if let Some(dir) = path.parent() {
++        fs::create_dir_all(dir)?;
++        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
++    }
++    // create_new: a second Zeo that raced this one keeps the file the first wrote.
++    match fs::OpenOptions::new()
++        .write(true)
++        .create_new(true)
++        .mode(0o600)
++        .open(path)
++    {
++        Ok(mut file) => {
++            file.write_all(&secret)?;
++            file.sync_all()?;
++            log::info!("agent_sandbox event=hostname_secret_created");
++            Ok(secret)
++        }
++        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => load_or_create_secret(path),
++        Err(error) => Err(error),
++    }
++}
++
++/// The `--hostname` arguments for the project at `canonical_root`, or none when the secret
++/// cannot be read or made: the jail is then `ai-sandbox`, as before, and the reason is logged.
++pub fn hostname_args(secret_file: &Path, canonical_root: &Path) -> Vec<String> {
++    match load_or_create_secret(secret_file) {
++        Ok(secret) => vec![
++            HOSTNAME_OPTION.to_string(),
++            hostname_for(&secret, canonical_root),
++        ],
++        Err(error) => {
++            log::warn!(
++                "agent_sandbox event=hostname_skipped reason=secret file={} error={error}",
++                secret_file.display()
++            );
++            Vec::new()
++        }
++    }
++}
+diff --git a/crates/agent_sandbox/src/jail_hostname_tests.rs b/crates/agent_sandbox/src/jail_hostname_tests.rs
+new file mode 100644
+index 0000000..eea4788
+--- /dev/null
++++ b/crates/agent_sandbox/src/jail_hostname_tests.rs
+@@ -0,0 +1,179 @@
++// Operator ask 5 of 2026-11-23: a stable host name per project, an ordinary machine's, that
++// says nothing about the project's path. Filter: `jail_hostname`.
++use std::os::unix::fs::PermissionsExt as _;
++use std::path::Path;
++
++use crate::jail_hostname::{hostname_args, hostname_for, load_or_create_secret};
++
++const SECRET: [u8; 32] = [7; 32];
++
++#[test]
++fn jail_hostname_is_an_ordinary_machine_name_and_one_dns_label() {
++    let name = hostname_for(&SECRET, Path::new("/home/u/work/app"));
++    assert!(name.starts_with("desktop-"), "{name}");
++    assert_eq!(name.len(), "desktop-".len() + 6, "{name}");
++    assert!(
++        name.bytes()
++            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
++        "what ai-jail's --hostname accepts: {name}"
++    );
++}
++
++#[test]
++fn jail_hostname_is_stable_per_project_and_differs_across_them() {
++    let app = Path::new("/home/u/work/app");
++    assert_eq!(hostname_for(&SECRET, app), hostname_for(&SECRET, app));
++    assert_ne!(
++        hostname_for(&SECRET, app),
++        hostname_for(&SECRET, Path::new("/home/u/work/other")),
++        "two projects look like two machines"
++    );
++    assert_ne!(
++        hostname_for(&SECRET, app),
++        hostname_for(&[8; 32], app),
++        "another machine's secret gives another name"
++    );
++}
++
++#[test]
++fn jail_hostname_secret_is_made_once_owner_only_and_kept() {
++    let dir = tempfile::tempdir().expect("tempdir");
++    let path = dir.path().join("agent_sandbox").join("hostname.key");
++    let first = load_or_create_secret(&path).expect("made");
++    assert_eq!(first.len(), 32);
++    let mode = std::fs::metadata(&path).expect("file").permissions().mode();
++    assert_eq!(mode & 0o777, 0o600);
++    let dir_mode = std::fs::metadata(path.parent().expect("dir"))
++        .expect("dir")
++        .permissions()
++        .mode();
++    assert_eq!(dir_mode & 0o777, 0o700);
++    assert_eq!(load_or_create_secret(&path).expect("read"), first, "kept");
++}
++
++#[test]
++fn jail_hostname_refuses_a_damaged_secret_and_skips_the_option() {
++    let dir = tempfile::tempdir().expect("tempdir");
++    let path = dir.path().join("hostname.key");
++    std::fs::write(&path, b"short").expect("write");
++    assert!(load_or_create_secret(&path).is_err(), "never replaced");
++    assert_eq!(std::fs::read(&path).expect("read"), b"short");
++    assert!(
++        hostname_args(&path, Path::new("/w/app")).is_empty(),
++        "the jail stays ai-sandbox"
++    );
++}
++
++#[test]
++fn jail_hostname_args_name_the_option_and_the_name() {
++    let dir = tempfile::tempdir().expect("tempdir");
++    let path = dir.path().join("hostname.key");
++    let args = hostname_args(&path, Path::new("/w/app"));
++    assert_eq!(args.len(), 2);
++    assert_eq!(args[0], "--hostname");
++    let secret = std::fs::read(&path).expect("made");
++    assert_eq!(args[1], hostname_for(&secret, Path::new("/w/app")));
++}
++
++mod launch {
++    use std::collections::HashSet;
++
++    use gpui::TestAppContext;
++    use project::agent_registry_store::ZEO_PLUS_AGENT_ID;
++    use project::agent_server_store::AgentId;
++    use serde_json::{Value, json};
++
++    use crate::launch::{LaunchDecision, LaunchEnv, decide_in};
++    use crate::launch_tests::*;
++
++    /// ai-jail 3.5.0-r5's options; `hostname` adds `--hostname`, as 3.5.0-r6 does.
++    fn help(hostname: bool) -> String {
++        let extra = if hostname {
++            "    --hostname <NAME>  Host name\\n"
++        } else {
++            ""
++        };
++        format!(
++            "case \"$1\" in --help) printf '    --memory <SIZE>  Cap memory\\n    --state-root <DIR>  State on disk\\n    --cpus <LIST>  Pin CPUs\\n    --mask-host  Synthetic host view\\n    --overlay-system  Overlays\\n    --syscall-view  Syscalls\\n    --minimal-etc  Allowlisted /etc\\n{extra}' ;; *) echo 'ai-jail 3.5.0' ;; esac"
++        )
++    }
++
++    fn settings(f: &Fixture, project: Value) -> Value {
++        let mut value = sandbox(f, true, project, memory_off());
++        value["agent_sandbox"]["state_root"] = json!(f.base.join("state"));
++        value
++    }
++
++    /// The decision with the secret kept in the fixture, never in Zeo's own data folder.
++    async fn decide_here(
++        f: &Fixture,
++        project: &gpui::Entity<project::Project>,
++        cx: &mut TestAppContext,
++    ) -> LaunchDecision {
++        let env = LaunchEnv {
++            home: f.base.join("zeo-home"),
++            config_dir: f.base.join("zeo-home/.config/zeo"),
++            runtime_dir: None,
++            hostname_secret: f.base.join("zeo-home/hostname.key"),
++        };
++        let mut async_cx = cx.to_async();
++        decide_in(
++            AgentId::new(ZEO_PLUS_AGENT_ID),
++            project,
++            agent_cmd("/usr/bin/claude-agent-acp-plus"),
++            &HashSet::new(),
++            env,
++            &mut async_cx,
++        )
++        .await
++    }
++
++    /// The value after `--hostname` among the jailed command's own options.
++    fn hostname_arg(args: &[String]) -> Option<String> {
++        let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
++        let at = args[..end].iter().position(|a| a == "--hostname")?;
++        args.get(at + 1).cloned()
++    }
++
++    #[gpui::test]
++    async fn jail_hostname_names_a_jail_that_hides_the_host(cx: &mut TestAppContext) {
++        init(cx);
++        let f = fixture("ai-jail 3.5.0");
++        write_script(&f.ai_jail, &help(true));
++        set_user_settings(settings(&f, json!({ "mask_host": true })), cx);
++        let project = project(&f, cx).await;
++        let (_, first) = jailed(decide_here(&f, &project, cx).await);
++        let name = hostname_arg(&first.args).expect("named");
++        assert!(name.starts_with("desktop-"), "{name}");
++        let (_, again) = jailed(decide_here(&f, &project, cx).await);
++        assert_eq!(hostname_arg(&again.args), Some(name), "stable");
++    }
++
++    #[gpui::test]
++    async fn jail_hostname_only_with_the_host_hidden_and_the_option(cx: &mut TestAppContext) {
++        init(cx);
++        let f = fixture("ai-jail 3.5.0");
++        write_script(&f.ai_jail, &help(false));
++        set_user_settings(settings(&f, json!({ "mask_host": true })), cx);
++        let project = project(&f, cx).await;
++        let (_, cmd) = jailed(decide_here(&f, &project, cx).await);
++        assert_eq!(
++            hostname_arg(&cmd.args),
++            None,
++            "an older ai-jail starts, as ai-sandbox"
++        );
++
++        write_script(&f.ai_jail, &help(true));
++        set_user_settings(settings(&f, json!({ "mask_host": false })), cx);
++        let (_, cmd) = jailed(decide_here(&f, &project, cx).await);
++        assert_eq!(
++            hostname_arg(&cmd.args),
++            None,
++            "the host shown, nothing to hide"
++        );
++        assert!(
++            !f.base.join("zeo-home/hostname.key").exists(),
++            "no secret made for a jail that does not use one"
++        );
++    }
++}
+diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
+index 8235fcc..349c5fd 100644
+--- a/crates/agent_sandbox/src/launch.rs
++++ b/crates/agent_sandbox/src/launch.rs
+@@ -417,6 +417,8 @@ pub(crate) struct LaunchEnv {
+     pub home: PathBuf,
+     pub config_dir: PathBuf,
+     pub runtime_dir: Option<PathBuf>,
++    /// The secret the jails' host names are hashed with (ask 5 of 2026-11-23).
++    pub hostname_secret: PathBuf,
+ }
+ 
+ impl LaunchEnv {
+@@ -427,6 +429,7 @@ impl LaunchEnv {
+             runtime_dir: std::env::var_os("XDG_RUNTIME_DIR")
+                 .map(PathBuf::from)
+                 .filter(|dir| dir.is_absolute()),
++            hostname_secret: crate::jail_hostname::secret_path(),
+         }
+     }
+ }
+@@ -821,7 +824,22 @@ impl LocalLaunch {
+             syscall_view,
+             minimal_etc,
+         };
+-        let host_args = host_view::host_args_for(mask_host, host_layer, Path::exists);
++        let mut host_args = host_view::host_args_for(mask_host, host_layer, Path::exists);
++        // Ask 5 of 2026-11-23: a jail that hides the host is named for its project, not
++        // `ai-sandbox`; an ai-jail without the option keeps that name, which hides as much.
++        if mask_host {
++            if binary.supports_hostname {
++                host_args.extend(crate::jail_hostname::hostname_args(
++                    &self.env.hostname_secret,
++                    &canonical_root,
++                ));
++            } else {
++                log::info!(
++                    "agent_sandbox event=hostname_skipped reason=unsupported version={}",
++                    binary.version
++                );
++            }
++        }
+ 
+         // Zeo next §6.54: each project keeps its own home, /tmp and Claude config -- its own
+         // login (operator, 2026-11-21) -- when ai-jail offers `--state-root`; otherwise the
+diff --git a/crates/agent_sandbox/src/launch_tests.rs b/crates/agent_sandbox/src/launch_tests.rs
+index 626deb3..65bfac3 100644
+--- a/crates/agent_sandbox/src/launch_tests.rs
++++ b/crates/agent_sandbox/src/launch_tests.rs
+@@ -742,6 +742,7 @@ mod run_additions {
+         LaunchEnv {
+             home: home.to_path_buf(),
+             config_dir: home.join(".config/zeo"),
++            hostname_secret: home.join(".local/share/zeo/agent_sandbox/hostname.key"),
+             runtime_dir: None,
+         }
+     }
+@@ -1370,6 +1371,7 @@ mod review_round_three {
+         let env = LaunchEnv {
+             home: home.clone(),
+             config_dir: home.join(".config/zeo"),
++            hostname_secret: home.join(".local/share/zeo/agent_sandbox/hostname.key"),
+             runtime_dir: Some(runtime.clone()),
+         };
+         let (_, cmd, spawn) = spawn_of(
+@@ -1443,6 +1445,7 @@ mod review_round_three {
+             home: f.base.join("zeo-home"),
+             config_dir: f.base.join("zeo-home/.config/zeo"),
+             runtime_dir: None,
++            hostname_secret: f.base.join("zeo-home/hostname.key"),
+         };
+         let (record, cmd, spawn) = spawn_of(
+             plan_with(
+@@ -1545,6 +1548,7 @@ mod loopback_off_the_jail_proxy {
+             home: f.base.join("zeo-home"),
+             config_dir: f.base.join("zeo-home/.config/zeo"),
+             runtime_dir: None,
++            hostname_secret: f.base.join("zeo-home/hostname.key"),
+         };
+         let mut async_cx = cx.to_async();
+         let plan: LaunchPlan = plan_in(
+diff --git a/crates/agent_sandbox/src/probe.rs b/crates/agent_sandbox/src/probe.rs
+index 73720fc..34628fb 100644
+--- a/crates/agent_sandbox/src/probe.rs
++++ b/crates/agent_sandbox/src/probe.rs
+@@ -49,6 +49,8 @@ pub struct JailBinary {
+     pub supports_syscall_view: bool,
+     /// `--minimal-etc` (3.5.0-r5): `/etc` as an allowlist of the host's entries.
+     pub supports_minimal_etc: bool,
++    /// `--hostname` (3.5.0-r6): the jail's host name, one per project (ask 5 of 2026-11-23).
++    pub supports_hostname: bool,
+ }
+ 
+ /// What `--help` listed, cached with the version.
+@@ -62,6 +64,7 @@ struct HelpFlags {
+     overlay_system: bool,
+     syscall_view: bool,
+     minimal_etc: bool,
++    hostname: bool,
+ }
+ 
+ impl HelpFlags {
+@@ -75,6 +78,7 @@ impl HelpFlags {
+             overlay_system: help_lists_option(help, crate::host_view::OVERLAY_SYSTEM_OPTION),
+             syscall_view: help_lists_option(help, crate::host_view::SYSCALL_VIEW_OPTION),
+             minimal_etc: help_lists_option(help, crate::host_view::MINIMAL_ETC_OPTION),
++            hostname: help_lists_option(help, crate::jail_hostname::HOSTNAME_OPTION),
+         }
+     }
+ 
+@@ -89,6 +93,7 @@ impl HelpFlags {
+             supports_overlay_system: self.overlay_system,
+             supports_syscall_view: self.syscall_view,
+             supports_minimal_etc: self.minimal_etc,
++            supports_hostname: self.hostname,
+         }
+     }
+ }
+diff --git a/crates/settings_ui/src/pages/agent_jail_host.rs b/crates/settings_ui/src/pages/agent_jail_host.rs
+index 8a4897c..d1da45a 100644
+--- a/crates/settings_ui/src/pages/agent_jail_host.rs
++++ b/crates/settings_ui/src/pages/agent_jail_host.rs
+@@ -54,7 +54,7 @@ pub(crate) fn host_switches(sandbox: &AgentSandboxSettings, key: Option<&str>) -
+     }
+ }
+ 
+-pub(crate) const MASK_HOST_NOTE: &str = "The jailed agent sees only the CPUs and memory its limits allow, its own cgroup and a machine id of its own, instead of this machine's; with ai-jail 3.5.0-r3, also a kernel version without the build details, a generic OS name, no swap or disks, and an uptime counted from its start. Still visible: the writable folders' disk and size, the CPU numbers, cpuid and the toolchains' own version strings. It hides; it does not isolate. Restart the agent to apply.";
++pub(crate) const MASK_HOST_NOTE: &str = "The jailed agent sees only the CPUs and memory its limits allow, its own cgroup, a machine id of its own and, with ai-jail 3.5.0-r6, a host name of its own (desktop- and six characters, the same on every start of this project), instead of this machine's; with ai-jail 3.5.0-r3, also a kernel version without the build details, a generic OS name, no swap or disks, and an uptime counted from its start. Still visible: the writable folders' disk and size, the CPU numbers, cpuid and the toolchains' own version strings. It hides; it does not isolate. Restart the agent to apply.";
+ pub(crate) const OVERLAY_NOTE: &str = "Serve /usr, /etc and /opt through read-only overlays, so the jail's mount table names no disk of this machine for them. File walks over those folders get slower. Needs ai-jail 3.5.0-r3. Restart the agent to apply.";
+ pub(crate) const OVERLAY_DISABLED_NOTE: &str = "Applies only while Hide the Host is on.";
+ pub(crate) const SYSCALL_VIEW_NOTE: &str = "Answer uname and sysinfo from ai-jail, so the kernel version, memory, load and uptime they report match the hidden host instead of this machine's. Each of those calls makes a round trip to ai-jail. Needs ai-jail 3.5.0-r4. Restart the agent to apply.";

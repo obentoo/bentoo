@@ -1,0 +1,219 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 17:37:12 -0300
+Subject: [PATCH] settings_ui: a Zeo badge marks the settings and pages Zeo
+ added
+
+Operator ask of 2026-11-23 (item 10): the settings window mixes Zed's
+settings with the ones Zeo added, and nothing told them apart -- a setting
+looked up in Zed's docs, or asked about upstream, might not exist there.
+
+A setting Zeo added to one of Zed's pages now carries a "Zeo" chip beside
+its title (render_settings_item_layout, by json_path): the Remote Projects
+Button, the three card defaults, Ask Questions In Cards, MCP Servers Over
+ACP and Zeo LSP For Agents. A page that is Zeo's alone -- Panel Button
+Order here, and the jail's pages through the next patch -- carries it on its link and
+beside its title in the breadcrumbs, not on every row (operator,
+2026-11-24: there it would only repeat itself). The tooltip says "Added by
+Zeo: Zed does not have this setting." (or "page").
+
+Nothing in a setting says who added it, so zeo_badge.rs keeps the two lists
+by hand. A patch that adds a setting to one of Zed's pages, or a page of
+its own, adds it there too.
+
+Tests: zeo_badge_tests.rs -- every badged path and page title exists in
+the window (a later rename would otherwise drop the badge silently), and the
+predicates mark Zeo's entries only.
+---
+
+diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/settings_ui.rs
+index a1be68f..c379998 100644
+--- a/crates/settings_ui/src/settings_ui.rs
++++ b/crates/settings_ui/src/settings_ui.rs
+@@ -1,6 +1,9 @@
+ mod components;
+ mod page_data;
+ pub mod pages;
++mod zeo_badge;
++#[cfg(test)]
++mod zeo_badge_tests;
+ 
+ use agent_skills::SkillIndex;
+ use anyhow::{Context as _, Result};
+@@ -1232,7 +1235,15 @@ impl SettingsPageItem {
+                                 .relative()
+                                 .w_full()
+                                 .max_w_1_2()
+-                                .child(Label::new(sub_page_link.title.clone()))
++                                .child(
++                                    h_flex()
++                                        .gap_1()
++                                        .child(Label::new(sub_page_link.title.clone()))
++                                        .when(
++                                            zeo_badge::is_zeo_page(&sub_page_link.title),
++                                            |this| this.child(zeo_badge::render_page_badge()),
++                                        ),
++                                )
+                                 .when_some(
+                                     sub_page_link.description.as_ref(),
+                                     |this, description| {
+@@ -1441,6 +1452,9 @@ fn render_settings_item_layout(
+                         .w_full()
+                         .gap_1()
+                         .child(Label::new(SharedString::new_static(title)))
++                        .when(zeo_badge::is_zeo_setting(json_path), |this| {
++                            this.child(zeo_badge::render_setting_badge())
++                        })
+                         .when_some(reset_fn, |this, reset_to_default| {
+                             this.child(
+                                 IconButton::new("reset-to-default-btn", IconName::Undo)
+@@ -3571,6 +3585,12 @@ impl SettingsWindow {
+                 )
+                 .map(|item| Label::new(item).color(Color::Muted)),
+             )
++            .when(
++                self.sub_page_stack
++                    .last()
++                    .is_some_and(|page| zeo_badge::is_zeo_page(&page.link.title)),
++                |this| this.child(zeo_badge::render_page_badge()),
++            )
+     }
+ 
+     fn render_no_results(&self, cx: &App) -> impl IntoElement {
+diff --git a/crates/settings_ui/src/zeo_badge.rs b/crates/settings_ui/src/zeo_badge.rs
+new file mode 100644
+index 0000000..a566d85
+--- /dev/null
++++ b/crates/settings_ui/src/zeo_badge.rs
+@@ -0,0 +1,57 @@
++//! The "Zeo" badge (operator ask 10 of 2026-11-23): the settings window mixes Zed's own settings
++//! with the ones Zeo added, and nothing told them apart -- a setting looked up in Zed's docs, or
++//! asked about upstream, might not exist there. A Zeo setting in one of Zed's pages carries the
++//! badge beside its title; a page that is Zeo's alone carries it on its link and on its title
++//! once, not on every row (operator, 2026-11-24: there it would only repeat itself).
++//!
++//! The lists are by hand because nothing in a setting says who added it. When a patch adds a
++//! setting to one of Zed's pages, or a page of its own, it adds the setting here too;
++//! `zeo_badge_lists_name_only_what_the_window_has` fails on a name the window no longer has.
++
++use gpui::{AnyElement, App};
++use ui::{Chip, Tooltip, prelude::*};
++
++/// The `json_path` of every setting Zeo added to one of Zed's pages.
++pub(crate) const ZEO_SETTING_PATHS: &[&str] = &[
++    "status_bar.remote_projects_button",
++    "agent.terminal_card_default",
++    "agent.edit_card_default",
++    "agent.tool_card_default",
++    "agent.ask_questions_in_cards",
++    "agent.mcp_servers_over_acp",
++    "agent.zeo_lsp",
++];
++
++/// The title of every sub-page that is Zeo's alone.
++pub(crate) const ZEO_PAGE_TITLES: &[&str] = &["Panel Button Order"];
++
++const BADGE: &str = "Zeo";
++const TOOLTIP: &str = "Added by Zeo: Zed does not have this setting.";
++const PAGE_TOOLTIP: &str = "Added by Zeo: Zed does not have this page.";
++
++/// Whether the setting at `json_path` is one Zeo added to a page of Zed's.
++pub(crate) fn is_zeo_setting(json_path: Option<&str>) -> bool {
++    json_path.is_some_and(|path| ZEO_SETTING_PATHS.contains(&path))
++}
++
++/// Whether the sub-page titled `title` is Zeo's alone.
++pub(crate) fn is_zeo_page(title: &str) -> bool {
++    ZEO_PAGE_TITLES.contains(&title)
++}
++
++/// The badge beside a Zeo setting's title.
++pub(crate) fn render_setting_badge() -> AnyElement {
++    render_badge(TOOLTIP)
++}
++
++/// The badge on a Zeo page's link and title.
++pub(crate) fn render_page_badge() -> AnyElement {
++    render_badge(PAGE_TOOLTIP)
++}
++
++fn render_badge(tooltip: &'static str) -> AnyElement {
++    Chip::new(BADGE)
++        .label_color(Color::Accent)
++        .tooltip(move |_window, cx: &mut App| Tooltip::simple(tooltip, cx))
++        .into_any_element()
++}
+diff --git a/crates/settings_ui/src/zeo_badge_tests.rs b/crates/settings_ui/src/zeo_badge_tests.rs
+new file mode 100644
+index 0000000..31c3534
+--- /dev/null
++++ b/crates/settings_ui/src/zeo_badge_tests.rs
+@@ -0,0 +1,68 @@
++// Operator ask 10 of 2026-11-23: a "Zeo" badge on every setting and page Zeo added. The lists
++// are kept by hand, so this guards them against a name the window no longer has (a setting
++// renamed or moved by a later patch would silently lose its badge). Filter: `zeo_badge`.
++use std::collections::HashSet;
++
++use crate::page_data::settings_data;
++use crate::test::register_settings;
++use crate::zeo_badge::{ZEO_PAGE_TITLES, ZEO_SETTING_PATHS, is_zeo_page, is_zeo_setting};
++use crate::{SettingItem, SettingsPageItem};
++
++fn paths_of<'a>(items: impl IntoIterator<Item = &'a SettingItem>, into: &mut HashSet<String>) {
++    for item in items {
++        if let Some(path) = item.field.json_path() {
++            into.insert(path.to_string());
++        }
++    }
++}
++
++#[gpui::test]
++fn zeo_badge_lists_name_only_what_the_window_has(cx: &mut gpui::TestAppContext) {
++    let (paths, links) = cx.update(|cx| {
++        register_settings(cx);
++        let app_state = workspace::AppState::test(cx);
++        workspace::AppState::set_global(app_state, cx);
++        let mut paths = HashSet::new();
++        let mut links = HashSet::new();
++        for page in settings_data(cx) {
++            for item in page.items.iter() {
++                match item {
++                    SettingsPageItem::SettingItem(item) => paths_of([item], &mut paths),
++                    SettingsPageItem::DynamicItem(item) => {
++                        paths_of([&item.discriminant], &mut paths);
++                        paths_of(item.fields.iter().flatten(), &mut paths);
++                    }
++                    SettingsPageItem::SubPageLink(link) => {
++                        links.insert(link.title.to_string());
++                    }
++                    SettingsPageItem::SectionHeader(_) | SettingsPageItem::ActionLink(_) => {}
++                }
++            }
++        }
++        (paths, links)
++    });
++    for path in ZEO_SETTING_PATHS {
++        assert!(
++            paths.contains(*path),
++            "{path} is badged but no setting has it"
++        );
++    }
++    for title in ZEO_PAGE_TITLES {
++        assert!(
++            links.contains(*title),
++            "{title} is badged but no page link has it"
++        );
++    }
++}
++
++#[test]
++fn zeo_badge_marks_zeo_settings_and_pages_only() {
++    assert!(is_zeo_setting(Some("agent.tool_card_default")));
++    assert!(
++        !is_zeo_setting(Some("agent.default_model")),
++        "Zed's own setting"
++    );
++    assert!(!is_zeo_setting(None), "a row with no settings.json path");
++    assert!(is_zeo_page("Panel Button Order"));
++    assert!(!is_zeo_page("Edit Predictions"), "Zed's own page");
++}

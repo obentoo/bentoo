@@ -1,0 +1,425 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 17:33:54 -0300
+Subject: [PATCH] settings_ui: the jail's restart notice has a Restart Agent
+ button
+
+Operator ask of 2026-11-23 (item 9): the Agent Sandbox page says "Restart
+the agent to apply." once a setting changed, and gave no way to do it -- the
+operator had to find each thread and click its lock. The notice now has a
+Restart Agent button beside it.
+
+settings_ui does not depend on agent_ui, so the page cannot reach the
+threads. agent_sandbox::restart_request carries the ask: the button sets the
+JailRestartRequest global (the project root and a growing serial), and every
+ConversationView observes it. A view restarts when the request names its
+project, its agent's launch record has drifted from the settings of now, and
+the serial is one it has not acted on (restart_wanted). It restarts the way
+its lock does (ThreadView::restart_agent_for_jail, now pub(crate)): the
+transcript is carried, and a turn in progress asks "Restart the agent?"
+first. The call is deferred, because the restart updates the view the
+observer is running in. Several views of one agent are safe:
+restart_connection returns the connection already restarting. Native
+threads have no launch record and are left alone.
+
+Logs: agent_sandbox event=restart_requested source=settings serial=N on the
+click, agent_sandbox event=restart_for_jail source=settings serial=N per
+view that restarts.
+
+Tests: agent_sandbox restart_request_tests.rs (the rule; observers see each
+request with a growing serial) and agent_ui
+conversation_view/tests/settings_restart_tests.rs (a drifted agent of the
+project restarts, another project's request and a view with no launch record
+leave it alone). Lab 2026-11-24: 85/85 with the agent_jail tests. Red not
+run as a separate step: without the observer the drifted view keeps its
+thread, which the assert_ne names.
+---
+
+diff --git a/crates/agent_sandbox/src/agent_sandbox.rs b/crates/agent_sandbox/src/agent_sandbox.rs
+index b72d007..9e2895b 100644
+--- a/crates/agent_sandbox/src/agent_sandbox.rs
++++ b/crates/agent_sandbox/src/agent_sandbox.rs
+@@ -15,6 +15,7 @@ pub mod host_view;
+ pub mod launch;
+ pub mod memory;
+ pub mod probe;
++pub mod restart_request;
+ mod project_keys;
+ mod settings;
+ pub mod skill_maps;
+@@ -62,6 +63,8 @@ mod operator_pause_tests;
+ #[cfg(test)]
+ mod probe_tests;
+ #[cfg(test)]
++mod restart_request_tests;
++#[cfg(test)]
+ mod roundtrip_tests;
+ #[cfg(test)]
+ mod scope_tests;
+diff --git a/crates/agent_sandbox/src/restart_request.rs b/crates/agent_sandbox/src/restart_request.rs
+new file mode 100644
+index 0000000..f821466
+--- /dev/null
++++ b/crates/agent_sandbox/src/restart_request.rs
+@@ -0,0 +1,43 @@
++//! A restart asked from the Agent Sandbox page (operator ask 9 of 2026-11-23): its "Restart the
++//! agent to apply." notice had no way to act on it, so the operator had to find each thread's lock.
++//! `settings_ui` cannot reach the threads (it does not depend on `agent_ui`), so the page writes a
++//! request here and every agent thread observes it, restarting the way its lock click does.
++
++use std::path::{Path, PathBuf};
++
++use gpui::{App, Global};
++
++/// The latest restart asked for: the project whose agents should restart, and a serial so a
++/// thread acts on each request once, however often the global is observed.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct JailRestartRequest {
++    pub root: PathBuf,
++    pub serial: u64,
++}
++
++impl Global for JailRestartRequest {}
++
++/// Asks every agent of `root` running on settings older than now to restart; returns the serial.
++pub fn request_restart(root: &Path, cx: &mut App) -> u64 {
++    let serial = cx
++        .try_global::<JailRestartRequest>()
++        .map_or(1, |request| request.serial + 1);
++    log::info!("agent_sandbox event=restart_requested source=settings serial={serial}");
++    cx.set_global(JailRestartRequest {
++        root: root.to_path_buf(),
++        serial,
++    });
++    serial
++}
++
++/// Whether a thread of `own_root` that last acted on `last_serial` restarts for `request`: only
++/// for its own project, only once, and only when its agent runs on older settings -- an agent
++/// already current has nothing to apply, and a restart would only cut it.
++pub fn restart_wanted(
++    request: &JailRestartRequest,
++    last_serial: u64,
++    own_root: &Path,
++    drifted: bool,
++) -> bool {
++    request.serial > last_serial && request.root == own_root && drifted
++}
+diff --git a/crates/agent_sandbox/src/restart_request_tests.rs b/crates/agent_sandbox/src/restart_request_tests.rs
+new file mode 100644
+index 0000000..305c873
+--- /dev/null
++++ b/crates/agent_sandbox/src/restart_request_tests.rs
+@@ -0,0 +1,52 @@
++// Operator ask 9 of 2026-11-23: the Agent Sandbox page's restart notice gets a button that
++// restarts the project's agents. Filter: `restart_request`.
++use std::cell::Cell;
++use std::path::Path;
++use std::rc::Rc;
++
++use gpui::TestAppContext;
++
++use crate::restart_request::{JailRestartRequest, request_restart, restart_wanted};
++
++fn request(root: &str, serial: u64) -> JailRestartRequest {
++    JailRestartRequest {
++        root: root.into(),
++        serial,
++    }
++}
++
++#[test]
++fn restart_request_applies_to_a_drifted_agent_of_the_same_project_once() {
++    let asked = request("/w/app", 3);
++    assert!(restart_wanted(&asked, 2, Path::new("/w/app"), true));
++    assert!(
++        !restart_wanted(&asked, 3, Path::new("/w/app"), true),
++        "a request already acted on is not acted on again"
++    );
++    assert!(
++        !restart_wanted(&asked, 2, Path::new("/w/other"), true),
++        "another project's agents keep running"
++    );
++    assert!(
++        !restart_wanted(&asked, 2, Path::new("/w/app"), false),
++        "an agent already on the settings of now has nothing to apply"
++    );
++}
++
++#[gpui::test]
++fn restart_request_notifies_observers_with_a_growing_serial(cx: &mut TestAppContext) {
++    let seen = Rc::new(Cell::new(0u64));
++    let _subscription = cx.update(|cx| {
++        let seen = seen.clone();
++        cx.observe_global::<JailRestartRequest>(move |cx| {
++            seen.set(cx.global::<JailRestartRequest>().serial);
++        })
++    });
++    let first = cx.update(|cx| request_restart(Path::new("/w/app"), cx));
++    cx.run_until_parked();
++    assert_eq!(seen.get(), first, "the observers learn of the request");
++    let second = cx.update(|cx| request_restart(Path::new("/w/app"), cx));
++    cx.run_until_parked();
++    assert!(second > first, "a second click is a new request");
++    assert_eq!(seen.get(), second);
++}
+diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
+index 24c5804..fe6b5e6 100644
+--- a/crates/agent_ui/src/conversation_view.rs
++++ b/crates/agent_ui/src/conversation_view.rs
+@@ -1200,6 +1200,7 @@ impl ConversationView {
+         }));
+ 
+         subscriptions.extend(crate::sub_thread::observe_sub_thread_stores(cx));
++        subscriptions.push(Self::observe_settings_restart(window, cx));
+ 
+         cx.on_release(|this, cx| {
+             this.request_elicitation_form_states.clear();
+@@ -1352,6 +1353,40 @@ impl ConversationView {
+         self.reset(window, cx);
+     }
+ 
++    /// Restarts this thread's agent when the Agent Sandbox page asks for it (operator ask 9 of
++    /// 2026-11-23) and the agent runs on settings older than now. It goes the lock click's way, so
++    /// a turn in progress asks first. Only requests made after this view exists count.
++    fn observe_settings_restart(window: &mut Window, cx: &mut Context<Self>) -> Subscription {
++        use agent_sandbox::restart_request::{JailRestartRequest, restart_wanted};
++        let last_serial = std::cell::Cell::new(
++            cx.try_global::<JailRestartRequest>()
++                .map_or(0, |request| request.serial),
++        );
++        cx.observe_global_in::<JailRestartRequest>(window, move |this, window, cx| {
++            let request = cx.global::<JailRestartRequest>().clone();
++            let Some(root) = agent_sandbox::launch::project_root(&this.project, cx) else {
++                return;
++            };
++            let drifted = agent_sandbox::LaunchRegistry::get(&this.agent.agent_id(), &root, cx)
++                .is_some_and(|record| agent_sandbox::launch::drifted_now(&record, cx));
++            let wanted = restart_wanted(&request, last_serial.get(), &root, drifted);
++            last_serial.set(request.serial);
++            if !wanted {
++                return;
++            }
++            let Some(thread_view) = this.root_thread_view() else {
++                return;
++            };
++            log::info!(
++                "agent_sandbox event=restart_for_jail source=settings serial={}",
++                request.serial
++            );
++            let restart = thread_view.read(cx).restart_agent_for_jail();
++            // The restart updates this view, which is mid-update here: run it once this ends.
++            window.defer(cx, move |window, cx| restart(window, cx));
++        })
++    }
++
+     /// Restarts the agent so a jail turned on or off applies (Zeo next §6.50, §6.54). The
+     /// thread's session is carried into the config directory the restarted agent will use; a
+     /// session with no transcript there has nothing to resume and is replaced by a new one.
+@@ -4722,6 +4757,8 @@ pub(crate) mod tests {
+ 
+     mod tool_card_display_tests;
+ 
++    mod settings_restart_tests;
++
+     #[test]
+     fn test_thread_error_protocol_codes_preserve_context_and_data() {
+         let data = json!({"detail": {"retry": false, "values": [1, 2]}});
+diff --git a/crates/agent_ui/src/conversation_view/tests/settings_restart_tests.rs b/crates/agent_ui/src/conversation_view/tests/settings_restart_tests.rs
+new file mode 100644
+index 0000000..9aac50a
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/tests/settings_restart_tests.rs
+@@ -0,0 +1,119 @@
++//! Operator ask 9 of 2026-11-23: the Agent Sandbox page's "Restart the agent to apply." notice
++//! gets a Restart Agent button, and the threads of that project restart on it. Filter:
++//! `tests::settings_restart_tests`.
++//!
++//! Wiring: inside `conversation_view.rs`'s `mod tests { .. }`, `mod settings_restart_tests;`
++//! resolves to this file.
++
++use super::*;
++use agent_sandbox::launch::{LaunchRecord, MemoryPort, Reason};
++use agent_sandbox::restart_request::request_restart;
++use gpui::EntityId;
++
++/// A view of agent "Test" on a project with one worktree, `/project`.
++async fn view_on_project(
++    cx: &mut TestAppContext,
++) -> (Entity<ConversationView>, PathBuf, &mut VisualTestContext) {
++    let fs = FakeFs::new(cx.executor());
++    fs.insert_tree("/project", serde_json::json!({ "main.rs": "" }))
++        .await;
++    let project = Project::test(fs, [Path::new("/project")], cx).await;
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
++    let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
++    let thread_store = cx.update(|_window, cx| cx.new(|cx| ThreadStore::new(cx)));
++    let connection_store =
++        cx.update(|_window, cx| cx.new(|cx| AgentConnectionStore::new(project.clone(), cx)));
++    let root = cx
++        .update(|_window, cx| agent_sandbox::launch::project_root(&project, cx))
++        .expect("a project with a worktree has a root");
++    let view = cx.update(|window, cx| {
++        cx.new(|cx| {
++            ConversationView::new(
++                Rc::new(StubAgentServer::new(StubAgentConnection::new())),
++                connection_store.clone(),
++                Agent::Custom { id: "Test".into() },
++                None,
++                None,
++                None,
++                None,
++                None,
++                workspace.downgrade(),
++                project,
++                Some(thread_store),
++                AgentThreadSource::AgentPanel,
++                window,
++                cx,
++            )
++        })
++    });
++    cx.run_until_parked();
++    (view, root, cx)
++}
++
++/// A launch of agent "Test" in `root`, outside the jail, started on settings that are not the
++/// ones of now (its fingerprint matches none), so it shows as drifted.
++fn drifted_launch(root: &Path) -> LaunchRecord {
++    LaunchRecord {
++        agent_id: "Test".into(),
++        project_root: root.to_path_buf(),
++        reason: Reason::Off,
++        ai_jail_version: None,
++        ai_jail_path: None,
++        rw_maps: Vec::new(),
++        allow_hosts: Vec::new(),
++        forward_ports: Vec::new(),
++        memory_port: MemoryPort::Off,
++        settings_fingerprint: 0x5eed,
++        memory_fingerprint: 0x5eed,
++        settings_key: None,
++        jail_pid: None,
++        paused: false,
++        claude_config_dir: None,
++        ai_jail_missing: false,
++    }
++}
++
++fn thread_id_of(view: &Entity<ConversationView>, cx: &mut VisualTestContext) -> EntityId {
++    view.read_with(cx, |view, _| {
++        view.active_thread().expect("connected thread").entity_id()
++    })
++}
++
++#[gpui::test]
++async fn settings_restart_restarts_a_drifted_agent_of_the_project(cx: &mut TestAppContext) {
++    init_test(cx);
++    let (view, root, cx) = view_on_project(cx).await;
++    cx.update(|_window, cx| agent_sandbox::LaunchRegistry::register(drifted_launch(&root), cx));
++    let before = thread_id_of(&view, cx);
++
++    cx.update(|_window, cx| request_restart(Path::new("/elsewhere"), cx));
++    cx.run_until_parked();
++    assert_eq!(
++        thread_id_of(&view, cx),
++        before,
++        "a request for another project leaves this thread's agent running"
++    );
++
++    cx.update(|_window, cx| request_restart(&root, cx));
++    cx.run_until_parked();
++    assert_ne!(
++        thread_id_of(&view, cx),
++        before,
++        "the project's drifted agent restarts and the thread is rebuilt on it"
++    );
++}
++
++#[gpui::test]
++async fn settings_restart_leaves_an_agent_without_a_launch_alone(cx: &mut TestAppContext) {
++    init_test(cx);
++    let (view, root, cx) = view_on_project(cx).await;
++    let before = thread_id_of(&view, cx);
++    cx.update(|_window, cx| request_restart(&root, cx));
++    cx.run_until_parked();
++    assert_eq!(
++        thread_id_of(&view, cx),
++        before,
++        "with no launch record there is no setting to apply"
++    );
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 95134a5..a268983 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -7201,7 +7201,7 @@ impl ThreadView {
+ 
+     /// Restarts the agent so a changed sandbox setting applies (§6.50). The thread is resumed
+     /// on the new process; a turn in progress would be cut, so that case asks first.
+-    fn restart_agent_for_jail(&self) -> Box<dyn Fn(&mut Window, &mut App)> {
++    pub(crate) fn restart_agent_for_jail(&self) -> Box<dyn Fn(&mut Window, &mut App)> {
+         let server_view = self.server_view.clone();
+         let thread = self.thread.clone();
+         Box::new(move |window, cx| {
+diff --git a/crates/settings_ui/src/pages/agent_jail_page.rs b/crates/settings_ui/src/pages/agent_jail_page.rs
+index ebd3fb6..dbd267b 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page.rs
+@@ -45,6 +45,8 @@ const PREVIEW_OFF: &str = "Sandbox off: the agent starts without ai-jail.";
+ const INVALID_ENDPOINT_NOTE: &str =
+     "No port is forwarded into the jail: the ai-memory endpoint is not a valid URL.";
+ const RESTART_NOTICE: &str = "Restart the agent to apply.";
++const RESTART_BUTTON: &str = "Restart Agent";
++const RESTART_TOOLTIP: &str = "Restart this project's agents that run on older settings. A thread in the middle of a turn asks first.";
+ /// The adapter the preview wraps; a start wraps whichever Claude adapter the agent runs.
+ const PREVIEW_AGENT: &str = "claude-agent-acp-plus";
+ 
+@@ -1038,13 +1040,7 @@ pub(crate) fn render_agent_jail_page(
+                         .buffer_font(cx),
+                 )
+                 .child(project_switch)
+-                .when(drifted, |this| {
+-                    this.child(
+-                        Label::new(RESTART_NOTICE)
+-                            .size(LabelSize::Small)
+-                            .color(Color::Warning),
+-                    )
+-                })
++                .when(drifted, |this| this.child(render_restart_notice(root)))
+                 .when_some(ai_jail_file, |this, notice| {
+                     this.child(
+                         Label::new(notice)
+@@ -1862,6 +1858,31 @@ pub(crate) fn render_agent_memory_page(
+         .into_any_element()
+ }
+ 
++/// The notice a changed setting shows until the agents restart, with the button that restarts
++/// them (operator ask 9 of 2026-11-23): before it, the notice named a step it gave no way to take.
++/// The page cannot reach the threads, so it asks through [`agent_sandbox::restart_request`].
++fn render_restart_notice(root: &Path) -> AnyElement {
++    let root = root.to_path_buf();
++    h_flex()
++        .gap_2()
++        .child(
++            Label::new(RESTART_NOTICE)
++                .size(LabelSize::Small)
++                .color(Color::Warning),
++        )
++        .child(
++            Button::new("agent-jail-restart-agent", RESTART_BUTTON)
++                .start_icon(Icon::new(IconName::RotateCw).size(IconSize::Small))
++                .label_size(LabelSize::Small)
++                .tab_index(0_isize)
++                .tooltip(Tooltip::text(RESTART_TOOLTIP))
++                .on_click(move |_, _, cx| {
++                    agent_sandbox::restart_request::request_restart(&root, cx);
++                }),
++        )
++        .into_any_element()
++}
++
+ #[path = "agent_jail_capabilities.rs"]
+ mod agent_jail_capabilities;
+ pub(crate) use agent_jail_capabilities::request_anchor;
