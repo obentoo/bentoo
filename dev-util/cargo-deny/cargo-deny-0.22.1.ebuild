@@ -52,7 +52,7 @@ CRATES="
 	fixedbitset@0.5.9
 	flate2@1.1.11
 	foldhash@0.1.5
-	form_urlencoded@1.2.2
+	form_urlencoded@1.2.3
 	fs_extra@1.3.0
 	funty@2.0.0
 	getrandom@0.2.17
@@ -155,7 +155,7 @@ CRATES="
 	untrusted@0.9.0
 	ureq-proto@0.7.1
 	ureq@3.5.2
-	url@2.5.8
+	url@2.5.9
 	utf8-zero@0.8.1
 	utf8_iter@1.1.0
 	utf8parse@0.2.2
