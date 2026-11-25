@@ -72,10 +72,18 @@ EAPI=8
 # `rustix = "^1.1.4"` (locked to 1.1.6)". Topped up inline the same way;
 # checked against the lock's registry entries: 525 in the lock, all of them
 # in the tarball or below, nothing else missing.
+#
+# 3.6.1 moved url 2.5.8 -> 2.5.9, which pulls form_urlencoded 1.2.2 -> 1.2.3
+# (via reqwest 0.12, ai-memory-wiki), and the build died with "failed to
+# select a version for the requirement `url = "^2.4"` (locked to 2.5.9)".
+# Topped up inline the same way; checked against the lock's registry
+# entries: 525 in the lock, all in the tarball or below, nothing else missing.
 CRATES="
+	form_urlencoded@1.2.3
 	libz-sys@1.1.33
 	quinn-udp@0.5.16
 	rustix@1.1.6
+	url@2.5.9
 	win-custody@0.1.2
 "
 
