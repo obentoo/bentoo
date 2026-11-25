@@ -170,6 +170,9 @@ BDEPEND="
 #   fix-sketcher-toolbars  NOT in 1.1.3 -- it applies clean, so the overlay was
 #                       silently missing a real fix. Added here under ::gentoo's
 #                       exact filename so the sweep can pair them.
+# Plus one of bentoo's own: freecad-1.1.4-pyside-6.12-pyobjectwrapper.patch.
+#   PySide 6.12 stopped including pyobjectwrapper.h from signalmanager.h, and
+#   src/Gui/PythonWrapper.cpp fails without it. No upstream fix yet.
 # BENTOO-DIVERGENCE: files/content - our copy of
 # freecad-1.1.1-fix-sketcher-toolbars.patch differs from ::gentoo's, and that
 # is deliberate: it carries only HALF of their fix.
@@ -188,6 +191,7 @@ BDEPEND="
 # upstream backports 7db3f901 to the 1.1 branch.
 PATCHES=(
 	"${FILESDIR}"/freecad-1.1.1-fix-sketcher-toolbars.patch
+	"${FILESDIR}"/freecad-1.1.4-pyside-6.12-pyobjectwrapper.patch
 )
 
 # BENTOO-DIVERGENCE: DEFINED_PHASES - no src_unpack here, where ::gentoo's
