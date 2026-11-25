@@ -1,18 +1,18 @@
---syscall-view for ai-jail 3.5.0 (from the fork's feat/syscall-view, merged into
-the Zeo stack zeo/ebuild-350-r4): with --mask-host, uname(2) and sysinfo(2)
-are answered by ai-jail outside the sandbox through a seccomp user-notify
-filter the in-sandbox helper installs before its deny filter, so `uname -r`,
-Python's platform and `getconf _PHYS_PAGES` agree with the host view's files:
-the numeric release, the sandbox's host name, its age as uptime, no load,
-memory sized to the limit. Opt-in, Linux only, never saved; only the native
+--syscall-view for ai-jail 3.7.0 (from the fork's feat/syscall-view, on branch
+zeo/ebuild-370): with --mask-host, uname(2) and sysinfo(2) are answered by
+ai-jail outside the sandbox through a seccomp user-notify filter the
+in-sandbox helper installs before its deny filter, so `uname -r`, Python's
+platform and `getconf _PHYS_PAGES` agree with the host view's files: the
+numeric release, the sandbox's host name, its age as uptime, no load, memory
+sized to the limit. Opt-in, Linux only, never saved; only the native
 architecture is trapped. Must follow ai-jail-host-view-extra.patch. Design:
 zeo-workspace docs/HOST-VIEW-EXTRA-LAYER.md §4.3.
 
 diff --git a/README.md b/README.md
-index b4e4c90..d48a6ee 100644
+index 026fd4b..73a8f48 100644
 --- a/README.md
 +++ b/README.md
-@@ -894,6 +894,18 @@ subvolume for them; it is separate because an overlay slows metadata walks
+@@ -960,6 +960,18 @@ subvolume for them; it is separate because an overlay slows metadata walks
  itself an overlay stacked too deep (inside a container it can fail with
  `Invalid argument`).
  
@@ -31,7 +31,7 @@ index b4e4c90..d48a6ee 100644
  The allowed CPUs are the `--cpus` set, else the process's affinity
  (`taskset`), trimmed to the cgroup's `cpu.max` rounded up to whole CPUs; the
  memory limit is the smallest `memory.max` from the sandbox's cgroup up to the
-@@ -913,7 +925,9 @@ so this changes behaviour only under `--no-landlock --no-seccomp`.
+@@ -979,7 +991,9 @@ so this changes behaviour only under `--no-landlock --no-seccomp`.
  The `cpuid` instruction, timing, the `uname(2)` kernel release, the CPU
  numbers `sched_getaffinity` and `/proc/self/status` return, and the mount
  sources in `/proc/self/mountinfo` of the writable mounts (and of the system
@@ -42,7 +42,7 @@ index b4e4c90..d48a6ee 100644
  
  ## Browsers
  
-@@ -1049,6 +1063,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
+@@ -1170,6 +1184,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
  --state-root DIR                $HOME, /tmp and Claude config on disk under DIR (Linux; not saved)
  --mask-host                     hardware view sized to the sandbox's limits (Linux; not saved; see Hiding the host)
  --overlay-system                with --mask-host: /usr, /etc, /opt through read-only overlays (Linux; not saved)
@@ -51,10 +51,10 @@ index b4e4c90..d48a6ee 100644
  --dry-run                       print the backend invocation
  --init                          write configuration and exit
 diff --git a/docs/CLI_TUI_PARITY.md b/docs/CLI_TUI_PARITY.md
-index 2a75963..70abd46 100644
+index 500ec6a..515dda5 100644
 --- a/docs/CLI_TUI_PARITY.md
 +++ b/docs/CLI_TUI_PARITY.md
-@@ -93,8 +93,8 @@ or integration rather than saved sandbox authority.
+@@ -103,8 +103,8 @@ or integration rather than saved sandbox authority.
  - Host view: `--mask-host` (a per-run choice made by the caller --
    typically a wrapper such as an editor -- not saved authority: no
    configuration key, refused on macOS; it only narrows what the sandbox
@@ -66,10 +66,10 @@ index 2a75963..70abd46 100644
  
  ## Release rule
 diff --git a/docs/USER_GUIDE.md b/docs/USER_GUIDE.md
-index 0ae0c07..24ba04c 100644
+index 7b1e415..72e5b0e 100644
 --- a/docs/USER_GUIDE.md
 +++ b/docs/USER_GUIDE.md
-@@ -659,6 +659,13 @@ instead of the host's disk for them. Metadata walks get slower (a `find` over
+@@ -746,6 +746,13 @@ instead of the host's disk for them. Metadata walks get slower (a `find` over
  `/usr` measured +21 %), and an overlay cannot sit on a root that is already
  stacked too deep (some containers: `Invalid argument`).
  
@@ -84,10 +84,10 @@ index 0ae0c07..24ba04c 100644
  ai-jail's default Landlock and seccomp a nested sandbox is refused anyway, so
  this matters only under `--no-landlock --no-seccomp`. The `cpuid` instruction,
 diff --git a/src/cli.rs b/src/cli.rs
-index 7a31aaf..8ce3b9f 100644
+index f1b87bf..482a704 100644
 --- a/src/cli.rs
 +++ b/src/cli.rs
-@@ -213,6 +213,9 @@ OPTIONS:
+@@ -221,6 +221,9 @@ OPTIONS:
      --overlay-system               With --mask-host: serve /usr, /etc and /opt through
                                     read-only overlays so the mount table names no host disk
                                     (Linux; never saved; slower metadata walks)
@@ -97,7 +97,7 @@ index 7a31aaf..8ce3b9f 100644
      --clean                        Ignore saved and legacy project policy, start fresh
      --dry-run                      Print the sandbox command without executing
      --init                         Create/update external per-project config and exit
-@@ -290,6 +293,9 @@ pub struct CliArgs {
+@@ -301,6 +304,9 @@ pub struct CliArgs {
      pub state_root: Option<PathBuf>,
      pub mask_host: bool,
      pub overlay_system: bool,
@@ -107,7 +107,7 @@ index 7a31aaf..8ce3b9f 100644
      pub agent_state: Option<bool>,
      pub harnesses: Vec<String>,
      pub request_files: Vec<PathBuf>,
-@@ -581,6 +587,22 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
+@@ -611,6 +617,22 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
              Long("overlay-system") => {
                  args.overlay_system = true;
              }
@@ -130,15 +130,7 @@ index 7a31aaf..8ce3b9f 100644
              Long(s @ ("gpu" | "no-gpu")) => {
                  args.gpu = Some(s == "gpu");
              }
-@@ -1230,6 +1252,7 @@ const SANDBOX_LONG_FLAGS: &[&str] = &[
-     "--state-root",
-     "--mask-host",
-     "--overlay-system",
-+    "--syscall-view",
-     "--x11",
-     "--no-x11",
-     "--host-shm",
-@@ -1281,6 +1304,7 @@ const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
+@@ -1353,6 +1375,7 @@ const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
      "state_root",
      "mask_host",
      "overlay_system",
@@ -146,7 +138,15 @@ index 7a31aaf..8ce3b9f 100644
  ];
  
  /// Names already missing from docs/USER_GUIDE.md at upstream v3.3.0
-@@ -3072,6 +3096,24 @@ mod tests {
+@@ -1493,6 +1516,7 @@ const INTERFACE_UNDOCUMENTED_BASELINE: &[&str] = &[
+     "--claude-dir",
+     "--mask-host",
+     "--overlay-system",
++    "--syscall-view",
+     "--x11",
+     "--no-x11",
+     "--host-shm",
+@@ -3242,6 +3266,24 @@ mod tests {
          assert!(args.mask_host && args.overlay_system);
      }
  
@@ -172,7 +172,7 @@ index 7a31aaf..8ce3b9f 100644
      fn parse_claude_dir() {
          let args = parse_test(&[
 diff --git a/src/config.rs b/src/config.rs
-index 4324078..fdc2b41 100644
+index df9e856..95bd52e 100644
 --- a/src/config.rs
 +++ b/src/config.rs
 @@ -195,6 +195,10 @@ pub struct Config {
@@ -186,7 +186,7 @@ index 4324078..fdc2b41 100644
      #[serde(default, skip_serializing_if = "Vec::is_empty")]
      pub command: Vec<String>,
      #[serde(default, skip_serializing_if = "Vec::is_empty")]
-@@ -2657,6 +2661,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
+@@ -3689,6 +3693,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
      config.state_root = cli.state_root.clone();
      config.mask_host = cli.mask_host;
      config.overlay_system = cli.overlay_system;
@@ -194,7 +194,7 @@ index 4324078..fdc2b41 100644
  
      expand_user_paths(&mut config);
  
-@@ -4984,6 +4989,7 @@ no_gpu = true
+@@ -6037,6 +6042,7 @@ no_gpu = true
              state_root: None,
              mask_host: false,
              overlay_system: false,
@@ -202,7 +202,7 @@ index 4324078..fdc2b41 100644
              command: vec!["claude".into()],
              rw_maps: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
              ro_maps: vec![PathBuf::from("/opt/data")],
-@@ -8387,6 +8393,7 @@ hide_dotdirs = [".my_secrets"]
+@@ -9472,6 +9478,7 @@ hide_dotdirs = [".my_secrets"]
              state_root: None,
              mask_host: false,
              overlay_system: false,
@@ -211,10 +211,10 @@ index 4324078..fdc2b41 100644
              rw_maps: vec![PathBuf::from("/tmp/shared")],
              ro_maps: vec![],
 diff --git a/src/config_store.rs b/src/config_store.rs
-index e4d316c..f3f5125 100644
+index bba67a2..08f3141 100644
 --- a/src/config_store.rs
 +++ b/src/config_store.rs
-@@ -1199,6 +1199,7 @@ pub(crate) fn save_project_grants(
+@@ -1237,6 +1237,7 @@ pub(crate) fn save_project_grants(
      // `--mask-host` is invocation-scoped for the same reason.
      grants.mask_host = false;
      grants.overlay_system = false;
@@ -222,7 +222,7 @@ index e4d316c..f3f5125 100644
      doc.directory_grants = approved_directory_grants.to_vec();
      doc.grants = grants;
      doc.approved_env_names = approved_env_names;
-@@ -1523,6 +1524,7 @@ const CONFIG_FIELD_POLICY: &[ConfigFieldPolicy] = &[
+@@ -1561,6 +1562,7 @@ const CONFIG_FIELD_POLICY: &[ConfigFieldPolicy] = &[
      excluded_policy!("state_root", Authority),
      excluded_policy!("mask_host", Restriction),
      excluded_policy!("overlay_system", Restriction),
@@ -230,7 +230,7 @@ index e4d316c..f3f5125 100644
      static_policy!("command", Authority, Command),
      static_policy!("rw_maps", Authority, RwMaps),
      static_policy!("ro_maps", Authority, RoMaps),
-@@ -2335,6 +2337,7 @@ mod tests {
+@@ -2373,6 +2375,7 @@ mod tests {
          expected_excluded!("state_root", Authority),
          expected_excluded!("mask_host", Restriction),
          expected_excluded!("overlay_system", Restriction),
@@ -238,7 +238,7 @@ index e4d316c..f3f5125 100644
          expected_authority!("command", Authority, Command, ["command claude"]),
          expected_authority!(
              "rw_maps",
-@@ -2456,6 +2459,9 @@ mod tests {
+@@ -2494,6 +2497,9 @@ mod tests {
              "overlay_system" => {
                  config.overlay_system = true;
              }
@@ -249,10 +249,10 @@ index e4d316c..f3f5125 100644
                  config.command =
                      vec!["claude".into(), "--token=top-secret".into()];
 diff --git a/src/main.rs b/src/main.rs
-index 7690635..4ec642b 100644
+index 96fbbd7..662eda6 100644
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -354,6 +354,9 @@ fn validate_overlay_system(config: &config::Config) -> Result<(), String> {
+@@ -388,6 +388,9 @@ fn validate_overlay_system(config: &config::Config) -> Result<(), String> {
      if config.overlay_system && !config.mask_host {
          return Err("--overlay-system requires --mask-host".into());
      }
@@ -262,7 +262,7 @@ index 7690635..4ec642b 100644
      Ok(())
  }
  
-@@ -1116,6 +1119,13 @@ fn run_landlock_exec(cli: &cli::CliArgs) -> Result<i32, String> {
+@@ -1228,6 +1231,13 @@ fn run_landlock_exec(cli: &cli::CliArgs) -> Result<i32, String> {
      // Apply seccomp filter after Landlock (reduces kernel syscall
      // surface). Must happen before exec so the user command inherits
      // the filter.
@@ -275,8 +275,8 @@ index 7690635..4ec642b 100644
 +    }
      sandbox::apply_seccomp(&config, cli.verbose)?;
  
-     // Apply the full limit set here, inside the sandbox, after bwrap
-@@ -2912,6 +2922,12 @@ mod tests {
+     // Drop PATH entries that do not exist in here.
+@@ -3274,6 +3284,12 @@ mod tests {
              ..Config::default()
          };
          assert!(validate_overlay_system(&both).is_ok());
@@ -290,10 +290,10 @@ index 7690635..4ec642b 100644
      }
  
 diff --git a/src/proxy.rs b/src/proxy.rs
-index 3bffe1f..185a817 100644
+index b69d09a..f2591fc 100644
 --- a/src/proxy.rs
 +++ b/src/proxy.rs
-@@ -2113,7 +2113,10 @@ fn serve_published(control: &UnixStream, port: u16) {
+@@ -2118,7 +2118,10 @@ fn serve_published(control: &UnixStream, port: u16) {
  /// Send one byte carrying `fd` as SCM_RIGHTS ancillary data. std has no
  /// stable API for it, and nix's would pull in its `socket` feature.
  #[cfg(target_os = "linux")]
@@ -305,7 +305,7 @@ index 3bffe1f..185a817 100644
      use nix::libc;
      let byte = [0_u8; 1];
      let mut iov = libc::iovec {
-@@ -2157,7 +2160,7 @@ fn send_fd(stream: &UnixStream, fd: &impl AsRawFd) -> io::Result<()> {
+@@ -2162,7 +2165,7 @@ fn send_fd(stream: &UnixStream, fd: &impl AsRawFd) -> io::Result<()> {
  /// `Ok(None)` at end of stream; `InvalidData` for a byte that carried no
  /// descriptor. Extra descriptors in one message are closed.
  #[cfg(target_os = "linux")]
@@ -315,7 +315,7 @@ index 3bffe1f..185a817 100644
      let mut byte = [0_u8; 1];
      let mut iov = libc::iovec {
 diff --git a/src/sandbox/bwrap.rs b/src/sandbox/bwrap.rs
-index dbc3615..5ac3f2a 100644
+index 570933c..7dcd6d4 100644
 --- a/src/sandbox/bwrap.rs
 +++ b/src/sandbox/bwrap.rs
 @@ -352,7 +352,7 @@ impl MountSet {
@@ -371,22 +371,28 @@ index dbc3615..5ac3f2a 100644
      })
  }
  
-@@ -1449,6 +1465,8 @@ fn resolve_landlock_wrapper(
-         // audit record still report them.
-         && config.rlimit.is_empty()
+@@ -1452,6 +1468,8 @@ fn resolve_landlock_wrapper(
          && config.cpus.is_none()
+         // A teardown report needs the wrapper as the command's sub-reaper.
+         && !teardown_report
 +        // --syscall-view's notify filter is installed by the wrapper.
 +        && !config.syscall_view
      {
          return Ok(None);
      }
-@@ -1715,7 +1733,18 @@ pub fn build(
+@@ -1766,13 +1784,23 @@ pub fn build(
      // accept the command from the fd).
      cmd.arg("--");
      if wrapper.is_some() {
--        for arg in landlock_wrapper_args(config, &map_args, verbose) {
-+        let mut wrapper_args =
-+            landlock_wrapper_args(config, &map_args, verbose);
+-        for arg in landlock_wrapper_args_with_ecryptfs(
++        let mut wrapper_args = landlock_wrapper_args_with_ecryptfs(
+             config,
+             &map_args,
+             verbose,
+             teardown_report_fd.map(|fd| fd.to_string()),
+             &ecryptfs_raw_fds,
+-        ) {
++        );
 +        // `--syscall-view`: the helper's end of the supervisor's socket
 +        // pair, before the wrapper's own `--`.
 +        if config.syscall_view {
@@ -401,7 +407,7 @@ index dbc3615..5ac3f2a 100644
          }
      }
 diff --git a/src/sandbox/mod.rs b/src/sandbox/mod.rs
-index 114706b..4ccb1e6 100644
+index 441614a..14b3796 100644
 --- a/src/sandbox/mod.rs
 +++ b/src/sandbox/mod.rs
 @@ -70,6 +70,15 @@ mod host_view_synth;
@@ -420,19 +426,19 @@ index 114706b..4ccb1e6 100644
  mod host_view_uptime;
  #[cfg(target_os = "linux")]
  mod landlock;
-@@ -1975,7 +1984,7 @@ pub fn build(
-     #[cfg(target_os = "macos")]
-     {
-         let _ = (guard, bridge_sockets);
+@@ -1996,7 +2005,7 @@ pub fn build(
+         // No teardown report on macOS.
+         let _ = (guard, bridge_sockets, teardown_report_fd);
+         let _ = legacy_mask_mountable;
 -        if config.mask_host || config.overlay_system {
 +        if config.mask_host || config.overlay_system || config.syscall_view {
              return Err("--mask-host is Linux-only".into());
          }
          let prepared = prepare_seatbelt_config(config)?;
-@@ -2011,7 +2020,7 @@ pub fn dry_run(
-     #[cfg(target_os = "macos")]
+@@ -2035,7 +2044,7 @@ pub fn dry_run(
      {
-         let _ = (guard, bridge_sockets);
+         // No wrapper on macOS: the teardown report is not supported there.
+         let _ = (guard, bridge_sockets, teardown_report);
 -        if config.mask_host || config.overlay_system {
 +        if config.mask_host || config.overlay_system || config.syscall_view {
              return Err("--mask-host is Linux-only".into());

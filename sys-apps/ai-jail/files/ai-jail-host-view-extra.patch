@@ -1,25 +1,26 @@
---mask-host's second layer for ai-jail 3.5.0 (from the fork's
-feat/host-view-extra, merged into the Zeo stack zeo/ebuild-350-r3). Under
---mask-host the sandbox now also reads: the numeric kernel release only in
-/proc/version and /proc/sys/kernel/{osrelease,version} (no distribution
-suffix, builder, compiler or date); a generic os-release (ID=linux); a
-/proc/swaps with no swap; its own boot id; empty /etc/crypttab, release
-files and partition, disk, NUMA, memory-block, interrupt, scheduler and
-pressure files; a tmpfs over /etc/portage, /sys/block, /usr/lib/modules and
-/usr/src; CPU topology files, so lscpu reads one thread per core; a live
-free-memory figure under a memory limit; and CLOCK_BOOTTIME,
-CLOCK_MONOTONIC and sysinfo().uptime counted from the launch, in a time
-namespace the supervisor enters before it execs bwrap. Every jail: the
-landlock helper drops AI_JAIL_QUIET before the final exec. New opt-in
+--mask-host's second layer for ai-jail 3.7.0 (from the fork's
+feat/host-view-extra, on branch zeo/ebuild-370). Under --mask-host the
+sandbox now also reads: the numeric kernel release only in /proc/version and
+/proc/sys/kernel/{osrelease,version} (no distribution suffix, builder,
+compiler or date); a generic os-release (ID=linux); a /proc/swaps with no
+swap; its own boot id; empty /etc/crypttab, release files and partition,
+disk, NUMA, memory-block, interrupt, scheduler and pressure files; a tmpfs
+over /etc/portage, /sys/block, /usr/lib/modules and /usr/src; CPU topology
+files, so lscpu reads one thread per core; a live free-memory figure under a
+memory limit; and CLOCK_BOOTTIME, CLOCK_MONOTONIC and sysinfo().uptime
+counted from the launch, in a time namespace the supervisor enters before it
+execs bwrap. Every jail: the landlock helper drops AI_JAIL_QUIET before it
+runs the command (before upstream's teardown reaper, too). New opt-in
 --overlay-system (with --mask-host): /usr, /etc and /opt through read-only
 overlays so the mount table names no host disk for them. Must follow
-ai-jail-mask-host.patch. Design: zeo-workspace docs/HOST-VIEW-EXTRA-LAYER.md §4.2.
+ai-jail-mask-host.patch. Design: zeo-workspace docs/HOST-VIEW-EXTRA-LAYER.md
+§4.2.
 
 diff --git a/README.md b/README.md
-index 8dff7f1..b4e4c90 100644
+index a13dea9..026fd4b 100644
 --- a/README.md
 +++ b/README.md
-@@ -878,6 +878,21 @@ sandbox:
+@@ -944,6 +944,21 @@ sandbox:
  | `/sys/fs/cgroup` | only the sandbox's own cgroup, read-only, in its own cgroup namespace (`/proc/self/cgroup` reads `0::/`) |
  | `/sys/class/dmi`, `/sys/devices/virtual/dmi` | empty |
  | `/etc/machine-id` | the sandbox's own id: kept in `DIR/machine-id` under `--state-root DIR`, else random per launch |
@@ -41,7 +42,7 @@ index 8dff7f1..b4e4c90 100644
  
  The allowed CPUs are the `--cpus` set, else the process's affinity
  (`taskset`), trimmed to the cgroup's `cpu.max` rounded up to whole CPUs; the
-@@ -897,7 +912,8 @@ so this changes behaviour only under `--no-landlock --no-seccomp`.
+@@ -963,7 +978,8 @@ so this changes behaviour only under `--no-landlock --no-seccomp`.
  **What it cannot hide.** This hides the easy answers; it does not isolate.
  The `cpuid` instruction, timing, the `uname(2)` kernel release, the CPU
  numbers `sched_getaffinity` and `/proc/self/status` return, and the mount
@@ -51,7 +52,7 @@ index 8dff7f1..b4e4c90 100644
  
  ## Browsers
  
-@@ -1032,6 +1048,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
+@@ -1153,6 +1169,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
  --cpus LIST                     pin the sandbox to CPUs, locked by seccomp
  --state-root DIR                $HOME, /tmp and Claude config on disk under DIR (Linux; not saved)
  --mask-host                     hardware view sized to the sandbox's limits (Linux; not saved; see Hiding the host)
@@ -60,10 +61,10 @@ index 8dff7f1..b4e4c90 100644
  --dry-run                       print the backend invocation
  --init                          write configuration and exit
 diff --git a/docs/CLI_TUI_PARITY.md b/docs/CLI_TUI_PARITY.md
-index a198bf9..2a75963 100644
+index 49205d2..500ec6a 100644
 --- a/docs/CLI_TUI_PARITY.md
 +++ b/docs/CLI_TUI_PARITY.md
-@@ -93,7 +93,8 @@ or integration rather than saved sandbox authority.
+@@ -103,7 +103,8 @@ or integration rather than saved sandbox authority.
  - Host view: `--mask-host` (a per-run choice made by the caller --
    typically a wrapper such as an editor -- not saved authority: no
    configuration key, refused on macOS; it only narrows what the sandbox
@@ -74,10 +75,10 @@ index a198bf9..2a75963 100644
  
  ## Release rule
 diff --git a/docs/USER_GUIDE.md b/docs/USER_GUIDE.md
-index 709ce9b..0ae0c07 100644
+index c5e646a..7b1e415 100644
 --- a/docs/USER_GUIDE.md
 +++ b/docs/USER_GUIDE.md
-@@ -643,12 +643,28 @@ namespace; DMI is hidden; `/etc/machine-id` is the sandbox's own.
+@@ -730,12 +730,28 @@ namespace; DMI is hidden; `/etc/machine-id` is the sandbox's own.
    `/proc/meminfo` stays the host's.
  - Machine id: kept in `DIR/machine-id` under `--state-root DIR`, so it stays the
    same between launches; a fresh one per launch otherwise.
@@ -108,10 +109,10 @@ index 709ce9b..0ae0c07 100644
  
  ## Migration and reapproval
 diff --git a/src/cli.rs b/src/cli.rs
-index 6946f07..7a31aaf 100644
+index dc88b2c..f1b87bf 100644
 --- a/src/cli.rs
 +++ b/src/cli.rs
-@@ -210,6 +210,9 @@ OPTIONS:
+@@ -218,6 +218,9 @@ OPTIONS:
                                     own machine-id (Linux; never saved). A nested sandbox can no
                                     longer mount /proc (bwrap, podman, Claude Code's Bash
                                     sandbox; already refused unless --no-landlock --no-seccomp)
@@ -121,7 +122,7 @@ index 6946f07..7a31aaf 100644
      --clean                        Ignore saved and legacy project policy, start fresh
      --dry-run                      Print the sandbox command without executing
      --init                         Create/update external per-project config and exit
-@@ -286,6 +289,7 @@ pub struct CliArgs {
+@@ -297,6 +300,7 @@ pub struct CliArgs {
      pub claude_dir: Option<PathBuf>,
      pub state_root: Option<PathBuf>,
      pub mask_host: bool,
@@ -129,7 +130,7 @@ index 6946f07..7a31aaf 100644
      pub agent_state: Option<bool>,
      pub harnesses: Vec<String>,
      pub request_files: Vec<PathBuf>,
-@@ -574,6 +578,9 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
+@@ -604,6 +608,9 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
              Long("mask-host") => {
                  args.mask_host = true;
              }
@@ -139,15 +140,7 @@ index 6946f07..7a31aaf 100644
              Long(s @ ("gpu" | "no-gpu")) => {
                  args.gpu = Some(s == "gpu");
              }
-@@ -1222,6 +1229,7 @@ const SANDBOX_LONG_FLAGS: &[&str] = &[
-     "--claude-dir",
-     "--state-root",
-     "--mask-host",
-+    "--overlay-system",
-     "--x11",
-     "--no-x11",
-     "--host-shm",
-@@ -1272,6 +1280,7 @@ const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
+@@ -1345,6 +1352,7 @@ const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
      "runtime_harnesses",
      "state_root",
      "mask_host",
@@ -155,7 +148,15 @@ index 6946f07..7a31aaf 100644
  ];
  
  /// Names already missing from docs/USER_GUIDE.md at upstream v3.3.0
-@@ -3055,6 +3064,14 @@ mod tests {
+@@ -1484,6 +1492,7 @@ const INTERFACE_UNDOCUMENTED_BASELINE: &[&str] = &[
+     "--no-browser",
+     "--claude-dir",
+     "--mask-host",
++    "--overlay-system",
+     "--x11",
+     "--no-x11",
+     "--host-shm",
+@@ -3225,6 +3234,14 @@ mod tests {
          assert_eq!(args.command, vec!["claude"]);
      }
  
@@ -171,7 +172,7 @@ index 6946f07..7a31aaf 100644
      fn parse_claude_dir() {
          let args = parse_test(&[
 diff --git a/src/config.rs b/src/config.rs
-index c7572fe..4324078 100644
+index e77e061..df9e856 100644
 --- a/src/config.rs
 +++ b/src/config.rs
 @@ -191,6 +191,10 @@ pub struct Config {
@@ -185,7 +186,7 @@ index c7572fe..4324078 100644
      #[serde(default, skip_serializing_if = "Vec::is_empty")]
      pub command: Vec<String>,
      #[serde(default, skip_serializing_if = "Vec::is_empty")]
-@@ -2652,6 +2656,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
+@@ -3684,6 +3688,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
      }
      config.state_root = cli.state_root.clone();
      config.mask_host = cli.mask_host;
@@ -193,7 +194,7 @@ index c7572fe..4324078 100644
  
      expand_user_paths(&mut config);
  
-@@ -4978,6 +4983,7 @@ no_gpu = true
+@@ -6031,6 +6036,7 @@ no_gpu = true
              runtime_harnesses: Vec::new(),
              state_root: None,
              mask_host: false,
@@ -201,7 +202,7 @@ index c7572fe..4324078 100644
              command: vec!["claude".into()],
              rw_maps: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
              ro_maps: vec![PathBuf::from("/opt/data")],
-@@ -8380,6 +8386,7 @@ hide_dotdirs = [".my_secrets"]
+@@ -9465,6 +9471,7 @@ hide_dotdirs = [".my_secrets"]
              runtime_harnesses: Vec::new(),
              state_root: None,
              mask_host: false,
@@ -210,10 +211,10 @@ index c7572fe..4324078 100644
              rw_maps: vec![PathBuf::from("/tmp/shared")],
              ro_maps: vec![],
 diff --git a/src/config_store.rs b/src/config_store.rs
-index 71105eb..e4d316c 100644
+index e182fe1..bba67a2 100644
 --- a/src/config_store.rs
 +++ b/src/config_store.rs
-@@ -1198,6 +1198,7 @@ pub(crate) fn save_project_grants(
+@@ -1236,6 +1236,7 @@ pub(crate) fn save_project_grants(
      grants.state_root = None;
      // `--mask-host` is invocation-scoped for the same reason.
      grants.mask_host = false;
@@ -221,7 +222,7 @@ index 71105eb..e4d316c 100644
      doc.directory_grants = approved_directory_grants.to_vec();
      doc.grants = grants;
      doc.approved_env_names = approved_env_names;
-@@ -1521,6 +1522,7 @@ const CONFIG_FIELD_POLICY: &[ConfigFieldPolicy] = &[
+@@ -1559,6 +1560,7 @@ const CONFIG_FIELD_POLICY: &[ConfigFieldPolicy] = &[
      excluded_policy!("runtime_harnesses", Authority),
      excluded_policy!("state_root", Authority),
      excluded_policy!("mask_host", Restriction),
@@ -229,7 +230,7 @@ index 71105eb..e4d316c 100644
      static_policy!("command", Authority, Command),
      static_policy!("rw_maps", Authority, RwMaps),
      static_policy!("ro_maps", Authority, RoMaps),
-@@ -2332,6 +2334,7 @@ mod tests {
+@@ -2370,6 +2372,7 @@ mod tests {
          expected_excluded!("runtime_harnesses", Authority),
          expected_excluded!("state_root", Authority),
          expected_excluded!("mask_host", Restriction),
@@ -237,7 +238,7 @@ index 71105eb..e4d316c 100644
          expected_authority!("command", Authority, Command, ["command claude"]),
          expected_authority!(
              "rw_maps",
-@@ -2450,6 +2453,9 @@ mod tests {
+@@ -2488,6 +2491,9 @@ mod tests {
              "mask_host" => {
                  config.mask_host = true;
              }
@@ -248,11 +249,11 @@ index 71105eb..e4d316c 100644
                  config.command =
                      vec!["claude".into(), "--token=top-secret".into()];
 diff --git a/src/main.rs b/src/main.rs
-index eb5555e..7690635 100644
+index 7e93ac1..96fbbd7 100644
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -347,6 +347,16 @@ fn validate_network_flags(config: &config::Config) -> Result<(), String> {
-     validate_publish_ports(config)
+@@ -381,6 +381,16 @@ fn checked_limits(
+     Ok(limits)
  }
  
 +/// `--overlay-system` is a layer of `--mask-host`'s view (its empty bottom
@@ -268,7 +269,7 @@ index eb5555e..7690635 100644
  /// `--egress-log` only sees what the filtered-egress proxy relays, so with
  /// the network off or full it would log nothing while looking enabled.
  /// Checked on the finalized config: a config file or a harness
-@@ -1137,6 +1147,11 @@ fn run_landlock_exec(cli: &cli::CliArgs) -> Result<i32, String> {
+@@ -1240,6 +1250,11 @@ fn run_landlock_exec(cli: &cli::CliArgs) -> Result<i32, String> {
          unsafe { std::env::set_var("PATH", &pruned) };
      }
  
@@ -277,18 +278,18 @@ index eb5555e..7690635 100644
 +    // SAFETY: single-threaded, before exec.
 +    unsafe { std::env::remove_var("AI_JAIL_QUIET") };
 +
-     // Replace this process with the real command
-     let err = std::process::Command::new(&cli.command[0])
-         .args(&cli.command[1..])
-@@ -1783,6 +1798,7 @@ fn run(
-     config::absolutize_user_paths(&mut config, &invocation_cwd);
-     apply_browser_profile(&mut config, !command_from_untrusted_project);
-     validate_network_flags(&config)?;
-+    validate_overlay_system(&config)?;
+     // Prepare limits after the launcher and bridges have been created.
+     // The teardown reaper applies them in its forked command, so per-process
+     // limits cannot prevent the reaper itself from spawning or reporting.
+@@ -2002,6 +2017,7 @@ fn run(
+         _ => None,
+     };
      let resource_limits = validate_resource_limits(&config)?;
++    validate_overlay_system(&config)?;
  
      // Handle status command
-@@ -2528,7 +2544,7 @@ mod tests {
+     if cli.status {
+@@ -2881,7 +2897,7 @@ mod tests {
          should_auto_save_project_config, should_check_update,
          should_save_global_preferences,
          untrusted_project_command_carries_credentials, validate_egress_log_on,
@@ -297,7 +298,7 @@ index eb5555e..7690635 100644
      };
      use crate::cli::CliArgs;
      use crate::config::{BrowserProfile, Config};
-@@ -2882,6 +2898,23 @@ mod tests {
+@@ -3244,6 +3260,23 @@ mod tests {
          assert!(validate_network_flags(&Config::default()).is_ok());
      }
  
@@ -322,7 +323,7 @@ index eb5555e..7690635 100644
      fn secrets_require_filtered_mode_allowlist_and_env_key() {
          // Not filtered.
 diff --git a/src/sandbox/bwrap.rs b/src/sandbox/bwrap.rs
-index e78df80..dbc3615 100644
+index 06a65e1..570933c 100644
 --- a/src/sandbox/bwrap.rs
 +++ b/src/sandbox/bwrap.rs
 @@ -68,6 +68,12 @@ enum Mount {
@@ -422,7 +423,7 @@ index e78df80..dbc3615 100644
                  Mount::Tmpfs { dest: dest.clone() }
              }
          })
-@@ -1690,6 +1731,18 @@ pub fn build(
+@@ -1747,6 +1788,18 @@ pub fn build(
      // posix_spawn does not reliably pass a non-stdio fd through. (#147)
      let proc_path = std::ffi::CString::new(format!("/proc/self/fd/{args_fd}"))
          .map_err(|e| format!("building bwrap args fd path: {e}"))?;
@@ -1509,7 +1510,7 @@ index 60797ea..fc375bb 100644
              })
              .map_err(|e| format!("--mask-host: cannot start uptime: {e}"))?;
 diff --git a/src/sandbox/mod.rs b/src/sandbox/mod.rs
-index 34eb3e1..114706b 100644
+index fdfd8d7..441614a 100644
 --- a/src/sandbox/mod.rs
 +++ b/src/sandbox/mod.rs
 @@ -64,8 +64,12 @@ pub(crate) mod bwrap;
@@ -1525,29 +1526,29 @@ index 34eb3e1..114706b 100644
  mod host_view_uptime;
  #[cfg(target_os = "linux")]
  mod landlock;
-@@ -1971,7 +1975,7 @@ pub fn build(
-     #[cfg(target_os = "macos")]
-     {
-         let _ = (guard, bridge_sockets);
+@@ -1992,7 +1996,7 @@ pub fn build(
+         // No teardown report on macOS.
+         let _ = (guard, bridge_sockets, teardown_report_fd);
+         let _ = legacy_mask_mountable;
 -        if config.mask_host {
 +        if config.mask_host || config.overlay_system {
              return Err("--mask-host is Linux-only".into());
          }
          let prepared = prepare_seatbelt_config(config)?;
-@@ -2007,7 +2011,7 @@ pub fn dry_run(
-     #[cfg(target_os = "macos")]
+@@ -2031,7 +2035,7 @@ pub fn dry_run(
      {
-         let _ = (guard, bridge_sockets);
+         // No wrapper on macOS: the teardown report is not supported there.
+         let _ = (guard, bridge_sockets, teardown_report);
 -        if config.mask_host {
 +        if config.mask_host || config.overlay_system {
              return Err("--mask-host is Linux-only".into());
          }
          let prepared = prepare_seatbelt_config(config)?;
 diff --git a/src/signals.rs b/src/signals.rs
-index a49d2b3..097f40d 100644
+index b712441..74e2dbe 100644
 --- a/src/signals.rs
 +++ b/src/signals.rs
-@@ -217,10 +217,24 @@ pub fn run_supervised_exec(fd: i32, command: &[String]) -> Result<i32, String> {
+@@ -239,10 +239,24 @@ pub fn run_supervised_exec(fd: i32, command: &[String]) -> Result<i32, String> {
      if read != 1 || byte[0] != 1 {
          return Err("Supervised execution was cancelled".into());
      }

@@ -190,12 +190,13 @@ DOCS=( README.md docs )
 PATCHES=( "${FILESDIR}"/${PN}-chromium-launcher-caps.patch )
 
 # Zeo's jail (Zeo next proposal §6.54) needs two features the fork carries and
-# upstream has not released: whole-sandbox resource limits (--memory,
-# --max-tasks, --cpu-quota, --cpus, --rlimit) and --state-root (the sandbox's
-# $HOME, /tmp and Claude config on disk). Both are opt-in flags: a launch that
-# names neither behaves as upstream 3.5.0. They go upstream as separate PRs
-# after local testing; drop these when a release carries them. Named without a
-# version for the same reason as the launcher patch.
+# upstream has not released: whole-sandbox cgroup limits (--memory,
+# --max-tasks, --cpu-quota) and --state-root (the sandbox's $HOME, /tmp and
+# Claude config on disk). --cpus and --rlimit are upstream's since 3.6.0; the
+# cgroup limits build on them. Both are opt-in flags: a launch that names
+# neither behaves as upstream 3.7.0. Rebased from the fork's zeo/ebuild-370;
+# drop these when a release carries them. Named without a version for the
+# same reason as the launcher patch.
 PATCHES+=(
 	"${FILESDIR}"/${PN}-resource-limits.patch
 	"${FILESDIR}"/${PN}-state-root.patch
@@ -204,10 +205,34 @@ PATCHES+=(
 # --mask-host (Zeo next proposal §6.63): synthetic /proc/cpuinfo, meminfo,
 # stat, loadavg, a live uptime and /sys/devices/system/cpu sized to the limits
 # above, only the sandbox's own cgroup (--unshare-cgroup), no DMI, a machine id
-# kept under --state-root. Opt-in: a launch without the flag behaves as -r1.
+# kept under --state-root. Opt-in: a launch without the flag behaves as upstream.
 # From the fork's feat/mask-host plus its wiring to --cpus and --state-root, so
 # it must follow the two patches above. Upstream PR only after local testing.
 PATCHES+=( "${FILESDIR}"/${PN}-mask-host.patch )
+
+# --mask-host's second layer (Zeo next proposal §6.63, docs/HOST-VIEW-EXTRA-
+# LAYER.md §4.2): kernel build strings, os-release, swap, disks, crypttab,
+# NUMA, modules, the boot id and a time namespace; --overlay-system for the
+# system trees. From the fork's feat/host-view-extra on top of the patch
+# above; a launch without --mask-host only loses AI_JAIL_QUIET in the agent.
+PATCHES+=( "${FILESDIR}"/${PN}-host-view-extra.patch )
+
+# --syscall-view (docs/HOST-VIEW-EXTRA-LAYER.md §4.3): uname(2) and sysinfo(2)
+# answered by ai-jail through a seccomp user-notify filter, under --mask-host.
+# From the fork's feat/syscall-view on top of the patch above; opt-in.
+PATCHES+=( "${FILESDIR}"/${PN}-syscall-view.patch )
+
+# --minimal-etc (with --mask-host): /etc as a read-only tmpfs holding only an
+# allowlist of the host's entries programs read at run time; the rest of /etc
+# (hostname, fstab, ssh/, every service's configuration) is absent. From the
+# fork's feat/minimal-etc on top of the patch above; opt-in.
+PATCHES+=( "${FILESDIR}"/${PN}-minimal-etc.patch )
+
+# --hostname: the sandbox's host name instead of ai-sandbox, one per project
+# for a caller that passes it (Zeo's hidden-host jails); the sandbox also gets
+# an /etc/hostname of its own, so the host's name stops showing there. From
+# the fork's feat/hostname on top of the patch above; opt-in.
+PATCHES+=( "${FILESDIR}"/${PN}-hostname.patch )
 
 src_prepare() {
 	default

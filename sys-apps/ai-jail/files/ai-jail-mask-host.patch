@@ -1,4 +1,4 @@
---mask-host for ai-jail 3.5.0: show the sandbox a host sized to its limits.
+--mask-host for ai-jail 3.7.0: show the sandbox a host sized to its limits.
 Synthetic /proc/cpuinfo (model "Virtual CPU", the host's vendor and feature
 flags kept), /proc/stat, /proc/loadavg, /proc/meminfo (when a memory limit
 applies) and /sys/devices/system/cpu, written at launch to a 0700 temp
@@ -6,9 +6,9 @@ directory and bound over the real ones; a live /proc/uptime (the sandbox's
 own age, rewritten in place once a second, idle = age x its CPU count), so
 `uptime` keeps working; --unshare-cgroup with only the sandbox's own cgroup
 at /sys/fs/cgroup; DMI hidden; /etc/machine-id the sandbox's own, kept in
-DIR/machine-id under --state-root. Sizes come from --cpus, the scope's
-cpu.max (rounded up) and memory.max. Opt-in, Linux only, never saved: a
-launch without the flag behaves as before.
+DIR/machine-id under --state-root. Sizes come from upstream's --cpus, the
+scope's cpu.max (rounded up) and memory.max. Opt-in, Linux only, never saved:
+a launch without the flag behaves as before.
 
 Why: an agent in Zeo's jail read the host's CPU model, RAM, swap, load, uptime,
 board and every sibling cgroup unit (Zeo next proposal §6.63, ask 86). It
@@ -16,16 +16,16 @@ hides, it does not isolate: cpuid, timing, uname(2), sched_getaffinity and
 mount sources stay the host's. Cost: a nested sandbox cannot mount its own
 /proc, which ai-jail's default Landlock and seccomp already refuse.
 
-From the zeo-workspace/ai-jail fork: feat/mask-host (on upstream v3.5.0) and
-its wiring to --cpus and --state-root on zeo/ebuild-350-r2. Applies after
+From the zeo-workspace/ai-jail fork, branch zeo/ebuild-370 (feat/mask-host and
+its wiring to --cpus and --state-root, on upstream v3.7.0). Applies after
 ai-jail-resource-limits.patch and ai-jail-state-root.patch, in that order.
 Not upstream yet; it goes there as its own PR after local testing.
 
 diff --git a/README.md b/README.md
-index 698734f..8dff7f1 100644
+index 2ee16e7..a13dea9 100644
 --- a/README.md
 +++ b/README.md
-@@ -858,6 +858,47 @@ counted (`oom_kills`, `memory_peak`, `tasks_refused`, `cpu_usage_usec`). The
+@@ -924,6 +924,47 @@ counted (`oom_kills`, `memory_peak`, `tasks_refused`, `cpu_usage_usec`). The
  config fields are `memory_max`, `max_tasks`, `cpu_quota` and `cpus`; a project
  `.ai-jail` may add or lower a limit, never raise it.
  
@@ -73,7 +73,7 @@ index 698734f..8dff7f1 100644
  ## Browsers
  
  `--browser[=hard|soft]` reuses an isolated browser profile, but browsers still
-@@ -990,6 +1031,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
+@@ -1111,6 +1152,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
                                  session; see Resource limits)
  --cpus LIST                     pin the sandbox to CPUs, locked by seccomp
  --state-root DIR                $HOME, /tmp and Claude config on disk under DIR (Linux; not saved)
@@ -82,10 +82,10 @@ index 698734f..8dff7f1 100644
  --dry-run                       print the backend invocation
  --init                          write configuration and exit
 diff --git a/docs/CLI_TUI_PARITY.md b/docs/CLI_TUI_PARITY.md
-index 9576b12..a198bf9 100644
+index 2174ddb..49205d2 100644
 --- a/docs/CLI_TUI_PARITY.md
 +++ b/docs/CLI_TUI_PARITY.md
-@@ -90,6 +90,10 @@ or integration rather than saved sandbox authority.
+@@ -100,6 +100,10 @@ or integration rather than saved sandbox authority.
  - Sandbox state on disk: `--state-root` (a per-run directory chosen by the
    caller -- typically a wrapper such as an editor -- not saved authority: no
    configuration key, refused under `--lockdown` and on macOS)
@@ -97,10 +97,10 @@ index 9576b12..a198bf9 100644
  
  ## Release rule
 diff --git a/docs/USER_GUIDE.md b/docs/USER_GUIDE.md
-index 1a744cc..709ce9b 100644
+index c91984e..c5e646a 100644
 --- a/docs/USER_GUIDE.md
 +++ b/docs/USER_GUIDE.md
-@@ -627,6 +627,30 @@ nothing. The flag is Linux only, refused under `--lockdown` (whose `$HOME` and
+@@ -714,6 +714,30 @@ nothing. The flag is Linux only, refused under `--lockdown` (whose `$HOME` and
  `/tmp` stay in memory on purpose), and never saved to a profile: pass it on each
  launch, as a wrapper such as an editor does with a directory per project.
  
@@ -132,10 +132,10 @@ index 1a744cc..709ce9b 100644
  
  Legacy repository `.ai-jail` files contribute restrictions only. Commands,
 diff --git a/src/cli.rs b/src/cli.rs
-index bad18ad..6946f07 100644
+index 5efb1ab..dc88b2c 100644
 --- a/src/cli.rs
 +++ b/src/cli.rs
-@@ -204,6 +204,12 @@ OPTIONS:
+@@ -212,6 +212,12 @@ OPTIONS:
      --state-root <DIR>             Keep the sandbox's $HOME, /tmp and Claude config on disk under
                                     DIR (home/, tmp/, claude/) instead of tmpfs (Linux; created
                                     0700; never saved to a profile)
@@ -148,7 +148,7 @@ index bad18ad..6946f07 100644
      --clean                        Ignore saved and legacy project policy, start fresh
      --dry-run                      Print the sandbox command without executing
      --init                         Create/update external per-project config and exit
-@@ -279,6 +285,7 @@ pub struct CliArgs {
+@@ -290,6 +296,7 @@ pub struct CliArgs {
      pub publish_ports: Vec<u16>,
      pub claude_dir: Option<PathBuf>,
      pub state_root: Option<PathBuf>,
@@ -156,7 +156,7 @@ index bad18ad..6946f07 100644
      pub agent_state: Option<bool>,
      pub harnesses: Vec<String>,
      pub request_files: Vec<PathBuf>,
-@@ -564,6 +571,9 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
+@@ -594,6 +601,9 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
                  args.state_root =
                      Some(PathBuf::from(val.to_string_lossy().into_owned()));
              }
@@ -166,15 +166,7 @@ index bad18ad..6946f07 100644
              Long(s @ ("gpu" | "no-gpu")) => {
                  args.gpu = Some(s == "gpu");
              }
-@@ -1211,6 +1221,7 @@ const SANDBOX_LONG_FLAGS: &[&str] = &[
-     "--no-browser",
-     "--claude-dir",
-     "--state-root",
-+    "--mask-host",
-     "--x11",
-     "--no-x11",
-     "--host-shm",
-@@ -1260,6 +1271,7 @@ const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
+@@ -1334,6 +1344,7 @@ const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
      "cpus_source",
      "runtime_harnesses",
      "state_root",
@@ -182,7 +174,15 @@ index bad18ad..6946f07 100644
  ];
  
  /// Names already missing from docs/USER_GUIDE.md at upstream v3.3.0
-@@ -3035,6 +3047,14 @@ mod tests {
+@@ -1472,6 +1483,7 @@ const INTERFACE_UNDOCUMENTED_BASELINE: &[&str] = &[
+     "--browser",
+     "--no-browser",
+     "--claude-dir",
++    "--mask-host",
+     "--x11",
+     "--no-x11",
+     "--host-shm",
+@@ -3205,6 +3217,14 @@ mod tests {
          assert!(error.contains("after command"));
      }
  
@@ -197,8 +197,17 @@ index bad18ad..6946f07 100644
      #[test]
      fn parse_claude_dir() {
          let args = parse_test(&[
+@@ -3753,7 +3773,7 @@ mod interface_profile_tests {
+     --no-allow-pty --allow-loopback-listen --no-allow-loopback-listen
+     --allow-loopback-connect --no-allow-loopback-connect --no-gpu
+     --gpu --no-docker --docker --tailscale --no-tailscale --landlock
+-    --no-landlock --seccomp --no-seccomp --rlimits --no-rlimits --ssh
++    --seccomp --rlimits --no-rlimits --ssh
+     --no-ssh --pictures --no-pictures --clean
+     --rw-map --ro-map --overlay-map --map --mask --deny-path
+     --mask-except --deny-path-except --hide-dotdir --allow-tcp-port
 diff --git a/src/config.rs b/src/config.rs
-index 7bd5803..c7572fe 100644
+index eb81bf0..e77e061 100644
 --- a/src/config.rs
 +++ b/src/config.rs
 @@ -187,6 +187,10 @@ pub struct Config {
@@ -212,7 +221,7 @@ index 7bd5803..c7572fe 100644
      #[serde(default, skip_serializing_if = "Vec::is_empty")]
      pub command: Vec<String>,
      #[serde(default, skip_serializing_if = "Vec::is_empty")]
-@@ -2647,6 +2651,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
+@@ -3679,6 +3683,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
          config.claude_dir = Some(p);
      }
      config.state_root = cli.state_root.clone();
@@ -220,7 +229,7 @@ index 7bd5803..c7572fe 100644
  
      expand_user_paths(&mut config);
  
-@@ -4972,6 +4977,7 @@ no_gpu = true
+@@ -6025,6 +6030,7 @@ no_gpu = true
          let config = Config {
              runtime_harnesses: Vec::new(),
              state_root: None,
@@ -228,7 +237,7 @@ index 7bd5803..c7572fe 100644
              command: vec!["claude".into()],
              rw_maps: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
              ro_maps: vec![PathBuf::from("/opt/data")],
-@@ -8373,6 +8379,7 @@ hide_dotdirs = [".my_secrets"]
+@@ -9458,6 +9464,7 @@ hide_dotdirs = [".my_secrets"]
          let config = Config {
              runtime_harnesses: Vec::new(),
              state_root: None,
@@ -237,10 +246,10 @@ index 7bd5803..c7572fe 100644
              rw_maps: vec![PathBuf::from("/tmp/shared")],
              ro_maps: vec![],
 diff --git a/src/config_store.rs b/src/config_store.rs
-index 1ead76c..71105eb 100644
+index 0ae8a5c..e182fe1 100644
 --- a/src/config_store.rs
 +++ b/src/config_store.rs
-@@ -1196,6 +1196,8 @@ pub(crate) fn save_project_grants(
+@@ -1234,6 +1234,8 @@ pub(crate) fn save_project_grants(
      grants.runtime_harnesses.clear();
      // `--state-root` is invocation-scoped for the same reason.
      grants.state_root = None;
@@ -249,7 +258,7 @@ index 1ead76c..71105eb 100644
      doc.directory_grants = approved_directory_grants.to_vec();
      doc.grants = grants;
      doc.approved_env_names = approved_env_names;
-@@ -1518,6 +1520,7 @@ pub(crate) fn config_field_names() -> Vec<&'static str> {
+@@ -1556,6 +1558,7 @@ pub(crate) fn config_field_names() -> Vec<&'static str> {
  const CONFIG_FIELD_POLICY: &[ConfigFieldPolicy] = &[
      excluded_policy!("runtime_harnesses", Authority),
      excluded_policy!("state_root", Authority),
@@ -257,7 +266,7 @@ index 1ead76c..71105eb 100644
      static_policy!("command", Authority, Command),
      static_policy!("rw_maps", Authority, RwMaps),
      static_policy!("ro_maps", Authority, RoMaps),
-@@ -2328,6 +2331,7 @@ mod tests {
+@@ -2366,6 +2369,7 @@ mod tests {
      const EXPECTED_STATIC_POLICY: &[ExpectedStaticPolicy] = &[
          expected_excluded!("runtime_harnesses", Authority),
          expected_excluded!("state_root", Authority),
@@ -265,7 +274,7 @@ index 1ead76c..71105eb 100644
          expected_authority!("command", Authority, Command, ["command claude"]),
          expected_authority!(
              "rw_maps",
-@@ -2443,6 +2447,9 @@ mod tests {
+@@ -2481,6 +2485,9 @@ mod tests {
              "state_root" => {
                  config.state_root = Some("/var/tmp/zeo-jail/x".into());
              }
@@ -276,7 +285,7 @@ index 1ead76c..71105eb 100644
                  config.command =
                      vec!["claude".into(), "--token=top-secret".into()];
 diff --git a/src/sandbox/bwrap.rs b/src/sandbox/bwrap.rs
-index aca7fea..e78df80 100644
+index 7c4a34f..06a65e1 100644
 --- a/src/sandbox/bwrap.rs
 +++ b/src/sandbox/bwrap.rs
 @@ -188,6 +188,13 @@ fn mounted_map_args<'a>(
@@ -412,13 +421,18 @@ index aca7fea..e78df80 100644
      })
  }
  
-@@ -1525,8 +1604,16 @@ pub fn build(
-     bridge_sockets: &super::BridgeSockets,
+@@ -1560,13 +1639,21 @@ pub fn build(
+     ecryptfs_lower_fds: &mut Vec<std::os::fd::OwnedFd>,
  ) -> Result<Command, String> {
      let sources = MountSources::from_guard(guard);
--    let mount_set =
-+    let mut mount_set =
-         discover_mounts_full(config, project_dir, &sources, verbose)?;
+-    let mount_set = discover_mounts_full(
++    let mut mount_set = discover_mounts_full(
+         config,
+         project_dir,
+         &sources,
+         verbose,
+         legacy_mask_mountable,
+     )?;
 +    if config.mask_host {
 +        apply_host_view(&mut mount_set, guard.host_view(config, true)?);
 +        if verbose {
@@ -430,7 +444,7 @@ index aca7fea..e78df80 100644
      let map_args = mounted_map_args(mount_set.landlock_map_mounts());
      let lockdown = config.lockdown_enabled();
      let bwrap = bwrap_binary_path()?;
-@@ -1750,6 +1837,11 @@ pub fn dry_run(
+@@ -2026,6 +2113,11 @@ pub fn dry_run(
          create_dirs: false,
          ..MountSources::from_guard(guard)
      };
@@ -442,38 +456,42 @@ index aca7fea..e78df80 100644
      let args = build_dry_run_args_forwarded(
          config,
          project_dir,
-@@ -1757,6 +1849,7 @@ pub fn dry_run(
-         verbose,
+@@ -2034,6 +2126,7 @@ pub fn dry_run(
          proxy_socket,
          bridge_sockets,
+         teardown_report,
 +        host_view,
      )?;
      let secret_names = crate::config::env_pass_names(&config.env_pass);
      Ok(format_dry_run_args_redacting(&args, &secret_names))
-@@ -1790,6 +1883,7 @@ fn build_dry_run_args_full(
-         verbose,
+@@ -2068,9 +2161,11 @@ fn build_dry_run_args_full(
          proxy_socket,
          &super::BridgeSockets::default(),
+         false,
 +        None,
      )
  }
  
-@@ -1800,9 +1894,13 @@ fn build_dry_run_args_forwarded(
-     verbose: bool,
++#[allow(clippy::too_many_arguments)]
+ fn build_dry_run_args_forwarded(
+     config: &Config,
+     project_dir: &Path,
+@@ -2079,9 +2174,13 @@ fn build_dry_run_args_forwarded(
      proxy_socket: Option<&Path>,
      bridge_sockets: &super::BridgeSockets,
+     teardown_report: bool,
 +    host_view: Option<&super::host_view::HostView>,
  ) -> Result<Vec<String>, String> {
 -    let mount_set =
 +    let mut mount_set =
-         discover_mounts_full(config, project_dir, sources, verbose)?;
+         discover_mounts_full(config, project_dir, sources, verbose, true)?;
 +    if let Some(view) = host_view {
 +        apply_host_view(&mut mount_set, view);
 +    }
      let map_args = mounted_map_args(mount_set.landlock_map_mounts());
      let lockdown = config.lockdown_enabled();
      let launch = super::build_launch_command(config);
-@@ -2156,6 +2254,9 @@ fn discover_mounts_full(
+@@ -2448,6 +2547,9 @@ fn discover_mounts_full(
          mask: mask_mounts,
          deny: deny_mounts,
          overlay_hide: overlay_hide_v,
@@ -483,42 +501,42 @@ index aca7fea..e78df80 100644
      };
      // --state-root: the sandbox's $HOME and /tmp on disk instead of tmpfs.
      // Every bind ai-jail layers over $HOME stays where it was; only the
-@@ -5037,6 +5138,7 @@ mod tests {
-                 forward: vec![(49374, sock.clone())],
+@@ -5421,6 +5523,7 @@ mod tests {
                  ..Default::default()
              },
+             false,
 +            None,
          )
          .unwrap();
  
-@@ -5094,6 +5196,7 @@ mod tests {
-                 )],
+@@ -5479,6 +5582,7 @@ mod tests {
                  ..Default::default()
              },
+             false,
 +            None,
          )
          .unwrap();
  
-@@ -5132,6 +5235,7 @@ mod tests {
-                 forward: vec![(49374, PathBuf::from("/tmp/only-one.sock"))],
+@@ -5518,6 +5622,7 @@ mod tests {
                  ..Default::default()
              },
+             false,
 +            None,
          );
          assert!(result.unwrap_err().contains("--forward-port 8080"));
      }
-@@ -5156,6 +5260,7 @@ mod tests {
-                 publish: vec![(4096, sock.clone())],
+@@ -5543,6 +5648,7 @@ mod tests {
                  ..Default::default()
              },
+             false,
 +            None,
          )
          .unwrap();
  
-@@ -5204,10 +5309,76 @@ mod tests {
-             false,
+@@ -5592,10 +5698,78 @@ mod tests {
              None,
              &crate::sandbox::BridgeSockets::default(),
+             false,
 +            None,
          );
          assert!(result.unwrap_err().contains("--publish-port 4096"));
@@ -560,6 +578,7 @@ index aca7fea..e78df80 100644
 +            false,
 +            None,
 +            &crate::sandbox::BridgeSockets::default(),
++            false,
 +            Some(view),
 +        )
 +        .unwrap();
@@ -582,6 +601,7 @@ index aca7fea..e78df80 100644
 +            false,
 +            None,
 +            &crate::sandbox::BridgeSockets::default(),
++            false,
 +            None,
 +        )
 +        .unwrap();
@@ -1863,7 +1883,7 @@ index 0000000..60797ea
 +    }
 +}
 diff --git a/src/sandbox/mod.rs b/src/sandbox/mod.rs
-index 326f77b..34eb3e1 100644
+index 6643aee..fdfd8d7 100644
 --- a/src/sandbox/mod.rs
 +++ b/src/sandbox/mod.rs
 @@ -62,6 +62,12 @@ fn project_config_dangerous_opt_ins(
@@ -1879,20 +1899,20 @@ index 326f77b..34eb3e1 100644
  mod landlock;
  #[cfg(target_os = "macos")]
  mod seatbelt;
-@@ -1965,6 +1971,9 @@ pub fn build(
-     #[cfg(target_os = "macos")]
-     {
-         let _ = (guard, bridge_sockets);
+@@ -1986,6 +1992,9 @@ pub fn build(
+         // No teardown report on macOS.
+         let _ = (guard, bridge_sockets, teardown_report_fd);
+         let _ = legacy_mask_mountable;
 +        if config.mask_host {
 +            return Err("--mask-host is Linux-only".into());
 +        }
          let prepared = prepare_seatbelt_config(config)?;
          seatbelt::build(
              &prepared,
-@@ -1998,6 +2007,9 @@ pub fn dry_run(
-     #[cfg(target_os = "macos")]
+@@ -2022,6 +2031,9 @@ pub fn dry_run(
      {
-         let _ = (guard, bridge_sockets);
+         // No wrapper on macOS: the teardown report is not supported there.
+         let _ = (guard, bridge_sockets, teardown_report);
 +        if config.mask_host {
 +            return Err("--mask-host is Linux-only".into());
 +        }

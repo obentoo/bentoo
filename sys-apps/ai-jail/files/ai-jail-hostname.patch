@@ -1,17 +1,17 @@
---hostname for ai-jail 3.5.0 (from the fork's feat/hostname, merged into the
-Zeo stack zeo/ebuild-350-r6): the sandbox's host name is NAME instead of
-ai-sandbox, one DNS label, and one name reaches everything that reads one --
-bwrap's UTS namespace, the sandbox's /etc/hosts, a new /etc/hostname bound
-over the host's (which named this machine even under --mask-host) and, with
+--hostname for ai-jail 3.7.0 (from the fork's feat/hostname, on branch
+zeo/ebuild-370): the sandbox's host name is NAME instead of ai-sandbox, one
+DNS label, and one name reaches everything that reads one -- bwrap's UTS
+namespace, the sandbox's /etc/hosts, a new /etc/hostname bound over the
+host's (which named this machine even under --mask-host) and, with
 --syscall-view, uname(2). The /etc/hostname bind is there with or without the
 option. Runtime only, never saved; needs no --mask-host. Must follow
 ai-jail-minimal-etc.patch.
 
 diff --git a/CLAUDE.md b/CLAUDE.md
-index 56eb693..a2f5080 100644
+index 7195626..c65e032 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
-@@ -178,7 +178,7 @@ There are regression tests in `src/config.rs` that parse old config file formats
+@@ -182,7 +182,7 @@ There are regression tests in `src/config.rs` that parse old config file formats
  
  The bwrap command mounts are order-dependent. The sequence in `sandbox/bwrap.rs` must be:
  
@@ -21,10 +21,10 @@ index 56eb693..a2f5080 100644
  3. GPU devices, then KVM device (`--kvm`, `/dev/kvm`)
  4. Docker socket
 diff --git a/README.md b/README.md
-index 2c00fd4..05f9ca4 100644
+index 311b6d5..1fe6945 100644
 --- a/README.md
 +++ b/README.md
-@@ -923,6 +923,17 @@ the tmpfs is remounted read-only once the binds inside it are made. With
+@@ -989,6 +989,17 @@ the tmpfs is remounted read-only once the binds inside it are made. With
  `--overlay-system`, the entries bound into it still name the host's disk in
  `/proc/self/mountinfo`; `/etc` itself reads `tmpfs`.
  
@@ -42,7 +42,7 @@ index 2c00fd4..05f9ca4 100644
  The allowed CPUs are the `--cpus` set, else the process's affinity
  (`taskset`), trimmed to the cgroup's `cpu.max` rounded up to whole CPUs; the
  memory limit is the smallest `memory.max` from the sandbox's cgroup up to the
-@@ -1082,6 +1093,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
+@@ -1203,6 +1214,7 @@ ai-jail [OPTIONS] [--] [COMMAND [ARGS...]]
  --overlay-system                with --mask-host: /usr, /etc, /opt through read-only overlays (Linux; not saved)
  --syscall-view                  with --mask-host: uname(2) and sysinfo(2) answered by ai-jail (Linux; not saved)
  --minimal-etc                   with --mask-host: /etc holds only a run-time allowlist (Linux; not saved)
@@ -51,10 +51,10 @@ index 2c00fd4..05f9ca4 100644
  --dry-run                       print the backend invocation
  --init                          write configuration and exit
 diff --git a/docs/CLI_TUI_PARITY.md b/docs/CLI_TUI_PARITY.md
-index f24b51f..0cc0fe1 100644
+index ccc9ac6..fa3343b 100644
 --- a/docs/CLI_TUI_PARITY.md
 +++ b/docs/CLI_TUI_PARITY.md
-@@ -95,6 +95,11 @@ or integration rather than saved sandbox authority.
+@@ -105,6 +105,11 @@ or integration rather than saved sandbox authority.
    configuration key, refused on macOS; it only narrows what the sandbox
    reads), and `--overlay-system`, `--syscall-view` and `--minimal-etc` with it
    (the same per-run choice; each refused without `--mask-host`)
@@ -67,10 +67,10 @@ index f24b51f..0cc0fe1 100644
  
  ## Release rule
 diff --git a/docs/USER_GUIDE.md b/docs/USER_GUIDE.md
-index 6807a33..a31af52 100644
+index 80cc19e..02f3b10 100644
 --- a/docs/USER_GUIDE.md
 +++ b/docs/USER_GUIDE.md
-@@ -676,6 +676,13 @@ configuration are absent. Symlinks are recreated and resolve inside the
+@@ -763,6 +763,13 @@ configuration are absent. Symlinks are recreated and resolve inside the
  sandbox. The full list, with the reason for each entry, is in
  `src/sandbox/minimal_etc.rs`.
  
@@ -84,11 +84,27 @@ index 6807a33..a31af52 100644
  A nested sandbox can no longer mount its own `/proc` under `--mask-host`; with
  ai-jail's default Landlock and seccomp a nested sandbox is refused anyway, so
  this matters only under `--no-landlock --no-seccomp`. The `cpuid` instruction,
+diff --git a/docs/config.example.toml b/docs/config.example.toml
+index 9b07d5e..1629694 100644
+--- a/docs/config.example.toml
++++ b/docs/config.example.toml
+@@ -85,6 +85,11 @@
+ # Linux only: pin the sandbox to these CPUs (needs seccomp)
+ # cpus = "0-3"
+ 
++# Linux only: whole-sandbox cgroup limits (need a systemd user session)
++# memory_max = "8G"
++# max_tasks = 2000
++# cpu_quota = 400
++
+ # Legacy compatibility only. An empty list grants no repository trust.
+ # trust_project_config = []
+ 
 diff --git a/src/cli.rs b/src/cli.rs
-index 3b7745b..a9bf04a 100644
+index de3044f..285484b 100644
 --- a/src/cli.rs
 +++ b/src/cli.rs
-@@ -219,6 +219,9 @@ OPTIONS:
+@@ -227,6 +227,9 @@ OPTIONS:
      --minimal-etc                  With --mask-host: /etc is a read-only tmpfs holding only
                                     what programs read at run time (accounts, name service,
                                     TLS roots, time zone, shell startup) (Linux; never saved)
@@ -98,7 +114,7 @@ index 3b7745b..a9bf04a 100644
      --clean                        Ignore saved and legacy project policy, start fresh
      --dry-run                      Print the sandbox command without executing
      --init                         Create/update external per-project config and exit
-@@ -298,6 +301,7 @@ pub struct CliArgs {
+@@ -309,6 +312,7 @@ pub struct CliArgs {
      pub overlay_system: bool,
      pub syscall_view: bool,
      pub minimal_etc: bool,
@@ -106,7 +122,7 @@ index 3b7745b..a9bf04a 100644
      /// Internal: the helper's end of the `--syscall-view` socket pair.
      pub syscall_view_fd: Option<i32>,
      pub agent_state: Option<bool>,
-@@ -597,6 +601,10 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
+@@ -627,6 +631,10 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
              Long("minimal-etc") => {
                  args.minimal_etc = true;
              }
@@ -117,15 +133,7 @@ index 3b7745b..a9bf04a 100644
              Long("syscall-view-fd") => {
                  if !args.landlock_exec {
                      return Err(
-@@ -1261,6 +1269,7 @@ const SANDBOX_LONG_FLAGS: &[&str] = &[
-     "--overlay-system",
-     "--syscall-view",
-     "--minimal-etc",
-+    "--hostname",
-     "--x11",
-     "--no-x11",
-     "--host-shm",
-@@ -1314,6 +1323,7 @@ const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
+@@ -1384,6 +1392,7 @@ const INTERFACE_INTERNAL_FIELDS: &[&str] = &[
      "overlay_system",
      "syscall_view",
      "minimal_etc",
@@ -133,7 +141,15 @@ index 3b7745b..a9bf04a 100644
  ];
  
  /// Names already missing from docs/USER_GUIDE.md at upstream v3.3.0
-@@ -3105,6 +3115,16 @@ mod tests {
+@@ -1526,6 +1535,7 @@ const INTERFACE_UNDOCUMENTED_BASELINE: &[&str] = &[
+     "--overlay-system",
+     "--syscall-view",
+     "--minimal-etc",
++    "--hostname",
+     "--x11",
+     "--no-x11",
+     "--host-shm",
+@@ -3275,6 +3285,16 @@ mod tests {
          assert!(args.mask_host && args.overlay_system);
      }
  
@@ -151,7 +167,7 @@ index 3b7745b..a9bf04a 100644
      fn parse_minimal_etc() {
          assert!(!parse_test(&["claude"]).unwrap().minimal_etc);
 diff --git a/src/config.rs b/src/config.rs
-index f492da7..531c01b 100644
+index d85261e..33c0691 100644
 --- a/src/config.rs
 +++ b/src/config.rs
 @@ -203,6 +203,10 @@ pub struct Config {
@@ -165,7 +181,24 @@ index f492da7..531c01b 100644
      #[serde(default, skip_serializing_if = "Vec::is_empty")]
      pub command: Vec<String>,
      #[serde(default, skip_serializing_if = "Vec::is_empty")]
-@@ -2667,6 +2671,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
+@@ -1539,7 +1543,15 @@ fn global_config_example_is_inert_and_documents_public_keys() {
+         .filter(|key| {
+             !matches!(
+                 *key,
+-                "runtime_harnesses" | "rlimit_source" | "cpus_source"
++                "runtime_harnesses"
++                    | "rlimit_source"
++                    | "cpus_source"
++                    | "state_root"
++                    | "mask_host"
++                    | "overlay_system"
++                    | "syscall_view"
++                    | "minimal_etc"
++                    | "hostname"
+             )
+         })
+         .collect::<std::collections::BTreeSet<_>>();
+@@ -3699,6 +3711,7 @@ pub fn merge(cli: &CliArgs, existing: Config) -> Config {
      config.overlay_system = cli.overlay_system;
      config.syscall_view = cli.syscall_view;
      config.minimal_etc = cli.minimal_etc;
@@ -173,7 +206,7 @@ index f492da7..531c01b 100644
  
      expand_user_paths(&mut config);
  
-@@ -4996,6 +5001,7 @@ no_gpu = true
+@@ -6049,6 +6062,7 @@ no_gpu = true
              overlay_system: false,
              syscall_view: false,
              minimal_etc: false,
@@ -181,7 +214,7 @@ index f492da7..531c01b 100644
              command: vec!["claude".into()],
              rw_maps: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
              ro_maps: vec![PathBuf::from("/opt/data")],
-@@ -8401,6 +8407,7 @@ hide_dotdirs = [".my_secrets"]
+@@ -9486,6 +9500,7 @@ hide_dotdirs = [".my_secrets"]
              overlay_system: false,
              syscall_view: false,
              minimal_etc: false,
@@ -189,11 +222,39 @@ index f492da7..531c01b 100644
              command: vec!["codex".into()],
              rw_maps: vec![PathBuf::from("/tmp/shared")],
              ro_maps: vec![],
+@@ -11372,6 +11387,14 @@ mod profile_field_coverage_tests {
+         "status_bar_style",
+         "resize_redraw_key",
+         "no_save_config",
++        // `serde(skip)` launch-only state: never read from a file, so a
++        // profile cannot carry them.
++        "state_root",
++        "mask_host",
++        "overlay_system",
++        "syscall_view",
++        "minimal_etc",
++        "hostname",
+     ];
+ 
+     fn config_fields() -> Vec<String> {
+@@ -11406,6 +11429,12 @@ mod profile_field_coverage_tests {
+             "[4242]",
+             "{ AJ_PROFILE_KEY = \"x.example\" }",
+             "{ nofile = \"unlimited\" }",
++            // The cgroup limits widen only from a lower value to a higher
++            // one, so each needs two values of its own shape.
++            "\"1G\"",
++            "\"2G\"",
++            "100",
++            "200",
+         ];
+         let fields = config_fields();
+         assert!(fields.len() > 40, "scanner found {fields:?}");
 diff --git a/src/config_store.rs b/src/config_store.rs
-index a03e020..fea39ce 100644
+index acb2889..bcddc5b 100644
 --- a/src/config_store.rs
 +++ b/src/config_store.rs
-@@ -1201,6 +1201,7 @@ pub(crate) fn save_project_grants(
+@@ -1239,6 +1239,7 @@ pub(crate) fn save_project_grants(
      grants.overlay_system = false;
      grants.syscall_view = false;
      grants.minimal_etc = false;
@@ -201,7 +262,7 @@ index a03e020..fea39ce 100644
      doc.directory_grants = approved_directory_grants.to_vec();
      doc.grants = grants;
      doc.approved_env_names = approved_env_names;
-@@ -1527,6 +1528,7 @@ const CONFIG_FIELD_POLICY: &[ConfigFieldPolicy] = &[
+@@ -1565,6 +1566,7 @@ const CONFIG_FIELD_POLICY: &[ConfigFieldPolicy] = &[
      excluded_policy!("overlay_system", Restriction),
      excluded_policy!("syscall_view", Restriction),
      excluded_policy!("minimal_etc", Restriction),
@@ -209,7 +270,7 @@ index a03e020..fea39ce 100644
      static_policy!("command", Authority, Command),
      static_policy!("rw_maps", Authority, RwMaps),
      static_policy!("ro_maps", Authority, RoMaps),
-@@ -2341,6 +2343,7 @@ mod tests {
+@@ -2379,6 +2381,7 @@ mod tests {
          expected_excluded!("overlay_system", Restriction),
          expected_excluded!("syscall_view", Restriction),
          expected_excluded!("minimal_etc", Restriction),
@@ -217,7 +278,7 @@ index a03e020..fea39ce 100644
          expected_authority!("command", Authority, Command, ["command claude"]),
          expected_authority!(
              "rw_maps",
-@@ -2468,6 +2471,9 @@ mod tests {
+@@ -2506,6 +2509,9 @@ mod tests {
              "minimal_etc" => {
                  config.minimal_etc = true;
              }
@@ -228,10 +289,10 @@ index a03e020..fea39ce 100644
                  config.command =
                      vec!["claude".into(), "--token=top-secret".into()];
 diff --git a/src/main.rs b/src/main.rs
-index a7f2f01..c837878 100644
+index 812666d..432bf22 100644
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -360,6 +360,11 @@ fn validate_overlay_system(config: &config::Config) -> Result<(), String> {
+@@ -394,6 +394,11 @@ fn validate_overlay_system(config: &config::Config) -> Result<(), String> {
      if config.minimal_etc && !config.mask_host {
          return Err("--minimal-etc requires --mask-host".into());
      }
@@ -243,7 +304,7 @@ index a7f2f01..c837878 100644
      Ok(())
  }
  
-@@ -2005,7 +2010,9 @@ fn run(
+@@ -2255,7 +2260,9 @@ fn run(
      let egress_stats = std::sync::Arc::new(egress_log::EgressStats::default());
  
      // Prepare sandbox resources (temp hosts file on Linux, no-op on macOS)
@@ -254,7 +315,7 @@ index a7f2f01..c837878 100644
  
      // Filtered egress: the CONNECT proxy runs as threads in this
      // supervisor process. On Linux the sandbox reaches it through the
-@@ -2946,6 +2953,17 @@ mod tests {
+@@ -3308,6 +3315,17 @@ mod tests {
              ..Config::default()
          };
          assert!(validate_overlay_system(&etc_masked).is_ok());
@@ -273,7 +334,7 @@ index a7f2f01..c837878 100644
      }
  
 diff --git a/src/sandbox/bwrap.rs b/src/sandbox/bwrap.rs
-index 68cd51c..905d014 100644
+index 51bcdd5..0455512 100644
 --- a/src/sandbox/bwrap.rs
 +++ b/src/sandbox/bwrap.rs
 @@ -353,6 +353,7 @@ impl MountSet {
@@ -462,7 +523,7 @@ index 68cd51c..905d014 100644
  fn resolved_hosts_dest() -> PathBuf {
      std::fs::canonicalize("/etc/hosts")
          .unwrap_or_else(|_| PathBuf::from("/etc/hosts"))
-@@ -1766,6 +1817,7 @@ pub fn build(
+@@ -1807,6 +1858,7 @@ pub fn build(
  
      opt_args.extend(mount_set.isolation_args(
          project_dir,
@@ -470,7 +531,7 @@ index 68cd51c..905d014 100644
          lockdown,
          config.network_enabled(),
          config.inherit_env_enabled(),
-@@ -2064,6 +2116,7 @@ fn build_dry_run_args_forwarded(
+@@ -2345,6 +2397,7 @@ fn build_dry_run_args_forwarded(
  
      args.extend(mount_set.isolation_args(
          project_dir,
@@ -478,7 +539,7 @@ index 68cd51c..905d014 100644
          lockdown,
          config.network_enabled(),
          config.inherit_env_enabled(),
-@@ -2314,12 +2367,24 @@ fn discover_mounts_full(
+@@ -2606,12 +2659,24 @@ fn discover_mounts_full(
          (vec![], vec![])
      };
      let mut mounts = MountSet {
@@ -509,7 +570,7 @@ index 68cd51c..905d014 100644
          sys_masks: {
              let mut masks = discover_sys_masks(lockdown);
              if (!display_mounts.is_empty() || !systemd_mounts.is_empty())
-@@ -8672,6 +8737,7 @@ mod tests {
+@@ -9150,6 +9215,7 @@ mod tests {
  
          let args = set.isolation_args(
              Path::new("/home/u/project"),
@@ -517,7 +578,7 @@ index 68cd51c..905d014 100644
              false,
              true,
              false,
-@@ -8949,12 +9015,58 @@ mod tests {
+@@ -9427,12 +9493,58 @@ mod tests {
  
      #[test]
      fn prepare_creates_private_hosts_file() {
@@ -692,7 +753,7 @@ index 0000000..6c2d592
 +    assert_eq!(hostname_contents("desktop-k3f9a2"), "desktop-k3f9a2\n");
 +}
 diff --git a/src/sandbox/mod.rs b/src/sandbox/mod.rs
-index be813d5..e0d4c43 100644
+index d13b8a3..087b261 100644
 --- a/src/sandbox/mod.rs
 +++ b/src/sandbox/mod.rs
 @@ -69,6 +69,7 @@ mod host_view_extra;
@@ -703,7 +764,7 @@ index be813d5..e0d4c43 100644
  #[cfg(target_os = "linux")]
  mod minimal_etc;
  #[cfg(target_os = "linux")]
-@@ -1849,13 +1850,16 @@ pub fn check() -> Result<(), String> {
+@@ -1851,13 +1852,16 @@ pub fn check() -> Result<(), String> {
      }
  }
  
