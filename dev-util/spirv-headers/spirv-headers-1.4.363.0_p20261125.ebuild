@@ -19,7 +19,7 @@ else
 	# exist in the older header.
 	# The rename target is ${PF}, not ${P}: PV carries no revision, so both
 	# revisions would fetch different content into one distfile name.
-	EGIT_COMMIT="fb1379425b16e58dcbdda7be0f8604a7f5cdce78"
+	EGIT_COMMIT="a9a66db4dcdff79915e667bd2bd1bffe3d1fb2d7"
 	SRC_URI="https://github.com/KhronosGroup/${MY_PN}/archive/${EGIT_COMMIT}.tar.gz -> ${PF}.tar.gz"
 	KEYWORDS="~alpha ~amd64 ~arm ~arm64 ~hppa ~loong ~mips ~ppc ~ppc64 ~riscv ~s390 ~sparc ~x86"
 	S="${WORKDIR}"/${MY_PN}-${EGIT_COMMIT}
