@@ -76,12 +76,18 @@ Options switch and confirms a list without Shift, and expected both
 saved as defaults; under this rule neither is, and the test now asserts
 that. Red-probed: forcing the plain confirm to persist fails it.
 
+(2026-11-25, Zed 6ba65ce3) operator decision over upstream #66869 (thread-only
+picks on ctrl-enter): Zeo keeps Shift; a secondary confirm is a plain pick and
+never enters upstream's thread-only mode. The native agent's model, profile
+and effort pickers and thinking toggle follow the same rule, the profile picker
+newly so (it saved every pick before), with the pin and the hint.
+
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
 diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
-index fba9f4d..9ba47e2 100644
+index bfab197..fe11332 100644
 --- a/crates/acp_thread/src/connection.rs
 +++ b/crates/acp_thread/src/connection.rs
 @@ -717,11 +717,27 @@ pub trait AgentModelSelector: 'static {
@@ -111,9 +117,9 @@ index fba9f4d..9ba47e2 100644
 +        None
 +    }
  
-     /// Retrieves the currently selected model for a specific session (thread).
-     ///
-@@ -1726,7 +1742,12 @@ mod test_support {
+     /// Makes the session thread-only: from then on, the models selected in it
+     /// are no longer saved as the user's default. Agents that never save one
+@@ -1731,7 +1747,12 @@ mod test_support {
              Task::ready(Ok(AgentModelList::Flat(vec![model])))
          }
  
@@ -128,7 +134,7 @@ index fba9f4d..9ba47e2 100644
              Task::ready(Ok(()))
          }
 diff --git a/crates/agent/src/agent.rs b/crates/agent/src/agent.rs
-index dcb1c4e..32573ab 100644
+index b6ff118..c392e31 100644
 --- a/crates/agent/src/agent.rs
 +++ b/crates/agent/src/agent.rs
 @@ -3053,7 +3053,12 @@ impl acp_thread::AgentModelSelector for NativeAgentModelSelector {
@@ -145,56 +151,21 @@ index dcb1c4e..32573ab 100644
          log::debug!(
              "Setting model for session {}: {}",
              self.session_id,
-@@ -3099,30 +3104,41 @@ impl acp_thread::AgentModelSelector for NativeAgentModelSelector {
+@@ -3097,7 +3102,11 @@ impl acp_thread::AgentModelSelector for NativeAgentModelSelector {
+             if let Some(speed) = speed {
+                 thread.set_speed(Some(speed), cx);
              }
+-            thread.save_default_model(cx);
++            // The thread is already on the new model; saving it is the separate,
++            // deliberate act of making it the model new threads start on (0010).
++            if persist_default {
++                thread.save_default_model(cx);
++            }
          });
  
--        update_settings_file(
--            self.connection.0.read(cx).fs.clone(),
--            cx,
--            move |settings, cx| {
--                let provider = model.provider_id().0.to_string();
--                let model = model.id().0.to_string();
--                let enable_thinking = thread.read(cx).thinking_enabled();
--                let speed = thread.read(cx).speed();
--                settings
--                    .agent
--                    .get_or_insert_default()
--                    .set_model(LanguageModelSelection {
--                        provider: provider.into(),
--                        model,
--                        enable_thinking,
--                        effort,
--                        speed,
--                    });
--            },
--        );
-+        // The thread is already on the new model; writing it to settings is the
-+        // separate, deliberate act of making it the model new threads start on.
-+        if persist_default {
-+            update_settings_file(
-+                self.connection.0.read(cx).fs.clone(),
-+                cx,
-+                move |settings, cx| {
-+                    let provider = model.provider_id().0.to_string();
-+                    let model = model.id().0.to_string();
-+                    let enable_thinking = thread.read(cx).thinking_enabled();
-+                    let speed = thread.read(cx).speed();
-+                    settings
-+                        .agent
-+                        .get_or_insert_default()
-+                        .set_model(LanguageModelSelection {
-+                            provider: provider.into(),
-+                            model,
-+                            enable_thinking,
-+                            effort,
-+                            speed,
-+                        });
-+                },
-+            );
-+        }
- 
          Task::ready(Ok(()))
+@@ -3109,6 +3118,13 @@ impl acp_thread::AgentModelSelector for NativeAgentModelSelector {
+         }
      }
  
 +    fn default_model_id(&self, cx: &App) -> Option<AgentModelId> {
@@ -207,7 +178,7 @@ index dcb1c4e..32573ab 100644
      fn selected_model(&self, cx: &mut App) -> Task<Result<acp_thread::AgentModelInfo>> {
          let Some(thread) = self
              .connection
-@@ -3190,6 +3206,13 @@ fn subagent_model_id_to_selection(model_id: &AgentModelId, cx: &App) -> Language
+@@ -3176,6 +3192,13 @@ fn subagent_model_id_to_selection(model_id: &AgentModelId, cx: &App) -> Language
      model_id_to_selection(model_id, cx)
  }
  
@@ -221,7 +192,7 @@ index dcb1c4e..32573ab 100644
  fn model_id_to_selection(model_id: &AgentModelId, cx: &App) -> LanguageModelSelection {
      let id = model_id.as_ref();
      let (provider, model) = id.split_once('/').unwrap_or(("", id));
-@@ -6127,6 +6150,21 @@ mod internal_tests {
+@@ -6117,6 +6140,21 @@ mod internal_tests {
          });
      }
  
@@ -243,7 +214,7 @@ index dcb1c4e..32573ab 100644
      #[gpui::test]
      async fn test_compact_prompt_routes_to_manual_compaction(cx: &mut TestAppContext) {
          let fake = init_test(cx);
-@@ -8702,6 +8740,86 @@ mod internal_tests {
+@@ -8692,6 +8730,86 @@ mod internal_tests {
          );
      }
  
@@ -330,7 +301,7 @@ index dcb1c4e..32573ab 100644
      #[gpui::test]
      async fn test_model_selection_persists_to_settings(cx: &mut TestAppContext) {
          init_test(cx);
-@@ -8749,7 +8867,7 @@ mod internal_tests {
+@@ -8739,7 +8857,7 @@ mod internal_tests {
          // Select a model
          let selector = connection.model_selector(&session_id).unwrap();
          let model_id = AgentModelId::new("fake/fake");
@@ -339,7 +310,7 @@ index dcb1c4e..32573ab 100644
              .await
              .unwrap();
  
-@@ -8794,9 +8912,11 @@ mod internal_tests {
+@@ -8784,9 +8902,11 @@ mod internal_tests {
          agent.update(cx, |agent, cx| agent.models.refresh_list(cx));
  
          let selector = connection.model_selector(&session_id).unwrap();
@@ -354,7 +325,25 @@ index dcb1c4e..32573ab 100644
          cx.run_until_parked();
  
          // Verify enable_thinking was written to settings as true.
-@@ -8863,9 +8983,11 @@ mod internal_tests {
+@@ -8846,14 +8966,15 @@ mod internal_tests {
+         // The settings write for the first selection only runs once the file
+         // loads. Making the thread thread-only and switching away before then
+         // must not save the second model or leak its options into the first.
++        // Shift picks (0010): a plain pick would save nothing to begin with.
+         let selector = connection.model_selector(&session_id).unwrap();
+         cx.update(|cx| {
+             selector
+-                .select_model(AgentModelId::new("fake-corp/fake-thinking"), cx)
++                .select_model(AgentModelId::new("fake-corp/fake-thinking"), true, cx)
+                 .detach_and_log_err(cx);
+             selector.mark_thread_only(cx);
+             selector
+-                .select_model(AgentModelId::new("fake/fake"), cx)
++                .select_model(AgentModelId::new("fake/fake"), true, cx)
+                 .detach_and_log_err(cx);
+         });
+         cx.run_until_parked();
+@@ -8931,9 +9052,11 @@ mod internal_tests {
  
          // Select the thinking model via select_model.
          let selector = connection.model_selector(&session_id).unwrap();
@@ -369,7 +358,7 @@ index dcb1c4e..32573ab 100644
  
          // select_model should have enabled thinking based on the model's supports_thinking().
          agent.read_with(cx, |agent, _| {
-@@ -8880,7 +9002,7 @@ mod internal_tests {
+@@ -8948,7 +9071,7 @@ mod internal_tests {
  
          // Switch back to the non-thinking model.
          let selector = connection.model_selector(&session_id).unwrap();
@@ -378,7 +367,7 @@ index dcb1c4e..32573ab 100644
              .await
              .unwrap();
  
-@@ -8992,9 +9114,11 @@ mod internal_tests {
+@@ -9060,9 +9183,11 @@ mod internal_tests {
          let session_id = acp_thread.read_with(cx, |thread, _| thread.session_id().clone());
  
          let selector = connection.model_selector(&session_id).unwrap();
@@ -393,7 +382,7 @@ index dcb1c4e..32573ab 100644
  
          // Verify thinking is enabled after selecting the thinking model.
          let thread = agent.read_with(cx, |agent, _| {
-@@ -9087,9 +9211,11 @@ mod internal_tests {
+@@ -9158,9 +9283,11 @@ mod internal_tests {
          let session_id = acp_thread.read_with(cx, |thread, _| thread.session_id().clone());
  
          let selector = connection.model_selector(&session_id).unwrap();
@@ -408,7 +397,7 @@ index dcb1c4e..32573ab 100644
  
          let thread = agent.read_with(cx, |agent, _| {
              agent.sessions.get(&session_id).unwrap().thread.clone()
-@@ -9189,9 +9315,11 @@ mod internal_tests {
+@@ -9260,9 +9387,11 @@ mod internal_tests {
          let session_id = acp_thread.read_with(cx, |thread, _| thread.session_id().clone());
  
          let selector = connection.model_selector(&session_id).unwrap();
@@ -423,7 +412,7 @@ index dcb1c4e..32573ab 100644
  
          let send = acp_thread.update(cx, |thread, cx| thread.send(vec!["Hello".into()], cx));
          let send = cx.foreground_executor().spawn(send);
-@@ -9310,9 +9438,11 @@ mod internal_tests {
+@@ -9381,9 +9510,11 @@ mod internal_tests {
          cx.run_until_parked();
  
          let selector = connection.model_selector(&session_id).unwrap();
@@ -438,8 +427,41 @@ index dcb1c4e..32573ab 100644
  
          thread.read_with(cx, |thread, _| {
              assert_eq!(thread.model().unwrap().id().0.as_ref(), "other-model-id");
+@@ -9457,7 +9588,7 @@ mod internal_tests {
+                 .any(|model| model.id == removed_model_id)
+         );
+ 
+-        cx.update(|cx| selector.select_model(luna_id, cx))
++        cx.update(|cx| selector.select_model(luna_id, false, cx))
+             .await
+             .unwrap();
+         thread.read_with(cx, |thread, _| {
+@@ -9667,9 +9798,11 @@ mod internal_tests {
+         let session_id = acp_thread.read_with(cx, |thread, _| thread.session_id().clone());
+         let thread = cx.update(|cx| native_thread_for_session(&agent, &session_id, cx));
+         let selector = connection.model_selector(&session_id).unwrap();
+-        cx.update(|cx| selector.select_model(AgentModelId::new("zed.dev/claude-opus-4-6"), cx))
+-            .await
+-            .unwrap();
++        cx.update(|cx| {
++            selector.select_model(AgentModelId::new("zed.dev/claude-opus-4-6"), false, cx)
++        })
++        .await
++        .unwrap();
+         let profile_id = agent_settings::AgentProfileId("saved-claude".into());
+         cx.update(|cx| {
+             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
+@@ -9748,7 +9881,7 @@ mod internal_tests {
+                 .flatten()
+                 .any(|model| model.id.as_ref() == "zed.dev/claude-opus-4-6")
+         );
+-        cx.update(|cx| selector.select_model(AgentModelId::new("zed.dev/gpt-6-luna"), cx))
++        cx.update(|cx| selector.select_model(AgentModelId::new("zed.dev/gpt-6-luna"), false, cx))
+             .await
+             .unwrap();
+         thread.update(cx, |thread, cx| {
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
-index 324529f..3fdb00d 100644
+index 06ead41..17db7c0 100644
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
 @@ -22,6 +22,7 @@ mod model_search;
@@ -885,8 +907,143 @@ index 3bb1628..11fd525 100644
      }
  
      #[gpui::test]
+diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
+index a2d58c1..f3eac8e 100644
+--- a/crates/agent_ui/src/conversation_view.rs
++++ b/crates/agent_ui/src/conversation_view.rs
+@@ -279,13 +279,12 @@ impl ProfileProvider for Entity<agent::Thread> {
+         self.read(cx).model().is_some()
+     }
+ 
+-    fn pick_profile(&self, profile_id: AgentProfileId, thread_only: bool, cx: &mut App) {
++    fn pick_profile(&self, profile_id: AgentProfileId, persist_default: bool, cx: &mut App) {
+         self.update(cx, |thread, cx| {
+-            if thread_only {
+-                thread.mark_thread_only(cx);
+-            }
+             thread.set_profile(profile_id, cx);
+-            thread.save_default_profile(cx);
++            if persist_default {
++                thread.save_default_profile(cx);
++            }
+         });
+     }
+ 
+@@ -4781,19 +4780,19 @@ pub(crate) mod tests {
+     }
+ 
+     #[gpui::test]
+-    async fn test_picking_profile_saves_it_unless_the_thread_is_thread_only(
+-        cx: &mut TestAppContext,
+-    ) {
++    // Zeo (0010): a plain pick moves this thread only, Shift also saves the
++    // default, and neither makes the thread thread-only (#66869's mode).
++    async fn test_picking_profile_saves_it_only_with_shift(cx: &mut TestAppContext) {
+         let (_conversation_view, native_thread, _fake_provider, cx) = setup_native_thread(cx).await;
+         let settings_fs = write_agent_settings(&native_thread, json!({}), cx).await;
+ 
+-        for (profile, thread_only, expected_default_profile, expected_thread_only) in [
+-            ("ask", false, "ask", false),
+-            ("minimal", true, "ask", true),
+-            ("write", false, "ask", true),
++        for (profile, persist_default, expected_default_profile) in [
++            ("minimal", false, json!(null)),
++            ("ask", true, json!("ask")),
++            ("write", false, json!("ask")),
+         ] {
+             cx.update(|_window, cx| {
+-                native_thread.pick_profile(AgentProfileId(profile.into()), thread_only, cx);
++                native_thread.pick_profile(AgentProfileId(profile.into()), persist_default, cx);
+             });
+             cx.run_until_parked();
+ 
+@@ -4802,16 +4801,15 @@ pub(crate) mod tests {
+                 expected_default_profile
+             );
+             native_thread.read_with(cx, |thread, _cx| {
+-                assert_eq!(thread.is_thread_only(), expected_thread_only);
++                assert!(!thread.is_thread_only());
+                 assert_eq!(thread.profile().as_str(), profile);
+             });
+         }
+     }
+ 
+     #[gpui::test]
+-    async fn test_picking_thinking_effort_saves_it_unless_the_thread_is_thread_only(
+-        cx: &mut TestAppContext,
+-    ) {
++    // Zeo (0010): as for the profile, only a Shift pick saves the effort.
++    async fn test_picking_thinking_effort_saves_it_only_with_shift(cx: &mut TestAppContext) {
+         let (conversation_view, native_thread, _fake_provider, cx) = setup_native_thread(cx).await;
+         let model = thread_model_selection(&native_thread, cx);
+         let settings_fs = write_agent_settings(
+@@ -4822,13 +4820,13 @@ pub(crate) mod tests {
+         .await;
+         let thread_view = active_thread(&conversation_view, cx);
+ 
+-        for (effort, thread_only, expected_saved_effort, expected_thread_only) in [
+-            ("high", false, "high", false),
+-            ("low", true, "high", true),
+-            ("medium", false, "high", true),
++        for (effort, persist_default, expected_saved_effort) in [
++            ("high", true, "high"),
++            ("low", false, "high"),
++            ("medium", false, "high"),
+         ] {
+             thread_view.update(cx, |view, cx| {
+-                view.pick_native_agent_thinking_effort(effort.to_string(), thread_only, cx);
++                view.pick_native_agent_thinking_effort(effort.to_string(), persist_default, cx);
+             });
+             cx.run_until_parked();
+ 
+@@ -4839,7 +4837,7 @@ pub(crate) mod tests {
+                 expected_saved_effort
+             );
+             native_thread.read_with(cx, |thread, _cx| {
+-                assert_eq!(thread.is_thread_only(), expected_thread_only);
++                assert!(!thread.is_thread_only());
+                 assert_eq!(thread.thinking_effort().map(String::as_str), Some(effort));
+             });
+         }
+@@ -4861,8 +4859,9 @@ pub(crate) mod tests {
+         .await;
+         let thread_view = active_thread(&conversation_view, cx);
+ 
++        // A Shift pick (0010): a plain one saves nothing at all.
+         thread_view.update(cx, |view, cx| {
+-            view.pick_native_agent_thinking_effort("high".to_string(), false, cx);
++            view.pick_native_agent_thinking_effort("high".to_string(), true, cx);
+         });
+         cx.run_until_parked();
+ 
+@@ -5046,7 +5045,10 @@ pub(crate) mod tests {
+     }
+ 
+     #[gpui::test]
+-    async fn test_secondary_confirm_in_selectors_makes_thread_thread_only(cx: &mut TestAppContext) {
++    // Zeo (0010, operator decision over #66869): a secondary confirm is a plain
++    // pick -- this thread only, nothing saved -- and never makes the thread
++    // thread-only; Shift is what saves a default.
++    async fn test_secondary_confirm_in_selectors_is_a_plain_pick(cx: &mut TestAppContext) {
+         use settings::KeybindSource;
+ 
+         fn bind_keymap(path: &'static str, source: KeybindSource, cx: &mut App) {
+@@ -5175,12 +5177,9 @@ pub(crate) mod tests {
+ 
+                 let case = format!("{selector} selector, {default_keymap}, {jetbrains_keymap:?}");
+                 let thread_only = native_thread.read_with(cx, |thread, _| thread.is_thread_only());
+-                assert!(thread_only, "{case}");
++                assert!(!thread_only, "{case}");
+                 let settings = settings_fs.load(paths::settings_file()).await.unwrap();
+                 assert_eq!(settings, saved_settings, "{case}");
+-
+-                native_thread.update(cx, |thread, cx| thread.reset_to_defaults(cx));
+-                assert!(!native_thread.read_with(cx, |thread, _cx| thread.is_thread_only()));
+             }
+         }
+     }
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index ce46e92..96a5d52 100644
+index 59619e7..28f45c0 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -26,6 +26,7 @@ use sandbox::{SandboxFsPolicy, SandboxNetPolicy, SandboxPolicy};
@@ -897,7 +1054,7 @@ index ce46e92..96a5d52 100644
  use crate::ui::{
      SandboxGroup, SandboxRow, SandboxSection, SandboxStatusTooltip, TerminalSandboxWarning,
      TerminalToolHeader, fast_mode_button, thinking_effort_trigger,
-@@ -6620,12 +6621,17 @@ impl ThreadView {
+@@ -6690,11 +6691,17 @@ impl ThreadView {
                  }
              });
          let thinking_toggle = if supports_disabling_thinking {
@@ -908,15 +1065,15 @@ index ce46e92..96a5d52 100644
                      thread.update(cx, |thread, cx| {
                          let enable_thinking = !thread.thinking_enabled();
                          thread.set_thinking_enabled(enable_thinking, cx);
- 
++
 +                        if !persist_default {
 +                            return;
 +                        }
 +
-                         let favorite_key = thread
-                             .model()
-                             .map(|model| (model.provider_id.0.to_string(), model.id.0.to_string()));
-@@ -6743,21 +6749,56 @@ impl ThreadView {
+                         thread.save_model_options(cx, move |model| {
+                             model.enable_thinking = enable_thinking
+                         });
+@@ -6797,44 +6804,72 @@ impl ThreadView {
          PopoverMenu::new("effort-selector")
              .trigger_with_tooltip(trigger, tooltip)
              .menu(move |window, cx| {
@@ -968,33 +1125,38 @@ index ce46e92..96a5d52 100644
 +                                .into_any_element()
 +                        };
  
--                        menu.push_item(entry.handler({
+-                        let pick_effort = |thread_only: Option<bool>| {
+-                            let effort = effort_level.value.clone();
++                        // Shift, not upstream's secondary confirm, is what saves
++                        // the pick as the default (0010).
 +                        menu = menu.custom_entry(render_entry, {
-                             let effort = effort_level.value;
++                            let effort = effort_level.value;
                              let weak_self = weak_self.clone();
--                            move |_window, cx| {
+-                            move |window: &mut Window, cx: &mut App| {
 +                            move |window, cx| {
-                                 let effort = effort.clone();
+                                 let effort = effort.to_string();
+-                                // A click has no secondary confirm of its own, so
+-                                // it goes by the same modifier a picker row does.
+-                                let thread_only =
+-                                    thread_only.unwrap_or_else(|| window.modifiers().secondary(cx));
 +                                let persist_default = persists_default(window);
                                  weak_self
                                      .update(cx, |this, cx| {
-                                         if let Some(thread) = this.as_native_thread(cx) {
-@@ -6767,6 +6808,10 @@ impl ThreadView {
-                                                     cx,
-                                                 );
- 
-+                                                if !persist_default {
-+                                                    return;
-+                                                }
-+
-                                                 let favorite_key = thread.model().map(|model| {
-                                                     (
-                                                         model.provider_id().0.to_string(),
-@@ -6801,10 +6846,10 @@ impl ThreadView {
+                                         this.pick_native_agent_thinking_effort(
+                                             effort,
+-                                            thread_only,
++                                            persist_default,
+                                             cx,
+                                         );
                                      })
                                      .ok();
                              }
--                        }));
+-                        };
+-                        menu.push_item(
+-                            entry
+-                                .handler(pick_effort(None))
+-                                .secondary_handler(pick_effort(Some(true))),
+-                        );
 +                        });
                      }
  
@@ -1003,7 +1165,7 @@ index ce46e92..96a5d52 100644
                  }))
              })
              .with_handle(self.thinking_effort_menu_handle.clone())
-@@ -14053,7 +14098,9 @@ impl ThreadView {
+@@ -13963,7 +13998,9 @@ impl ThreadView {
          else {
              return;
          };
@@ -1014,6 +1176,34 @@ index ce46e92..96a5d52 100644
          cx.spawn(async move |this, cx| {
              select.await?;
              this.update(cx, |this, cx| this.retry_generation(cx))?;
+@@ -14088,21 +14125,22 @@ impl ThreadView {
+         }
+     }
+ 
++    /// A plain pick moves this thread only; `persist_default` (Shift, 0010)
++    /// also saves the effort as the default.
+     pub(super) fn pick_native_agent_thinking_effort(
+         &mut self,
+         effort: String,
+-        thread_only: bool,
++        persist_default: bool,
+         cx: &mut Context<Self>,
+     ) {
+         let Some(thread) = self.as_native_thread(cx) else {
+             return;
+         };
+         thread.update(cx, |thread, cx| {
+-            if thread_only {
+-                thread.mark_thread_only(cx);
+-            }
+             thread.set_thinking_effort(Some(effort.clone()), cx);
+-            thread.save_model_options(cx, move |model| model.effort = Some(effort.clone()));
++            if persist_default {
++                thread.save_model_options(cx, move |model| model.effort = Some(effort.clone()));
++            }
+         });
+     }
+ 
 diff --git a/crates/agent_ui/src/mode_selector.rs b/crates/agent_ui/src/mode_selector.rs
 index 38e292e..f27e1fd 100644
 --- a/crates/agent_ui/src/mode_selector.rs
@@ -1266,7 +1456,7 @@ index 38e292e..f27e1fd 100644
      struct TestAgentServer {
          saved_defaults: Arc<Mutex<Vec<Option<acp::SessionConfigValueId>>>>,
 diff --git a/crates/agent_ui/src/model_selector.rs b/crates/agent_ui/src/model_selector.rs
-index 628fcbe..617e639 100644
+index cf0e56f..801c040 100644
 --- a/crates/agent_ui/src/model_selector.rs
 +++ b/crates/agent_ui/src/model_selector.rs
 @@ -20,6 +20,7 @@ use util::ResultExt;
@@ -1277,7 +1467,7 @@ index 628fcbe..617e639 100644
  use crate::ui::{
      ModelSelectorFooter, ModelSelectorHeader, ModelSelectorListItem, documentation_aside_side,
  };
-@@ -171,8 +172,10 @@ impl ModelPickerDelegate {
+@@ -202,8 +203,10 @@ impl ModelPickerDelegate {
  
          let next_model = favorite_models[next_index].clone();
  
@@ -1289,16 +1479,30 @@ index 628fcbe..617e639 100644
              .detach_and_log_err(cx);
  
          self.selected_model = Some(next_model);
-@@ -272,7 +275,7 @@ impl PickerDelegate for ModelPickerDelegate {
+@@ -281,16 +284,17 @@ impl PickerDelegate for ModelPickerDelegate {
+         })
+     }
+ 
+-    fn confirm(&mut self, secondary: bool, window: &mut Window, cx: &mut Context<Picker<Self>>) {
++    // Zeo keeps 0010's gesture over upstream's secondary confirm (#66869): a
++    // plain pick is already this thread only and Shift also saves the default,
++    // so a secondary confirm is a plain pick and never makes the thread
++    // thread-only.
++    fn confirm(&mut self, _secondary: bool, window: &mut Window, cx: &mut Context<Picker<Self>>) {
+         if let Some(ModelPickerEntry::Model(model_info, _)) =
+             self.filtered_entries.get(self.selected_index)
              && model_info.disabled.is_none()
          {
+-            if secondary {
+-                self.selector.mark_thread_only(cx);
+-            }
              self.selector
 -                .select_model(model_info.id.clone(), cx)
 +                .select_model(model_info.id.clone(), persists_default(window), cx)
                  .detach_and_log_err(cx);
              self.selected_model = Some(model_info.clone());
              let current_index = self.selected_index;
-@@ -301,6 +304,8 @@ impl PickerDelegate for ModelPickerDelegate {
+@@ -319,6 +323,8 @@ impl PickerDelegate for ModelPickerDelegate {
              }
              ModelPickerEntry::Model(model_info, is_favorite) => {
                  let is_selected = Some(model_info) == self.selected_model.as_ref();
@@ -1307,7 +1511,7 @@ index 628fcbe..617e639 100644
  
                  let is_favorite = *is_favorite;
                  let handle_action_click = {
-@@ -337,6 +342,7 @@ impl PickerDelegate for ModelPickerDelegate {
+@@ -355,6 +361,7 @@ impl PickerDelegate for ModelPickerDelegate {
                                  })
                                  .disabled(model_info.disabled.clone())
                                  .is_selected(is_selected)
@@ -1315,7 +1519,7 @@ index 628fcbe..617e639 100644
                                  .is_focused(selected)
                                  .is_latest(model_info.is_latest)
                                  .is_favorite(is_favorite)
-@@ -373,15 +379,21 @@ impl PickerDelegate for ModelPickerDelegate {
+@@ -391,15 +398,21 @@ impl PickerDelegate for ModelPickerDelegate {
      fn render_footer(
          &self,
          _window: &mut Window,
@@ -1343,7 +1547,27 @@ index 628fcbe..617e639 100644
      }
  }
  
-@@ -636,7 +648,12 @@ mod tests {
+@@ -579,9 +592,7 @@ mod tests {
+     }
+ 
+     #[gpui::test]
+-    fn confirming_model_selects_it_and_secondary_makes_the_thread_thread_only(
+-        cx: &mut TestAppContext,
+-    ) {
++    fn confirming_model_selects_it_and_secondary_is_a_plain_pick(cx: &mut TestAppContext) {
+         cx.update(|cx| {
+             let settings_store = settings::SettingsStore::test(cx);
+             cx.set_global(settings_store);
+@@ -601,7 +612,7 @@ mod tests {
+         cx.run_until_parked();
+ 
+         let mut cx = VisualTestContext::from_window(window_handle.into(), cx);
+-        for (secondary, expected_thread_only_marks) in [(false, 0), (true, 1)] {
++        for (secondary, expected_thread_only_marks) in [(false, 0), (true, 0)] {
+             window_handle
+                 .update(&mut cx, |picker, window, cx| {
+                     picker.delegate.set_selected_index(1, window, cx);
+@@ -737,7 +748,12 @@ mod tests {
              Task::ready(Ok(AgentModelList::Flat(self.models.clone())))
          }
  
@@ -1357,6 +1581,91 @@ index 628fcbe..617e639 100644
              self.selected_models.borrow_mut().push(model_id.clone());
              if let Some(model) = self.models.iter().find(|model| model.id == model_id) {
                  *self.selected_model.borrow_mut() = model.clone();
+diff --git a/crates/agent_ui/src/profile_selector.rs b/crates/agent_ui/src/profile_selector.rs
+index 7c3f6ff..a8079fe 100644
+--- a/crates/agent_ui/src/profile_selector.rs
++++ b/crates/agent_ui/src/profile_selector.rs
+@@ -1,3 +1,4 @@
++use crate::set_as_default::{default_hint_footer, default_marker, persists_default};
+ use crate::{
+     CycleModeSelector, ManageProfiles, ToggleProfileSelector, ui::documentation_aside_side,
+ };
+@@ -35,10 +36,9 @@ pub trait ProfileProvider {
+     /// Check if there is a model selected in the current context.
+     fn model_selected(&self, cx: &App) -> bool;
+ 
+-    /// Set the profile the user picked and save it as the default for new
+-    /// threads. A thread-only pick makes the thread thread-only, which saves
+-    /// nothing.
+-    fn pick_profile(&self, profile_id: AgentProfileId, thread_only: bool, cx: &mut App);
++    /// Set the profile the user picked on this thread; `persist_default`
++    /// (Shift, 0010) also saves it as the default for new threads.
++    fn pick_profile(&self, profile_id: AgentProfileId, persist_default: bool, cx: &mut App);
+ 
+     /// Whether the current workspace is restricted (has untrusted worktrees).
+     ///
+@@ -581,13 +581,15 @@ impl PickerDelegate for ProfilePickerDelegate {
+         })
+     }
+ 
+-    fn confirm(&mut self, secondary: bool, _window: &mut Window, cx: &mut Context<Picker<Self>>) {
++    // 0010's gesture, not upstream's secondary confirm (#66869): Shift saves
++    // the pick as the default, a secondary confirm is a plain pick.
++    fn confirm(&mut self, _secondary: bool, window: &mut Window, cx: &mut Context<Picker<Self>>) {
+         match self.filtered_entries.get(self.selected_index) {
+             Some(ProfilePickerEntry::Profile(entry)) => {
+                 if let Some(candidate) = self.candidates.get(entry.candidate_index) {
+                     let profile_id = candidate.id.clone();
+                     self.provider
+-                        .pick_profile(profile_id.clone(), secondary, cx);
++                        .pick_profile(profile_id.clone(), persists_default(window), cx);
+ 
+                     telemetry::event!(
+                         "Agent Profile Switched",
+@@ -638,6 +640,7 @@ impl PickerDelegate for ProfilePickerDelegate {
+                 let candidate = self.candidates.get(entry.candidate_index)?;
+                 let active_id = self.provider.profile_id(cx);
+                 let is_active = active_id == candidate.id;
++                let is_default = AgentSettings::get_global(cx).default_profile == candidate.id;
+                 let has_documentation = Self::documentation(candidate).is_some();
+ 
+                 let has_warning = self.provider.is_restricted(cx)
+@@ -645,7 +648,7 @@ impl PickerDelegate for ProfilePickerDelegate {
+                 // The warning details are merged into the documentation aside,
+                 // so hovering either the row or the icon shows a single popup.
+                 let track_hover = has_documentation || has_warning;
+-                let has_end_slot = is_active || has_warning;
++                let has_end_slot = is_active || is_default || has_warning;
+ 
+                 Some(
+                     div()
+@@ -681,6 +684,9 @@ impl PickerDelegate for ProfilePickerDelegate {
+                                                         .color(Color::Warning),
+                                                 )
+                                             })
++                                            .when(is_default, |this| {
++                                                this.child(default_marker(("profile-default", ix)))
++                                            })
+                                             .when(is_active, |this| {
+                                                 this.child(
+                                                     Icon::new(IconName::Check).color(Color::Accent),
+@@ -782,6 +788,7 @@ impl PickerDelegate for ProfilePickerDelegate {
+         Some(
+             v_flex()
+                 .w_full()
++                .child(default_hint_footer(cx))
+                 .child(
+                     h_flex()
+                         .w_full()
+@@ -1063,6 +1070,7 @@ mod tests {
+             self.has_model
+         }
+ 
+-        fn pick_profile(&self, _profile_id: AgentProfileId, _thread_only: bool, _cx: &mut App) {}
++        fn pick_profile(&self, _profile_id: AgentProfileId, _persist_default: bool, _cx: &mut App) {
++        }
+     }
+ }
 diff --git a/crates/agent_ui/src/set_as_default.rs b/crates/agent_ui/src/set_as_default.rs
 new file mode 100644
 index 0000000..258e3b5

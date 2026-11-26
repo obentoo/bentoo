@@ -1,0 +1,715 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Wed, 25 Nov 2026 20:47:06 -0300
+Subject: [PATCH] agent_ui: the lock's small modal opens under the lock;
+ turning the jail on asks and restarts
+
+Operator, 2026-11-25, two changes to 0174's small modal, the one the open lock
+of an agent started outside the jail shows:
+
+1. It opens right under the lock. It was a workspace modal, centred in the
+   window, far from what was clicked. It is now a PopoverMenu whose trigger
+   is the lock (attached at the lock's bottom-left corner), its handle kept
+   by the ThreadView; the modal entity itself is unchanged.
+
+2. Turning the switch on asks once, "Turn on the agent sandbox for <name>
+   and restart the agent?" (Cancel / Turn On and Restart, Cancel first as
+   every sandbox prompt), and on the confirming answer saves the setting and
+   restarts the agent inside the jail. Before, it saved and left an amber
+   lock for a second click. Turning off keeps the page's path (it asks
+   first and restarts nothing).
+
+The restart waits for the saved setting to come back through the settings
+file: restarting at once would start the agent with the store still saying
+"off", outside the jail. The wait runs on the window, not on the popover,
+because the confirmation takes focus and the popover may be gone when the
+setting lands; it watches SettingsStore and gives up, with a warning, after
+ten seconds. The restart itself goes straight to restart_for_jail: the
+confirmation already said a running turn stops, so restart_agent_for_jail's
+own "Restart the agent?" would be a second question.
+
+One click reaches the switch's handler up to three times -- SwitchField's row,
+its Switch and, with a tab index, the Switch's inner element all carry it
+(upstream ui) -- so the modal ignores the switch while a confirmation it
+opened is pending. Without that, three prompts opened and each replaced the
+one before (seen on Xvfb: three quick_modal_toggle lines, two cancelled);
+0174's turn-off had the same three prompts.
+
+New catalog entries (en-US, pt-BR): agent-jail-confirm-turn-on-project,
+agent-jail-confirm-turn-on-detail, agent-jail-button-turn-on-restart; the
+modal's hint now says what turning on does.
+
+Tests (agent_jail_quick_modal_tests.rs): the popover starts under the lock
+and lines up with it; turning on asks, and Cancel saves nothing and
+restarts nothing; Turn On and Restart saves the project as on and restarts
+the thread once the store reads it, with no second prompt. The test
+settings store reloads the saved file by itself, so "no restart before the
+setting lands" is held by the code's wait, not by a test.
+
+In the ai-jail group, at its end.
+---
+
+diff --git a/crates/agent_sandbox/src/confirm.rs b/crates/agent_sandbox/src/confirm.rs
+index ba0915b..c12d22a 100644
+--- a/crates/agent_sandbox/src/confirm.rs
++++ b/crates/agent_sandbox/src/confirm.rs
+@@ -77,6 +77,23 @@ pub fn confirm_turn_off(scope: OffScope, window: &mut Window, cx: &mut App) -> T
+     )
+ }
+ 
++/// Asks "Turn on the agent sandbox for <name> and restart the agent?" -- the lock's small modal
++/// (operator, 2026-11-25): turning the jail on there applies it at once instead of leaving an
++/// amber lock to click. `true` only for Turn On and Restart; Cancel comes first, as in
++/// [`turn_off_buttons`]. The page's switch still saves without asking (R4.1).
++pub fn confirm_turn_on_and_restart(name: &str, window: &mut Window, cx: &mut App) -> Task<bool> {
++    let message = t!("agent-jail-confirm-turn-on-project", name = name);
++    let cancel = t!("agent-jail-button-cancel");
++    let turn_on = t!("agent-jail-button-turn-on-restart");
++    ask(
++        &message,
++        &t!("agent-jail-confirm-turn-on-detail"),
++        &[cancel.as_str(), turn_on.as_str()],
++        window,
++        cx,
++    )
++}
++
+ /// Asks "Forget <path>?" (R6.4). `true` only for Forget.
+ pub fn confirm_forget(path: &str, window: &mut Window, cx: &mut App) -> Task<bool> {
+     let message = t!("agent-jail-confirm-forget", path = path);
+diff --git a/crates/agent_ui/src/agent_jail_quick_modal.rs b/crates/agent_ui/src/agent_jail_quick_modal.rs
+index 03ef079..7cf17dd 100644
+--- a/crates/agent_ui/src/agent_jail_quick_modal.rs
++++ b/crates/agent_ui/src/agent_jail_quick_modal.rs
+@@ -3,31 +3,66 @@
+ //! capabilities -- when all the operator wanted was to turn the jail on. The modal holds only
+ //! this project's switch and "Advanced…", which opens the full page. A jail already on keeps the
+ //! old click (the page), and a pending change keeps the restart.
++//!
++//! Operator, 2026-11-25: it opens right under the lock (a popover, no longer a centred modal),
++//! and turning the switch on asks once and restarts the agent inside the jail, instead of
++//! leaving an amber lock to click.
+ 
+-use std::path::PathBuf;
++use std::{path::PathBuf, rc::Rc, time::Duration};
+ 
+ use agent_sandbox::{AgentSandboxSettings, LaunchRegistry, launch};
++use futures::{FutureExt as _, StreamExt as _, channel::mpsc};
+ use gpui::{
+     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Render, Subscription, Window,
+ };
+ use project::agent_server_store::AgentId;
+ use settings::{Settings as _, SettingsStore};
+ use ui::{SwitchField, ToggleState, prelude::*};
++use util::ResultExt as _;
+ use workspace::ModalView;
+ use zeo_i18n::t;
+ 
++/// How long a confirmed turn-on waits for its saved setting to come back through the settings
++/// file before giving up on the restart. The save is local, so this is generous.
++const SETTING_LANDS_WITHIN: Duration = Duration::from_secs(10);
++
++/// What restarts this thread's agent, without asking again: the turn-on confirmation already
++/// said a turn in progress stops.
++pub type RestartAgent = Rc<dyn Fn(&mut Window, &mut App)>;
++
+ pub struct AgentJailQuickModal {
+     agent_id: AgentId,
+     root: PathBuf,
++    restart: RestartAgent,
++    /// A turn-on confirmation is open. One click reaches the switch's handler up to three times
++    /// (SwitchField's row, its Switch and, with a tab index, the Switch's inner element all
++    /// carry it), and each would open its own prompt, replacing the one before.
++    asking: bool,
+     focus_handle: FocusHandle,
+     _settings: Subscription,
+ }
+ 
++/// Whether the next start of `agent_id` in `root` would be jailed, as the lock reads it.
++pub fn jailed_on_next_start(agent_id: &AgentId, root: &std::path::Path, cx: &App) -> bool {
++    LaunchRegistry::get(agent_id, root, cx)
++        .and_then(|record| {
++            launch::jailed_on_next_start(&record, AgentSandboxSettings::get_global(cx))
++        })
++        .unwrap_or(false)
++}
++
+ impl AgentJailQuickModal {
+-    pub fn new(agent_id: AgentId, root: PathBuf, cx: &mut Context<Self>) -> Self {
++    pub fn new(
++        agent_id: AgentId,
++        root: PathBuf,
++        restart: RestartAgent,
++        cx: &mut Context<Self>,
++    ) -> Self {
+         Self {
+             agent_id,
+             root,
++            restart,
++            asking: false,
+             focus_handle: cx.focus_handle(),
+             // The switch shows the setting of now: a change saved from here, or from the page in
+             // another window, redraws it.
+@@ -37,11 +72,98 @@ impl AgentJailQuickModal {
+ 
+     /// Whether the next start of this thread's agent would be jailed, as the lock reads it.
+     pub fn jail_on(&self, cx: &App) -> bool {
+-        LaunchRegistry::get(&self.agent_id, &self.root, cx)
+-            .and_then(|record| {
+-                launch::jailed_on_next_start(&record, AgentSandboxSettings::get_global(cx))
++        jailed_on_next_start(&self.agent_id, &self.root, cx)
++    }
++
++    /// The switch. Off goes the page's way (only `enabled` is written, and it asks first). On asks
++    /// "turn on and restart?", saves, waits for the saved setting to land, then restarts. That
++    /// wait runs on the window, not on this popover: the confirmation takes focus, and the
++    /// popover may be gone by the time the setting comes back.
++    fn set_jail(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
++        if self.asking {
++            return;
++        }
++        log::info!("agent_sandbox event=quick_modal_toggle on={on}");
++        if !on {
++            let turning_off =
++                agent_sandbox::confirm::set_project_enabled(&self.root, false, window, cx);
++            self.asking = true;
++            cx.spawn(async move |this, cx| {
++                turning_off.await;
++                this.update(cx, |this, _| this.asking = false).ok();
+             })
+-            .unwrap_or(false)
++            .detach();
++            return;
++        }
++        let name = self
++            .root
++            .file_name()
++            .map(|name| name.to_string_lossy().into_owned())
++            .unwrap_or_else(|| self.root.to_string_lossy().into_owned());
++        let consent = agent_sandbox::confirm::confirm_turn_on_and_restart(&name, window, cx);
++        self.asking = true;
++        let (agent_id, root, restart) = (
++            self.agent_id.clone(),
++            self.root.clone(),
++            self.restart.clone(),
++        );
++        window
++            .spawn(cx, async move |cx| {
++                if !consent.await {
++                    log::info!("agent_sandbox event=quick_modal_turn_on outcome=cancelled");
++                    return;
++                }
++                let Some(save) = cx
++                    .update(|window, cx| {
++                        agent_sandbox::confirm::set_project_enabled(&root, true, window, cx)
++                    })
++                    .log_err()
++                else {
++                    return;
++                };
++                if !save.await {
++                    log::warn!("agent_sandbox event=quick_modal_turn_on outcome=not_saved");
++                    return;
++                }
++                let (landed_tx, mut landed) = mpsc::unbounded::<()>();
++                let Some(_watch) = cx
++                    .update(|_, cx| {
++                        cx.observe_global::<SettingsStore>(move |_| {
++                            landed_tx.unbounded_send(()).ok();
++                        })
++                    })
++                    .log_err()
++                else {
++                    return;
++                };
++                let mut deadline = cx.background_executor().timer(SETTING_LANDS_WITHIN).fuse();
++                loop {
++                    let Some(on) = cx
++                        .update(|_, cx| jailed_on_next_start(&agent_id, &root, cx))
++                        .log_err()
++                    else {
++                        return;
++                    };
++                    if on {
++                        log::info!("agent_sandbox event=quick_modal_turn_on outcome=restarting");
++                        cx.update(|window, cx| restart(window, cx)).log_err();
++                        return;
++                    }
++                    futures::select_biased! {
++                        _ = landed.next() => {}
++                        _ = deadline => {
++                            log::warn!(
++                                "agent_sandbox event=quick_modal_turn_on outcome=setting_not_seen \
++                                 waited_secs={}",
++                                SETTING_LANDS_WITHIN.as_secs()
++                            );
++                            return;
++                        }
++                    }
++                }
++            })
++            .detach();
++        cx.emit(DismissEvent);
+     }
+ 
+     fn open_advanced(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+@@ -68,25 +190,16 @@ impl Focusable for AgentJailQuickModal {
+ 
+ impl Render for AgentJailQuickModal {
+     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+-        let root = self.root.clone();
++        let this = cx.entity().downgrade();
+         let switch = SwitchField::new(
+             "agent-jail-quick-switch",
+             Some(t!("agent-sandbox-project-enabled")),
+             Some(t!("agent-jail-quick-hint").into()),
+             self.jail_on(cx),
+             move |toggle, window, cx| {
+-                log::info!(
+-                    "agent_sandbox event=quick_modal_toggle on={}",
+-                    *toggle == ToggleState::Selected
+-                );
+-                // The page's own path: only `enabled` is written, and turning off asks first.
+-                agent_sandbox::confirm::set_project_enabled(
+-                    &root,
+-                    *toggle == ToggleState::Selected,
+-                    window,
+-                    cx,
+-                )
+-                .detach();
++                let on = *toggle == ToggleState::Selected;
++                this.update(cx, |this, cx| this.set_jail(on, window, cx))
++                    .log_err();
+             },
+         )
+         .tab_index(0);
+diff --git a/crates/agent_ui/src/agent_jail_quick_modal_tests.rs b/crates/agent_ui/src/agent_jail_quick_modal_tests.rs
+index 2936b08..05bcd01 100644
+--- a/crates/agent_ui/src/agent_jail_quick_modal_tests.rs
++++ b/crates/agent_ui/src/agent_jail_quick_modal_tests.rs
+@@ -33,12 +33,41 @@ fn record_opened_pages(cx: &mut TestAppContext) -> Arc<Mutex<Vec<String>>> {
+     opened
+ }
+ 
++/// The lock's popover, while it is open (operator, 2026-11-25: no longer a workspace modal).
+ fn quick_modal(win: &mut Win) -> Option<Entity<AgentJailQuickModal>> {
+-    win.workspace.read_with(&mut win.cx, |workspace, cx| {
+-        workspace.active_modal::<AgentJailQuickModal>(cx)
++    win.panel.read_with(&mut win.cx, |panel, cx| {
++        panel
++            .active_conversation_view()?
++            .read(cx)
++            .active_thread()?
++            .read(cx)
++            .jail_quick_modal()
+     })
+ }
+ 
++/// The entity of the thread on screen: a restart rebuilds it.
++fn thread_on_screen(win: &mut Win) -> gpui::EntityId {
++    win.panel.read_with(&mut win.cx, |panel, cx| {
++        panel
++            .active_conversation_view()
++            .expect("a conversation")
++            .read(cx)
++            .active_thread()
++            .expect("a thread")
++            .entity_id()
++    })
++}
++
++fn click(win: &mut Win, selector: &'static str) {
++    let bounds = win
++        .cx
++        .debug_bounds(selector)
++        .unwrap_or_else(|| panic!("{selector} is drawn"));
++    win.cx
++        .simulate_click(bounds.center(), gpui::Modifiers::default());
++    win.cx.run_until_parked();
++}
++
+ #[gpui::test]
+ async fn quick_modal_opens_from_the_open_lock_instead_of_the_page(cx: &mut TestAppContext) {
+     let fs = init(cx);
+@@ -74,7 +103,7 @@ async fn quick_modal_opens_from_the_open_lock_instead_of_the_page(cx: &mut TestA
+         vec![zed_actions::AGENT_JAIL_SETTINGS_PATH.to_string()],
+         "Advanced opens the full page"
+     );
+-    assert!(quick_modal(&mut win).is_none(), "and closes the modal");
++    assert!(quick_modal(&mut win).is_none(), "and closes the popover");
+ }
+ 
+ #[gpui::test]
+@@ -97,3 +126,98 @@ async fn quick_modal_switch_follows_the_setting(cx: &mut TestAppContext) {
+         "the switch reads the setting of now"
+     );
+ }
++
++// Operator, 2026-11-25: the small modal opens right under the lock, and turning the jail on asks
++// once, then restarts the agent inside the jail. Hostile halves first: a centred modal fails the
++// position check; Cancel must neither save nor restart; a restart before the saved setting lands
++// would restart the agent still outside the jail.
++
++#[gpui::test]
++async fn quick_modal_opens_under_the_lock(cx: &mut TestAppContext) {
++    let fs = init(cx);
++    cx.update(|cx| LaunchRegistry::register(record("/w/app", Reason::Off, None), cx));
++    let mut win = window_with_stub_thread(&fs, &["/w/app"], cx).await;
++    win.cx.run_until_parked();
++    let lock = win.cx.debug_bounds("ICON-LockOff").expect("open lock");
++    click(&mut win, "ICON-LockOff");
++    assert!(quick_modal(&mut win).is_some(), "the popover is open");
++    let modal = win
++        .cx
++        .debug_bounds("agent-jail-quick-modal")
++        .expect("the popover is drawn");
++    assert!(
++        modal.top() >= lock.bottom(),
++        "it starts under the lock: popover {modal:?}, lock {lock:?}"
++    );
++    assert!(
++        (modal.left() - lock.left()).abs() < gpui::px(24.),
++        "and lines up with it: popover {modal:?}, lock {lock:?}"
++    );
++}
++
++#[gpui::test]
++async fn quick_modal_turning_on_asks_and_cancel_changes_nothing(cx: &mut TestAppContext) {
++    let fs = init(cx);
++    cx.update(|cx| LaunchRegistry::register(record("/w/app", Reason::Off, None), cx));
++    let mut win = window_with_stub_thread(&fs, &["/w/app"], cx).await;
++    win.cx.run_until_parked();
++    let before = thread_on_screen(&mut win);
++    click(&mut win, "ICON-LockOff");
++    click(&mut win, "agent-jail-quick-switch");
++    assert!(
++        win.cx.has_pending_prompt(),
++        "turning the jail on asks first"
++    );
++    win.cx.simulate_prompt_answer("Cancel");
++    win.cx.run_until_parked();
++    assert_eq!(
++        thread_on_screen(&mut win),
++        before,
++        "Cancel restarts nothing"
++    );
++    let saved = fs
++        .load(paths::settings_file().as_path())
++        .await
++        .unwrap_or_default();
++    assert!(
++        !saved.contains("agent_sandbox"),
++        "and saves nothing: {saved}"
++    );
++}
++
++#[gpui::test]
++async fn quick_modal_turning_on_restarts_once_the_setting_lands(cx: &mut TestAppContext) {
++    let fs = init(cx);
++    cx.update(|cx| LaunchRegistry::register(record("/w/app", Reason::Off, None), cx));
++    let mut win = window_with_stub_thread(&fs, &["/w/app"], cx).await;
++    win.cx.run_until_parked();
++    let before = thread_on_screen(&mut win);
++    click(&mut win, "ICON-LockOff");
++    click(&mut win, "agent-jail-quick-switch");
++    win.cx.simulate_prompt_answer("Turn On and Restart");
++    win.cx.run_until_parked();
++    let saved = fs
++        .load(paths::settings_file().as_path())
++        .await
++        .expect("the switch saved the settings file");
++    assert!(
++        saved.contains("\"enabled\": true"),
++        "the project is on: {saved}"
++    );
++    // The settings file's watcher has handed the saved value back by now (the test settings
++    // store reloads it): the restart waits for that, so the new agent starts inside the jail.
++    let jailed = win.cx.update(|_, cx| {
++        crate::agent_jail_quick_modal::jailed_on_next_start(
++            &AgentId::new("Test"),
++            Path::new("/w/app"),
++            cx,
++        )
++    });
++    assert!(jailed, "the setting of now jails the next start");
++    assert_ne!(
++        thread_on_screen(&mut win),
++        before,
++        "the agent restarted, without a second question"
++    );
++    assert!(!win.cx.has_pending_prompt());
++}
+diff --git a/crates/agent_ui/src/agent_jail_status.rs b/crates/agent_ui/src/agent_jail_status.rs
+index cbd0fa3..b07ab03 100644
+--- a/crates/agent_ui/src/agent_jail_status.rs
++++ b/crates/agent_ui/src/agent_jail_status.rs
+@@ -5,8 +5,10 @@
+ use agent_sandbox::cpu_reserve::CpuReservation;
+ use agent_sandbox::launch::{self, LaunchRecord, MemoryPort, Reason};
+ use agent_sandbox::probe;
+-use gpui::{AnyElement, App, SharedString, Window};
+-use ui::{Divider, Tooltip, prelude::*};
++use std::rc::Rc;
++
++use gpui::{AnyElement, App, Entity, SharedString, Window};
++use ui::{Divider, PopoverMenu, PopoverMenuHandle, Tooltip, prelude::*};
+ use zeo_i18n::t;
+ 
+ /// The tooltip line of an agent started on settings that have changed since (R5.4).
+@@ -201,15 +203,24 @@ fn list_line(list: &'static str, items: impl Iterator<Item = String>) -> SharedS
+     t!("agent-jail-status-list", list = list, items = items).into()
+ }
+ 
++/// The lock's small modal as a popover under the lock (operator, 2026-11-25): its handle, kept by
++/// the thread view, and what builds it.
++pub struct JailQuickMenu {
++    pub handle: PopoverMenuHandle<crate::agent_jail_quick_modal::AgentJailQuickModal>,
++    pub build: Rc<
++        dyn Fn(&mut Window, &mut App) -> Entity<crate::agent_jail_quick_modal::AgentJailQuickModal>,
++    >,
++}
++
+ /// The toolbar button for `summary`: the lock, its tooltip and a divider, like
+ /// `ThreadView::render_sandbox_status`. A click opens the Agent Sandbox settings page (R5.5).
+ /// The icon; `on_restart` is what a click does while a change is pending (§6.50) -- otherwise
+-/// `on_open`, the lock's small modal of an agent outside the jail (ask 15 of 2026-11-23), or,
+-/// without one, the sandbox settings page, as before.
++/// `quick_menu`, the lock's small modal of an agent outside the jail (ask 15 of 2026-11-23),
++/// opened right under the lock, or, without one, the sandbox settings page, as before.
+ pub fn render_jail_status_button(
+     summary: JailStatusSummary,
+     on_restart: Option<Box<dyn Fn(&mut Window, &mut App)>>,
+-    on_open: Option<Box<dyn Fn(&mut Window, &mut App)>>,
++    quick_menu: Option<JailQuickMenu>,
+     on_pause: Option<Box<dyn Fn(&mut Window, &mut App)>>,
+     on_stop: Option<Box<dyn Fn(&mut Window, &mut App)>>,
+ ) -> AnyElement {
+@@ -221,43 +232,49 @@ pub fn render_jail_status_button(
+         unavailable,
+     } = summary;
+     let on_restart = pending.and(on_restart);
++    let lock = IconButton::new("agent-jail-status", icon)
++        .icon_size(IconSize::Small)
++        .disabled(unavailable)
++        .icon_color(color)
++        .tooltip(Tooltip::element(move |_window, _cx| {
++            v_flex()
++                .w(rems_from_px(320_f32))
++                .gap_1()
++                .child(Label::new(t!("agent-jail-status-title")))
++                .children(lines.iter().map(|line| {
++                    Label::new(line.clone())
++                        .size(LabelSize::Small)
++                        .color(Color::Muted)
++                }))
++                .into_any_element()
++        }));
++    let lock = match (on_restart, quick_menu) {
++        (None, Some(JailQuickMenu { handle, build })) => PopoverMenu::new("agent-jail-quick-menu")
++            .trigger(lock)
++            .menu(move |window, cx| Some(build(window, cx)))
++            .with_handle(handle)
++            .attach(gpui::Anchor::BottomLeft)
++            .anchor(gpui::Anchor::TopLeft)
++            .into_any_element(),
++        (on_restart, _) => lock
++            .on_click(move |_, window, cx| {
++                if let Some(on_restart) = &on_restart {
++                    on_restart(window, cx);
++                    return;
++                }
++                window.dispatch_action(
++                    Box::new(zed_actions::OpenSettingsAt {
++                        path: zed_actions::AGENT_JAIL_SETTINGS_PATH.to_string(),
++                        target: None,
++                    }),
++                    cx,
++                );
++            })
++            .into_any_element(),
++    };
+     h_flex()
+         .gap_1()
+-        .child(
+-            IconButton::new("agent-jail-status", icon)
+-                .icon_size(IconSize::Small)
+-                .disabled(unavailable)
+-                .icon_color(color)
+-                .tooltip(Tooltip::element(move |_window, _cx| {
+-                    v_flex()
+-                        .w(rems_from_px(320_f32))
+-                        .gap_1()
+-                        .child(Label::new(t!("agent-jail-status-title")))
+-                        .children(lines.iter().map(|line| {
+-                            Label::new(line.clone())
+-                                .size(LabelSize::Small)
+-                                .color(Color::Muted)
+-                        }))
+-                        .into_any_element()
+-                }))
+-                .on_click(move |_, window, cx| {
+-                    if let Some(on_restart) = &on_restart {
+-                        on_restart(window, cx);
+-                        return;
+-                    }
+-                    if let Some(on_open) = &on_open {
+-                        on_open(window, cx);
+-                        return;
+-                    }
+-                    window.dispatch_action(
+-                        Box::new(zed_actions::OpenSettingsAt {
+-                            path: zed_actions::AGENT_JAIL_SETTINGS_PATH.to_string(),
+-                            target: None,
+-                        }),
+-                        cx,
+-                    );
+-                }),
+-        )
++        .child(lock)
+         // Operator ask of 2026-11-23: Pause freezes the jail -- every process keeps its memory --
+         // so Resume goes on with nothing lost. The kill switch beside it ends the jail.
+         .when_some(on_pause, |this, on_pause| {
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index ebbf697..b28b89b 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -819,6 +819,11 @@ pub struct ThreadView {
+     /// An interruption prompt (Stop Generation, Stop Subagent) is on screen, so a second click,
+     /// Escape or Cancel opens no second one (operator ask of 2026-11-23).
+     interrupt_confirmation_open: bool,
++    /// The lock's small modal, a popover under the lock (operator, 2026-11-25).
++    jail_quick_menu: PopoverMenuHandle<crate::agent_jail_quick_modal::AgentJailQuickModal>,
++    /// The popover last built, so a test can read its switch.
++    jail_quick_modal:
++        Rc<RefCell<Option<WeakEntity<crate::agent_jail_quick_modal::AgentJailQuickModal>>>>,
+     question_queue: QuestionQueue,
+     /// The pending question card is minimized to its bar (Zeo next proposal §5.5). Per
+     /// thread, and back to open once no question is pending, so the next one shows.
+@@ -1401,6 +1406,8 @@ impl ThreadView {
+             elicitation_form_states: HashMap::default(),
+             open_decline_confirmations: HashSet::default(),
+             interrupt_confirmation_open: false,
++            jail_quick_menu: PopoverMenuHandle::default(),
++            jail_quick_modal: Rc::default(),
+             question_queue: QuestionQueue::default(),
+             question_card_minimized: false,
+             auto_scroll_paused_at: None,
+@@ -7228,12 +7235,12 @@ impl ThreadView {
+         };
+         // Ask 15 of 2026-11-23: an agent started outside the jail opens the small modal -- this
+         // project's switch and Advanced -- instead of the whole page.
+-        let on_open = (record.reason == agent_sandbox::launch::Reason::Off)
+-            .then(|| self.open_jail_quick_modal(root.clone()));
++        let quick_menu = (record.reason == agent_sandbox::launch::Reason::Off)
++            .then(|| self.jail_quick_menu(root.clone()));
+         let button = crate::agent_jail_status::render_jail_status_button(
+             summary,
+             Some(self.restart_agent_for_jail()),
+-            on_open,
++            quick_menu,
+             on_pause,
+             on_stop,
+         );
+@@ -7278,20 +7285,42 @@ impl ThreadView {
+         )
+     }
+ 
+-    /// Opens the lock's small modal for `root` (ask 15 of 2026-11-23).
+-    fn open_jail_quick_modal(&self, root: PathBuf) -> Box<dyn Fn(&mut Window, &mut App)> {
+-        let workspace = self.workspace.clone();
++    /// The lock's small modal for `root` (ask 15 of 2026-11-23), as a popover under the lock
++    /// (operator, 2026-11-25). Its switch restarts the agent once the jail is on.
++    fn jail_quick_menu(&self, root: PathBuf) -> crate::agent_jail_status::JailQuickMenu {
+         let agent_id = self.agent_id.clone();
+-        Box::new(move |window, cx| {
+-            let (agent_id, root) = (agent_id.clone(), root.clone());
+-            workspace
+-                .update(cx, |workspace, cx| {
+-                    workspace.toggle_modal(window, cx, |_window, cx| {
+-                        crate::agent_jail_quick_modal::AgentJailQuickModal::new(agent_id, root, cx)
+-                    });
+-                })
++        let server_view = self.server_view.clone();
++        let last = self.jail_quick_modal.clone();
++        // Restarts without asking again: the modal's own confirmation said a running turn stops.
++        let restart: crate::agent_jail_quick_modal::RestartAgent = Rc::new(move |window, cx| {
++            log::info!("agent_sandbox event=restart_for_jail source=quick_modal");
++            server_view
++                .update(cx, |view, cx| view.restart_for_jail(window, cx))
+                 .log_err();
+-        })
++        });
++        crate::agent_jail_status::JailQuickMenu {
++            handle: self.jail_quick_menu.clone(),
++            build: Rc::new(move |_window, cx| {
++                let (agent_id, root, restart) = (agent_id.clone(), root.clone(), restart.clone());
++                let modal = cx.new(|cx| {
++                    crate::agent_jail_quick_modal::AgentJailQuickModal::new(
++                        agent_id, root, restart, cx,
++                    )
++                });
++                *last.borrow_mut() = Some(modal.downgrade());
++                modal
++            }),
++        }
++    }
++
++    #[cfg(test)]
++    pub(crate) fn jail_quick_modal(
++        &self,
++    ) -> Option<Entity<crate::agent_jail_quick_modal::AgentJailQuickModal>> {
++        self.jail_quick_menu
++            .is_deployed()
++            .then(|| self.jail_quick_modal.borrow().as_ref()?.upgrade())
++            .flatten()
+     }
+ 
+     /// Restarts the agent so a changed sandbox setting applies (§6.50). The thread is resumed
+diff --git a/crates/zeo_i18n/locales/en-US/agent-jail.ftl b/crates/zeo_i18n/locales/en-US/agent-jail.ftl
+index 9bac2f4..b9c1509 100644
+--- a/crates/zeo_i18n/locales/en-US/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/en-US/agent-jail.ftl
+@@ -97,9 +97,12 @@ agent-jail-confirm-turn-off-default = Turn off the agent sandbox for projects wi
+ agent-jail-confirm-turn-off-detail = The agent will run with your user's full access the next time it starts.
+ agent-jail-confirm-forget = Forget { $path }?
+ agent-jail-confirm-forget-detail = ai-memory deletes the page. This cannot be undone.
++agent-jail-confirm-turn-on-project = Turn on the agent sandbox for { $name } and restart the agent?
++agent-jail-confirm-turn-on-detail = The agent restarts inside the jail now. The thread is kept; a turn in progress stops.
+ agent-jail-button-cancel = Cancel
+ agent-jail-button-turn-off = Turn Off
+ agent-jail-button-forget = Forget
++agent-jail-button-turn-on-restart = Turn On and Restart
+ agent-jail-button-allow = Allow
+ agent-jail-root-not-utf8 = The agent sandbox cannot be configured for a project whose path is not valid UTF-8: { $path }
+ agent-jail-secret-prompt = Allow "{ $server }" in this project's jail?
+@@ -154,5 +157,5 @@ agent-jail-paused-disk = Paused: disk quota
+ agent-jail-resume = Resume
+     .operator = Let the agent go on where it stopped
+     .disk = Let the agent go on; it may grow by the quota again from here
+-agent-jail-quick-hint = Applies when the agent restarts: click the lock again once it turns amber.
++agent-jail-quick-hint = Turning it on asks first, then restarts the agent inside the jail.
+ agent-jail-quick-advanced = Advanced…
+diff --git a/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl b/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
+index 2a280f3..a67d808 100644
+--- a/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
+@@ -94,9 +94,12 @@ agent-jail-confirm-turn-off-default = Desligar o sandbox do agente nos projetos
+ agent-jail-confirm-turn-off-detail = O agente vai rodar com o acesso completo do seu usuário na próxima vez que iniciar.
+ agent-jail-confirm-forget = Esquecer { $path }?
+ agent-jail-confirm-forget-detail = O ai-memory apaga a página. Não dá para desfazer.
++agent-jail-confirm-turn-on-project = Ligar o sandbox do agente em { $name } e reiniciar o agente?
++agent-jail-confirm-turn-on-detail = O agente reinicia dentro do jail agora. A thread é mantida; um turno em andamento para.
+ agent-jail-button-cancel = Cancelar
+ agent-jail-button-turn-off = Desligar
+ agent-jail-button-forget = Esquecer
++agent-jail-button-turn-on-restart = Ligar e Reiniciar
+ agent-jail-button-allow = Permitir
+ agent-jail-root-not-utf8 = O sandbox do agente não pode ser configurado para um projeto cujo caminho não é UTF-8 válido: { $path }
+ agent-jail-secret-prompt = Permitir "{ $server }" no jail deste projeto?
+@@ -151,5 +154,5 @@ agent-jail-paused-disk = Pausado: cota de disco
+ agent-jail-resume = Retomar
+     .operator = Deixa o agente seguir de onde parou
+     .disk = Deixa o agente seguir; a partir daqui ele pode crescer de novo até a cota
+-agent-jail-quick-hint = Vale quando o agente reiniciar: clique no cadeado de novo quando ele ficar âmbar.
++agent-jail-quick-hint = Ligar pede confirmação e então reinicia o agente dentro do jail.
+ agent-jail-quick-advanced = Avançado…

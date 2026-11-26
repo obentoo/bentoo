@@ -1,0 +1,672 @@
+From e90a189c464f3ba02be3fee317a64a483d3d38c8 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Wed, 25 Nov 2026 04:49:57 -0300
+Subject: [PATCH] agent_ui, voice_input: voice input speaks pt-BR
+
+Voice input (0067, 0085) reads its text through zeo_i18n's t! from
+locales/<language>/voice.ftl, in en-US and pt-BR: the button's label,
+tooltips and aria label, the consent and download strip, the discarded-
+transcript toast, and every notice the voice_input crate raises -- no
+microphone, the 2-minute limit, no speech, the CPU check, a missing or
+unreadable model, download failures, and the remote transcription's URL,
+key, timeout, HTTP and answer errors. The en-US file is the code's English
+byte for byte; "<notice>: <reason>" pairs are whole messages with $reason.
+
+The no-speech notice is still compared to decide the outcome logged; both
+sides now come from the same function, so they agree in any language.
+
+In the voice group, after 0085.
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 08bc15c..2ae4fd1 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -20251,6 +20251,7 @@ dependencies = [
+  "tempfile",
+  "url",
+  "whisper-rs",
++ "zeo_i18n",
+ ]
+ 
+ [[package]]
+diff --git a/crates/agent_ui/src/voice_button.rs b/crates/agent_ui/src/voice_button.rs
+index 69664da..b8907ce 100644
+--- a/crates/agent_ui/src/voice_button.rs
++++ b/crates/agent_ui/src/voice_button.rs
+@@ -15,11 +15,9 @@ use ui::{
+ };
+ use voice_input::state::{Input, Owner};
+ use voice_input::{ToggleRecording, ViewState, VoiceInput, VoiceModel};
++use zeo_i18n::t;
+ 
+ const BUTTON_ID: &str = "voice-input";
+-const LABEL: &str = "Voice input";
+-const READ_ONLY: &str = "The composer is read-only";
+-const BUSY: &str = "Voice input is busy in another thread";
+ const MODEL_HOST: &str = "huggingface.co";
+ /// Wide enough for the icon and `m:ss` up to the 2-minute limit (R2.6).
+ const RECORDING_WIDTH: Rems = rems(4.5);
+@@ -155,17 +153,20 @@ pub fn render_voice_strip(state: &ViewState, cx: &App) -> Option<AnyElement> {
+                     h_flex()
+                         .gap_1()
+                         .child(
+-                            Button::new("voice-input-consent-decline", "Not now")
++                            Button::new("voice-input-consent-decline", t!("voice-consent-decline"))
+                                 .label_size(LabelSize::Small)
+                                 .tab_index(0_isize)
+                                 .on_click(|_, _, cx| send(Input::ConsentDeclined, cx)),
+                         )
+                         .child(
+-                            Button::new("voice-input-consent-download", "Download")
+-                                .label_size(LabelSize::Small)
+-                                .style(ButtonStyle::Filled)
+-                                .tab_index(0_isize)
+-                                .on_click(|_, _, cx| send(Input::ConsentGiven, cx)),
++                            Button::new(
++                                "voice-input-consent-download",
++                                t!("voice-consent-download"),
++                            )
++                            .label_size(LabelSize::Small)
++                            .style(ButtonStyle::Filled)
++                            .tab_index(0_isize)
++                            .on_click(|_, _, cx| send(Input::ConsentGiven, cx)),
+                         ),
+                 )
+                 .into_any_element(),
+@@ -175,12 +176,12 @@ pub fn render_voice_strip(state: &ViewState, cx: &App) -> Option<AnyElement> {
+                 .icon(IconName::Info)
+                 .severity(Severity::Info)
+                 .border_position(CalloutBorderPosition::Bottom)
+-                .title("Downloading the speech model")
++                .title(t!("voice-download-title"))
+                 .actions_slot(
+                     div()
+                         .debug_selector(|| "voice-input-download-cancel".into())
+                         .child(
+-                            Button::new("voice-input-download-cancel", "Cancel")
++                            Button::new("voice-input-download-cancel", t!("voice-download-cancel"))
+                                 .label_size(LabelSize::Small)
+                                 .tab_index(0_isize)
+                                 .on_click(|_, _, cx| send(Input::DownloadCancel, cx)),
+@@ -217,20 +218,19 @@ pub fn render_voice_strip(state: &ViewState, cx: &App) -> Option<AnyElement> {
+ /// while idle, from the state itself; see [`tooltip_text_with_host`].
+ pub fn tooltip_text(state: &ViewState, read_only: bool, binding: Option<&str>) -> String {
+     if read_only {
+-        return READ_ONLY.to_string();
++        return t!("voice-read-only");
+     }
+     match state {
+-        ViewState::Hidden => LABEL.to_string(),
+-        ViewState::Idle { remote_host } => {
+-            with_host(with_binding(LABEL, binding), remote_host.as_deref())
+-        }
+-        ViewState::Busy => BUSY.to_string(),
+-        ViewState::AwaitingConsent { .. } => {
+-            "Voice input is waiting for the model download to be confirmed".to_string()
+-        }
+-        ViewState::Downloading { .. } => "Voice input is downloading the speech model".to_string(),
+-        ViewState::Recording { .. } => with_binding("Stop recording", binding),
+-        ViewState::Transcribing => "Transcribing…".to_string(),
++        ViewState::Hidden => t!("voice-label"),
++        ViewState::Idle { remote_host } => with_host(
++            with_binding(&t!("voice-label"), binding),
++            remote_host.as_deref(),
++        ),
++        ViewState::Busy => t!("voice-busy"),
++        ViewState::AwaitingConsent { .. } => t!("voice-awaiting-consent"),
++        ViewState::Downloading { .. } => t!("voice-downloading"),
++        ViewState::Recording { .. } => with_binding(&t!("voice-stop-recording"), binding),
++        ViewState::Transcribing => t!("voice-transcribing"),
+     }
+ }
+ 
+@@ -259,13 +259,16 @@ pub fn tooltip_text_with_host(
+ /// What a screen reader announces for the button: the control, not its bare time.
+ pub fn aria_label(state: &ViewState) -> String {
+     match state {
+-        ViewState::Recording { elapsed } => format!("Stop recording ({})", elapsed_label(*elapsed)),
+-        ViewState::Transcribing => "Transcribing voice input".to_string(),
++        ViewState::Recording { elapsed } => t!(
++            "voice-stop-recording-elapsed",
++            elapsed = elapsed_label(*elapsed)
++        ),
++        ViewState::Transcribing => t!("voice-transcribing-aria"),
+         ViewState::Hidden
+         | ViewState::Idle { .. }
+         | ViewState::Busy
+         | ViewState::AwaitingConsent { .. }
+-        | ViewState::Downloading { .. } => LABEL.to_string(),
++        | ViewState::Downloading { .. } => t!("voice-label"),
+     }
+ }
+ 
+@@ -294,9 +297,11 @@ pub fn elapsed_label(elapsed: Duration) -> String {
+ 
+ /// The consent question: the model, its download size and the host it comes from (R6.1).
+ pub fn consent_text(model: VoiceModel, size: &str) -> String {
+-    format!(
+-        "Voice input needs the speech model {} ({size}) from {MODEL_HOST}. Download it?",
+-        model_name(model)
++    t!(
++        "voice-consent",
++        model = model_name(model).to_string(),
++        size = size,
++        host = MODEL_HOST
+     )
+ }
+ 
+@@ -317,7 +322,7 @@ fn with_binding(label: &str, binding: Option<&str>) -> String {
+ 
+ fn with_host(text: String, remote_host: Option<&str>) -> String {
+     match remote_host {
+-        Some(host) => format!("{text} — remote: {host}"),
++        Some(host) => t!("voice-with-remote", text = text, host = host),
+         None => text,
+     }
+ }
+diff --git a/crates/agent_ui/src/voice_notice.rs b/crates/agent_ui/src/voice_notice.rs
+index 277a0f4..60819ba 100644
+--- a/crates/agent_ui/src/voice_notice.rs
++++ b/crates/agent_ui/src/voice_notice.rs
+@@ -11,7 +11,9 @@ use voice_input::{VoiceEvent, VoiceInput};
+ use workspace::{MultiWorkspace, Toast, Workspace, notifications::NotificationId};
+ 
+ /// The notice for a transcript that arrived after its composer was closed (R4.7).
+-pub const DISCARDED: &str = "Transcript discarded: the thread was closed";
++pub fn discarded() -> String {
++    zeo_i18n::t!("voice-discarded")
++}
+ 
+ /// Every voice notice shares one id, so a newer notice replaces the previous one in a workspace
+ /// instead of stacking under it.
+@@ -83,7 +85,7 @@ fn on_voice_event(event: &VoiceEvent, cx: &mut App) {
+ 
+ fn notify_discarded(owner: EntityId, cx: &mut App) {
+     match active_workspace(cx) {
+-        Some(workspace) => show_toast(&workspace.downgrade(), DISCARDED, cx),
++        Some(workspace) => show_toast(&workspace.downgrade(), discarded(), cx),
+         None => log::warn!(
+             "voice_input event=discard_notice_dropped owner={} reason=no_workspace",
+             owner.as_u64()
+diff --git a/crates/voice_input/Cargo.toml b/crates/voice_input/Cargo.toml
+index f0c0bb9..85a92ad 100644
+--- a/crates/voice_input/Cargo.toml
++++ b/crates/voice_input/Cargo.toml
+@@ -32,6 +32,7 @@ tempfile.workspace = true
+ url.workspace = true
+ whisper-rs.workspace = true
+ 
++zeo_i18n.workspace = true
+ [target.'cfg(unix)'.dependencies]
+ libc.workspace = true
+ 
+diff --git a/crates/voice_input/src/local.rs b/crates/voice_input/src/local.rs
+index d9f1b39..0f2460a 100644
+--- a/crates/voice_input/src/local.rs
++++ b/crates/voice_input/src/local.rs
+@@ -36,11 +36,10 @@ impl fmt::Display for LocalError {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         // The model and the path are named by the source's context, so `{:#}` names them once.
+         match self {
+-            Self::Unreadable { .. } => write!(
+-                f,
+-                "The speech model was unreadable; it will be downloaded again on the next use"
+-            ),
+-            Self::Inference(_) => write!(f, "Local transcription failed"),
++            Self::Unreadable { .. } => {
++                f.write_str(&zeo_i18n::t!("voice-model-unreadable-redownload"))
++            }
++            Self::Inference(_) => f.write_str(&zeo_i18n::t!("voice-local-failed")),
+         }
+     }
+ }
+diff --git a/crates/voice_input/src/remote.rs b/crates/voice_input/src/remote.rs
+index 5927a7e..cd3f7ef 100644
+--- a/crates/voice_input/src/remote.rs
++++ b/crates/voice_input/src/remote.rs
+@@ -12,6 +12,7 @@ use http_client::http::HeaderValue;
+ use http_client::{AsyncBody, HttpClient, HttpRequestExt as _, Method, RedirectPolicy, Request};
+ use serde::Deserialize;
+ use url::{Host, Url};
++use zeo_i18n::t;
+ 
+ use crate::Language;
+ 
+@@ -34,7 +35,7 @@ struct Answer {
+ /// A fragment is refused too: it never reaches the server, but it would reach transport errors.
+ pub fn validate_url(raw: &str) -> anyhow::Result<Url> {
+     // `raw` is never echoed: it may carry credentials.
+-    let url = Url::parse(raw).context("The remote voice URL is not a valid URL")?;
++    let url = Url::parse(raw).context(t!("voice-remote-url-invalid"))?;
+     let scheme = url.scheme();
+     let host = url
+         .host_str()
+@@ -62,10 +63,16 @@ pub fn validate_url(raw: &str) -> anyhow::Result<Url> {
+     match scheme {
+         "https" => Ok(url),
+         "http" if loopback => Ok(url),
+-        "http" => bail!(
+-            "The remote voice URL must use https: {scheme}://{host} is not a loopback address"
+-        ),
+-        _ => bail!("The remote voice URL must use https, not {scheme} ({host})"),
++        "http" => bail!(t!(
++            "voice-remote-url-not-loopback",
++            scheme = scheme,
++            host = host.to_string()
++        )),
++        _ => bail!(t!(
++            "voice-remote-url-scheme",
++            scheme = scheme,
++            host = host.to_string()
++        )),
+     }
+ }
+ 
+@@ -102,7 +109,7 @@ pub fn proxy_refusal(
+     if client_proxy.is_none() && !env_proxy {
+         return None;
+     }
+-    Some("The remote voice URL uses plain http while a proxy is configured; use https".to_string())
++    Some(t!("voice-remote-url-proxy"))
+ }
+ 
+ /// The URL as it may be shown or logged: scheme, host, port and path, nothing else (R10.3).
+@@ -220,10 +227,11 @@ pub async fn transcribe_within(
+         result = exchange(http.as_ref(), request, &shown, key.as_deref(), &log).fuse() => result,
+         _ = timer.fuse() => {
+             log.outcome.set("timeout");
+-            Err(anyhow!(
+-                "Remote transcription timed out after {} s ({shown})",
+-                timeout.as_secs_f64()
+-            ))
++            Err(anyhow!(t!(
++                "voice-remote-timeout",
++                seconds = timeout.as_secs_f64(),
++                host = shown
++            )))
+         }
+     };
+     if result.is_ok() {
+@@ -241,9 +249,8 @@ fn build_request(
+     let authorization = match key {
+         Some(key) => {
+             // The `http` error does not carry the value, and neither does this one.
+-            let mut value = HeaderValue::from_str(&format!("Bearer {key}")).map_err(|_| {
+-                anyhow!("The remote voice API key is not a valid HTTP header value")
+-            })?;
++            let mut value = HeaderValue::from_str(&format!("Bearer {key}"))
++                .map_err(|_| anyhow!(t!("voice-remote-key-invalid")))?;
+             value.set_sensitive(true);
+             Some(value)
+         }
+@@ -275,10 +282,11 @@ async fn exchange(
+         Ok(response) => response,
+         Err(error) => {
+             log.outcome.set("send");
+-            return Err(anyhow!(
+-                "Remote transcription failed: could not reach {shown}: {}",
+-                scrub(&error, shown)
+-            ));
++            return Err(anyhow!(t!(
++                "voice-remote-unreachable",
++                host = shown,
++                error = scrub(&error, shown)
++            )));
+         }
+     };
+     let status = response.status();
+@@ -302,9 +310,14 @@ async fn exchange(
+         };
+         let status = status.as_u16();
+         if excerpt.is_empty() {
+-            bail!("Remote transcription failed: HTTP {status} from {shown}");
++            bail!(t!("voice-remote-http", status = status, host = shown));
+         }
+-        bail!("Remote transcription failed: HTTP {status} from {shown}: {excerpt}");
++        bail!(t!(
++            "voice-remote-http-excerpt",
++            status = status,
++            host = shown,
++            excerpt = excerpt
++        ));
+     }
+ 
+     let mut bytes = Vec::new();
+@@ -315,24 +328,21 @@ async fn exchange(
+         .await;
+     if let Err(error) = read {
+         log.outcome.set("body");
+-        return Err(anyhow!(
+-            "Remote transcription failed: reading the answer of {shown}: {}",
+-            scrub(&anyhow::Error::from(error), shown)
+-        ));
++        return Err(anyhow!(t!(
++            "voice-remote-read",
++            host = shown,
++            error = scrub(&anyhow::Error::from(error), shown)
++        )));
+     }
+     if bytes.len() > ANSWER_LIMIT {
+         log.outcome.set("too_large");
+-        bail!(
+-            "Remote transcription failed: the transcription answer of {shown} is larger than 1 MiB"
+-        );
++        bail!(t!("voice-remote-too-large", host = shown));
+     }
+     match serde_json::from_slice::<Answer>(&bytes) {
+         Ok(answer) => Ok(answer.text),
+         Err(error) => {
+             log.outcome.set("parse");
+-            Err(anyhow::Error::from(error).context(format!(
+-                "Remote transcription failed: {shown} did not answer with a JSON `text` field"
+-            )))
++            Err(anyhow::Error::from(error).context(t!("voice-remote-no-text", host = shown)))
+         }
+     }
+ }
+diff --git a/crates/voice_input/src/state.rs b/crates/voice_input/src/state.rs
+index 9ab0e6a..2abff5d 100644
+--- a/crates/voice_input/src/state.rs
++++ b/crates/voice_input/src/state.rs
+@@ -110,10 +110,10 @@ impl Default for Machine {
+ /// A shortcut released within this long of its press is a tap (toggle); longer is a hold (R2.2, R3.1).
+ pub const TAP_WINDOW: Duration = Duration::from_millis(300);
+ 
+-const NO_MICROPHONE: &str = "No microphone available";
+-const MICROPHONE_STOPPED: &str = "The microphone stopped";
+-const LIMIT_REACHED: &str = "Recording stopped at the 2-minute limit";
+-const NO_SPEECH: &str = "No speech was recognised";
++/// What a transcription that recognised nothing says; [`crate`] compares a notice against it.
++pub(crate) fn no_speech() -> String {
++    zeo_i18n::t!("voice-no-speech")
++}
+ 
+ impl Machine {
+     pub fn phase(&self) -> &Phase {
+@@ -186,20 +186,24 @@ impl Machine {
+             Input::CaptureFailed(reason) => match self.phase {
+                 Phase::Starting { owner, .. } => {
+                     self.phase = Phase::Idle;
+-                    vec![notify(owner, format!("{NO_MICROPHONE}: {reason}"))]
++                    vec![notify(
++                        owner,
++                        zeo_i18n::t!("voice-no-microphone", reason = reason),
++                    )]
+                 }
+                 _ => Vec::new(),
+             },
+-            Input::CaptureLimit => self.stop_with_notice(now, LIMIT_REACHED.to_string()),
+-            Input::CaptureDeviceError(reason) => {
+-                self.stop_with_notice(now, format!("{MICROPHONE_STOPPED}: {reason}"))
+-            }
++            Input::CaptureLimit => self.stop_with_notice(now, zeo_i18n::t!("voice-limit-reached")),
++            Input::CaptureDeviceError(reason) => self.stop_with_notice(
++                now,
++                zeo_i18n::t!("voice-microphone-stopped", reason = reason),
++            ),
+             Input::Transcribed { text } => match self.phase {
+                 Phase::Transcribing { owner } => {
+                     self.phase = Phase::Idle;
+                     let text = crate::transcript::clean(&text);
+                     if text.is_empty() {
+-                        vec![notify(owner, NO_SPEECH.to_string())]
++                        vec![notify(owner, no_speech())]
+                     } else {
+                         vec![Effect::Insert { owner, text }]
+                     }
+diff --git a/crates/voice_input/src/voice_input.rs b/crates/voice_input/src/voice_input.rs
+index 8ad6e1f..ac90c97 100644
+--- a/crates/voice_input/src/voice_input.rs
++++ b/crates/voice_input/src/voice_input.rs
+@@ -55,9 +55,6 @@ const IDLE_CHECK: Duration = Duration::from_secs(60);
+ /// Room for both early-end events of one recording (`Limit` and `DeviceError`).
+ const CAPTURE_EVENT_CAPACITY: usize = 4;
+ 
+-const BUSY: &str = "Voice input is busy in another thread";
+-const NO_SPEECH: &str = "No speech was recognised";
+-
+ /// Registers the `voice_input` settings section and creates the app-wide [`VoiceInput`], with
+ /// models downloaded to the user's data directory and the real microphone.
+ pub fn init(http: Arc<dyn HttpClient>, cx: &mut App) {
+@@ -483,7 +480,7 @@ impl VoiceInput {
+                 }
+                 Effect::Notify { owner, message } => {
+                     if finishing {
+-                        outcome = Some(if message == NO_SPEECH {
++                        outcome = Some(if message.as_str() == crate::state::no_speech() {
+                             "empty"
+                         } else {
+                             "error"
+@@ -496,7 +493,7 @@ impl VoiceInput {
+                 }
+                 Effect::Busy { owner } => cx.emit(VoiceEvent::Notify {
+                     owner: EntityId::from(owner.0),
+-                    message: BUSY.to_string(),
++                    message: zeo_i18n::t!("voice-busy"),
+                 }),
+             }
+         }
+@@ -1047,7 +1044,10 @@ impl TranscribeJob {
+ 
+     async fn local(self, pcm: Vec<f32>, cx: &mut AsyncApp) -> Input {
+         if let Err(level) = local::cpu_supported() {
+-            return Input::TranscribeFailed(format!("Voice input needs a CPU with {level}"));
++            return Input::TranscribeFailed(zeo_i18n::t!(
++                "voice-cpu-unsupported",
++                level = level.to_string()
++            ));
+         }
+         let spec = models::spec(self.settings.model);
+         let language = self.settings.language;
+@@ -1058,9 +1058,9 @@ impl TranscribeJob {
+         cx.background_spawn(async move {
+             let Some(resolved) = models::resolve_model_in(spec, &system_dir, &models_dir, &cache)
+             else {
+-                return Input::TranscribeFailed(format!(
+-                    "The speech model {} is missing; click the microphone to download it again",
+-                    model_name(spec.model)
++                return Input::TranscribeFailed(zeo_i18n::t!(
++                    "voice-model-missing",
++                    model = model_name(spec.model).to_string()
+                 ));
+             };
+             let result = transcriber
+@@ -1081,9 +1081,7 @@ impl TranscribeJob {
+     async fn remote(self, pcm: Vec<f32>, cx: &mut AsyncApp) -> Input {
+         let remote = self.settings.remote;
+         let Some(raw) = remote.url.as_deref() else {
+-            return Input::TranscribeFailed(
+-                "The remote voice URL is not set (voice_input.remote.url)".to_string(),
+-            );
++            return Input::TranscribeFailed(zeo_i18n::t!("voice-remote-url-unset"));
+         };
+         let url = match remote::validate_url(raw) {
+             Ok(url) => url,
+@@ -1148,7 +1146,7 @@ fn unreadable_model(error: LocalError, resolved: &ResolvedModel, spec: &ModelSpe
+         log::warn!(
+             "voice_input event=model_unreadable model={name} action=kept reason={reason} path={path:?}"
+         );
+-        format!("The speech model was unreadable: {source:#}")
++        zeo_i18n::t!("voice-model-unreadable", source = format!("{source:#}"))
+     };
+     if resolved.origin == ModelOrigin::System {
+         return keep("system_package");
+@@ -1177,8 +1175,10 @@ fn unreadable_model(error: LocalError, resolved: &ResolvedModel, spec: &ModelSpe
+                 "voice_input event=model_delete_failed model={name} path={path:?} error={:?}",
+                 remove_error.to_string()
+             );
+-            format!(
+-                "The speech model was unreadable and could not be deleted ({path}): {remove_error}"
++            zeo_i18n::t!(
++                "voice-model-undeletable",
++                path = path.as_str(),
++                error = remove_error.to_string()
+             )
+         }
+     }
+@@ -1227,13 +1227,17 @@ fn download_message(spec: &ModelSpec, error: &DownloadError) -> String {
+     let name = model_name(spec.model);
+     match error {
+         DownloadError::Mismatch { .. } => {
+-            format!("The speech model {name} did not match its checksum and was deleted")
++            zeo_i18n::t!("voice-download-mismatch", model = name.to_string())
+         }
+         DownloadError::Http(source) | DownloadError::Io(source) => {
+-            format!("Could not download the speech model {name}: {source:#}")
++            zeo_i18n::t!(
++                "voice-download-failed",
++                model = name.to_string(),
++                source = format!("{source:#}")
++            )
+         }
+         DownloadError::Cancelled => {
+-            format!("The download of the speech model {name} was cancelled")
++            zeo_i18n::t!("voice-download-cancelled", model = name.to_string())
+         }
+     }
+ }
+diff --git a/crates/zeo_i18n/locales/en-US/voice.ftl b/crates/zeo_i18n/locales/en-US/voice.ftl
+new file mode 100644
+index 0000000..c97cccd
+--- /dev/null
++++ b/crates/zeo_i18n/locales/en-US/voice.ftl
+@@ -0,0 +1,53 @@
++### Voice input: agent_ui/src/voice_button.rs, voice_notice.rs and the voice_input crate's notices
++### and errors (patch 0185, USE voice). The English is the code's own, byte for byte.
++
++## The composer's button and strip
++
++voice-label = Voice input
++voice-read-only = The composer is read-only
++voice-busy = Voice input is busy in another thread
++voice-awaiting-consent = Voice input is waiting for the model download to be confirmed
++voice-downloading = Voice input is downloading the speech model
++voice-stop-recording = Stop recording
++voice-stop-recording-elapsed = Stop recording ({ $elapsed })
++voice-transcribing = Transcribing…
++voice-transcribing-aria = Transcribing voice input
++voice-with-remote = { $text } — remote: { $host }
++voice-consent = Voice input needs the speech model { $model } ({ $size }) from { $host }. Download it?
++voice-consent-decline = Not now
++voice-consent-download = Download
++voice-download-title = Downloading the speech model
++voice-download-cancel = Cancel
++voice-discarded = Transcript discarded: the thread was closed
++
++## Notices
++
++voice-no-microphone = No microphone available: { $reason }
++voice-microphone-stopped = The microphone stopped: { $reason }
++voice-limit-reached = Recording stopped at the 2-minute limit
++voice-no-speech = No speech was recognised
++voice-cpu-unsupported = Voice input needs a CPU with { $level }
++voice-model-missing = The speech model { $model } is missing; click the microphone to download it again
++voice-model-unreadable = The speech model was unreadable: { $source }
++voice-model-unreadable-redownload = The speech model was unreadable; it will be downloaded again on the next use
++voice-model-undeletable = The speech model was unreadable and could not be deleted ({ $path }): { $error }
++voice-local-failed = Local transcription failed
++voice-download-mismatch = The speech model { $model } did not match its checksum and was deleted
++voice-download-failed = Could not download the speech model { $model }: { $source }
++voice-download-cancelled = The download of the speech model { $model } was cancelled
++
++## Remote transcription
++
++voice-remote-url-unset = The remote voice URL is not set (voice_input.remote.url)
++voice-remote-url-invalid = The remote voice URL is not a valid URL
++voice-remote-url-not-loopback = The remote voice URL must use https: { $scheme }://{ $host } is not a loopback address
++voice-remote-url-scheme = The remote voice URL must use https, not { $scheme } ({ $host })
++voice-remote-url-proxy = The remote voice URL uses plain http while a proxy is configured; use https
++voice-remote-key-invalid = The remote voice API key is not a valid HTTP header value
++voice-remote-timeout = Remote transcription timed out after { $seconds } s ({ $host })
++voice-remote-unreachable = Remote transcription failed: could not reach { $host }: { $error }
++voice-remote-http = Remote transcription failed: HTTP { $status } from { $host }
++voice-remote-http-excerpt = Remote transcription failed: HTTP { $status } from { $host }: { $excerpt }
++voice-remote-read = Remote transcription failed: reading the answer of { $host }: { $error }
++voice-remote-too-large = Remote transcription failed: the transcription answer of { $host } is larger than 1 MiB
++voice-remote-no-text = Remote transcription failed: { $host } did not answer with a JSON `text` field
+diff --git a/crates/zeo_i18n/locales/pt-BR/voice.ftl b/crates/zeo_i18n/locales/pt-BR/voice.ftl
+new file mode 100644
+index 0000000..8682711
+--- /dev/null
++++ b/crates/zeo_i18n/locales/pt-BR/voice.ftl
+@@ -0,0 +1,53 @@
++### Voice input in Brazilian Portuguese (patch 0185), translated by hand on 2026-11-25; awaiting
++### the operator's review as a native speaker.
++
++## The composer's button and strip
++
++voice-label = Entrada de voz
++voice-read-only = O compositor está somente leitura
++voice-busy = A entrada de voz está ocupada em outra thread
++voice-awaiting-consent = A entrada de voz está esperando a confirmação do download do modelo
++voice-downloading = A entrada de voz está baixando o modelo de fala
++voice-stop-recording = Parar a gravação
++voice-stop-recording-elapsed = Parar a gravação ({ $elapsed })
++voice-transcribing = Transcrevendo…
++voice-transcribing-aria = Transcrevendo a entrada de voz
++voice-with-remote = { $text } — remoto: { $host }
++voice-consent = A entrada de voz precisa do modelo de fala { $model } ({ $size }) de { $host }. Baixar?
++voice-consent-decline = Agora não
++voice-consent-download = Baixar
++voice-download-title = Baixando o modelo de fala
++voice-download-cancel = Cancelar
++voice-discarded = Transcrição descartada: a thread foi fechada
++
++## Notices
++
++voice-no-microphone = Nenhum microfone disponível: { $reason }
++voice-microphone-stopped = O microfone parou: { $reason }
++voice-limit-reached = A gravação parou no limite de 2 minutos
++voice-no-speech = Nenhuma fala foi reconhecida
++voice-cpu-unsupported = A entrada de voz precisa de uma CPU com { $level }
++voice-model-missing = O modelo de fala { $model } não está aqui; clique no microfone para baixá-lo de novo
++voice-model-unreadable = O modelo de fala estava ilegível: { $source }
++voice-model-unreadable-redownload = O modelo de fala estava ilegível; ele será baixado de novo no próximo uso
++voice-model-undeletable = O modelo de fala estava ilegível e não pôde ser apagado ({ $path }): { $error }
++voice-local-failed = A transcrição local falhou
++voice-download-mismatch = O modelo de fala { $model } não bateu com o checksum e foi apagado
++voice-download-failed = Não foi possível baixar o modelo de fala { $model }: { $source }
++voice-download-cancelled = O download do modelo de fala { $model } foi cancelado
++
++## Remote transcription
++
++voice-remote-url-unset = A URL de voz remota não está definida (voice_input.remote.url)
++voice-remote-url-invalid = A URL de voz remota não é uma URL válida
++voice-remote-url-not-loopback = A URL de voz remota precisa usar https: { $scheme }://{ $host } não é um endereço de loopback
++voice-remote-url-scheme = A URL de voz remota precisa usar https, não { $scheme } ({ $host })
++voice-remote-url-proxy = A URL de voz remota usa http simples com um proxy configurado; use https
++voice-remote-key-invalid = A chave de API de voz remota não é um valor de cabeçalho HTTP válido
++voice-remote-timeout = A transcrição remota estourou o tempo após { $seconds } s ({ $host })
++voice-remote-unreachable = A transcrição remota falhou: não foi possível alcançar { $host }: { $error }
++voice-remote-http = A transcrição remota falhou: HTTP { $status } de { $host }
++voice-remote-http-excerpt = A transcrição remota falhou: HTTP { $status } de { $host }: { $excerpt }
++voice-remote-read = A transcrição remota falhou: lendo a resposta de { $host }: { $error }
++voice-remote-too-large = A transcrição remota falhou: a resposta de transcrição de { $host } é maior que 1 MiB
++voice-remote-no-text = A transcrição remota falhou: { $host } não respondeu com um campo JSON `text`
+diff --git a/crates/zeo_i18n/src/catalog.rs b/crates/zeo_i18n/src/catalog.rs
+index dd9bb7b..51e9ebc 100644
+--- a/crates/zeo_i18n/src/catalog.rs
++++ b/crates/zeo_i18n/src/catalog.rs
+@@ -64,6 +64,10 @@ pub static SHIPPED: &[LocaleSource] = &[
+                 "en-US/epic-panel.ftl",
+                 include_str!("../locales/en-US/epic-panel.ftl"),
+             ),
++            (
++                "en-US/voice.ftl",
++                include_str!("../locales/en-US/voice.ftl"),
++            ),
+         ],
+     },
+     LocaleSource {
+@@ -98,6 +102,10 @@ pub static SHIPPED: &[LocaleSource] = &[
+                 "pt-BR/epic-panel.ftl",
+                 include_str!("../locales/pt-BR/epic-panel.ftl"),
+             ),
++            (
++                "pt-BR/voice.ftl",
++                include_str!("../locales/pt-BR/voice.ftl"),
++            ),
+         ],
+     },
+ ];

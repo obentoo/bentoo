@@ -86,37 +86,38 @@ CRATES="
 	av-scenechange@0.14.1
 	av1-grain@0.2.4
 	avif-serialize@0.8.6
-	aws-config@1.8.14
-	aws-credential-types@1.2.12
+	aws-config@1.13.3
+	aws-credential-types@1.3.1
 	aws-lc-rs@1.19.0
 	aws-lc-sys@0.47.0
-	aws-runtime@1.7.0
-	aws-sdk-bedrockruntime@1.125.0
-	aws-sdk-kinesis@1.100.0
-	aws-sdk-s3@1.123.0
-	aws-sdk-sso@1.94.0
-	aws-sdk-ssooidc@1.96.0
-	aws-sdk-sts@1.98.0
-	aws-sigv4@1.4.0
-	aws-smithy-async@1.2.14
-	aws-smithy-checksums@0.64.4
-	aws-smithy-eventstream@0.60.20
-	aws-smithy-http-client@1.1.10
-	aws-smithy-http@0.63.4
-	aws-smithy-json@0.62.7
-	aws-smithy-observability@0.2.5
-	aws-smithy-query@0.60.15
-	aws-smithy-runtime-api-macros@1.0.0
-	aws-smithy-runtime-api@1.12.3
-	aws-smithy-runtime@1.10.1
-	aws-smithy-schema@0.1.0
-	aws-smithy-types@1.4.9
-	aws-smithy-xml@0.60.15
-	aws-types@1.3.12
+	aws-runtime@1.10.4
+	aws-sdk-bedrock@1.169.0
+	aws-sdk-bedrockruntime@1.156.0
+	aws-sdk-kinesis@1.133.0
+	aws-sdk-s3@1.161.0
+	aws-sdk-sso@1.122.0
+	aws-sdk-ssooidc@1.124.0
+	aws-sdk-sts@1.127.0
+	aws-sigv4@1.6.6
+	aws-smithy-async@1.3.1
+	aws-smithy-checksums@0.65.1
+	aws-smithy-eventstream@0.61.6
+	aws-smithy-http-client@1.5.3
+	aws-smithy-http@0.64.3
+	aws-smithy-json@0.65.1
+	aws-smithy-observability@0.3.1
+	aws-smithy-query@0.64.0
+	aws-smithy-runtime-api-macros@1.2.0
+	aws-smithy-runtime-api@1.22.0
+	aws-smithy-runtime@1.16.4
+	aws-smithy-schema@1.2.0
+	aws-smithy-types@1.9.4
+	aws-smithy-xml@0.64.1
+	aws-types@1.7.0
 	axum-core@0.3.4
 	axum@0.6.20
 	backtrace@0.3.76
-	base16ct@0.1.1
+	base16ct@1.0.0
 	base64-simd@0.8.0
 	base64@0.21.7
 	base64@0.22.1
@@ -136,6 +137,7 @@ CRATES="
 	bitflags@2.13.1
 	bitstream-io@4.9.0
 	block-buffer@0.10.4
+	block-buffer@0.12.1
 	block-padding@0.3.3
 	block2@0.5.1
 	block2@0.6.2
@@ -196,6 +198,7 @@ CRATES="
 	clap_derive@4.5.49
 	clap_lex@0.7.6
 	cmake@0.1.56
+	cmov@0.5.4
 	cobs@0.3.0
 	codespan-reporting@0.13.0
 	color_quant@1.1.0
@@ -207,6 +210,7 @@ CRATES="
 	concurrent-queue@2.5.0
 	console@0.16.3
 	console_error_panic_hook@0.1.7
+	const-oid@0.10.3
 	const-oid@0.9.6
 	const-random-macro@0.1.16
 	const-random@0.1.18
@@ -229,6 +233,7 @@ CRATES="
 	coreaudio-sys@0.2.18
 	cosmic-text@0.19.0
 	cpp_demangle@0.5.1
+	cpubits@0.1.1
 	cpufeatures@0.2.17
 	cpufeatures@0.3.0
 	cranelift-assembler-x64-meta@0.135.9
@@ -244,7 +249,7 @@ CRATES="
 	cranelift-isle@0.135.9
 	cranelift-native@0.135.9
 	cranelift-srcgen@0.135.9
-	crash-handler@0.8.0
+	crash-handler@0.8.1
 	crc-catalog@2.4.0
 	crc-fast@1.9.0
 	crc32fast@1.5.0
@@ -257,14 +262,15 @@ CRATES="
 	crossbeam-queue@0.3.12
 	crossbeam-utils@0.8.21
 	crunchy@0.2.4
-	crypto-bigint@0.4.9
-	crypto-bigint@0.5.5
+	crypto-bigint@0.7.11
 	crypto-common@0.1.6
+	crypto-common@0.2.2
 	cssparser-macros@0.7.1
 	cssparser@0.37.0
 	cssparser@0.38.0
 	ctor@1.0.12
 	ctrlc@3.5.0
+	ctutils@0.4.8
 	cursor-icon@1.2.0
 	cxx-build@1.0.187
 	cxx@1.0.187
@@ -289,8 +295,8 @@ CRATES="
 	debug-ignore@1.0.5
 	debugid@0.8.0
 	deflate64@0.1.10
-	der@0.6.1
 	der@0.7.10
+	der@0.8.3
 	deranged@0.5.4
 	derive_more-impl@2.1.1
 	derive_more@2.1.1
@@ -299,6 +305,7 @@ CRATES="
 	diff@0.1.13
 	diffy@0.4.2
 	digest@0.10.7
+	digest@0.11.3
 	dioxus-cli-config@0.7.10
 	dioxus-core-types@0.7.10
 	dioxus-core@0.7.10
@@ -323,10 +330,10 @@ CRATES="
 	dwrote@0.11.5
 	dyn-clone@1.0.20
 	ec4rs@1.2.0
-	ecdsa@0.14.8
+	ecdsa@0.17.0
 	either@1.15.0
 	elasticlunr-rs@3.0.2
-	elliptic-curve@0.12.3
+	elliptic-curve@0.14.3
 	email_address@0.2.9
 	embed-resource@3.0.6
 	embedded-io@0.4.0
@@ -368,24 +375,29 @@ CRATES="
 	fax_derive@0.2.0
 	fdeflate@0.3.7
 	fearless_simd@0.4.1
-	ff@0.12.1
+	ff@0.14.0
 	filedescriptor@0.8.3
 	filetime@0.2.29
 	find-msvc-tools@0.1.11
 	fixedbitset@0.5.7
+	flatbuffers@25.12.19
 	flate2@1.1.8
 	float-cmp@0.9.0
 	float-ord@0.3.2
+	fluent-bundle@0.16.0
+	fluent-langneg@0.13.1
+	fluent-syntax@0.12.0
 	fluent-uri@0.4.1
 	flume@0.11.1
 	flume@0.12.0
 	fnv@1.0.7
 	foldhash@0.1.5
 	foldhash@0.2.0
-	font-types@0.10.0
 	font-types@0.11.0
+	font-types@0.12.7
 	fontconfig-parser@0.5.8
 	fontdb@0.23.0
+	fontdb@0.24.0
 	foreign-types-macros@0.2.3
 	foreign-types-shared@0.1.1
 	foreign-types-shared@0.3.1
@@ -438,7 +450,7 @@ CRATES="
 	goblin@0.9.3
 	gpu-allocator@0.28.0
 	granit-parser@2.1.0
-	group@0.12.1
+	group@0.14.0
 	guppy-workspace-hack@0.1.0
 	guppy@0.18.0
 	h2@0.3.27
@@ -446,6 +458,7 @@ CRATES="
 	half@2.7.1
 	handlebars@4.5.0
 	handlebars@5.1.2
+	harfrust@0.12.0
 	harfrust@0.5.0
 	hash32@0.3.1
 	hashbrown@0.12.3
@@ -468,6 +481,7 @@ CRATES="
 	hex@0.4.3
 	hkdf@0.12.4
 	hmac@0.12.1
+	hmac@0.13.0
 	home@0.5.11
 	hound@3.5.1
 	html5ever@0.39.0
@@ -483,6 +497,7 @@ CRATES="
 	httpdate@1.0.3
 	human_bytes@0.4.3
 	humantime@2.3.0
+	hybrid-array@0.4.15
 	hyper-rustls@0.27.9
 	hyper-timeout@0.5.2
 	hyper-tls@0.5.0
@@ -509,7 +524,7 @@ CRATES="
 	ignore@0.4.24
 	image-webp@0.2.4
 	image@0.25.10
-	imagesize@0.14.0
+	imagesize@0.15.0
 	imara-diff@0.2.0
 	imgref@1.12.0
 	include-flate-codegen@0.3.4
@@ -525,6 +540,8 @@ CRATES="
 	inout@0.1.4
 	instant@0.1.13
 	interpolate_name@0.2.4
+	intl-memoizer@0.5.3
+	intl_pluralrules@7.0.2
 	inventory@0.3.21
 	io-extras@0.19.0
 	io-lifetimes@2.0.4
@@ -605,6 +622,7 @@ CRATES="
 	loop9@0.1.5
 	lru-slab@0.1.2
 	lru@0.16.4
+	lru@0.18.5
 	lyon_extra@1.1.0
 	lyon_geom@1.0.19
 	lyon_path@1.0.19
@@ -622,6 +640,7 @@ CRATES="
 	maybe-owned@0.3.4
 	maybe-rayon@0.1.1
 	md-5@0.10.6
+	md-5@0.11.0
 	mdbook@0.4.40
 	memchr@2.8.3
 	memfd@0.6.5
@@ -740,7 +759,7 @@ CRATES="
 	ouroboros@0.18.5
 	ouroboros_macro@0.18.5
 	outref@0.5.2
-	p256@0.11.1
+	p256@0.14.0
 	page_size@0.6.0
 	palette@0.7.6
 	palette_derive@0.7.6
@@ -764,6 +783,7 @@ CRATES="
 	peg-runtime@0.8.5
 	peg@0.8.5
 	pem-rfc7468@0.7.0
+	pem-rfc7468@1.0.0
 	pem@3.0.6
 	percent-encoding@2.3.2
 	perf-event-data@0.1.8
@@ -797,14 +817,13 @@ CRATES="
 	piper@0.2.5
 	pkcs1@0.7.5
 	pkcs8@0.10.2
-	pkcs8@0.9.0
+	pkcs8@0.11.0
 	pkg-config@0.3.32
 	plain@0.2.3
 	plist@1.10.0
 	plotters-backend@0.3.7
 	plotters-svg@0.3.7
 	plotters@0.3.7
-	png@0.17.16
 	png@0.18.0
 	polling@3.11.0
 	pollster@0.2.5
@@ -822,6 +841,8 @@ CRATES="
 	presser@0.3.1
 	pretty_assertions@1.4.1
 	prettyplease@0.2.37
+	primefield@0.14.0
+	primeorder@0.14.0
 	proc-macro-crate@3.4.0
 	proc-macro-error-attr3@3.1.1
 	proc-macro-error-attr@1.0.4
@@ -894,8 +915,8 @@ CRATES="
 	rayon-core@1.13.0
 	rayon@1.11.0
 	rdrand@0.4.0
-	read-fonts@0.35.0
 	read-fonts@0.37.0
+	read-fonts@0.41.0
 	redox_syscall@0.5.18
 	redox_syscall@0.7.5
 	redox_users@0.5.2
@@ -910,8 +931,8 @@ CRATES="
 	renderdoc-sys@1.1.0
 	reqwest@0.11.27
 	reqwest@0.12.24
-	resvg@0.46.0
-	rfc6979@0.3.1
+	resvg@0.49.0
+	rfc6979@0.6.0
 	rgb@0.8.52
 	ring@0.17.14
 	rle-decode-fast@1.0.3
@@ -945,7 +966,6 @@ CRATES="
 	rustls@0.23.46
 	rustversion@1.0.22
 	rusty-fork@0.3.1
-	rustybuzz@0.20.1
 	ryu-js@1.0.3
 	ryu@1.0.23
 	saa@5.6.2
@@ -966,7 +986,7 @@ CRATES="
 	sea-query-binder@0.7.0
 	sea-query@0.32.7
 	seahash@4.1.0
-	sec1@0.3.0
+	sec1@0.8.1
 	seccompiler@0.5.0
 	secrecy@0.10.3
 	security-framework-sys@2.15.0
@@ -992,10 +1012,13 @@ CRATES="
 	serde_with_macros@3.22.0
 	serde_yaml@0.9.34+deprecated
 	serde_yaml_ng@0.10.0
+	serdect@0.4.3
 	sha-1@0.10.1
 	sha1@0.10.6
+	sha1@0.11.0
 	sha1_smol@1.0.1
 	sha2@0.10.9
+	sha2@0.11.1
 	sharded-slab@0.1.7
 	shell-words@1.1.0
 	shellexpand@3.1.1
@@ -1004,8 +1027,8 @@ CRATES="
 	shlex@2.0.1
 	signal-hook-registry@1.4.6
 	signal-hook@0.4.4
-	signature@1.6.4
 	signature@2.2.0
+	signature@3.0.0
 	simd-adler32@0.3.7
 	simd_cesu8@1.2.0
 	simd_helpers@0.1.0
@@ -1016,8 +1039,8 @@ CRATES="
 	simplelog@0.12.2
 	siphasher@0.3.11
 	siphasher@1.0.1
-	skrifa@0.37.0
 	skrifa@0.40.0
+	skrifa@0.44.0
 	slab@0.4.11
 	slotmap@1.0.7
 	smallvec@1.16.1
@@ -1032,8 +1055,8 @@ CRATES="
 	spin@0.10.0
 	spin@0.9.8
 	spirv@0.4.0+sdk-1.4.341.0
-	spki@0.6.0
 	spki@0.7.3
+	spki@0.8.1
 	sqlformat@0.2.6
 	sqlx-core@0.8.6
 	sqlx-macros-core@0.8.6
@@ -1072,7 +1095,7 @@ CRATES="
 	sval_serde@2.15.0
 	svg_fmt@0.4.5
 	svgtypes@0.16.1
-	swash@0.2.6
+	swash@0.2.10
 	symphonia-codec-pcm@0.5.5
 	symphonia-core@0.5.5
 	symphonia-format-riff@0.5.5
@@ -1112,8 +1135,8 @@ CRATES="
 	time-macros@0.2.27
 	time@0.3.47
 	tiny-keccak@2.0.2
-	tiny-skia-path@0.11.4
-	tiny-skia@0.11.4
+	tiny-skia-path@0.12.0
+	tiny-skia@0.12.0
 	tiny_http@0.12.0
 	tinystr@0.8.4
 	tinytemplate@1.2.1
@@ -1173,17 +1196,18 @@ CRATES="
 	ttf-parser@0.25.1
 	tungstenite@0.20.1
 	tungstenite@0.28.0
+	type-map@0.5.1
 	typed-path@0.13.0
 	typeid@1.0.3
-	typenum@1.19.0
+	typenum@1.20.1
 	ucd-trie@0.1.7
 	uds@0.4.2
 	uds_windows@1.1.0
 	unarray@0.1.4
+	unic-langid-impl@0.9.6
+	unic-langid@0.9.6
 	unicase@2.8.1
-	unicode-bidi-mirroring@0.4.0
 	unicode-bidi@0.3.18
-	unicode-ccc@0.4.0
 	unicode-general-category@1.1.0
 	unicode-ident@1.0.24
 	unicode-linebreak@0.1.5
@@ -1202,7 +1226,7 @@ CRATES="
 	untrusted@0.9.0
 	url@2.5.8
 	urlencoding@2.1.3
-	usvg@0.46.0
+	usvg@0.49.0
 	utf-8@0.7.6
 	utf8-chars@3.0.6
 	utf8_iter@1.0.4
@@ -1400,6 +1424,7 @@ CRATES="
 	wit-parser@0.227.1
 	wit-parser@0.244.0
 	wit-parser@0.254.2
+	wnaf@0.14.1
 	writeable@0.6.4
 	x11@2.21.0
 	x11rb-protocol@0.13.2
@@ -1551,7 +1576,7 @@ declare -A GIT_CRATES=(
 # rewrites the date and EGIT_COMMIT; a second version variable it could not
 # keep current would leave a new tarball under an old, already-manifested name).
 
-EGIT_COMMIT="c31063a050c987da77bf48053132600b91d383b0"
+EGIT_COMMIT="6ba65ce3be7fc08eec910088ea1472174aa4a002"
 # LLVM 23 only, so it is the default slot: llvm-r2 would always prefer slot 22
 # (its newest stable) whenever 22 is listed. RUST_NEEDS_LLVM ties the Rust slot
 # to it. RUST_MIN_VER is the newest stable Rust, 1.100.0, past upstream's
@@ -1916,6 +1941,10 @@ src_prepare() {
 		# 0154: a Markdown quote continues on a new line and on a paste, in the
 		# composer and in Markdown files alike. Ungrouped like 0124.
 		"${FILESDIR}/0154-editor-a-markdown-quote-continues-on-a-new-line-and-on-a-paste.patch"
+		# 0177: zeo_i18n, the translation catalog for Zeo's own screens (Fluent,
+		# t!, the ui_language setting). Ships no message yet. Ungrouped: every
+		# screen that translates its strings needs it, under whatever flag gates it.
+		"${FILESDIR}/0177-zeo-i18n-a-translation-catalog-for-zeo-s-own-screens.patch"
 	)
 
 	if use claude-agent-acp-plus; then
@@ -2338,6 +2367,14 @@ src_prepare() {
 			"${FILESDIR}/0172-settings-ui-a-zeo-badge-marks-the-settings-and-pages-zeo-added.patch"
 			# 0176: the /btw answer at the thread's text size. On 0169.
 			"${FILESDIR}/0176-agent-ui-the-btw-answer-is-drawn-at-the-thread-s-text-size.patch"
+			# 0181: the tasks card and the /btw card in en-US and pt-BR (zeo_i18n, 0177).
+			"${FILESDIR}/0181-agent-ui-the-tasks-card-and-the-btw-card-speak-pt-br.patch"
+			# 0182: the Agent Tasks panel in en-US and pt-BR. On 0181.
+			"${FILESDIR}/0182-agent-tasks-panel-the-agent-tasks-panel-speaks-pt-br.patch"
+			# 0186: the sidebar row's Stop Generation asks first. On 0166.
+			"${FILESDIR}/0186-sidebar-the-row-s-stop-generation-asks-first-as-the-panel-s-does.patch"
+			# 0189: Summarize Session (local digest, or the agent's via /btw). On 0070/0115/0177.
+			"${FILESDIR}/0189-agent-ui-summarize-session-a-precise-summary-to-copy-or-to-start-a-thr.patch"
 		)
 	fi
 
@@ -2407,6 +2444,16 @@ src_prepare() {
 			"${FILESDIR}/0174-agent-ui-the-open-lock-opens-a-small-modal-the-switch-and-advanced.patch"
 			# 0175: a hidden-host jail is named for its project (ai-jail --hostname). On 0168.
 			"${FILESDIR}/0175-agent-sandbox-a-jail-that-hides-the-host-is-named-for-its-project.patch"
+			# 0178: the Agent Sandbox page in en-US and pt-BR, through zeo_i18n (0177).
+			"${FILESDIR}/0178-settings-ui-the-agent-sandbox-page-speaks-pt-br.patch"
+			# 0179: the jail's messages and dialogs in en-US and pt-BR. On 0178.
+			"${FILESDIR}/0179-agent-sandbox-agent-ui-agent-servers-the-jail-s-messages-and-dialogs-speak-pt-br.patch"
+			# 0180: the Secrets page in en-US and pt-BR. On 0179.
+			"${FILESDIR}/0180-settings-ui-the-secrets-page-speaks-pt-br.patch"
+			# 0187: a paused jail shows Resume only. On 0165/0179.
+			"${FILESDIR}/0187-agent-ui-a-paused-jail-shows-resume-only-the-lock-s-stop-icon-is-the-o.patch"
+			# 0188: the lock's modal under the lock; turning on asks and restarts. On 0174/0179.
+			"${FILESDIR}/0188-agent-ui-the-lock-s-small-modal-opens-under-the-lock-turning-the-jail.patch"
 		)
 	fi
 
@@ -2433,6 +2480,8 @@ src_prepare() {
 	# the two ship together.
 	if use devtools-panel; then
 		PATCHES+=( "${FILESDIR}/0063-devtools-panel.patch" )
+		# 0184: the devtools panel's notices in en-US and pt-BR. On 0063.
+		PATCHES+=( "${FILESDIR}/0184-agent-ui-the-devtools-panel-s-notices-speak-pt-br.patch" )
 	fi
 
 	# 0066 (story 042): the Epic Stories panel -- a read-only dock panel of the
@@ -2442,6 +2491,8 @@ src_prepare() {
 	# devtools-bridge each on or off, and 0050/0051 on top of it.
 	if use epic; then
 		PATCHES+=( "${FILESDIR}/0066-epic-panel.patch" )
+		# 0183: the Epico panel in en-US and pt-BR (zeo_i18n, 0177). On 0066.
+		PATCHES+=( "${FILESDIR}/0183-epic-panel-the-epico-panel-speaks-pt-br.patch" )
 	fi
 
 	# 0067 (story 044): voice input -- a microphone button and ctrl-alt-v in the
@@ -2456,6 +2507,8 @@ src_prepare() {
 		PATCHES+=(
 			"${FILESDIR}/0067-voice-input.patch"
 			"${FILESDIR}/0085-agent-ui-voice-button-beside-add-context.patch"
+			# 0185: voice input in en-US and pt-BR. On 0085.
+			"${FILESDIR}/0185-agent-ui-voice-input-voice-input-speaks-pt-br.patch"
 		)
 	fi
 

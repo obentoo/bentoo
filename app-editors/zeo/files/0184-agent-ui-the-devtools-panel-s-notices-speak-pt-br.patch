@@ -1,0 +1,265 @@
+From e79474a2e087cd18533c31fc853806e9a0363ad6 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Wed, 25 Nov 2026 04:47:34 -0300
+Subject: [PATCH] agent_ui: the devtools panel's notices speak pt-BR
+
+The devtools panel's notices (0063) read their text through zeo_i18n's t!
+from locales/<language>/devtools.ftl, in en-US and pt-BR: Chromium (or Edge)
+not found, no local project, the open failure, no dev script (and the
+untrusted dev_command case), the dev server that never announced itself, and
+nothing to stop. The en-US file is the code's English byte for byte; the two
+sentences that were glued from constants are whole messages now.
+
+Not here: the wire errors the browser extension receives (browser_wire.rs),
+which zeo-browser localizes itself, and the sidebar's devtools entries, which
+sit in Zed's own sidebar.
+
+In the devtools-panel group, after 0063.
+---
+
+diff --git a/crates/agent_ui/src/browser_channel_tests/devtools_browser_guards.rs b/crates/agent_ui/src/browser_channel_tests/devtools_browser_guards.rs
+index 83c0be0..9e60519 100644
+--- a/crates/agent_ui/src/browser_channel_tests/devtools_browser_guards.rs
++++ b/crates/agent_ui/src/browser_channel_tests/devtools_browser_guards.rs
+@@ -33,7 +33,7 @@ use util::rel_path::RelPath;
+ use super::logged_lines;
+ use super::test_support::*;
+ use crate::devtools_browser::{
+-    BrowserTarget, CHROMIUM_NOT_FOUND, DevtoolsBrowserSettings, Launch, Opened, chromium_command,
++    BrowserTarget, DevtoolsBrowserSettings, Launch, Opened, chromium_command, chromium_not_found,
+     execute, expand_home, spawn_detached, usable_extension,
+ };
+ use crate::devtools_run::DevtoolsSettings;
+@@ -266,7 +266,7 @@ fn hostile_a_chromium_that_fails_to_spawn_is_logged_without_the_url() {
+         opened,
+         Opened::Default {
+             url,
+-            notice: Some(CHROMIUM_NOT_FOUND.to_string()),
++            notice: Some(chromium_not_found()),
+         },
+         "R4.4: the default browser, with the notice"
+     );
+diff --git a/crates/agent_ui/src/devtools_browser.rs b/crates/agent_ui/src/devtools_browser.rs
+index c3c2fce..1bd77f8 100644
+--- a/crates/agent_ui/src/devtools_browser.rs
++++ b/crates/agent_ui/src/devtools_browser.rs
+@@ -25,6 +25,7 @@ use gpui::{App, AppContext as _, AsyncApp, Context, WeakEntity, Window, actions}
+ use settings::{DevtoolsBrowserContent, RegisterSetting, Settings, SettingsContent};
+ use workspace::notifications::NotificationId;
+ use workspace::{Toast, Workspace};
++use zeo_i18n::t;
+ 
+ use crate::browser_channel::log_line;
+ use crate::devtools_projects::{DevtoolsProjects, loggable_root};
+@@ -48,11 +49,14 @@ actions!(
+ 
+ /// What R4.4 shows when the isolated window cannot be a Chromium one.
+ #[cfg(not(windows))]
+-pub const CHROMIUM_NOT_FOUND: &str = "Chromium not found: opened in your default browser";
++pub fn chromium_not_found() -> String {
++    t!("devtools-chromium-not-found")
++}
+ /// What R4.4 shows when the isolated window cannot be a Chromium one: Edge counts on Windows.
+ #[cfg(windows)]
+-pub const CHROMIUM_NOT_FOUND: &str = "Chromium or Edge not found: opened in your default browser";
+-const NO_LOCAL_PROJECT: &str = "Open a local project to open its devtools panel";
++pub fn chromium_not_found() -> String {
++    t!("devtools-chromium-or-edge-not-found")
++}
+ 
+ /// The browsers the isolated window may be, in the order they are looked up. Each must still
+ /// honour `--load-extension`: Chromium does; branded Google Chrome dropped it in 137, so it is
+@@ -150,7 +154,7 @@ pub fn plan(
+     let Some(program) = CHROMIUM_NAMES.into_iter().find_map(|name| lookup(name)) else {
+         return Launch::Default {
+             url: url.to_string(),
+-            notice: Some(CHROMIUM_NOT_FOUND.to_string()),
++            notice: Some(chromium_not_found()),
+         };
+     };
+     let mut args = vec![
+@@ -198,7 +202,10 @@ pub fn open_in_browser(
+ ) {
+     let Some((root, _)) = devtools_run::local_root(workspace, cx) else {
+         workspace.show_toast(
+-            Toast::new(NotificationId::unique::<BrowserToast>(), NO_LOCAL_PROJECT),
++            Toast::new(
++                NotificationId::unique::<BrowserToast>(),
++                t!("devtools-panel-no-local-project"),
++            ),
+             cx,
+         );
+         return;
+@@ -311,7 +318,7 @@ fn open_on_new_thread(
+             cx.update(|cx| {
+                 show_toast(
+                     workspace,
+-                    format!("Could not open the devtools panel: {error:#}"),
++                    t!("devtools-panel-open-failed", error = format!("{error:#}")),
+                     cx,
+                 )
+             });
+@@ -422,7 +429,7 @@ pub(crate) fn execute(root: &Path, url: &str, launch: Launch) -> Opened {
+                 );
+                 Opened::Default {
+                     url: url.to_string(),
+-                    notice: Some(CHROMIUM_NOT_FOUND.to_string()),
++                    notice: Some(chromium_not_found()),
+                 }
+             }
+         },
+diff --git a/crates/agent_ui/src/devtools_run.rs b/crates/agent_ui/src/devtools_run.rs
+index b1b126a..9322428 100644
+--- a/crates/agent_ui/src/devtools_run.rs
++++ b/crates/agent_ui/src/devtools_run.rs
+@@ -36,6 +36,7 @@ use util::rel_path::RelPath;
+ use workspace::notifications::NotificationId;
+ use workspace::tasks::ScheduledTaskResult;
+ use workspace::{MultiWorkspace, MultiWorkspaceEvent, Pane, SaveIntent, Toast, Workspace};
++use zeo_i18n::t;
+ 
+ use crate::browser_channel::log_line;
+ use crate::devtools_projects::{
+@@ -54,21 +55,22 @@ actions!(
+ );
+ 
+ /// What R1.4 shows when there is nothing to run.
+-pub const NO_DEV_SCRIPT: &str = "This project has no dev script";
++pub fn no_dev_script() -> String {
++    t!("devtools-no-dev-script")
++}
+ /// What R1.6 shows when a dev server Zeo started has not announced itself in time.
+-pub const NOT_ANNOUNCED: &str =
+-    "The dev server did not connect to Zeo — is @lucascouts/zeo-devtools in its config?";
++pub fn not_announced() -> String {
++    t!("devtools-not-announced")
++}
+ /// What R1.8 shows when there is nothing of Zeo's to stop.
+-pub const NOTHING_TO_STOP: &str = "No dev server started by Zeo for this project";
+-const NO_LOCAL_PROJECT: &str = "Open a local project to start its dev server";
++pub fn nothing_to_stop() -> String {
++    t!("devtools-nothing-to-stop")
++}
+ /// The label of the task, and of its terminal tab.
+ pub const TASK_LABEL: &str = "devtools: dev server";
+ /// How long a dev server Zeo started has to announce itself (R1.6).
+ pub const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(60);
+ 
+-const UNTRUSTED_OVERRIDE: &str =
+-    "devtools.dev_command is ignored because this project is not trusted";
+-
+ /// The `devtools` settings a project may set; see `DevtoolsSettingsContent`.
+ #[derive(Clone, Debug, Default, PartialEq, Eq, RegisterSetting)]
+ pub struct DevtoolsSettings {
+@@ -132,15 +134,14 @@ pub async fn resolve_dev_command(
+ 
+     let package_json = match read_package_json(fs, root).await {
+         Some(package_json) if has_dev_script(&package_json) => package_json,
+-        _ if override_ignored => bail!("{NO_DEV_SCRIPT}. {UNTRUSTED_OVERRIDE}."),
+-        _ => bail!(NO_DEV_SCRIPT),
++        _ if override_ignored => bail!(t!("devtools-no-dev-script-untrusted")),
++        _ => bail!(no_dev_script()),
+     };
+     let package_manager = detect_package_manager(fs, root, &package_json).await;
+     Ok(ResolvedDevCommand {
+         command: package_manager.to_string(),
+         args: vec!["run".to_string(), "dev".to_string()],
+-        notice: override_ignored
+-            .then(|| format!("{UNTRUSTED_OVERRIDE}: running its dev script instead.")),
++        notice: override_ignored.then(|| t!("devtools-untrusted-override")),
+     })
+ }
+ 
+@@ -238,7 +239,7 @@ pub fn start(
+         show_toast(
+             workspace,
+             NotificationId::unique::<StartToast>(),
+-            NO_LOCAL_PROJECT,
++            t!("devtools-server-no-local-project"),
+             cx,
+         );
+         return StartOutcome::NoLocalProject;
+@@ -334,7 +335,7 @@ pub fn stop(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Wo
+         show_toast(
+             workspace,
+             NotificationId::unique::<StopToast>(),
+-            NOTHING_TO_STOP,
++            nothing_to_stop(),
+             cx,
+         );
+         return;
+@@ -636,7 +637,7 @@ impl DevtoolsRuns {
+                 show_toast(
+                     workspace,
+                     NotificationId::unique::<NotAnnouncedToast>(),
+-                    NOT_ANNOUNCED,
++                    not_announced(),
+                     cx,
+                 )
+             });
+diff --git a/crates/zeo_i18n/locales/en-US/devtools.ftl b/crates/zeo_i18n/locales/en-US/devtools.ftl
+new file mode 100644
+index 0000000..7dded9f
+--- /dev/null
++++ b/crates/zeo_i18n/locales/en-US/devtools.ftl
+@@ -0,0 +1,14 @@
++### The devtools panel's notices: agent_ui/src/devtools_browser.rs and devtools_run.rs (patch
++### 0184, USE devtools-panel). The English is the code's own, byte for byte. The wire errors the
++### browser extension receives (browser_wire.rs) are not here: the extension localizes them itself.
++
++devtools-chromium-not-found = Chromium not found: opened in your default browser
++devtools-chromium-or-edge-not-found = Chromium or Edge not found: opened in your default browser
++devtools-panel-no-local-project = Open a local project to open its devtools panel
++devtools-panel-open-failed = Could not open the devtools panel: { $error }
++devtools-no-dev-script = This project has no dev script
++devtools-no-dev-script-untrusted = This project has no dev script. devtools.dev_command is ignored because this project is not trusted.
++devtools-untrusted-override = devtools.dev_command is ignored because this project is not trusted: running its dev script instead.
++devtools-not-announced = The dev server did not connect to Zeo — is @lucascouts/zeo-devtools in its config?
++devtools-nothing-to-stop = No dev server started by Zeo for this project
++devtools-server-no-local-project = Open a local project to start its dev server
+diff --git a/crates/zeo_i18n/locales/pt-BR/devtools.ftl b/crates/zeo_i18n/locales/pt-BR/devtools.ftl
+new file mode 100644
+index 0000000..689238b
+--- /dev/null
++++ b/crates/zeo_i18n/locales/pt-BR/devtools.ftl
+@@ -0,0 +1,14 @@
++### The devtools panel's notices in Brazilian Portuguese (patch 0184), translated by hand on
++### 2026-11-25; awaiting the operator's review as a native speaker. "dev server" and "dev script"
++### stay: they name the package.json script and what it starts.
++
++devtools-chromium-not-found = Chromium não encontrado: aberto no seu navegador padrão
++devtools-chromium-or-edge-not-found = Chromium ou Edge não encontrado: aberto no seu navegador padrão
++devtools-panel-no-local-project = Abra um projeto local para abrir o painel de devtools dele
++devtools-panel-open-failed = Não foi possível abrir o painel de devtools: { $error }
++devtools-no-dev-script = Este projeto não tem um dev script
++devtools-no-dev-script-untrusted = Este projeto não tem um dev script. devtools.dev_command é ignorado porque este projeto não é confiável.
++devtools-untrusted-override = devtools.dev_command é ignorado porque este projeto não é confiável: rodando o dev script dele no lugar.
++devtools-not-announced = O dev server não se conectou ao Zeo — o @lucascouts/zeo-devtools está na configuração dele?
++devtools-nothing-to-stop = Nenhum dev server iniciado pelo Zeo neste projeto
++devtools-server-no-local-project = Abra um projeto local para iniciar o dev server dele
+diff --git a/crates/zeo_i18n/src/catalog.rs b/crates/zeo_i18n/src/catalog.rs
+index a9a14d6..56c3c4e 100644
+--- a/crates/zeo_i18n/src/catalog.rs
++++ b/crates/zeo_i18n/src/catalog.rs
+@@ -56,6 +56,10 @@ pub static SHIPPED: &[LocaleSource] = &[
+                 "en-US/secrets.ftl",
+                 include_str!("../locales/en-US/secrets.ftl"),
+             ),
++            (
++                "en-US/devtools.ftl",
++                include_str!("../locales/en-US/devtools.ftl"),
++            ),
+         ],
+     },
+     LocaleSource {
+@@ -82,6 +86,10 @@ pub static SHIPPED: &[LocaleSource] = &[
+                 "pt-BR/secrets.ftl",
+                 include_str!("../locales/pt-BR/secrets.ftl"),
+             ),
++            (
++                "pt-BR/devtools.ftl",
++                include_str!("../locales/pt-BR/devtools.ftl"),
++            ),
+         ],
+     },
+ ];

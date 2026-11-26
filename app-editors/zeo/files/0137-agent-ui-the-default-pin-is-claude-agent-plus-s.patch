@@ -35,6 +35,9 @@ Test config_options::tests::only_claude_agent_plus_shows_the_default_pin.
 Proved on Xvfb with a stub under Plus's id (docs/assets/zeo-wave3-fixes-2026-11-21/
 in the hub: pin and check at rest, pin, check and star on hover).
 
+(2026-11-25, Zed 6ba65ce3) the profile picker, which 0010 now marks too
+(#66869), draws its row end through menu_row_markers like the others.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -155,7 +158,7 @@ index 8daa3e3..d68d239 100644
      fn composer_uses_the_first_matching_option_for_each_toolbar_control() {
          use acp::SessionConfigOptionCategory::*;
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
-index 2d94163..365cbc8 100644
+index 88a2830..70eec60 100644
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs
 @@ -28,7 +28,7 @@ use sandbox::{SandboxFsPolicy, SandboxNetPolicy, SandboxPolicy};
@@ -167,7 +170,7 @@ index 2d94163..365cbc8 100644
  use crate::ui::{
      SandboxGroup, SandboxRow, SandboxSection, SandboxStatusTooltip, TerminalSandboxWarning,
      TerminalToolHeader, fast_mode_button, thinking_effort_trigger,
-@@ -7379,22 +7379,13 @@ impl ThreadView {
+@@ -7434,22 +7434,13 @@ impl ThreadView {
          PopoverMenu::new("effort-selector")
              .trigger_with_tooltip(trigger, tooltip)
              .menu(move |window, cx| {
@@ -192,7 +195,7 @@ index 2d94163..365cbc8 100644
  
                          // A custom entry rather than a ContextMenuEntry: the
                          // built-in entry renders one icon at the end, and this
-@@ -7409,9 +7400,8 @@ impl ThreadView {
+@@ -7464,9 +7455,8 @@ impl ThreadView {
                                  .child(
                                      h_flex()
                                          .gap_1()
@@ -249,10 +252,10 @@ index f27e1fd..3e1b75c 100644
                                          this.child(
                                              Icon::new(IconName::Check)
 diff --git a/crates/agent_ui/src/model_selector.rs b/crates/agent_ui/src/model_selector.rs
-index 617e639..062da2f 100644
+index 801c040..cd8a84b 100644
 --- a/crates/agent_ui/src/model_selector.rs
 +++ b/crates/agent_ui/src/model_selector.rs
-@@ -304,8 +304,6 @@ impl PickerDelegate for ModelPickerDelegate {
+@@ -323,8 +323,6 @@ impl PickerDelegate for ModelPickerDelegate {
              }
              ModelPickerEntry::Model(model_info, is_favorite) => {
                  let is_selected = Some(model_info) == self.selected_model.as_ref();
@@ -261,7 +264,7 @@ index 617e639..062da2f 100644
  
                  let is_favorite = *is_favorite;
                  let handle_action_click = {
-@@ -342,7 +340,6 @@ impl PickerDelegate for ModelPickerDelegate {
+@@ -361,7 +359,6 @@ impl PickerDelegate for ModelPickerDelegate {
                                  })
                                  .disabled(model_info.disabled.clone())
                                  .is_selected(is_selected)
@@ -269,6 +272,45 @@ index 617e639..062da2f 100644
                                  .is_focused(selected)
                                  .is_latest(model_info.is_latest)
                                  .is_favorite(is_favorite)
+diff --git a/crates/agent_ui/src/profile_selector.rs b/crates/agent_ui/src/profile_selector.rs
+index a8079fe..92a8183 100644
+--- a/crates/agent_ui/src/profile_selector.rs
++++ b/crates/agent_ui/src/profile_selector.rs
+@@ -1,4 +1,4 @@
+-use crate::set_as_default::{default_hint_footer, default_marker, persists_default};
++use crate::set_as_default::{default_hint_footer, menu_row_markers, persists_default};
+ use crate::{
+     CycleModeSelector, ManageProfiles, ToggleProfileSelector, ui::documentation_aside_side,
+ };
+@@ -676,7 +676,6 @@ impl PickerDelegate for ProfilePickerDelegate {
+                                     this.end_slot(
+                                         h_flex()
+                                             .gap_1()
+-                                            .pr_2()
+                                             .when(has_warning, |this| {
+                                                 this.child(
+                                                     Icon::new(IconName::Warning)
+@@ -684,14 +683,12 @@ impl PickerDelegate for ProfilePickerDelegate {
+                                                         .color(Color::Warning),
+                                                 )
+                                             })
+-                                            .when(is_default, |this| {
+-                                                this.child(default_marker(("profile-default", ix)))
+-                                            })
+-                                            .when(is_active, |this| {
+-                                                this.child(
+-                                                    Icon::new(IconName::Check).color(Color::Accent),
+-                                                )
+-                                            }),
++                                            .child(menu_row_markers(
++                                                ("profile-default", ix),
++                                                is_default,
++                                                is_active,
++                                                None,
++                                            )),
+                                     )
+                                 }),
+                         )
 diff --git a/crates/agent_ui/src/set_as_default.rs b/crates/agent_ui/src/set_as_default.rs
 index c0483b7..35d6bcb 100644
 --- a/crates/agent_ui/src/set_as_default.rs

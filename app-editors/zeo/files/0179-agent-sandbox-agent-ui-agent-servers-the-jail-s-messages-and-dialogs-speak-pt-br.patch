@@ -1,0 +1,1705 @@
+From dfc746958f6df40963a1d44c80172213d69f7c19 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 22:50:22 -0300
+Subject: [PATCH] agent_sandbox, agent_ui, agent_servers: the jail's messages
+ and dialogs speak pt-BR
+
+Closes the Agent Sandbox screen begun in 0178: what the jail says outside the
+settings page now reads through zeo_i18n's t! from
+locales/<language>/agent-jail.ftl, in en-US and pt-BR --
+
+- why a start was refused (LaunchCause, LaunchError) and why a writable folder
+  or an allowed host was refused (RwMapError, HostError, LimitError, the scan's
+  WalkStop), the ai-memory errors and the outdated ai-jail warning;
+- the Turn Off, Forget and Allow (secret-carrying MCP server) dialogs and the
+  settings-write notification;
+- the thread's lock: its tooltip lines, the pending and drifted lines, the
+  reserved and shared CPUs, the Pause/Stop buttons and the paused controls,
+  and the quick modal;
+- the MCP not-enabled notice in the thread, with its title's plural.
+
+The en-US file is the code's English byte for byte, so every existing test pins
+the same text. A rule that refuses a path used to be a fragment glued into two
+sentences ("Writable folder ... {rule}.", "The project folder ... {rule}; ...");
+it is now a $rule select in each message (validate::rule_args), so a language
+writes each sentence whole. The host shapes select on $shape the same way.
+
+These errors are Display texts, and that is deliberate: a refused start reaches
+the thread's error banner -- Zed's code -- as that text, so translating Display
+is the only way to translate it without patching Zed's UI. The consequence: a
+log line that quotes one of these errors follows the UI language. Its event=
+and key= fields stay English, so the line stays machine-readable.
+
+Constants that held text became functions (fail_closed, memory_port_unsupported,
+turn_off_buttons, forget_buttons, secret_buttons, drifted_line, cpu_shared_label,
+ai_jail_missing, paused_label, operator_paused_label) and their tests follow.
+The prompt buttons are built per call; the answer is still read by index.
+
+In the ai-jail group, after 0178: every file it edits belongs to that group.
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 9df710c..27a2c36 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -406,6 +406,7 @@ dependencies = [
+  "url",
+  "which",
+  "workspace",
++ "zeo_i18n",
+ ]
+ 
+ [[package]]
+@@ -455,6 +456,7 @@ dependencies = [
+  "watch",
+  "workspace",
+  "zed_credentials_provider",
++ "zeo_i18n",
+ ]
+ 
+ [[package]]
+diff --git a/crates/agent_sandbox/Cargo.toml b/crates/agent_sandbox/Cargo.toml
+index e1fc37a..4fb5e76 100644
+--- a/crates/agent_sandbox/Cargo.toml
++++ b/crates/agent_sandbox/Cargo.toml
+@@ -36,6 +36,7 @@ url.workspace = true
+ which.workspace = true
+ workspace.workspace = true
+ 
++zeo_i18n.workspace = true
+ [dev-dependencies]
+ collections.workspace = true
+ fs = { workspace = true, features = ["test-support"] }
+diff --git a/crates/agent_sandbox/src/capabilities.rs b/crates/agent_sandbox/src/capabilities.rs
+index c590935..99c56de 100644
+--- a/crates/agent_sandbox/src/capabilities.rs
++++ b/crates/agent_sandbox/src/capabilities.rs
+@@ -20,11 +20,18 @@ use settings::{
+     AgentSandboxCapabilitiesContent, AgentSandboxProjectSettingsContent, Settings as _,
+ };
+ 
++use zeo_i18n::t;
++
+ use crate::confirm::{ask, refuse_non_utf8_root, save, target_project_key};
+ use crate::settings::{AgentSandboxSettings, resolve_project_key};
+ 
+ /// Cancel first: Zed's prompt preselects the first button, so a stray Enter keeps the server off.
+-pub const SECRET_BUTTONS: [&str; 2] = ["Cancel", "Allow"];
++pub fn secret_buttons() -> [String; 2] {
++    [
++        t!("agent-jail-button-cancel"),
++        t!("agent-jail-button-allow"),
++    ]
++}
+ 
+ /// Name parts that mark a value as a credential, matched on the name upper-cased with `-` as `_`.
+ /// Wider than `util::redact::should_redact`'s suffixes, since a flag (`--figma-api-key`) or a
+@@ -229,13 +236,8 @@ pub fn secret_prompt(server: &str, sites: &[SecretSite]) -> (String, String) {
+         .collect::<Vec<_>>()
+         .join(", ");
+     (
+-        format!("Allow \"{server}\" in this project's jail?"),
+-        format!(
+-            "Its configuration carries a secret ({places}). Zeo never hands it to the jail as \
+-             configured, so the secret stays outside: the agent reaches the server only through \
+-             Zeo's own copy (Claude Agent (Plus)), and an agent that cannot (the TUI adapter) \
+-             does not get it. The agent can still use the server's access."
+-        ),
++        t!("agent-jail-secret-prompt", server = server),
++        t!("agent-jail-secret-prompt.detail", places = places),
+     )
+ }
+ 
+@@ -253,7 +255,14 @@ pub fn set_project_mcp_server(
+ ) -> Task<bool> {
+     let consent = if on && !secrets.is_empty() {
+         let (message, detail) = secret_prompt(server, secrets);
+-        ask(&message, &detail, &SECRET_BUTTONS, window, cx)
++        let [cancel, allow] = secret_buttons();
++        ask(
++            &message,
++            &detail,
++            &[cancel.as_str(), allow.as_str()],
++            window,
++            cx,
++        )
+     } else {
+         Task::ready(true)
+     };
+diff --git a/crates/agent_sandbox/src/confirm.rs b/crates/agent_sandbox/src/confirm.rs
+index bed3d23..ba0915b 100644
+--- a/crates/agent_sandbox/src/confirm.rs
++++ b/crates/agent_sandbox/src/confirm.rs
+@@ -15,22 +15,35 @@ use settings::{Settings as _, SettingsContent, SettingsStore};
+ use workspace::notifications::simple_message_notification::MessageNotification;
+ use workspace::notifications::{NotificationId, show_app_notification};
+ 
++use zeo_i18n::t;
++
+ use crate::settings::{AgentSandboxSettings, lexical_match, resolve_project_key};
+ 
+ /// The R4.1 detail, shared by the project and the default prompt.
+-pub const TURN_OFF_DETAIL: &str =
+-    "The agent will run with your user's full access the next time it starts.";
++pub fn turn_off_detail() -> String {
++    t!("agent-jail-confirm-turn-off-detail")
++}
+ /// The R6.4 detail.
+-pub const FORGET_DETAIL: &str = "ai-memory deletes the page. This cannot be undone.";
++pub fn forget_detail() -> String {
++    t!("agent-jail-confirm-forget-detail")
++}
+ /// Cancel comes first: Zed's prompt preselects the first button and Enter confirms it, so an Enter
+ /// still held after the palette command lands on the harmless answer.
+-pub const TURN_OFF_BUTTONS: [&str; 2] = ["Cancel", "Turn Off"];
+-/// Cancel first, for the same reason as [`TURN_OFF_BUTTONS`].
+-pub const FORGET_BUTTONS: [&str; 2] = ["Cancel", "Forget"];
++pub fn turn_off_buttons() -> [String; 2] {
++    [
++        t!("agent-jail-button-cancel"),
++        t!("agent-jail-button-turn-off"),
++    ]
++}
++/// Cancel first, for the same reason as [`turn_off_buttons`].
++pub fn forget_buttons() -> [String; 2] {
++    [
++        t!("agent-jail-button-cancel"),
++        t!("agent-jail-button-forget"),
++    ]
++}
+ /// The index of the confirming button in both button arrays.
+ const CONFIRM_INDEX: usize = 1;
+-/// What the default switch's prompt names (R4.2).
+-const DEFAULT_SCOPE: &str = "projects without their own setting";
+ /// The settings key [`set_default_enabled`] writes, as logged.
+ const DEFAULT_KEY: &str = "agent_sandbox.enabled";
+ 
+@@ -46,18 +59,35 @@ pub enum OffScope {
+ /// Asks "Turn off the agent sandbox for <scope>?" (R4.1, R4.2). `true` only for Turn Off; Cancel,
+ /// a dismissed prompt and a dropped one are all `false` (R4.3).
+ pub fn confirm_turn_off(scope: OffScope, window: &mut Window, cx: &mut App) -> Task<bool> {
+-    let name = match &scope {
+-        OffScope::Project(name) => name.as_str(),
+-        OffScope::Default => DEFAULT_SCOPE,
++    // The default switch's prompt names "projects without their own setting" (R4.2): a whole
++    // message of its own, so a language need not fit that phrase into the project's sentence.
++    let message = match &scope {
++        OffScope::Project(name) => {
++            t!("agent-jail-confirm-turn-off-project", name = name.as_str())
++        }
++        OffScope::Default => t!("agent-jail-confirm-turn-off-default"),
+     };
+-    let message = format!("Turn off the agent sandbox for {name}?");
+-    ask(&message, TURN_OFF_DETAIL, &TURN_OFF_BUTTONS, window, cx)
++    let [cancel, turn_off] = turn_off_buttons();
++    ask(
++        &message,
++        &turn_off_detail(),
++        &[cancel.as_str(), turn_off.as_str()],
++        window,
++        cx,
++    )
+ }
+ 
+ /// Asks "Forget <path>?" (R6.4). `true` only for Forget.
+ pub fn confirm_forget(path: &str, window: &mut Window, cx: &mut App) -> Task<bool> {
+-    let message = format!("Forget {path}?");
+-    ask(&message, FORGET_DETAIL, &FORGET_BUTTONS, window, cx)
++    let message = t!("agent-jail-confirm-forget", path = path);
++    let [cancel, forget] = forget_buttons();
++    ask(
++        &message,
++        &forget_detail(),
++        &[cancel.as_str(), forget.as_str()],
++        window,
++        cx,
++    )
+ }
+ 
+ pub(crate) fn ask(
+@@ -233,9 +263,9 @@ pub fn target_project_key<'a>(
+ 
+ /// The text shown when a root that is not valid UTF-8 is refused.
+ pub fn non_utf8_root_message(root: &Path) -> String {
+-    format!(
+-        "The agent sandbox cannot be configured for a project whose path is not valid UTF-8: {}",
+-        root.to_string_lossy()
++    t!(
++        "agent-jail-root-not-utf8",
++        path = root.to_string_lossy().into_owned()
+     )
+ }
+ 
+@@ -273,10 +303,7 @@ pub(crate) async fn save(
+     };
+     let key = written_key.get().cloned().unwrap_or(fallback_key);
+     log::error!("{}", write_failure_log_line(&key, &error));
+-    let message = format!(
+-        "Could not save the agent sandbox setting: {}",
+-        first_line(&error)
+-    );
++    let message = t!("agent-sandbox-save-failed", error = first_line(&error));
+     cx.update(|cx| notify(message, cx));
+     false
+ }
+@@ -325,8 +352,8 @@ mod tests {
+     use settings::SettingsStore;
+ 
+     use super::{
+-        FORGET_BUTTONS, TURN_OFF_BUTTONS, confirm_forget, non_utf8_root_message,
+-        set_default_enabled, set_project_enabled, target_project_key, write_failure_log_line,
++        confirm_forget, forget_buttons, non_utf8_root_message, set_default_enabled,
++        set_project_enabled, target_project_key, turn_off_buttons, write_failure_log_line,
+     };
+     use crate::test_log_capture::LogCapture;
+ 
+@@ -556,8 +583,8 @@ mod tests {
+         assert!(!task.await, "forget: the first button cancels");
+ 
+         assert_eq!(file_text(&fs).await, before, "nothing written");
+-        assert_eq!(TURN_OFF_BUTTONS, ["Cancel", "Turn Off"]);
+-        assert_eq!(FORGET_BUTTONS, ["Cancel", "Forget"]);
++        assert_eq!(turn_off_buttons(), ["Cancel", "Turn Off"]);
++        assert_eq!(forget_buttons(), ["Cancel", "Forget"]);
+         assert_eq!(
+             prompts.borrow().buttons,
+             [
+diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
+index 349c5fd..e2810f3 100644
+--- a/crates/agent_sandbox/src/launch.rs
++++ b/crates/agent_sandbox/src/launch.rs
+@@ -18,6 +18,7 @@ use project::agent_registry_store::{ZEO_PLUS_AGENT_ID, ZEO_TUI_AGENT_ID};
+ use project::agent_server_store::{AgentId, AgentServerCommand};
+ use semver::Version;
+ use settings::Settings as _;
++use zeo_i18n::t;
+ 
+ use crate::command::{
+     JailInputs, NO_PROXY_CARRIER, generate, keep_loopback_off_proxy, loopback_no_proxy,
+@@ -34,11 +35,14 @@ use crate::validate::{
+ };
+ 
+ /// The sentence every refusal ends with (R1.9).
+-pub const FAIL_CLOSED: &str = "The agent was not started without the sandbox.";
++pub fn fail_closed() -> String {
++    t!("agent-jail-fail-closed")
++}
+ 
+ /// The R3.10 / R5.9 sentence: memory is on but this ai-jail cannot forward its port.
+-pub const MEMORY_PORT_UNSUPPORTED: &str =
+-    "ai-memory is not reachable from inside the jail: this ai-jail has no --forward-port";
++pub fn memory_port_unsupported() -> String {
++    t!("agent-jail-memory-port-unsupported")
++}
+ 
+ /// The binary and package names of the Claude adapters (R1.13). `claude-agent-tui` is the TUI
+ /// package's npm bin; `claude-agent-acp-tui` is the system adapter's name.
+@@ -262,105 +266,95 @@ impl LaunchCause {
+ impl fmt::Display for LaunchCause {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         match self {
+-            Self::NoRoot => write!(
+-                f,
+-                "The project has no local folder to run the agent in, and the agent sandbox is on."
+-            ),
++            Self::NoRoot => f.write_str(&t!("agent-jail-launch-no-root")),
+             Self::RootUnusable {
+                 root,
+                 problem: RootProblem::Colon,
+-            } => write!(
+-                f,
+-                "The project folder {} contains ':', which ai-jail reads as SOURCE:DEST, so its .git and .zed could not be kept read-only.",
+-                root.display()
+-            ),
++            } => f.write_str(&t!(
++                "agent-jail-launch-root-colon",
++                root = root.display().to_string()
++            )),
+             Self::RootUnusable {
+                 root,
+                 problem: RootProblem::NotUtf8,
+-            } => write!(
+-                f,
+-                "The project folder {} is not valid UTF-8, so ai-jail cannot be given its .git and .zed.",
+-                root.display()
+-            ),
+-            Self::RootForbidden { root, rule } => write!(
+-                f,
+-                "The project folder {} {rule}; the agent sandbox does not run an agent there.",
+-                root.display()
+-            ),
+-            Self::RootMissing { root } => write!(
+-                f,
+-                "The project folder {} no longer exists or is not a folder.",
+-                root.display()
+-            ),
++            } => f.write_str(&t!(
++                "agent-jail-launch-root-not-utf8",
++                root = root.display().to_string()
++            )),
++            Self::RootForbidden { root, rule } => {
++                let (rule, path, other, stop) = validate::rule_args(rule);
++                f.write_str(&t!(
++                    "agent-jail-launch-root-forbidden",
++                    rule = rule,
++                    root = root.display().to_string(),
++                    path = path,
++                    other = other,
++                    stop = stop
++                ))
++            }
++            Self::RootMissing { root } => f.write_str(&t!(
++                "agent-jail-launch-root-missing",
++                root = root.display().to_string()
++            )),
+             Self::NotInstalled {
+                 configured: Some(path),
+-            } => write!(
+-                f,
+-                "ai-jail was not found at {} (agent_sandbox.ai_jail_path).",
+-                path.display()
+-            ),
+-            Self::NotInstalled { configured: None } => write!(
+-                f,
+-                "ai-jail was not found on PATH; install it or set agent_sandbox.ai_jail_path."
+-            ),
+-            Self::VersionUnreadable(error) => {
+-                write!(f, "The version of ai-jail could not be read: {error}.")
++            } => f.write_str(&t!(
++                "agent-jail-launch-not-installed-at",
++                path = path.display().to_string()
++            )),
++            Self::NotInstalled { configured: None } => {
++                f.write_str(&t!("agent-jail-launch-not-installed"))
+             }
+-            Self::ClaudeDirInvalid(error) => write!(
+-                f,
+-                "The Claude config directory (agent_sandbox.claude_config_dir) cannot be mapped: {error}"
+-            ),
+-            Self::ClaudeDirMissing { dir } => write!(
+-                f,
+-                "The Claude config directory {dir} does not exist. Create it and log in with `CLAUDE_CONFIG_DIR={dir} claude`.",
+-                dir = dir.display()
+-            ),
++            Self::VersionUnreadable(error) => f.write_str(&t!(
++                "agent-jail-launch-version-unreadable",
++                error = error.to_string()
++            )),
++            Self::ClaudeDirInvalid(error) => f.write_str(&t!(
++                "agent-jail-launch-claude-dir-invalid",
++                error = error.to_string()
++            )),
++            Self::ClaudeDirMissing { dir } => f.write_str(&t!(
++                "agent-jail-launch-claude-dir-missing",
++                dir = dir.display().to_string()
++            )),
+             Self::InvalidMap(error) => write!(f, "{error}"),
+             Self::InvalidHost(error) => write!(f, "{error}"),
+             Self::Limit(error) => write!(f, "{error}"),
+-            Self::NestedMap { inner, outer } => write!(
+-                f,
+-                "Writable folder {} lies inside {}, which the agent can write; it could swap the inner folder for a symlink before the jail starts. Keep the outer folder only.",
+-                inner.display(),
+-                outer.display()
+-            ),
+-            Self::InvalidEnvKey { shown } => write!(
+-                f,
+-                "The environment variable name \"{shown}\" cannot be passed into the jail: a name has only letters, digits and '_', and does not start with a digit."
+-            ),
+-            Self::SymlinkedMount { path } => write!(
+-                f,
+-                "{} is a symlink; ai-jail cannot keep it read-only. Replace it with the folder itself.",
+-                path.display()
+-            ),
+-            Self::ZedDirCreate { dir, error } => {
+-                write!(f, "Could not create {}: {error}.", dir.display())
++            Self::NestedMap { inner, outer } => f.write_str(&t!(
++                "agent-jail-launch-nested-map",
++                inner = inner.display().to_string(),
++                outer = outer.display().to_string()
++            )),
++            Self::InvalidEnvKey { shown } => {
++                f.write_str(&t!("agent-jail-launch-env-key", name = shown.as_str()))
+             }
+-            Self::LimitsUnsupported => write!(
+-                f,
+-                "Resource limits are set for this project, and the installed ai-jail cannot apply them (it has no --memory). Install sys-apps/ai-jail 3.5.0-r1 or later, or clear agent_sandbox.limits."
+-            ),
+-            Self::MaskHostUnsupported => write!(
+-                f,
+-                "The host view is on for this project (agent_sandbox.mask_host), and the installed ai-jail cannot give it (it has no --mask-host). Install sys-apps/ai-jail 3.5.0-r2 or later, or turn Hide the Host off on the Agent Sandbox page."
+-            ),
+-            Self::OverlaySystemUnsupported => write!(
+-                f,
+-                "Hide the Disks is on for this project (agent_sandbox.overlay_system), and the installed ai-jail cannot give it (it has no --overlay-system). Install sys-apps/ai-jail 3.5.0-r3 or later, or turn Hide the Disks off on the Agent Sandbox page."
+-            ),
+-            Self::SyscallViewUnsupported => write!(
+-                f,
+-                "Hide the Kernel is on for this project (agent_sandbox.syscall_view), and the installed ai-jail cannot give it (it has no --syscall-view). Install sys-apps/ai-jail 3.5.0-r4 or later, or turn Hide the Kernel off on the Agent Sandbox page."
+-            ),
+-            Self::MinimalEtcUnsupported => write!(
+-                f,
+-                "Hide the System Config is on for this project (agent_sandbox.minimal_etc), and the installed ai-jail cannot give it (it has no --minimal-etc). Install sys-apps/ai-jail 3.5.0-r5 or later, or turn Hide the System Config off on the Agent Sandbox page."
+-            ),
+-            Self::StateRootCreate { dir, error } => write!(
+-                f,
+-                "The project's jail state folder {} could not be created: {error}.",
+-                dir.display()
+-            ),
++            Self::SymlinkedMount { path } => f.write_str(&t!(
++                "agent-jail-launch-symlinked-mount",
++                path = path.display().to_string()
++            )),
++            Self::ZedDirCreate { dir, error } => f.write_str(&t!(
++                "agent-jail-launch-dir-create",
++                dir = dir.display().to_string(),
++                error = error.to_string()
++            )),
++            Self::LimitsUnsupported => f.write_str(&t!("agent-jail-launch-limits-unsupported")),
++            Self::MaskHostUnsupported => {
++                f.write_str(&t!("agent-jail-launch-mask-host-unsupported"))
++            }
++            Self::OverlaySystemUnsupported => {
++                f.write_str(&t!("agent-jail-launch-overlay-unsupported"))
++            }
++            Self::SyscallViewUnsupported => {
++                f.write_str(&t!("agent-jail-launch-syscall-view-unsupported"))
++            }
++            Self::MinimalEtcUnsupported => {
++                f.write_str(&t!("agent-jail-launch-minimal-etc-unsupported"))
++            }
++            Self::StateRootCreate { dir, error } => f.write_str(&t!(
++                "agent-jail-launch-state-root-create",
++                dir = dir.display().to_string(),
++                error = error.to_string()
++            )),
+             Self::InvalidMemoryEndpoint(error) => write!(f, "{error}"),
+         }
+     }
+@@ -381,13 +375,17 @@ pub struct LaunchError {
+ impl fmt::Display for LaunchError {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         match &self.project_root {
+-            Some(root) => write!(
+-                f,
+-                "Agent sandbox, project {}: {} {FAIL_CLOSED}",
+-                root.display(),
+-                self.cause
+-            ),
+-            None => write!(f, "Agent sandbox: {} {FAIL_CLOSED}", self.cause),
++            Some(root) => f.write_str(&t!(
++                "agent-jail-launch-refused",
++                root = root.display().to_string(),
++                cause = self.cause.to_string(),
++                fail_closed = fail_closed()
++            )),
++            None => f.write_str(&t!(
++                "agent-jail-launch-refused-no-root",
++                cause = self.cause.to_string(),
++                fail_closed = fail_closed()
++            )),
+         }
+     }
+ }
+@@ -402,11 +400,10 @@ pub struct InvalidMemoryEndpoint {
+ 
+ impl fmt::Display for InvalidMemoryEndpoint {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+-        write!(
+-            f,
+-            "The ai-memory endpoint \"{}\" (agent_memory.endpoint) is not a URL.",
+-            self.shown
+-        )
++        f.write_str(&t!(
++            "agent-jail-memory-endpoint-not-url",
++            shown = self.shown.as_str()
++        ))
+     }
+ }
+ 
+diff --git a/crates/agent_sandbox/src/memory/client.rs b/crates/agent_sandbox/src/memory/client.rs
+index 4f9368f..4cb0dbb 100644
+--- a/crates/agent_sandbox/src/memory/client.rs
++++ b/crates/agent_sandbox/src/memory/client.rs
+@@ -20,6 +20,7 @@ use serde::Deserialize;
+ use serde::de::DeserializeOwned;
+ use serde_json::{Value, json};
+ use url::{Host, Url};
++use zeo_i18n::t;
+ 
+ use super::MemoryScope;
+ 
+@@ -74,20 +75,22 @@ pub enum MemoryError {
+ impl fmt::Display for MemoryError {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         match self {
+-            MemoryError::Unreachable { endpoint } => {
+-                write!(f, "ai-memory is not reachable at {endpoint}")
+-            }
+-            MemoryError::Timeout { endpoint } => write!(
+-                f,
+-                "ai-memory is not reachable at {endpoint}: no answer within {} seconds",
+-                REQUEST_TIMEOUT.as_secs()
+-            ),
+-            MemoryError::UnknownProject { scope } => {
+-                write!(f, "No memory recorded for {scope} yet.")
+-            }
++            MemoryError::Unreachable { endpoint } => f.write_str(&t!(
++                "agent-jail-memory-unreachable",
++                endpoint = endpoint.as_str()
++            )),
++            MemoryError::Timeout { endpoint } => f.write_str(&t!(
++                "agent-jail-memory-timeout",
++                endpoint = endpoint.as_str(),
++                seconds = REQUEST_TIMEOUT.as_secs()
++            )),
++            MemoryError::UnknownProject { scope } => f.write_str(&t!(
++                "agent-jail-memory-unknown-project",
++                scope = scope.to_string()
++            )),
+             MemoryError::Server(text) => f.write_str(text),
+             MemoryError::Malformed { tool } => {
+-                write!(f, "ai-memory sent an answer to {tool} that Zeo cannot read")
++                f.write_str(&t!("agent-jail-memory-malformed", tool = *tool))
+             }
+         }
+     }
+diff --git a/crates/agent_sandbox/src/probe.rs b/crates/agent_sandbox/src/probe.rs
+index 34628fb..43c7392 100644
+--- a/crates/agent_sandbox/src/probe.rs
++++ b/crates/agent_sandbox/src/probe.rs
+@@ -165,9 +165,10 @@ pub fn is_outdated(version: &Version) -> bool {
+ 
+ /// The R3.5 warning, shared by the settings page and the status icon's tooltip.
+ pub fn outdated_warning(version: &Version) -> String {
+-    format!(
+-        "ai-jail {version} is older than {MIN_SAFE} and is affected by GHSA-frgp-q3qc-g78p and \
+-         GHSA-w976-gw52-hvx2. Update ai-jail to {MIN_SAFE} or newer."
++    zeo_i18n::t!(
++        "agent-jail-outdated",
++        version = version.to_string(),
++        min = MIN_SAFE.to_string()
+     )
+ }
+ 
+diff --git a/crates/agent_sandbox/src/validate.rs b/crates/agent_sandbox/src/validate.rs
+index 26b59d1..78ddd80 100644
+--- a/crates/agent_sandbox/src/validate.rs
++++ b/crates/agent_sandbox/src/validate.rs
+@@ -12,6 +12,7 @@ use std::str::FromStr;
+ use std::sync::LazyLock;
+ 
+ use regex::Regex;
++use zeo_i18n::t;
+ 
+ /// Most writable folders a project may end up with (R2.6).
+ pub const MAX_RW_MAPS: usize = 32;
+@@ -59,11 +60,24 @@ pub enum WalkStop {
+ impl fmt::Display for WalkStop {
+     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+         match self {
+-            Self::TooManyEntries { limit } => {
+-                write!(formatter, "it holds more than {limit} entries")
+-            }
+-            Self::TooDeep { limit } => write!(formatter, "it is nested deeper than {limit} levels"),
+-            Self::Unreadable { kind } => write!(formatter, "it could not be read: {kind}"),
++            Self::TooManyEntries { limit } => formatter.write_str(&t!(
++                "agent-jail-walk-stop",
++                stop = "too_many",
++                limit = *limit,
++                kind = ""
++            )),
++            Self::TooDeep { limit } => formatter.write_str(&t!(
++                "agent-jail-walk-stop",
++                stop = "too_deep",
++                limit = *limit,
++                kind = ""
++            )),
++            Self::Unreadable { kind } => formatter.write_str(&t!(
++                "agent-jail-walk-stop",
++                stop = "unreadable",
++                limit = 0,
++                kind = kind.to_string()
++            )),
+         }
+     }
+ }
+@@ -114,6 +128,32 @@ impl fmt::Display for ForbiddenRule {
+     }
+ }
+ 
++/// `rule` as the `$rule` the refusal messages select on (locales/*/agent-jail.ftl), with the
++/// paths and the scan's stop it names: (`$rule`, `$path`, `$other`, `$stop`). Each language
++/// writes the whole sentence around the rule, so the rule is never a fragment glued on.
++pub(crate) fn rule_args(rule: &ForbiddenRule) -> (&'static str, String, String, String) {
++    let shown = |path: &Path| path.display().to_string();
++    match rule {
++        ForbiddenRule::Root => ("root", String::new(), String::new(), String::new()),
++        ForbiddenRule::Home => ("home", String::new(), String::new(), String::new()),
++        ForbiddenRule::AboveHome { home } => {
++            ("above_home", shown(home), String::new(), String::new())
++        }
++        ForbiddenRule::Protected { protected } => {
++            ("protected", shown(protected), String::new(), String::new())
++        }
++        ForbiddenRule::LinkTarget { target, link } => {
++            ("link_target", shown(target), shown(link), String::new())
++        }
++        ForbiddenRule::RuntimeDir { dir } => {
++            ("runtime_dir", shown(dir), String::new(), String::new())
++        }
++        ForbiddenRule::ProtectedSetIncomplete { dir, stop } => {
++            ("incomplete", shown(dir), String::new(), stop.to_string())
++        }
++    }
++}
++
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ enum ProtectedKind {
+     Listed,
+@@ -415,45 +455,52 @@ pub enum RwMapError {
+ impl fmt::Display for RwMapError {
+     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+         match self {
+-            Self::NotAbsolute { entry } if entry.is_empty() => write!(
+-                formatter,
+-                "A writable folder entry is empty; it must be an absolute path."
+-            ),
+-            Self::NotAbsolute { entry } => write!(
+-                formatter,
+-                "Writable folder \"{entry}\" is not an absolute path; start it with / or ~/."
+-            ),
+-            Self::Colon { entry } => write!(
+-                formatter,
+-                "Writable folder \"{entry}\" contains ':', which ai-jail reads as SOURCE:DEST."
+-            ),
+-            Self::Missing { entry, kind } => write!(
+-                formatter,
+-                "Writable folder \"{entry}\" does not exist or cannot be resolved ({kind})."
+-            ),
+-            Self::NotUtf8 { entry, canonical } => write!(
+-                formatter,
+-                "Writable folder \"{entry}\" resolves to {}, which is not valid UTF-8 and cannot be passed to ai-jail.",
+-                canonical.display()
+-            ),
+-            Self::ColonInTarget { entry, canonical } => write!(
+-                formatter,
+-                "Writable folder \"{entry}\" resolves to {canonical}, which contains ':', which ai-jail reads as SOURCE:DEST."
+-            ),
++            Self::NotAbsolute { entry } if entry.is_empty() => {
++                formatter.write_str(&t!("agent-jail-rw-map-empty"))
++            }
++            Self::NotAbsolute { entry } => formatter.write_str(&t!(
++                "agent-jail-rw-map-not-absolute",
++                entry = entry.as_str()
++            )),
++            Self::Colon { entry } => {
++                formatter.write_str(&t!("agent-jail-rw-map-colon", entry = entry.as_str()))
++            }
++            Self::Missing { entry, kind } => formatter.write_str(&t!(
++                "agent-jail-rw-map-missing",
++                entry = entry.as_str(),
++                kind = kind.to_string()
++            )),
++            Self::NotUtf8 { entry, canonical } => formatter.write_str(&t!(
++                "agent-jail-rw-map-not-utf8",
++                entry = entry.as_str(),
++                canonical = canonical.display().to_string()
++            )),
++            Self::ColonInTarget { entry, canonical } => formatter.write_str(&t!(
++                "agent-jail-rw-map-colon-in-target",
++                entry = entry.as_str(),
++                canonical = canonical.as_str()
++            )),
+             Self::Forbidden {
+                 entry,
+                 canonical,
+                 rule,
+-            } => write!(
+-                formatter,
+-                "Writable folder \"{entry}\" ({}) {rule}.",
+-                canonical.display()
+-            ),
+-            Self::NotADirectory { entry, canonical } => write!(
+-                formatter,
+-                "Writable folder \"{entry}\" ({}) is not a folder.",
+-                canonical.display()
+-            ),
++            } => {
++                let (rule, path, other, stop) = rule_args(rule);
++                formatter.write_str(&t!(
++                    "agent-jail-rw-map-forbidden",
++                    rule = rule,
++                    entry = entry.as_str(),
++                    canonical = canonical.display().to_string(),
++                    path = path,
++                    other = other,
++                    stop = stop
++                ))
++            }
++            Self::NotADirectory { entry, canonical } => formatter.write_str(&t!(
++                "agent-jail-rw-map-not-folder",
++                entry = entry.as_str(),
++                canonical = canonical.display().to_string()
++            )),
+         }
+     }
+ }
+@@ -537,40 +584,41 @@ pub enum HostError {
+ impl fmt::Display for HostError {
+     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+         match self {
+-            Self::Empty => write!(formatter, "An allowed host entry is empty."),
+-            Self::TooLong { entry, length } => write!(
+-                formatter,
+-                "Allowed host \"{entry}\" is {length} characters long; a DNS name has at most {MAX_HOST_LENGTH}."
+-            ),
+-            Self::IpLiteral { entry } => write!(
+-                formatter,
+-                "Allowed host \"{entry}\" is an IP address; only DNS names are allowed."
+-            ),
+-            Self::Localhost { entry } => write!(
+-                formatter,
+-                "Allowed host \"{entry}\" names localhost; loopback services are never allowed hosts."
+-            ),
++            Self::Empty => formatter.write_str(&t!("agent-jail-host-empty")),
++            Self::TooLong { entry, length } => formatter.write_str(&t!(
++                "agent-jail-host-too-long",
++                entry = entry.as_str(),
++                length = *length,
++                max = MAX_HOST_LENGTH
++            )),
++            Self::IpLiteral { entry } => {
++                formatter.write_str(&t!("agent-jail-host-ip", entry = entry.as_str()))
++            }
++            Self::Localhost { entry } => {
++                formatter.write_str(&t!("agent-jail-host-localhost", entry = entry.as_str()))
++            }
+             Self::NotDnsName { entry, shape } => {
+-                let rule = match shape {
+-                    HostShape::Scheme => "carries a scheme; write the bare host name",
+-                    HostShape::Path => "carries a path; write the bare host name",
+-                    HostShape::Port => "carries a port; write the bare host name",
+-                    HostShape::Wildcard => "is a wildcard; list each host name",
+-                    HostShape::UpperCase => "has upper-case letters; write it in lower case",
+-                    HostShape::Malformed => {
+-                        "is not a DNS name (two or more labels of a-z, 0-9 and inner '-', no trailing dot)"
+-                    }
++                let shape = match shape {
++                    HostShape::Scheme => "scheme",
++                    HostShape::Path => "path",
++                    HostShape::Port => "port",
++                    HostShape::Wildcard => "wildcard",
++                    HostShape::UpperCase => "upper_case",
++                    HostShape::Malformed => "malformed",
+                 };
+-                write!(formatter, "Allowed host \"{entry}\" {rule}.")
++                formatter.write_str(&t!(
++                    "agent-jail-host-not-dns",
++                    shape = shape,
++                    entry = entry.as_str()
++                ))
+             }
+-            Self::NumericLastLabel { entry } => write!(
+-                formatter,
+-                "Allowed host \"{entry}\" ends in a numeric label, which resolves as an IP address; only DNS names are allowed."
+-            ),
+-            Self::PatternUnavailable { entry } => write!(
+-                formatter,
+-                "Allowed host \"{entry}\" cannot be checked: the host-name pattern is unavailable."
+-            ),
++            Self::NumericLastLabel { entry } => {
++                formatter.write_str(&t!("agent-jail-host-numeric-label", entry = entry.as_str()))
++            }
++            Self::PatternUnavailable { entry } => formatter.write_str(&t!(
++                "agent-jail-host-pattern-unavailable",
++                entry = entry.as_str()
++            )),
+         }
+     }
+ }
+@@ -651,16 +699,18 @@ pub enum LimitError {
+ impl fmt::Display for LimitError {
+     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+         match self {
+-            Self::TooManyRwMaps { count } => write!(
+-                formatter,
+-                "Writable folder #{} crosses the limit of {MAX_RW_MAPS} writable folders per project ({count} configured).",
+-                MAX_RW_MAPS + 1
+-            ),
+-            Self::TooManyHosts { count } => write!(
+-                formatter,
+-                "Allowed host #{} crosses the limit of {MAX_ALLOWED_HOSTS} allowed hosts per project ({count} configured).",
+-                MAX_ALLOWED_HOSTS + 1
+-            ),
++            Self::TooManyRwMaps { count } => formatter.write_str(&t!(
++                "agent-jail-limit-rw-maps",
++                number = MAX_RW_MAPS + 1,
++                max = MAX_RW_MAPS,
++                count = *count
++            )),
++            Self::TooManyHosts { count } => formatter.write_str(&t!(
++                "agent-jail-limit-hosts",
++                number = MAX_ALLOWED_HOSTS + 1,
++                max = MAX_ALLOWED_HOSTS,
++                count = *count
++            )),
+         }
+     }
+ }
+diff --git a/crates/agent_servers/Cargo.toml b/crates/agent_servers/Cargo.toml
+index 3c21064..dab72ca 100644
+--- a/crates/agent_servers/Cargo.toml
++++ b/crates/agent_servers/Cargo.toml
+@@ -68,6 +68,7 @@ util.workspace = true
+ watch.workspace = true
+ zed_credentials_provider.workspace = true
+ 
++zeo_i18n.workspace = true
+ [dev-dependencies]
+ client = { workspace = true, features = ["test-support"] }
+ context_server = { workspace = true, features = ["test-support"] }
+diff --git a/crates/agent_servers/src/acp/jail_servers.rs b/crates/agent_servers/src/acp/jail_servers.rs
+index 904a094..54673ab 100644
+--- a/crates/agent_servers/src/acp/jail_servers.rs
++++ b/crates/agent_servers/src/acp/jail_servers.rs
+@@ -236,33 +236,34 @@ pub(crate) fn not_enabled_notice(not_enabled: &[(String, NotEnabled)]) -> Option
+     let mut lines = Vec::new();
+     let not_chosen = names(&[NotEnabled::NotChosen]);
+     if !not_chosen.is_empty() {
+-        lines.push(format!("Not chosen: {not_chosen}."));
++        lines.push(zeo_i18n::t!(
++            "agent-jail-notice-not-chosen",
++            names = not_chosen
++        ));
+     }
+     let cannot = names(&[NotEnabled::SecretAgentCannotProxy]);
+     if !cannot.is_empty() {
+-        lines.push(format!(
+-            "Carries a secret, which reaches a jail only through Zeo's own copy, and this agent \
+-             cannot use it (MCP over ACP): {cannot}."
++        lines.push(zeo_i18n::t!(
++            "agent-jail-notice-secret-cannot-proxy",
++            names = cannot
+         ));
+     }
+     let stopped = names(&[NotEnabled::SecretNotRunning]);
+     if !stopped.is_empty() {
+-        lines.push(format!(
+-            "Carries a secret, which reaches a jail only through Zeo's own copy, and that copy \
+-             is not running: {stopped}."
++        lines.push(zeo_i18n::t!(
++            "agent-jail-notice-secret-not-running",
++            names = stopped
+         ));
+     }
+-    lines.push("Choose them under Capabilities on the Agent Sandbox page.".to_string());
+-    let count = not_enabled.len();
+-    let title = if count == 1 {
+-        "1 MCP server is not enabled for this project's jail".to_string()
+-    } else {
+-        format!("{count} MCP servers are not enabled for this project's jail")
+-    };
++    lines.push(zeo_i18n::t!("agent-jail-notice-choose"));
++    let title = zeo_i18n::t!("agent-jail-notice-title", count = not_enabled.len());
+     let meta = serde_json::Map::from_iter([
+         (
+             SETTINGS_ACTION_META_KEY.to_string(),
+-            serde_json::json!({ "label": "Open Capabilities", "path": CAPABILITIES_SETTINGS_PATH }),
++            serde_json::json!({
++                "label": zeo_i18n::t!("agent-jail-notice-open"),
++                "path": CAPABILITIES_SETTINGS_PATH
++            }),
+         ),
+         // A choice made there reaches the agent on its next start: the notice offers it.
+         (RESTART_ACTION_META_KEY.to_string(), serde_json::json!(true)),
+diff --git a/crates/agent_servers/src/sandbox_hook_lifecycle_tests.rs b/crates/agent_servers/src/sandbox_hook_lifecycle_tests.rs
+index f2550ba..0232a84 100644
+--- a/crates/agent_servers/src/sandbox_hook_lifecycle_tests.rs
++++ b/crates/agent_servers/src/sandbox_hook_lifecycle_tests.rs
+@@ -13,7 +13,7 @@ use std::time::Duration;
+ 
+ use acp_thread::AgentConnection;
+ use agent_client_protocol::{schema::ProtocolVersion, v1::schema as acp};
+-use agent_sandbox::launch::{FAIL_CLOSED, LaunchRegistry, Reason};
++use agent_sandbox::launch::{LaunchRegistry, Reason, fail_closed};
+ use fs::RealFs;
+ use gpui::{Entity, TestAppContext, UpdateGlobal as _};
+ use project::Project;
+@@ -138,7 +138,7 @@ async fn sandbox_refusal_message_is_the_top_level_text(cx: &mut TestAppContext)
+         panic!("a start without ai-jail must be refused");
+     };
+     let shown = error.to_string();
+-    assert!(shown.contains(FAIL_CLOSED), "shown text: {shown}");
++    assert!(shown.contains(&fail_closed()), "shown text: {shown}");
+     assert!(
+         shown.contains(&f.root.display().to_string()),
+         "shown text names the root: {shown}"
+diff --git a/crates/agent_ui/src/agent_jail_quick_modal.rs b/crates/agent_ui/src/agent_jail_quick_modal.rs
+index c03576a..03ef079 100644
+--- a/crates/agent_ui/src/agent_jail_quick_modal.rs
++++ b/crates/agent_ui/src/agent_jail_quick_modal.rs
+@@ -14,12 +14,7 @@ use project::agent_server_store::AgentId;
+ use settings::{Settings as _, SettingsStore};
+ use ui::{SwitchField, ToggleState, prelude::*};
+ use workspace::ModalView;
+-
+-pub const QUICK_MODAL_TITLE: &str = "Agent Sandbox";
+-pub const QUICK_SWITCH_LABEL: &str = "Run agents in ai-jail for this project";
+-pub const QUICK_SWITCH_HINT: &str =
+-    "Applies when the agent restarts: click the lock again once it turns amber.";
+-pub const QUICK_ADVANCED: &str = "Advanced\u{2026}";
++use zeo_i18n::t;
+ 
+ pub struct AgentJailQuickModal {
+     agent_id: AgentId,
+@@ -76,8 +71,8 @@ impl Render for AgentJailQuickModal {
+         let root = self.root.clone();
+         let switch = SwitchField::new(
+             "agent-jail-quick-switch",
+-            Some(QUICK_SWITCH_LABEL),
+-            Some(QUICK_SWITCH_HINT.into()),
++            Some(t!("agent-sandbox-project-enabled")),
++            Some(t!("agent-jail-quick-hint").into()),
+             self.jail_on(cx),
+             move |toggle, window, cx| {
+                 log::info!(
+@@ -104,7 +99,7 @@ impl Render for AgentJailQuickModal {
+             .w(rems(30.))
+             .p_3()
+             .gap_2()
+-            .child(Label::new(QUICK_MODAL_TITLE))
++            .child(Label::new(t!("agent-jail-status-title")))
+             .child(
+                 Label::new(self.root.to_string_lossy().into_owned())
+                     .size(LabelSize::Small)
+@@ -121,12 +116,15 @@ impl Render for AgentJailQuickModal {
+                     div()
+                         .debug_selector(|| "agent-jail-quick-advanced".into())
+                         .child(
+-                            Button::new("agent-jail-quick-advanced", QUICK_ADVANCED)
+-                                .label_size(LabelSize::Small)
+-                                .tab_index(0_isize)
+-                                .on_click(cx.listener(|this, _, window, cx| {
+-                                    this.open_advanced(window, cx)
+-                                })),
++                            Button::new(
++                                "agent-jail-quick-advanced",
++                                t!("agent-jail-quick-advanced"),
++                            )
++                            .label_size(LabelSize::Small)
++                            .tab_index(0_isize)
++                            .on_click(
++                                cx.listener(|this, _, window, cx| this.open_advanced(window, cx)),
++                            ),
+                         ),
+                 ),
+             )
+diff --git a/crates/agent_ui/src/agent_jail_status.rs b/crates/agent_ui/src/agent_jail_status.rs
+index 7ad0d39..8238756 100644
+--- a/crates/agent_ui/src/agent_jail_status.rs
++++ b/crates/agent_ui/src/agent_jail_status.rs
+@@ -7,12 +7,12 @@ use agent_sandbox::launch::{self, LaunchRecord, MemoryPort, Reason};
+ use agent_sandbox::probe;
+ use gpui::{AnyElement, App, SharedString, Window};
+ use ui::{Divider, Tooltip, prelude::*};
++use zeo_i18n::t;
+ 
+-const REMOTE: &str = "The agent sandbox is not available for remote projects.";
+-const OWN_COMMAND: &str = "Sandboxed by its agent_servers command; not managed by Zeo.";
+-const NOT_CLAUDE: &str =
+-    "Not a Claude agent: the agent sandbox applies only to the Claude adapters.";
+-const DRIFTED: &str = "Restart the agent to apply the new setting.";
++/// The tooltip line of an agent started on settings that have changed since (R5.4).
++pub fn drifted_line() -> String {
++    t!("agent-jail-status-drifted")
++}
+ 
+ /// What the icon draws and what its tooltip says.
+ #[derive(Clone, Debug, PartialEq)]
+@@ -54,18 +54,13 @@ impl JailStatusSummary {
+             return self;
+         };
+         let (icon, line) = match change {
+-            JailPending::TurnsOn => (
+-                IconName::Lock,
+-                "Sandbox on \u{2014} restart the agent to apply it. Click to restart.",
+-            ),
+-            JailPending::TurnsOff => (
+-                IconName::LockOff,
+-                "Sandbox off \u{2014} restart the agent to apply it. Click to restart.",
+-            ),
++            JailPending::TurnsOn => (IconName::Lock, t!("agent-jail-status-pending-on")),
++            JailPending::TurnsOff => (IconName::LockOff, t!("agent-jail-status-pending-off")),
+         };
+         self.icon = icon;
+         self.color = Color::Warning;
+-        self.lines.retain(|existing| existing.as_ref() != DRIFTED);
++        let drifted = drifted_line();
++        self.lines.retain(|existing| existing.as_ref() != drifted);
+         self.lines.insert(0, line.into());
+         self.pending = pending;
+         self
+@@ -84,7 +79,7 @@ impl JailStatusSummary {
+             self.color = Color::Warning;
+         } else {
+             self.lines
+-                .push(format!("Reserved CPUs: {}", reservation.list()).into());
++                .push(t!("agent-jail-status-reserved-cpus", cpus = reservation.list()).into());
+         }
+         self
+     }
+@@ -92,20 +87,19 @@ impl JailStatusSummary {
+ 
+ /// The warning a jail that shares its reserved cores shows.
+ pub fn cpu_shared_line(reservation: &CpuReservation) -> String {
+-    format!(
+-        "Shares CPUs {} with another jail: too few cores were free when it started.",
+-        reservation.list()
+-    )
++    t!("agent-jail-status-cpus-shared", cpus = reservation.list())
+ }
+ 
+ /// The label beside the lock of a jail whose reserved cores are shared (§6.63).
+-pub const CPU_SHARED_LABEL: &str = "Shares CPUs";
++pub fn cpu_shared_label() -> String {
++    t!("agent-jail-status-cpus-shared.label")
++}
+ 
+ /// "Shares CPUs" beside the lock of a jail whose reserved cores are shared (§6.63), nothing
+ /// otherwise. Reserving is chosen on the Agent Sandbox page (operator, 2026-11-22).
+ pub fn render_cpu_shared_label(shared: bool) -> Option<AnyElement> {
+     shared.then(|| {
+-        Label::new(CPU_SHARED_LABEL)
++        Label::new(cpu_shared_label())
+             .size(LabelSize::Small)
+             .color(Color::Warning)
+             .into_any_element()
+@@ -115,54 +109,53 @@ pub fn render_cpu_shared_label(shared: bool) -> Option<AnyElement> {
+ /// The icon's presentation for `record`; `drifted` is whether the settings of now differ from
+ /// those the agent was started with (R5.4).
+ /// The tooltip of a disabled lock: the sandbox needs ai-jail (operator, 2026-11-22).
+-pub const AI_JAIL_MISSING: &str = "The agent sandbox needs ai-jail, which is not installed. Install sys-apps/ai-jail 3.5.0-r2 or later, then start a new thread to turn the sandbox on.";
++pub fn ai_jail_missing() -> String {
++    t!("agent-jail-status-ai-jail-missing")
++}
+ 
+ pub fn jail_status_summary(record: &LaunchRecord, drifted: bool) -> JailStatusSummary {
+     let mut lines: Vec<SharedString> = Vec::new();
+     let icon = match record.reason {
+         Reason::On => {
+-            lines.push("Started inside the agent sandbox (ai-jail).".into());
++            lines.push(t!("agent-jail-status-on").into());
+             lines.push(
+-                format!(
+-                    "ai-jail version: {}",
+-                    record
+-                        .ai_jail_version
+-                        .as_ref()
+-                        .map_or_else(|| "unknown".to_string(), ToString::to_string)
++                t!(
++                    "agent-jail-status-version",
++                    version = record.ai_jail_version.as_ref().map_or_else(
++                        || t!("agent-jail-status-version-unknown"),
++                        ToString::to_string
++                    )
+                 )
+                 .into(),
+             );
+             lines.push(list_line(
+-                "Writable folders",
++                "rw_maps",
+                 record.rw_maps.iter().map(|path| path.display().to_string()),
+             ));
++            lines.push(list_line("allow_hosts", record.allow_hosts.iter().cloned()));
+             lines.push(list_line(
+-                "Allowed hosts",
+-                record.allow_hosts.iter().cloned(),
+-            ));
+-            lines.push(list_line(
+-                "Forwarded ports",
++                "forward_ports",
+                 record.forward_ports.iter().map(ToString::to_string),
+             ));
+             IconName::Lock
+         }
+         Reason::OwnCommand => {
+-            lines.push(OWN_COMMAND.into());
++            lines.push(t!("agent-jail-status-own-command").into());
+             IconName::Lock
+         }
+         Reason::Off => {
+-            lines.push("Started without the agent sandbox.".into());
++            lines.push(t!("agent-jail-status-off").into());
+             if record.ai_jail_missing {
+-                lines.push(AI_JAIL_MISSING.into());
++                lines.push(ai_jail_missing().into());
+             }
+             IconName::LockOff
+         }
+         Reason::Remote => {
+-            lines.push(REMOTE.into());
++            lines.push(t!("agent-jail-status-remote").into());
+             IconName::LockOff
+         }
+         Reason::NotClaude => {
+-            lines.push(NOT_CLAUDE.into());
++            lines.push(t!("agent-jail-status-not-claude").into());
+             IconName::LockOff
+         }
+     };
+@@ -175,10 +168,10 @@ pub fn jail_status_summary(record: &LaunchRecord, drifted: bool) -> JailStatusSu
+         lines.push(probe::outdated_warning(version).into());
+     }
+     if record.memory_port == MemoryPort::Unsupported {
+-        lines.push(launch::MEMORY_PORT_UNSUPPORTED.into());
++        lines.push(launch::memory_port_unsupported().into());
+     }
+     if drifted {
+-        lines.push(DRIFTED.into());
++        lines.push(drifted_line().into());
+     }
+ 
+     let color = if outdated_version.is_some() {
+@@ -197,13 +190,15 @@ pub fn jail_status_summary(record: &LaunchRecord, drifted: bool) -> JailStatusSu
+     }
+ }
+ 
+-fn list_line(label: &str, items: impl Iterator<Item = String>) -> SharedString {
++/// `list` is the `$list` the message selects on: rw_maps, allow_hosts or forward_ports.
++fn list_line(list: &'static str, items: impl Iterator<Item = String>) -> SharedString {
+     let items: Vec<String> = items.collect();
+-    if items.is_empty() {
+-        format!("{label}: none").into()
++    let items = if items.is_empty() {
++        t!("agent-jail-status-list-none")
+     } else {
+-        format!("{label}: {}", items.join(", ")).into()
+-    }
++        items.join(", ")
++    };
++    t!("agent-jail-status-list", list = list, items = items).into()
+ }
+ 
+ /// The toolbar button for `summary`: the lock, its tooltip and a divider, like
+@@ -237,7 +232,7 @@ pub fn render_jail_status_button(
+                     v_flex()
+                         .w(rems_from_px(320_f32))
+                         .gap_1()
+-                        .child(Label::new("Agent Sandbox"))
++                        .child(Label::new(t!("agent-jail-status-title")))
+                         .children(lines.iter().map(|line| {
+                             Label::new(line.clone())
+                                 .size(LabelSize::Small)
+@@ -270,9 +265,7 @@ pub fn render_jail_status_button(
+                 IconButton::new("agent-jail-pause", IconName::DebugPause)
+                     .icon_size(IconSize::Small)
+                     .icon_color(Color::Muted)
+-                    .tooltip(Tooltip::text(
+-                        "Pause Agent: freeze the jail; Resume goes on with nothing lost",
+-                    ))
++                    .tooltip(Tooltip::text(t!("agent-jail-pause")))
+                     .on_click(move |_, window, cx| on_pause(window, cx)),
+             )
+         })
+@@ -282,9 +275,7 @@ pub fn render_jail_status_button(
+                 IconButton::new("agent-jail-stop", IconName::Stop)
+                     .icon_size(IconSize::Small)
+                     .icon_color(Color::Error)
+-                    .tooltip(Tooltip::text(
+-                        "Stop Agent: end the jail and everything running in it",
+-                    ))
++                    .tooltip(Tooltip::text(t!("agent-jail-stop")))
+                     .on_click(move |_, window, cx| on_stop(window, cx)),
+             )
+         })
+@@ -294,10 +285,14 @@ pub fn render_jail_status_button(
+ 
+ /// Zeo next §6.54: a jail the disk watchdog paused -- its processes frozen, no work lost -- with
+ /// what the operator can do about it.
+-pub const PAUSED_LABEL: &str = "Paused: disk quota";
++pub fn paused_label() -> String {
++    t!("agent-jail-paused-disk")
++}
+ 
+ /// A jail the operator paused with Pause (ask of 2026-11-23).
+-pub const OPERATOR_PAUSED_LABEL: &str = "Paused";
++pub fn operator_paused_label() -> String {
++    t!("agent-jail-paused")
++}
+ 
+ /// The paused state beside the lock: the label, Resume and Stop.
+ pub fn render_jail_paused(
+@@ -307,15 +302,15 @@ pub fn render_jail_paused(
+ ) -> AnyElement {
+     let (label, selector, resume_tooltip) = if by_operator {
+         (
+-            OPERATOR_PAUSED_LABEL,
++            operator_paused_label(),
+             "agent-jail-paused-operator",
+-            "Let the agent go on where it stopped",
++            t!("agent-jail-resume.operator"),
+         )
+     } else {
+         (
+-            PAUSED_LABEL,
++            paused_label(),
+             "agent-jail-paused-disk",
+-            "Let the agent go on; it may grow by the quota again from here",
++            t!("agent-jail-resume.disk"),
+         )
+     };
+     h_flex()
+@@ -328,15 +323,15 @@ pub fn render_jail_paused(
+             ),
+         )
+         .child(
+-            Button::new("agent-jail-resume", "Resume")
++            Button::new("agent-jail-resume", t!("agent-jail-resume"))
+                 .label_size(LabelSize::Small)
+                 .tooltip(Tooltip::text(resume_tooltip))
+                 .on_click(move |_, window, cx| on_resume(window, cx)),
+         )
+         .child(
+-            Button::new("agent-jail-paused-stop", "Stop")
++            Button::new("agent-jail-paused-stop", t!("agent-jail-paused-stop"))
+                 .label_size(LabelSize::Small)
+-                .tooltip(Tooltip::text("End the jail and everything running in it"))
++                .tooltip(Tooltip::text(t!("agent-jail-paused-stop.tooltip")))
+                 .on_click(move |_, window, cx| on_stop(window, cx)),
+         )
+         .into_any_element()
+diff --git a/crates/agent_ui/src/agent_jail_status_pending_tests.rs b/crates/agent_ui/src/agent_jail_status_pending_tests.rs
+index 2f2c412..271e569 100644
+--- a/crates/agent_ui/src/agent_jail_status_pending_tests.rs
++++ b/crates/agent_ui/src/agent_jail_status_pending_tests.rs
+@@ -55,7 +55,10 @@ fn turning_the_jail_on_shows_a_closed_lock_in_warning_until_the_restart() {
+     assert_eq!(summary.color, Color::Warning);
+     assert!(summary.lines[0].contains("Sandbox on"));
+     assert!(
+-        summary.lines.iter().all(|line| line.as_ref() != DRIFTED),
++        summary
++            .lines
++            .iter()
++            .all(|line| line.as_ref() != drifted_line()),
+         "the pending line replaces the generic drift line"
+     );
+     assert!(
+diff --git a/crates/settings_ui/src/pages/agent_jail_page.rs b/crates/settings_ui/src/pages/agent_jail_page.rs
+index c6bed61..b4db81a 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page.rs
+@@ -12,7 +12,7 @@ use std::sync::{Arc, OnceLock};
+ 
+ use agent_sandbox::command::{self, JailInputs};
+ use agent_sandbox::confirm::{self, non_utf8_root_message, target_project_key};
+-use agent_sandbox::launch::{self, MEMORY_PORT_UNSUPPORTED, MemoryPort};
++use agent_sandbox::launch::{self, MemoryPort, memory_port_unsupported};
+ use agent_sandbox::memory::{
+     self, MemoryClient, MemoryScope, MemoryStatus, RecentPage, ResolvedBy, display_endpoint,
+ };
+@@ -148,12 +148,12 @@ pub(crate) async fn ai_jail_file_notice(fs: &dyn Fs, root: &Path) -> Option<Stri
+ pub(crate) fn forward_port_notice(
+     memory: &AgentMemorySettings,
+     supports_forward_port: bool,
+-) -> Option<&'static str> {
++) -> Option<String> {
+     matches!(
+         launch::memory_port(memory, supports_forward_port),
+         Ok(MemoryPort::Unsupported)
+     )
+-    .then_some(MEMORY_PORT_UNSUPPORTED)
++    .then(memory_port_unsupported)
+ }
+ 
+ /// The R7.3 note while memory is on and the endpoint is not loopback. It names the host only:
+@@ -947,7 +947,6 @@ pub(crate) fn render_agent_jail_page(
+             // The R7.3 note is shown once, beside the Memory switch.
+             let memory_notices: Vec<String> = supports_forward_port
+                 .and_then(|supports| forward_port_notice(&memory, supports))
+-                .map(str::to_string)
+                 .into_iter()
+                 .collect();
+             let lists = [
+diff --git a/crates/settings_ui/src/pages/agent_jail_page_tests.rs b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+index 0371c96..4bd4cfd 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+@@ -246,7 +246,7 @@ mod page {
+     use std::ffi::OsStr;
+     use std::os::unix::ffi::OsStrExt as _;
+ 
+-    use agent_sandbox::launch::MEMORY_PORT_UNSUPPORTED;
++    use agent_sandbox::launch::memory_port_unsupported;
+     use agent_sandbox::{AgentMemorySettings, AgentSandboxProjectSettings, AgentSandboxSettings};
+ 
+     use super::super::{
+@@ -299,11 +299,11 @@ mod page {
+     fn agent_jail_page_forward_port_notice_only_with_memory_on_and_the_flag_absent() {
+         assert_eq!(
+             forward_port_notice(&memory(true, LOOPBACK), false),
+-            Some(MEMORY_PORT_UNSUPPORTED)
++            Some(memory_port_unsupported())
+         );
+         assert_eq!(
+             forward_port_notice(&memory(true, "http://localhost:7000/mcp"), false),
+-            Some(MEMORY_PORT_UNSUPPORTED)
++            Some(memory_port_unsupported())
+         );
+         assert_eq!(
+             forward_port_notice(&memory(true, LOOPBACK), true),
+diff --git a/crates/zeo_i18n/locales/en-US/agent-jail.ftl b/crates/zeo_i18n/locales/en-US/agent-jail.ftl
+new file mode 100644
+index 0000000..30a3dd2
+--- /dev/null
++++ b/crates/zeo_i18n/locales/en-US/agent-jail.ftl
+@@ -0,0 +1,160 @@
++### The jail's messages outside the settings page (patch 0179, USE ai-jail): why a start was
++### refused, why an entry was refused, the Turn Off / Forget / Allow dialogs, the thread's lock
++### and its tooltip, the quick modal, the paused controls and the MCP not-enabled notice. The
++### English is the code's own, byte for byte. These errors are Display texts, so a log line that
++### quotes one follows the UI language; its event= and key= fields stay English.
++###
++### $rule (a path a jail refuses): root, home, above_home, protected, link_target, runtime_dir,
++### incomplete -- with $path, $other (the symlink) and $stop (why a scan stopped) as they apply.
++
++## Why a scan of a protected folder stopped ($stop: too_many, too_deep, unreadable)
++
++agent-jail-walk-stop = { $stop ->
++    [too_many] it holds more than { $limit } entries
++    [too_deep] it is nested deeper than { $limit } levels
++   *[unreadable] it could not be read: { $kind }
++}
++
++## A refused start
++
++agent-jail-launch-no-root = The project has no local folder to run the agent in, and the agent sandbox is on.
++agent-jail-launch-root-colon = The project folder { $root } contains ':', which ai-jail reads as SOURCE:DEST, so its .git and .zed could not be kept read-only.
++agent-jail-launch-root-not-utf8 = The project folder { $root } is not valid UTF-8, so ai-jail cannot be given its .git and .zed.
++agent-jail-launch-root-forbidden = { $rule ->
++    [root] The project folder { $root } is the root directory /; the agent sandbox does not run an agent there.
++    [home] The project folder { $root } is the home directory; the agent sandbox does not run an agent there.
++    [above_home] The project folder { $root } contains the home directory { $path }; the agent sandbox does not run an agent there.
++    [protected] The project folder { $root } is, lies inside, or contains the protected path { $path }; the agent sandbox does not run an agent there.
++    [link_target] The project folder { $root } is, lies inside, or contains { $path }, the target of the symlink { $other } in a protected folder; the agent sandbox does not run an agent there.
++    [runtime_dir] The project folder { $root } is, lies inside, or contains the runtime directory { $path }, which holds Zeo's devtools socket; the agent sandbox does not run an agent there.
++   *[incomplete] The project folder { $root } cannot be checked: the protected folder { $path } was not fully scanned for symlinks ({ $stop }), so every folder is refused; the agent sandbox does not run an agent there.
++}
++agent-jail-launch-root-missing = The project folder { $root } no longer exists or is not a folder.
++agent-jail-launch-not-installed-at = ai-jail was not found at { $path } (agent_sandbox.ai_jail_path).
++agent-jail-launch-not-installed = ai-jail was not found on PATH; install it or set agent_sandbox.ai_jail_path.
++agent-jail-launch-version-unreadable = The version of ai-jail could not be read: { $error }.
++agent-jail-launch-claude-dir-invalid = The Claude config directory (agent_sandbox.claude_config_dir) cannot be mapped: { $error }
++agent-jail-launch-claude-dir-missing = The Claude config directory { $dir } does not exist. Create it and log in with `CLAUDE_CONFIG_DIR={ $dir } claude`.
++agent-jail-launch-nested-map = Writable folder { $inner } lies inside { $outer }, which the agent can write; it could swap the inner folder for a symlink before the jail starts. Keep the outer folder only.
++agent-jail-launch-env-key = The environment variable name "{ $name }" cannot be passed into the jail: a name has only letters, digits and '_', and does not start with a digit.
++agent-jail-launch-symlinked-mount = { $path } is a symlink; ai-jail cannot keep it read-only. Replace it with the folder itself.
++agent-jail-launch-dir-create = Could not create { $dir }: { $error }.
++agent-jail-launch-limits-unsupported = Resource limits are set for this project, and the installed ai-jail cannot apply them (it has no --memory). Install sys-apps/ai-jail 3.5.0-r1 or later, or clear agent_sandbox.limits.
++agent-jail-launch-mask-host-unsupported = The host view is on for this project (agent_sandbox.mask_host), and the installed ai-jail cannot give it (it has no --mask-host). Install sys-apps/ai-jail 3.5.0-r2 or later, or turn Hide the Host off on the Agent Sandbox page.
++agent-jail-launch-overlay-unsupported = Hide the Disks is on for this project (agent_sandbox.overlay_system), and the installed ai-jail cannot give it (it has no --overlay-system). Install sys-apps/ai-jail 3.5.0-r3 or later, or turn Hide the Disks off on the Agent Sandbox page.
++agent-jail-launch-syscall-view-unsupported = Hide the Kernel is on for this project (agent_sandbox.syscall_view), and the installed ai-jail cannot give it (it has no --syscall-view). Install sys-apps/ai-jail 3.5.0-r4 or later, or turn Hide the Kernel off on the Agent Sandbox page.
++agent-jail-launch-minimal-etc-unsupported = Hide the System Config is on for this project (agent_sandbox.minimal_etc), and the installed ai-jail cannot give it (it has no --minimal-etc). Install sys-apps/ai-jail 3.5.0-r5 or later, or turn Hide the System Config off on the Agent Sandbox page.
++agent-jail-launch-state-root-create = The project's jail state folder { $dir } could not be created: { $error }.
++agent-jail-launch-refused = Agent sandbox, project { $root }: { $cause } { $fail_closed }
++agent-jail-launch-refused-no-root = Agent sandbox: { $cause } { $fail_closed }
++agent-jail-fail-closed = The agent was not started without the sandbox.
++agent-jail-memory-endpoint-not-url = The ai-memory endpoint "{ $shown }" (agent_memory.endpoint) is not a URL.
++agent-jail-memory-port-unsupported = ai-memory is not reachable from inside the jail: this ai-jail has no --forward-port
++agent-jail-outdated = ai-jail { $version } is older than { $min } and is affected by GHSA-frgp-q3qc-g78p and GHSA-w976-gw52-hvx2. Update ai-jail to { $min } or newer.
++
++## A refused writable folder
++
++agent-jail-rw-map-empty = A writable folder entry is empty; it must be an absolute path.
++agent-jail-rw-map-not-absolute = Writable folder "{ $entry }" is not an absolute path; start it with / or ~/.
++agent-jail-rw-map-colon = Writable folder "{ $entry }" contains ':', which ai-jail reads as SOURCE:DEST.
++agent-jail-rw-map-missing = Writable folder "{ $entry }" does not exist or cannot be resolved ({ $kind }).
++agent-jail-rw-map-not-utf8 = Writable folder "{ $entry }" resolves to { $canonical }, which is not valid UTF-8 and cannot be passed to ai-jail.
++agent-jail-rw-map-colon-in-target = Writable folder "{ $entry }" resolves to { $canonical }, which contains ':', which ai-jail reads as SOURCE:DEST.
++agent-jail-rw-map-forbidden = { $rule ->
++    [root] Writable folder "{ $entry }" ({ $canonical }) is the root directory /.
++    [home] Writable folder "{ $entry }" ({ $canonical }) is the home directory.
++    [above_home] Writable folder "{ $entry }" ({ $canonical }) contains the home directory { $path }.
++    [protected] Writable folder "{ $entry }" ({ $canonical }) is, lies inside, or contains the protected path { $path }.
++    [link_target] Writable folder "{ $entry }" ({ $canonical }) is, lies inside, or contains { $path }, the target of the symlink { $other } in a protected folder.
++    [runtime_dir] Writable folder "{ $entry }" ({ $canonical }) is, lies inside, or contains the runtime directory { $path }, which holds Zeo's devtools socket.
++   *[incomplete] Writable folder "{ $entry }" ({ $canonical }) cannot be checked: the protected folder { $path } was not fully scanned for symlinks ({ $stop }), so every folder is refused.
++}
++agent-jail-rw-map-not-folder = Writable folder "{ $entry }" ({ $canonical }) is not a folder.
++
++## A refused allowed host ($shape: scheme, path, port, wildcard, upper_case, malformed)
++
++agent-jail-host-empty = An allowed host entry is empty.
++agent-jail-host-too-long = Allowed host "{ $entry }" is { $length } characters long; a DNS name has at most { $max }.
++agent-jail-host-ip = Allowed host "{ $entry }" is an IP address; only DNS names are allowed.
++agent-jail-host-localhost = Allowed host "{ $entry }" names localhost; loopback services are never allowed hosts.
++agent-jail-host-not-dns = { $shape ->
++    [scheme] Allowed host "{ $entry }" carries a scheme; write the bare host name.
++    [path] Allowed host "{ $entry }" carries a path; write the bare host name.
++    [port] Allowed host "{ $entry }" carries a port; write the bare host name.
++    [wildcard] Allowed host "{ $entry }" is a wildcard; list each host name.
++    [upper_case] Allowed host "{ $entry }" has upper-case letters; write it in lower case.
++   *[malformed] Allowed host "{ $entry }" is not a DNS name (two or more labels of a-z, 0-9 and inner '-', no trailing dot).
++}
++agent-jail-host-numeric-label = Allowed host "{ $entry }" ends in a numeric label, which resolves as an IP address; only DNS names are allowed.
++agent-jail-host-pattern-unavailable = Allowed host "{ $entry }" cannot be checked: the host-name pattern is unavailable.
++agent-jail-limit-rw-maps = Writable folder #{ $number } crosses the limit of { $max } writable folders per project ({ $count } configured).
++agent-jail-limit-hosts = Allowed host #{ $number } crosses the limit of { $max } allowed hosts per project ({ $count } configured).
++
++## Dialogs and notifications
++
++agent-jail-confirm-turn-off-project = Turn off the agent sandbox for { $name }?
++agent-jail-confirm-turn-off-default = Turn off the agent sandbox for projects without their own setting?
++agent-jail-confirm-turn-off-detail = The agent will run with your user's full access the next time it starts.
++agent-jail-confirm-forget = Forget { $path }?
++agent-jail-confirm-forget-detail = ai-memory deletes the page. This cannot be undone.
++agent-jail-button-cancel = Cancel
++agent-jail-button-turn-off = Turn Off
++agent-jail-button-forget = Forget
++agent-jail-button-allow = Allow
++agent-jail-root-not-utf8 = The agent sandbox cannot be configured for a project whose path is not valid UTF-8: { $path }
++agent-jail-secret-prompt = Allow "{ $server }" in this project's jail?
++    .detail = Its configuration carries a secret ({ $places }). Zeo never hands it to the jail as configured, so the secret stays outside: the agent reaches the server only through Zeo's own copy (Claude Agent (Plus)), and an agent that cannot (the TUI adapter) does not get it. The agent can still use the server's access.
++
++## ai-memory
++
++agent-jail-memory-unreachable = ai-memory is not reachable at { $endpoint }
++agent-jail-memory-timeout = ai-memory is not reachable at { $endpoint }: no answer within { $seconds } seconds
++agent-jail-memory-unknown-project = No memory recorded for { $scope } yet.
++agent-jail-memory-malformed = ai-memory sent an answer to { $tool } that Zeo cannot read
++
++## The MCP not-enabled notice in the thread
++
++agent-jail-notice-title = { $count ->
++    [one] 1 MCP server is not enabled for this project's jail
++   *[other] { $count } MCP servers are not enabled for this project's jail
++}
++agent-jail-notice-not-chosen = Not chosen: { $names }.
++agent-jail-notice-secret-cannot-proxy = Carries a secret, which reaches a jail only through Zeo's own copy, and this agent cannot use it (MCP over ACP): { $names }.
++agent-jail-notice-secret-not-running = Carries a secret, which reaches a jail only through Zeo's own copy, and that copy is not running: { $names }.
++agent-jail-notice-choose = Choose them under Capabilities on the Agent Sandbox page.
++agent-jail-notice-open = Open Capabilities
++
++## The thread's lock, its tooltip and the quick modal ($list: rw_maps, allow_hosts, forward_ports)
++
++agent-jail-status-title = Agent Sandbox
++agent-jail-status-on = Started inside the agent sandbox (ai-jail).
++agent-jail-status-off = Started without the agent sandbox.
++agent-jail-status-version = ai-jail version: { $version }
++agent-jail-status-version-unknown = unknown
++agent-jail-status-list = { $list ->
++    [rw_maps] Writable folders: { $items }
++    [allow_hosts] Allowed hosts: { $items }
++   *[forward_ports] Forwarded ports: { $items }
++}
++agent-jail-status-list-none = none
++agent-jail-status-remote = The agent sandbox is not available for remote projects.
++agent-jail-status-own-command = Sandboxed by its agent_servers command; not managed by Zeo.
++agent-jail-status-not-claude = Not a Claude agent: the agent sandbox applies only to the Claude adapters.
++agent-jail-status-drifted = Restart the agent to apply the new setting.
++agent-jail-status-pending-on = Sandbox on — restart the agent to apply it. Click to restart.
++agent-jail-status-pending-off = Sandbox off — restart the agent to apply it. Click to restart.
++agent-jail-status-reserved-cpus = Reserved CPUs: { $cpus }
++agent-jail-status-cpus-shared = Shares CPUs { $cpus } with another jail: too few cores were free when it started.
++    .label = Shares CPUs
++agent-jail-status-ai-jail-missing = The agent sandbox needs ai-jail, which is not installed. Install sys-apps/ai-jail 3.5.0-r2 or later, then start a new thread to turn the sandbox on.
++agent-jail-pause = Pause Agent: freeze the jail; Resume goes on with nothing lost
++agent-jail-stop = Stop Agent: end the jail and everything running in it
++agent-jail-paused = Paused
++agent-jail-paused-disk = Paused: disk quota
++agent-jail-resume = Resume
++    .operator = Let the agent go on where it stopped
++    .disk = Let the agent go on; it may grow by the quota again from here
++agent-jail-paused-stop = Stop
++    .tooltip = End the jail and everything running in it
++agent-jail-quick-hint = Applies when the agent restarts: click the lock again once it turns amber.
++agent-jail-quick-advanced = Advanced…
+diff --git a/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl b/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
+new file mode 100644
+index 0000000..77ed097
+--- /dev/null
++++ b/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
+@@ -0,0 +1,157 @@
++### The jail's messages outside the settings page in Brazilian Portuguese (patch 0179).
++### Drafted with Lara Translate on 2026-11-24 (the longer sentences) and by hand (the short
++### ones), revised by hand; awaiting the operator's review as a native speaker. Glossary: "jail",
++### "sandbox" (o sandbox) and "thread" (a thread) stay in English; the switch names match the
++### Agent Sandbox page's own pt-BR (agent-sandbox.ftl).
++
++## Why a scan of a protected folder stopped
++
++agent-jail-walk-stop = { $stop ->
++    [too_many] ela tem mais de { $limit } entradas
++    [too_deep] ela tem mais de { $limit } níveis de profundidade
++   *[unreadable] não foi possível lê-la: { $kind }
++}
++
++## A refused start
++
++agent-jail-launch-no-root = O projeto não tem uma pasta local onde rodar o agente, e o sandbox do agente está ligado.
++agent-jail-launch-root-colon = A pasta do projeto { $root } contém ':', que o ai-jail lê como SOURCE:DEST, então o .git e o .zed dela não puderam ser mantidos somente leitura.
++agent-jail-launch-root-not-utf8 = A pasta do projeto { $root } não é UTF-8 válido, então o ai-jail não pode receber o .git e o .zed dela.
++agent-jail-launch-root-forbidden = { $rule ->
++    [root] A pasta do projeto { $root } é o diretório raiz /; o sandbox do agente não roda um agente ali.
++    [home] A pasta do projeto { $root } é o diretório home; o sandbox do agente não roda um agente ali.
++    [above_home] A pasta do projeto { $root } contém o diretório home { $path }; o sandbox do agente não roda um agente ali.
++    [protected] A pasta do projeto { $root } é, está dentro de ou contém o caminho protegido { $path }; o sandbox do agente não roda um agente ali.
++    [link_target] A pasta do projeto { $root } é, está dentro de ou contém { $path }, o destino do symlink { $other } numa pasta protegida; o sandbox do agente não roda um agente ali.
++    [runtime_dir] A pasta do projeto { $root } é, está dentro de ou contém o diretório de runtime { $path }, que guarda o socket de devtools do Zeo; o sandbox do agente não roda um agente ali.
++   *[incomplete] A pasta do projeto { $root } não pode ser verificada: a pasta protegida { $path } não foi varrida por inteiro em busca de symlinks ({ $stop }), então toda pasta é recusada; o sandbox do agente não roda um agente ali.
++}
++agent-jail-launch-root-missing = A pasta do projeto { $root } não existe mais ou não é uma pasta.
++agent-jail-launch-not-installed-at = O ai-jail não foi encontrado em { $path } (agent_sandbox.ai_jail_path).
++agent-jail-launch-not-installed = O ai-jail não foi encontrado no PATH; instale-o ou defina agent_sandbox.ai_jail_path.
++agent-jail-launch-version-unreadable = Não foi possível ler a versão do ai-jail: { $error }.
++agent-jail-launch-claude-dir-invalid = O diretório de configuração do Claude (agent_sandbox.claude_config_dir) não pode ser mapeado: { $error }
++agent-jail-launch-claude-dir-missing = O diretório de configuração do Claude { $dir } não existe. Crie-o e faça login com `CLAUDE_CONFIG_DIR={ $dir } claude`.
++agent-jail-launch-nested-map = A pasta gravável { $inner } fica dentro de { $outer }, onde o agente pode gravar; ele poderia trocar a pasta interna por um symlink antes de o jail iniciar. Mantenha só a pasta externa.
++agent-jail-launch-env-key = O nome de variável de ambiente "{ $name }" não pode ser passado para o jail: um nome tem só letras, dígitos e '_', e não começa com dígito.
++agent-jail-launch-symlinked-mount = { $path } é um symlink; o ai-jail não consegue mantê-lo somente leitura. Troque-o pela própria pasta.
++agent-jail-launch-dir-create = Não foi possível criar { $dir }: { $error }.
++agent-jail-launch-limits-unsupported = Há limites de recursos definidos para este projeto, e o ai-jail instalado não consegue aplicá-los (não tem --memory). Instale o sys-apps/ai-jail 3.5.0-r1 ou posterior, ou limpe agent_sandbox.limits.
++agent-jail-launch-mask-host-unsupported = A visão do host está ligada neste projeto (agent_sandbox.mask_host), e o ai-jail instalado não consegue dá-la (não tem --mask-host). Instale o sys-apps/ai-jail 3.5.0-r2 ou posterior, ou desligue Ocultar o host na página Agent Sandbox.
++agent-jail-launch-overlay-unsupported = Ocultar os discos está ligado neste projeto (agent_sandbox.overlay_system), e o ai-jail instalado não consegue fazê-lo (não tem --overlay-system). Instale o sys-apps/ai-jail 3.5.0-r3 ou posterior, ou desligue Ocultar os discos na página Agent Sandbox.
++agent-jail-launch-syscall-view-unsupported = Ocultar o kernel está ligado neste projeto (agent_sandbox.syscall_view), e o ai-jail instalado não consegue fazê-lo (não tem --syscall-view). Instale o sys-apps/ai-jail 3.5.0-r4 ou posterior, ou desligue Ocultar o kernel na página Agent Sandbox.
++agent-jail-launch-minimal-etc-unsupported = Ocultar a configuração do sistema está ligado neste projeto (agent_sandbox.minimal_etc), e o ai-jail instalado não consegue fazê-lo (não tem --minimal-etc). Instale o sys-apps/ai-jail 3.5.0-r5 ou posterior, ou desligue Ocultar a configuração do sistema na página Agent Sandbox.
++agent-jail-launch-state-root-create = Não foi possível criar a pasta de estado do jail do projeto { $dir }: { $error }.
++agent-jail-launch-refused = Sandbox do agente, projeto { $root }: { $cause } { $fail_closed }
++agent-jail-launch-refused-no-root = Sandbox do agente: { $cause } { $fail_closed }
++agent-jail-fail-closed = O agente não foi iniciado sem o sandbox.
++agent-jail-memory-endpoint-not-url = O endpoint do ai-memory "{ $shown }" (agent_memory.endpoint) não é uma URL.
++agent-jail-memory-port-unsupported = O ai-memory não é alcançável de dentro do jail: este ai-jail não tem --forward-port
++agent-jail-outdated = O ai-jail { $version } é anterior ao { $min } e é afetado por GHSA-frgp-q3qc-g78p e GHSA-w976-gw52-hvx2. Atualize o ai-jail para o { $min } ou mais novo.
++
++## A refused writable folder
++
++agent-jail-rw-map-empty = Uma entrada de pasta gravável está vazia; ela precisa ser um caminho absoluto.
++agent-jail-rw-map-not-absolute = A pasta gravável "{ $entry }" não é um caminho absoluto; comece com / ou ~/.
++agent-jail-rw-map-colon = A pasta gravável "{ $entry }" contém ':', que o ai-jail lê como SOURCE:DEST.
++agent-jail-rw-map-missing = A pasta gravável "{ $entry }" não existe ou não pode ser resolvida ({ $kind }).
++agent-jail-rw-map-not-utf8 = A pasta gravável "{ $entry }" resolve para { $canonical }, que não é UTF-8 válido e não pode ser passado ao ai-jail.
++agent-jail-rw-map-colon-in-target = A pasta gravável "{ $entry }" resolve para { $canonical }, que contém ':', que o ai-jail lê como SOURCE:DEST.
++agent-jail-rw-map-forbidden = { $rule ->
++    [root] A pasta gravável "{ $entry }" ({ $canonical }) é o diretório raiz /.
++    [home] A pasta gravável "{ $entry }" ({ $canonical }) é o diretório home.
++    [above_home] A pasta gravável "{ $entry }" ({ $canonical }) contém o diretório home { $path }.
++    [protected] A pasta gravável "{ $entry }" ({ $canonical }) é, está dentro de ou contém o caminho protegido { $path }.
++    [link_target] A pasta gravável "{ $entry }" ({ $canonical }) é, está dentro de ou contém { $path }, o destino do symlink { $other } numa pasta protegida.
++    [runtime_dir] A pasta gravável "{ $entry }" ({ $canonical }) é, está dentro de ou contém o diretório de runtime { $path }, que guarda o socket de devtools do Zeo.
++   *[incomplete] A pasta gravável "{ $entry }" ({ $canonical }) não pode ser verificada: a pasta protegida { $path } não foi varrida por inteiro em busca de symlinks ({ $stop }), então toda pasta é recusada.
++}
++agent-jail-rw-map-not-folder = A pasta gravável "{ $entry }" ({ $canonical }) não é uma pasta.
++
++## A refused allowed host
++
++agent-jail-host-empty = Uma entrada de host permitido está vazia.
++agent-jail-host-too-long = O host permitido "{ $entry }" tem { $length } caracteres; um nome DNS tem no máximo { $max }.
++agent-jail-host-ip = O host permitido "{ $entry }" é um endereço IP; só nomes DNS são permitidos.
++agent-jail-host-localhost = O host permitido "{ $entry }" cita localhost; serviços de loopback nunca são hosts permitidos.
++agent-jail-host-not-dns = { $shape ->
++    [scheme] O host permitido "{ $entry }" traz um esquema; escreva só o nome do host.
++    [path] O host permitido "{ $entry }" traz um caminho; escreva só o nome do host.
++    [port] O host permitido "{ $entry }" traz uma porta; escreva só o nome do host.
++    [wildcard] O host permitido "{ $entry }" é um curinga; liste cada nome de host.
++    [upper_case] O host permitido "{ $entry }" tem letras maiúsculas; escreva-o em minúsculas.
++   *[malformed] O host permitido "{ $entry }" não é um nome DNS (dois ou mais rótulos de a-z, 0-9 e '-' no meio, sem ponto final).
++}
++agent-jail-host-numeric-label = O host permitido "{ $entry }" termina num rótulo numérico, que resolve como endereço IP; só nomes DNS são permitidos.
++agent-jail-host-pattern-unavailable = O host permitido "{ $entry }" não pode ser verificado: o padrão de nome de host não está disponível.
++agent-jail-limit-rw-maps = A pasta gravável nº { $number } passa do limite de { $max } pastas graváveis por projeto ({ $count } configuradas).
++agent-jail-limit-hosts = O host permitido nº { $number } passa do limite de { $max } hosts permitidos por projeto ({ $count } configurados).
++
++## Dialogs and notifications
++
++agent-jail-confirm-turn-off-project = Desligar o sandbox do agente em { $name }?
++agent-jail-confirm-turn-off-default = Desligar o sandbox do agente nos projetos sem configuração própria?
++agent-jail-confirm-turn-off-detail = O agente vai rodar com o acesso completo do seu usuário na próxima vez que iniciar.
++agent-jail-confirm-forget = Esquecer { $path }?
++agent-jail-confirm-forget-detail = O ai-memory apaga a página. Não dá para desfazer.
++agent-jail-button-cancel = Cancelar
++agent-jail-button-turn-off = Desligar
++agent-jail-button-forget = Esquecer
++agent-jail-button-allow = Permitir
++agent-jail-root-not-utf8 = O sandbox do agente não pode ser configurado para um projeto cujo caminho não é UTF-8 válido: { $path }
++agent-jail-secret-prompt = Permitir "{ $server }" no jail deste projeto?
++    .detail = A configuração dele contém um segredo ({ $places }). O Zeo nunca o entrega ao jail como está configurado, então o segredo fica de fora: o agente alcança o servidor só pela cópia do próprio Zeo (Claude Agent (Plus)), e um agente que não consegue (o adaptador TUI) não o recebe. O agente ainda pode usar o acesso do servidor.
++
++## ai-memory
++
++agent-jail-memory-unreachable = O ai-memory não é alcançável em { $endpoint }
++agent-jail-memory-timeout = O ai-memory não é alcançável em { $endpoint }: nenhuma resposta em { $seconds } segundos
++agent-jail-memory-unknown-project = Ainda não há memória registrada para { $scope }.
++agent-jail-memory-malformed = O ai-memory mandou uma resposta para { $tool } que o Zeo não consegue ler
++
++## The MCP not-enabled notice in the thread
++
++agent-jail-notice-title = { $count ->
++    [one] { $count } servidor MCP não está habilitado para o jail deste projeto
++   *[other] { $count } servidores MCP não estão habilitados para o jail deste projeto
++}
++agent-jail-notice-not-chosen = Não escolhidos: { $names }.
++agent-jail-notice-secret-cannot-proxy = Contém um segredo, que chega a um jail só pela cópia do próprio Zeo, e este agente não consegue usá-la (MCP sobre ACP): { $names }.
++agent-jail-notice-secret-not-running = Contém um segredo, que chega a um jail só pela cópia do próprio Zeo, e essa cópia não está rodando: { $names }.
++agent-jail-notice-choose = Escolha-os em Capacidades, na página Agent Sandbox.
++agent-jail-notice-open = Abrir Capacidades
++
++## The thread's lock, its tooltip and the quick modal
++
++agent-jail-status-title = Agent Sandbox
++agent-jail-status-on = Iniciado dentro do sandbox do agente (ai-jail).
++agent-jail-status-off = Iniciado sem o sandbox do agente.
++agent-jail-status-version = Versão do ai-jail: { $version }
++agent-jail-status-version-unknown = desconhecida
++agent-jail-status-list = { $list ->
++    [rw_maps] Pastas graváveis: { $items }
++    [allow_hosts] Hosts permitidos: { $items }
++   *[forward_ports] Portas encaminhadas: { $items }
++}
++agent-jail-status-list-none = nenhuma
++agent-jail-status-remote = O sandbox do agente não está disponível para projetos remotos.
++agent-jail-status-own-command = Isolado pelo próprio comando de agent_servers; não é gerenciado pelo Zeo.
++agent-jail-status-not-claude = Não é um agente Claude: o sandbox do agente vale só para os adaptadores do Claude.
++agent-jail-status-drifted = Reinicie o agente para aplicar a nova configuração.
++agent-jail-status-pending-on = Sandbox ligado — reinicie o agente para aplicar. Clique para reiniciar.
++agent-jail-status-pending-off = Sandbox desligado — reinicie o agente para aplicar. Clique para reiniciar.
++agent-jail-status-reserved-cpus = CPUs reservadas: { $cpus }
++agent-jail-status-cpus-shared = Divide as CPUs { $cpus } com outro jail: havia poucos núcleos livres quando ele iniciou.
++    .label = Divide CPUs
++agent-jail-status-ai-jail-missing = O sandbox do agente precisa do ai-jail, que não está instalado. Instale o sys-apps/ai-jail 3.5.0-r2 ou posterior e então inicie uma nova thread para ligar o sandbox.
++agent-jail-pause = Pausar agente: congela o jail; Retomar segue sem perder nada
++agent-jail-stop = Parar agente: encerra o jail e tudo o que roda nele
++agent-jail-paused = Pausado
++agent-jail-paused-disk = Pausado: cota de disco
++agent-jail-resume = Retomar
++    .operator = Deixa o agente seguir de onde parou
++    .disk = Deixa o agente seguir; a partir daqui ele pode crescer de novo até a cota
++agent-jail-paused-stop = Parar
++    .tooltip = Encerra o jail e tudo o que roda nele
++agent-jail-quick-hint = Vale quando o agente reiniciar: clique no cadeado de novo quando ele ficar âmbar.
++agent-jail-quick-advanced = Avançado…
+diff --git a/crates/zeo_i18n/src/catalog.rs b/crates/zeo_i18n/src/catalog.rs
+index 9ed4402..291aa3d 100644
+--- a/crates/zeo_i18n/src/catalog.rs
++++ b/crates/zeo_i18n/src/catalog.rs
+@@ -48,6 +48,10 @@ pub static SHIPPED: &[LocaleSource] = &[
+                 "en-US/agent-sandbox.ftl",
+                 include_str!("../locales/en-US/agent-sandbox.ftl"),
+             ),
++            (
++                "en-US/agent-jail.ftl",
++                include_str!("../locales/en-US/agent-jail.ftl"),
++            ),
+         ],
+     },
+     LocaleSource {
+@@ -66,6 +70,10 @@ pub static SHIPPED: &[LocaleSource] = &[
+                 "pt-BR/agent-sandbox.ftl",
+                 include_str!("../locales/pt-BR/agent-sandbox.ftl"),
+             ),
++            (
++                "pt-BR/agent-jail.ftl",
++                include_str!("../locales/pt-BR/agent-jail.ftl"),
++            ),
+         ],
+     },
+ ];

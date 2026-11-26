@@ -1,0 +1,1719 @@
+From d20513c2fd9de4e7b48190f32da5f01f7b8d7f04 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 21:51:17 -0300
+Subject: [PATCH] settings_ui: the Agent Sandbox page speaks pt-BR (zeo_i18n's
+ first screen)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Stage 2 of docs/I18N-PROPOSAL.md (zeo-workspace): the Agent Sandbox (ai-jail)
+page -- its notices, the two lists, the limits, the host switches, the
+capabilities, the generated command, the other projects' defaults and the
+Memory section -- reads its text through zeo_i18n's t! (0177) from
+locales/<language>/agent-sandbox.ftl, in en-US and pt-BR.
+
+The en-US file is the page's own English, byte for byte, so the page reads
+as it did and every existing test still pins the same text (the catalog is
+English until zeo_i18n::init, which tests never call). What used to be built
+by concatenation is now a whole message per case: "Writable folder ... is
+already in the list" and its siblings select on $kind (rw_map, allow_host),
+the limit labels on $field, the memory scope on $source, so a language writes
+the article and the agreement English does not need. pt-BR also gets plurals
+English never had ("1 página").
+
+The pt-BR text was drafted with Lara Translate and revised by hand: jail,
+sandbox and thread stay English (the operator's glossary, 2026-11-24), and
+"MCP Servers" too, since it names Zed's own page. Not translated yet: the
+page's title in the settings navigation ("Agent Sandbox (ai-jail)", matched
+by title elsewhere), errors and dialogs that come from the agent_sandbox crate
+(validation, Turn Off, Forget), and the thread's jail status and quick modal
+in agent_ui.
+
+SettingsInputField::with_placeholder takes impl Into<SharedString> instead of
+&'static str: a translated placeholder is owned. Every existing caller passes
+a literal, which still converts. The placeholder is set when the field's
+editor is created, so a language change reaches it when the page reopens.
+
+In the ai-jail group, after 0175: every file it edits belongs to that group.
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index dfda0fe..9df710c 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -16956,6 +16956,7 @@ dependencies = [
+  "workspace",
+  "zed_actions",
+  "zed_credentials_provider",
++ "zeo_i18n",
+ ]
+ 
+ [[package]]
+diff --git a/crates/settings_ui/Cargo.toml b/crates/settings_ui/Cargo.toml
+index 9f9aad4..a5ec346 100644
+--- a/crates/settings_ui/Cargo.toml
++++ b/crates/settings_ui/Cargo.toml
+@@ -76,6 +76,7 @@ util.workspace = true
+ workspace.workspace = true
+ zed_actions.workspace = true
+ zed_credentials_provider.workspace = true
++zeo_i18n.workspace = true
+ 
+ [dev-dependencies]
+ credentials_provider = { workspace = true, features = ["test-support"] }
+diff --git a/crates/settings_ui/src/components/input_field.rs b/crates/settings_ui/src/components/input_field.rs
+index 155d98b..27acea2 100644
+--- a/crates/settings_ui/src/components/input_field.rs
++++ b/crates/settings_ui/src/components/input_field.rs
+@@ -14,7 +14,7 @@ use ui::{Tooltip, prelude::*, rems};
+ pub struct SettingsInputField {
+     id: ElementId,
+     initial_text: Option<String>,
+-    placeholder: Option<&'static str>,
++    placeholder: Option<SharedString>,
+     confirm: Option<Rc<dyn Fn(Option<String>, &mut Window, &mut App)>>,
+     tab_index: Option<isize>,
+     use_buffer_font: bool,
+@@ -59,8 +59,8 @@ impl SettingsInputField {
+         self
+     }
+ 
+-    pub fn with_placeholder(mut self, placeholder: &'static str) -> Self {
+-        self.placeholder = Some(placeholder);
++    pub fn with_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
++        self.placeholder = Some(placeholder.into());
+         self
+     }
+ 
+@@ -147,7 +147,7 @@ impl RenderOnce for SettingsInputField {
+ 
+         let editor = window.use_keyed_state((self.id.clone(), "editor"), cx, {
+             let initial_text = self.initial_text.clone();
+-            let placeholder = self.placeholder;
++            let placeholder = self.placeholder.clone();
+             let mut confirm = self.confirm.clone();
+ 
+             move |window, cx| {
+@@ -175,7 +175,7 @@ impl RenderOnce for SettingsInputField {
+                 }
+ 
+                 if let Some(placeholder) = placeholder {
+-                    editor.set_placeholder_text(placeholder, window, cx);
++                    editor.set_placeholder_text(&placeholder, window, cx);
+                 }
+                 editor.set_text_style_refinement(styles);
+                 editor
+@@ -217,9 +217,7 @@ impl RenderOnce for SettingsInputField {
+         let confirm_for_button = self.confirm.clone();
+         let is_editor_empty = editor_text.trim().is_empty();
+ 
+-        let aria_label = self
+-            .aria_label
+-            .or_else(|| self.placeholder.map(SharedString::new_static));
++        let aria_label = self.aria_label.or_else(|| self.placeholder.clone());
+         let aria_description = self.aria_description;
+ 
+         let (a11y_value, a11y_text_runs) =
+diff --git a/crates/settings_ui/src/pages/agent_jail_capabilities.rs b/crates/settings_ui/src/pages/agent_jail_capabilities.rs
+index ec73232..d2b1334 100644
+--- a/crates/settings_ui/src/pages/agent_jail_capabilities.rs
++++ b/crates/settings_ui/src/pages/agent_jail_capabilities.rs
+@@ -23,15 +23,13 @@ use project::context_server_store::{
+ };
+ use settings::{Settings as _, SettingsStore};
+ use ui::{SwitchField, ToggleState, Tooltip, prelude::*};
++use zeo_i18n::t;
+ 
+ use super::{JailPageState, reveal};
+ 
+ /// `agent_servers::acp::zeo_lsp::ZEO_LSP_SERVER_NAME`, which this crate cannot reach.
+ pub(crate) const ZEO_LSP: &str = "zeo-lsp";
+ 
+-pub(crate) const SERVERS_NOTE: &str = "Zeo's MCP servers this project's jailed agent may use. A chosen server runs outside the jail, in Zeo, and the agent reaches it through Zeo (MCP over ACP), so its tools act with your files and network. None unless the default list (agent_sandbox.capabilities) names some; a choice applies to the next thread.";
+-pub(crate) const PLUGINS_NOTE: &str = "Zeo has no plugin store yet, so the jail gets no Claude Code plugin: the host's ~/.claude/plugins is not mapped. Zeo's skills reach it as plugins, above.";
+-const NO_SERVERS: &str = "This project has no MCP servers. Add one under MCP Servers.";
+ /// The anchor `OpenSettingsAt { path: "agent_sandbox#capabilities" }` reveals (the jail notice).
+ pub(crate) const CAPABILITIES_ANCHOR: &str = "capabilities";
+ 
+@@ -60,11 +58,11 @@ pub(crate) fn take_anchor(anchor: &str) -> bool {
+ 
+ /// Where the value in force comes from (§6.64 step 2, round 2): the project's own setting or
+ /// the default in `agent_sandbox.capabilities`.
+-pub(crate) fn source_label(set_here: bool) -> &'static str {
++pub(crate) fn source_label(set_here: bool) -> String {
+     if set_here {
+-        "Set for this project"
++        t!("agent-sandbox-set-for-this-project")
+     } else {
+-        "Default for every project"
++        t!("agent-sandbox-default-for-every-project")
+     }
+ }
+ 
+@@ -95,14 +93,18 @@ pub(crate) fn server_rows(
+                 .as_deref()
+                 .map(secret_sites_of)
+                 .unwrap_or_default();
+-            let mut note = status_note(&status).to_string();
++            let mut note = status_note(&status);
+             if !secrets.is_empty() {
+                 let places = secrets
+                     .iter()
+                     .map(SecretSite::describe)
+                     .collect::<Vec<_>>()
+                     .join(", ");
+-                note = format!("{note}. Carries a secret ({places}): asks before turning on");
++                note = t!(
++                    "agent-sandbox-mcp-carries-secret",
++                    status = note,
++                    places = places
++                );
+             }
+             ServerRow {
+                 chosen: chosen.contains(&name),
+@@ -116,7 +118,7 @@ pub(crate) fn server_rows(
+     if (zeo_lsp || chosen.iter().any(|name| name == ZEO_LSP)) && !listed(&rows, ZEO_LSP) {
+         rows.push(ServerRow {
+             name: ZEO_LSP.to_string(),
+-            note: "The project's language servers, read-only: diagnostics, definition, references, hover, symbols".to_string(),
++            note: t!("agent-sandbox-mcp-zeo-lsp"),
+             secrets: Vec::new(),
+             chosen: chosen.iter().any(|name| name == ZEO_LSP),
+         });
+@@ -125,7 +127,7 @@ pub(crate) fn server_rows(
+         if !listed(&rows, name) {
+             rows.push(ServerRow {
+                 name: name.clone(),
+-                note: "Not configured in this project".to_string(),
++                note: t!("agent-sandbox-mcp-not-configured"),
+                 secrets: Vec::new(),
+                 chosen: true,
+             });
+@@ -135,17 +137,15 @@ pub(crate) fn server_rows(
+     rows
+ }
+ 
+-fn status_note(status: &ContextServerStatus) -> &'static str {
++fn status_note(status: &ContextServerStatus) -> String {
+     match status {
+-        ContextServerStatus::Running => "Running",
+-        ContextServerStatus::Starting => "Starting",
+-        ContextServerStatus::Stopped => {
+-            "Stopped: handed over as configured only if the jail can start it"
+-        }
+-        ContextServerStatus::Error(_) => "Failed to start",
++        ContextServerStatus::Running => t!("agent-sandbox-mcp-running"),
++        ContextServerStatus::Starting => t!("agent-sandbox-mcp-starting"),
++        ContextServerStatus::Stopped => t!("agent-sandbox-mcp-stopped"),
++        ContextServerStatus::Error(_) => t!("agent-sandbox-mcp-failed"),
+         ContextServerStatus::AuthRequired
+         | ContextServerStatus::ClientSecretRequired { .. }
+-        | ContextServerStatus::Authenticating => "Needs authentication",
++        | ContextServerStatus::Authenticating => t!("agent-sandbox-mcp-needs-auth"),
+     }
+ }
+ 
+@@ -216,8 +216,8 @@ pub(crate) fn render_capabilities(
+     }
+     let skills = SwitchField::new(
+         "agent-jail-skills",
+-        Some("Skills"),
+-        Some("Zeo's skills (~/.agents/skills and this project's .agents/skills) as plugins, mapped read-only. Restart the agent to apply.".into()),
++        Some(t!("agent-sandbox-skills")),
++        Some(t!("agent-sandbox-skills.note").into()),
+         sandbox.skills_for_key(key),
+         {
+             let root = root.to_path_buf();
+@@ -229,8 +229,8 @@ pub(crate) fn render_capabilities(
+     .tab_index(0);
+     let connectors = SwitchField::new(
+         "agent-jail-connectors",
+-        Some("claude.ai Connectors"),
+-        Some("The account's claude.ai connectors. They reach their vendors through anthropic.com, past the allowed hosts. Restart the agent to apply.".into()),
++        Some(t!("agent-sandbox-connectors")),
++        Some(t!("agent-sandbox-connectors.note").into()),
+         sandbox.claude_ai_connectors_for_key(key),
+         {
+             let root = root.to_path_buf();
+@@ -240,13 +240,11 @@ pub(crate) fn render_capabilities(
+         },
+     )
+     .tab_index(0);
+-    let muted = |text: &'static str| Label::new(text).size(LabelSize::Small).color(Color::Muted);
++    let muted = |text: String| Label::new(text).size(LabelSize::Small).color(Color::Muted);
+     let heading = v_flex()
+         .gap_0p5()
+-        .child(Label::new("Capabilities"))
+-        .child(muted(
+-            "What the jailed agent may use besides the project. A project's own choice replaces the default in agent_sandbox.capabilities, field by field.",
+-        ));
++        .child(Label::new(t!("agent-sandbox-capabilities")))
++        .child(muted(t!("agent-sandbox-capabilities.note")));
+     // The jail notice's action: scroll the block's heading to the top of the page, once the page
+     // has its full height -- before the background probe lands the page is shorter and the scroll
+     // stops early (the round-2 Xvfb proof saw it stop ~160 px down). Focusing a wrapper, as Tab
+@@ -268,7 +266,7 @@ pub(crate) fn render_capabilities(
+         });
+     let servers_source = source_row(
+         "agent-jail-mcp-reset",
+-        "Use the default MCP servers",
++        t!("agent-sandbox-mcp-servers.reset"),
+         sandbox.mcp_servers_set_for_key(key),
+         {
+             let root = root.to_path_buf();
+@@ -280,7 +278,7 @@ pub(crate) fn render_capabilities(
+     );
+     let skills_source = source_row(
+         "agent-jail-skills-reset",
+-        "Use the default for skills",
++        t!("agent-sandbox-skills.reset"),
+         sandbox.skills_set_for_key(key),
+         {
+             let root = root.to_path_buf();
+@@ -296,11 +294,13 @@ pub(crate) fn render_capabilities(
+         .child(
+             v_flex()
+                 .gap_0p5()
+-                .child(Label::new("MCP Servers").size(LabelSize::Small))
+-                .child(muted(SERVERS_NOTE))
++                .child(Label::new(t!("agent-sandbox-mcp-servers")).size(LabelSize::Small))
++                .child(muted(t!("agent-sandbox-mcp-servers.note")))
+                 .child(servers_source),
+         )
+-        .when(servers.is_empty(), |this| this.child(muted(NO_SERVERS)))
++        .when(servers.is_empty(), |this| {
++            this.child(muted(t!("agent-sandbox-mcp-servers.none")))
++        })
+         .children(servers)
+         .child(reveal(
+             state,
+@@ -313,8 +313,8 @@ pub(crate) fn render_capabilities(
+         .child(
+             v_flex()
+                 .gap_0p5()
+-                .child(Label::new("Claude Code Plugins").size(LabelSize::Small))
+-                .child(muted(PLUGINS_NOTE)),
++                .child(Label::new(t!("agent-sandbox-plugins")).size(LabelSize::Small))
++                .child(muted(t!("agent-sandbox-plugins.note"))),
+         )
+         .child(reveal(
+             state,
+@@ -347,7 +347,7 @@ fn align_to_top(scroll_handle: &ScrollHandle, control: gpui::Bounds<gpui::Pixels
+ /// project sets its own.
+ fn source_row(
+     reset_id: &'static str,
+-    reset_label: &'static str,
++    reset_label: String,
+     set_here: bool,
+     on_reset: impl Fn(&mut App) + 'static,
+     state: &Entity<JailPageState>,
+@@ -362,7 +362,7 @@ fn source_row(
+             .icon_size(IconSize::Small)
+             .icon_color(Color::Muted)
+             .tab_index(0_isize)
+-            .aria_label(reset_label)
++            .aria_label(reset_label.clone())
+             .tooltip(Tooltip::text(reset_label))
+             .on_click(move |_, _, cx| on_reset(cx));
+         reveal(state, reset_id, scroll_handle, button, cx)
+diff --git a/crates/settings_ui/src/pages/agent_jail_host.rs b/crates/settings_ui/src/pages/agent_jail_host.rs
+index d1da45a..0e2d93b 100644
+--- a/crates/settings_ui/src/pages/agent_jail_host.rs
++++ b/crates/settings_ui/src/pages/agent_jail_host.rs
+@@ -18,6 +18,7 @@ use agent_sandbox::capabilities::{
+ use agent_sandbox::confirm::set_project_reserve_cpus;
+ use gpui::{AnyElement, App, Entity, ScrollHandle};
+ use ui::{SwitchField, ToggleState, prelude::*};
++use zeo_i18n::t;
+ 
+ use super::{JailPageState, reveal};
+ 
+@@ -54,15 +55,6 @@ pub(crate) fn host_switches(sandbox: &AgentSandboxSettings, key: Option<&str>) -
+     }
+ }
+ 
+-pub(crate) const MASK_HOST_NOTE: &str = "The jailed agent sees only the CPUs and memory its limits allow, its own cgroup, a machine id of its own and, with ai-jail 3.5.0-r6, a host name of its own (desktop- and six characters, the same on every start of this project), instead of this machine's; with ai-jail 3.5.0-r3, also a kernel version without the build details, a generic OS name, no swap or disks, and an uptime counted from its start. Still visible: the writable folders' disk and size, the CPU numbers, cpuid and the toolchains' own version strings. It hides; it does not isolate. Restart the agent to apply.";
+-pub(crate) const OVERLAY_NOTE: &str = "Serve /usr, /etc and /opt through read-only overlays, so the jail's mount table names no disk of this machine for them. File walks over those folders get slower. Needs ai-jail 3.5.0-r3. Restart the agent to apply.";
+-pub(crate) const OVERLAY_DISABLED_NOTE: &str = "Applies only while Hide the Host is on.";
+-pub(crate) const SYSCALL_VIEW_NOTE: &str = "Answer uname and sysinfo from ai-jail, so the kernel version, memory, load and uptime they report match the hidden host instead of this machine's. Each of those calls makes a round trip to ai-jail. Needs ai-jail 3.5.0-r4. Restart the agent to apply.";
+-pub(crate) const MINIMAL_ETC_NOTE: &str = "Show the jail only the parts of /etc its tools need -- accounts, DNS, certificates, time zone, the library loader and the shell's startup -- instead of all of this machine's configuration. /usr and /opt stay: the toolchains live there. A tool that reads another /etc file may fail. Needs ai-jail 3.5.0-r5. Restart the agent to apply.";
+-pub(crate) const RESERVE_NOTE: &str = "Pin the jail to cores of its own, none shared with another reserving jail while enough are free. Off, the CPU quota alone limits it. Restart the agent to apply.";
+-pub(crate) const RESERVE_FORCED_NOTE: &str =
+-    "On while Hide the Host is on: its CPU files must match the cores the jail runs on.";
+-
+ pub(crate) fn render_host_switches(
+     root: &Path,
+     sandbox: &AgentSandboxSettings,
+@@ -74,8 +66,8 @@ pub(crate) fn render_host_switches(
+     let switches = host_switches(sandbox, key);
+     let mask_host = SwitchField::new(
+         "agent-jail-mask-host",
+-        Some("Hide the Host"),
+-        Some(MASK_HOST_NOTE.into()),
++        Some(t!("agent-sandbox-hide-host")),
++        Some(t!("agent-sandbox-hide-host.note").into()),
+         switches.mask_host,
+         {
+             let root = root.to_path_buf();
+@@ -87,12 +79,12 @@ pub(crate) fn render_host_switches(
+     .tab_index(0);
+     let reserve = SwitchField::new(
+         "agent-jail-reserve-cpus",
+-        Some("Reserve CPUs"),
++        Some(t!("agent-sandbox-reserve-cpus")),
+         Some(
+             if switches.reserve_forced {
+-                RESERVE_FORCED_NOTE
++                t!("agent-sandbox-reserve-cpus.forced")
+             } else {
+-                RESERVE_NOTE
++                t!("agent-sandbox-reserve-cpus.note")
+             }
+             .into(),
+         ),
+@@ -108,12 +100,12 @@ pub(crate) fn render_host_switches(
+     .tab_index(0);
+     let overlay = SwitchField::new(
+         "agent-jail-overlay-system",
+-        Some("Hide the Disks"),
++        Some(t!("agent-sandbox-hide-disks")),
+         Some(
+             if switches.overlay_disabled {
+-                OVERLAY_DISABLED_NOTE
++                t!("agent-sandbox-host-layer-off")
+             } else {
+-                OVERLAY_NOTE
++                t!("agent-sandbox-hide-disks.note")
+             }
+             .into(),
+         ),
+@@ -129,12 +121,12 @@ pub(crate) fn render_host_switches(
+     .tab_index(0);
+     let syscalls = SwitchField::new(
+         "agent-jail-syscall-view",
+-        Some("Hide the Kernel"),
++        Some(t!("agent-sandbox-hide-kernel")),
+         Some(
+             if switches.overlay_disabled {
+-                OVERLAY_DISABLED_NOTE
++                t!("agent-sandbox-host-layer-off")
+             } else {
+-                SYSCALL_VIEW_NOTE
++                t!("agent-sandbox-hide-kernel.note")
+             }
+             .into(),
+         ),
+@@ -150,12 +142,12 @@ pub(crate) fn render_host_switches(
+     .tab_index(0);
+     let system_config = SwitchField::new(
+         "agent-jail-minimal-etc",
+-        Some("Hide the System Config"),
++        Some(t!("agent-sandbox-hide-system-config")),
+         Some(
+             if switches.overlay_disabled {
+-                OVERLAY_DISABLED_NOTE
++                t!("agent-sandbox-host-layer-off")
+             } else {
+-                MINIMAL_ETC_NOTE
++                t!("agent-sandbox-hide-system-config.note")
+             }
+             .into(),
+         ),
+@@ -171,7 +163,7 @@ pub(crate) fn render_host_switches(
+     .tab_index(0);
+     v_flex()
+         .gap_2()
+-        .child(Label::new("Host"))
++        .child(Label::new(t!("agent-sandbox-host")))
+         .child(reveal(
+             state,
+             "agent-jail-mask-host",
+diff --git a/crates/settings_ui/src/pages/agent_jail_limits.rs b/crates/settings_ui/src/pages/agent_jail_limits.rs
+index 23a4143..855c9f0 100644
+--- a/crates/settings_ui/src/pages/agent_jail_limits.rs
++++ b/crates/settings_ui/src/pages/agent_jail_limits.rs
+@@ -13,6 +13,7 @@ use futures::channel::oneshot;
+ use gpui::{AnyElement, App, AsyncApp, Entity, ScrollHandle, SharedString, Task};
+ use settings::{AgentSandboxLimitsContent, SettingsStore};
+ use ui::{Tooltip, prelude::*};
++use zeo_i18n::t;
+ 
+ use super::{JailPageState, first_line, reveal};
+ 
+@@ -49,17 +50,12 @@ impl LimitField {
+         }
+     }
+ 
+-    pub(crate) fn title(self) -> &'static str {
+-        match self {
+-            LimitField::Memory => "Memory",
+-            LimitField::CpuQuota => "CPU",
+-            LimitField::MaxTasks => "Processes",
+-            LimitField::DiskQuota => "Disk Growth",
+-        }
++    pub(crate) fn title(self) -> String {
++        t!("agent-sandbox-limit-title", field = self.field())
+     }
+ 
+     /// "No limit" beside the title while none is in force; the stepper shows the value otherwise.
+-    fn off_note(self, limits: &SandboxLimits) -> Option<&'static str> {
++    fn off_note(self, limits: &SandboxLimits) -> Option<String> {
+         let on = limits.effective();
+         let set = match self {
+             LimitField::Memory => on.memory.is_some(),
+@@ -67,7 +63,7 @@ impl LimitField {
+             LimitField::MaxTasks => on.max_tasks.is_some(),
+             LimitField::DiskQuota => on.disk_quota.is_some(),
+         };
+-        (!set).then_some("No limit")
++        (!set).then(|| t!("agent-sandbox-limit-off"))
+     }
+ 
+     /// Whether the project's own entry sets this limit.
+@@ -92,8 +88,9 @@ impl LimitField {
+                 if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                     Ok(LimitValue::Size(raw.to_string()))
+                 } else {
+-                    Err(format!(
+-                        "{raw:?} is not a memory size: a whole number with an optional K, M, G or T (8G), or 0 for none."
++                    Err(t!(
++                        "agent-sandbox-limit-invalid-memory",
++                        raw = format!("{raw:?}")
+                     ))
+                 }
+             }
+@@ -101,23 +98,22 @@ impl LimitField {
+                 if raw == "0" || parse_size(raw).is_some() {
+                     Ok(LimitValue::Size(raw.to_string()))
+                 } else {
+-                    Err(format!(
+-                        "{raw:?} is not a disk size: a whole number with an optional K, M, G or T (20G), or 0 for none."
++                    Err(t!(
++                        "agent-sandbox-limit-invalid-disk",
++                        raw = format!("{raw:?}")
+                     ))
+                 }
+             }
+             LimitField::CpuQuota => raw
+                 .parse::<u32>()
+                 .map(|quota| LimitValue::Count(quota.into()))
+-                .map_err(|_| {
+-                    format!(
+-                        "{raw:?} is not a percentage of one CPU (400 is four CPUs), or 0 for none."
+-                    )
+-                }),
+-            LimitField::MaxTasks => raw
+-                .parse::<u64>()
+-                .map(LimitValue::Count)
+-                .map_err(|_| format!("{raw:?} is not a number of processes, or 0 for none.")),
++                .map_err(|_| t!("agent-sandbox-limit-invalid-cpu", raw = format!("{raw:?}"))),
++            LimitField::MaxTasks => raw.parse::<u64>().map(LimitValue::Count).map_err(|_| {
++                t!(
++                    "agent-sandbox-limit-invalid-tasks",
++                    raw = format!("{raw:?}")
++                )
++            }),
+         }
+     }
+ 
+@@ -207,7 +203,7 @@ async fn write_limit_async(
+         .unwrap_or_else(|| format!("agent_sandbox.projects.limits.{}", field.field()));
+     let error = first_line(&error);
+     log::error!("agent_sandbox event=settings_write_failed key={key:?} error={error:?}");
+-    Err(format!("Could not save the agent sandbox setting: {error}"))
++    Err(t!("agent-sandbox-save-failed", error = error))
+ }
+ 
+ /// The limits block: each limit in force, a reset on the ones this project sets, an input to set
+@@ -225,7 +221,7 @@ pub(crate) fn render_limits(
+     let mut rows = Vec::with_capacity(LimitField::ALL.len());
+     for field in LimitField::ALL {
+         let action = if field.is_set(own) {
+-            let label = format!("Use the default {}", field.title().to_lowercase());
++            let label = t!("agent-sandbox-limit-reset", field = field.field());
+             let id = format!("agent-jail-limit-{}-reset", field.field());
+             let button = IconButton::new(SharedString::from(id.clone()), IconName::RotateCcw)
+                 .icon_size(IconSize::Small)
+@@ -241,7 +237,7 @@ pub(crate) fn render_limits(
+                 });
+             reveal(state, id, scroll_handle, button, cx)
+         } else {
+-            Label::new("Default for every project")
++            Label::new(t!("agent-sandbox-default-for-every-project"))
+                 .size(LabelSize::Small)
+                 .color(Color::Muted)
+                 .into_any_element()
+@@ -287,13 +283,11 @@ pub(crate) fn render_limits(
+     }
+     v_flex()
+         .gap_0p5()
+-        .child(Label::new("Resource Limits"))
++        .child(Label::new(t!("agent-sandbox-limits")))
+         .child(
+-            Label::new(
+-                "Applied by ai-jail to the whole jail. Past the disk growth the agent is paused, not stopped. 0 turns a limit off for this project. Shift steps further, Alt finer; click a value to type one.",
+-            )
+-            .size(LabelSize::Small)
+-            .color(Color::Muted),
++            Label::new(t!("agent-sandbox-limits.note"))
++                .size(LabelSize::Small)
++                .color(Color::Muted),
+         )
+         .child(v_flex().mt_2().gap_2().children(rows))
+         .when_some(state_dir, |this, dir| {
+@@ -302,9 +296,9 @@ pub(crate) fn render_limits(
+                 v_flex()
+                     .mt_3()
+                     .gap_0p5()
+-                    .child(Label::new("State Folder"))
++                    .child(Label::new(t!("agent-sandbox-state-folder")))
+                     .child(
+-                        Label::new("This project's jail keeps its home, /tmp and Claude login in:")
++                        Label::new(t!("agent-sandbox-state-folder.note"))
+                             .size(LabelSize::Small)
+                             .color(Color::Muted),
+                     )
+@@ -314,7 +308,7 @@ pub(crate) fn render_limits(
+                             .buffer_font(cx),
+                     )
+                     .child(
+-                        Label::new("To log in before the first start, run:")
++                        Label::new(t!("agent-sandbox-state-folder.login"))
+                             .size(LabelSize::Small)
+                             .color(Color::Muted),
+                     )
+diff --git a/crates/settings_ui/src/pages/agent_jail_page.rs b/crates/settings_ui/src/pages/agent_jail_page.rs
+index dbd267b..c6bed61 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page.rs
+@@ -37,16 +37,8 @@ use util::ResultExt as _;
+ 
+ use crate::SettingsWindow;
+ use crate::components::{SettingsInputField, SettingsSectionHeader};
++use zeo_i18n::t;
+ 
+-const NO_PROJECT_NOTICE: &str = "Open a local project to configure it.";
+-const NOT_INSTALLED: &str = "ai-jail is not installed. Install it with `emerge sys-apps/ai-jail`, or enable USE `ai-jail` on `app-editors/zeo`.";
+-const AI_JAIL_FILE_NOTICE: &str = "This project has an .ai-jail file. ai-jail reads it too, and lets it only narrow the generated jail, never widen it.";
+-const PREVIEW_OFF: &str = "Sandbox off: the agent starts without ai-jail.";
+-const INVALID_ENDPOINT_NOTE: &str =
+-    "No port is forwarded into the jail: the ai-memory endpoint is not a valid URL.";
+-const RESTART_NOTICE: &str = "Restart the agent to apply.";
+-const RESTART_BUTTON: &str = "Restart Agent";
+-const RESTART_TOOLTIP: &str = "Restart this project's agents that run on older settings. A thread in the middle of a turn asks first.";
+ /// The adapter the preview wraps; a start wraps whichever Claude adapter the agent runs.
+ const PREVIEW_AGENT: &str = "claude-agent-acp-plus";
+ 
+@@ -58,10 +50,12 @@ pub(crate) enum EntryKind {
+ }
+ 
+ impl EntryKind {
+-    fn noun(self) -> &'static str {
++    /// The `$kind` the list messages select on (locales/*/agent-sandbox.ftl), so each language
++    /// writes the whole sentence -- an article and an agreement English does not need.
++    fn select(self) -> &'static str {
+         match self {
+-            Self::RwMap => "Writable folder",
+-            Self::AllowHost => "Allowed host",
++            Self::RwMap => "rw_map",
++            Self::AllowHost => "allow_host",
+         }
+     }
+ 
+@@ -120,23 +114,23 @@ impl EntryEnv {
+ /// 2.4.0, and nothing for a safe version.
+ pub(crate) fn banner_text(installed: Option<&Version>) -> Option<String> {
+     match installed {
+-        None => Some(NOT_INSTALLED.to_string()),
++        None => Some(t!("agent-sandbox-not-installed")),
+         Some(version) if probe::is_outdated(version) => Some(probe::outdated_warning(version)),
+         Some(_) => None,
+     }
+ }
+ 
+ /// The R3.3 text when no local project is active.
+-pub(crate) fn project_notice(root: Option<&Path>) -> Option<&'static str> {
+-    root.is_none().then_some(NO_PROJECT_NOTICE)
++pub(crate) fn project_notice(root: Option<&Path>) -> Option<String> {
++    root.is_none().then(|| t!("agent-sandbox-no-project"))
+ }
+ 
+ /// The R3.9 notice, only when `root/.ai-jail` is a file: a folder of that name is not what
+ /// ai-jail reads.
+-pub(crate) async fn ai_jail_file_notice(fs: &dyn Fs, root: &Path) -> Option<&'static str> {
++pub(crate) async fn ai_jail_file_notice(fs: &dyn Fs, root: &Path) -> Option<String> {
+     let path = root.join(".ai-jail");
+     match fs.metadata(&path).await {
+-        Ok(Some(metadata)) if !metadata.is_dir => Some(AI_JAIL_FILE_NOTICE),
++        Ok(Some(metadata)) if !metadata.is_dir => Some(t!("agent-sandbox-ai-jail-file")),
+         Ok(_) => None,
+         Err(error) => {
+             log::warn!(
+@@ -171,20 +165,18 @@ pub(crate) fn memory_endpoint_note(memory: &AgentMemorySettings) -> Option<Strin
+                 .ok()
+                 .and_then(|endpoint| endpoint.host_str().map(str::to_string));
+             Some(match host {
+-                Some(host) => format!(
+-                    "No port is forwarded into the jail for ai-memory at {host}. Add {host} to the allowed hosts for the jailed agent to reach it."
+-                ),
+-                None => INVALID_ENDPOINT_NOTE.to_string(),
++                Some(host) => t!("agent-sandbox-memory-endpoint-remote", host = host),
++                None => t!("agent-sandbox-memory-endpoint-invalid"),
+             })
+         }
+         Ok(MemoryPort::Forwarded(_) | MemoryPort::Unsupported | MemoryPort::Off) => None,
+-        Err(_) => Some(INVALID_ENDPOINT_NOTE.to_string()),
++        Err(_) => Some(t!("agent-sandbox-memory-endpoint-invalid")),
+     }
+ }
+ 
+ /// What the command block says instead of a command while the sandbox is off for the project.
+-pub(crate) fn preview_off_notice(enabled: bool) -> Option<&'static str> {
+-    (!enabled).then_some(PREVIEW_OFF)
++pub(crate) fn preview_off_notice(enabled: bool) -> Option<String> {
++    (!enabled).then(|| t!("agent-sandbox-preview-off"))
+ }
+ 
+ /// The `projects` key the page shows for `root`: the lexical match, else `resolved` (the key the
+@@ -338,7 +330,13 @@ fn check_new_entry(
+ ) -> Result<Option<String>, String> {
+     let resolved = resolve_project_key(sandbox.project_keys(), root).map(str::to_string);
+     let policy = sandbox.policy_for_key(resolved.as_deref());
+-    let already_listed = || format!("{} \"{raw}\" is already in the list.", kind.noun());
++    let already_listed = || {
++        t!(
++            "agent-sandbox-entry-already-listed",
++            kind = kind.select(),
++            raw = raw
++        )
++    };
+     match kind {
+         EntryKind::AllowHost => {
+             let host = validate::validate_host(raw).map_err(|error| error.to_string())?;
+@@ -368,9 +366,7 @@ fn check_new_entry(
+                 }
+             }
+             if map == claude_dir {
+-                return Err(format!(
+-                    "Writable folder \"{raw}\" is the Claude config directory, which the jail always maps."
+-                ));
++                return Err(t!("agent-sandbox-entry-is-claude-dir", raw = raw));
+             }
+             if maps.contains(&map) {
+                 return Err(already_listed());
+@@ -403,15 +399,17 @@ fn check_removal(
+         return Ok(key.to_string());
+     }
+     if kind.defaults(sandbox).iter().any(|entry| entry == raw) {
+-        return Err(format!(
+-            "{} \"{raw}\" applies to every project; remove it from agent_sandbox.{} in settings.json.",
+-            kind.noun(),
+-            kind.field()
++        return Err(t!(
++            "agent-sandbox-entry-is-default",
++            kind = kind.select(),
++            raw = raw,
++            field = kind.field()
+         ));
+     }
+-    Err(format!(
+-        "{} \"{raw}\" is not in this project's list.",
+-        kind.noun()
++    Err(t!(
++        "agent-sandbox-entry-not-listed",
++        kind = kind.select(),
++        raw = raw
+     ))
+ }
+ 
+@@ -474,7 +472,7 @@ async fn write_list(
+         .unwrap_or_else(|| format!("agent_sandbox.projects.{}", kind.field()));
+     let error = first_line(&error);
+     log::error!("agent_sandbox event=settings_write_failed key={key:?} error={error:?}");
+-    Err(format!("Could not save the agent sandbox setting: {error}"))
++    Err(t!("agent-sandbox-save-failed", error = error))
+ }
+ 
+ fn first_line(error: &anyhow::Error) -> String {
+@@ -634,7 +632,7 @@ struct JailPageState {
+     jail: JailProbe,
+     /// The `projects` key the root resolves to through a symlink, once resolved.
+     resolved_key: Option<String>,
+-    ai_jail_file: Option<&'static str>,
++    ai_jail_file: Option<String>,
+     rw_map_error: Option<String>,
+     host_error: Option<String>,
+     /// The last limit refused or not saved, and which (§6.54): shown under that limit's input.
+@@ -785,7 +783,7 @@ impl JailPageState {
+             files: false,
+             directories: true,
+             multiple: false,
+-            prompt: Some("Add Writable Folder".into()),
++            prompt: Some(t!("agent-sandbox-choose-folder-prompt").into()),
+         });
+         cx.spawn(async move |this, cx| {
+             let paths = match paths.await {
+@@ -856,7 +854,7 @@ pub(crate) fn render_agent_jail_page(
+         (
+             page.jail.clone(),
+             page.resolved_key.clone(),
+-            page.ai_jail_file,
++            page.ai_jail_file.clone(),
+             page.rw_map_error.clone(),
+             page.host_error.clone(),
+             page.limit_error.clone(),
+@@ -955,48 +953,43 @@ pub(crate) fn render_agent_jail_page(
+             let lists = [
+                 (
+                     EntryKind::RwMap,
+-                    "Writable Folders",
+-                    "Folders the jailed agent may write besides the project, chosen with Choose Folder. Each must be outside the project, the Claude config directory and every other writable folder.",
+-                    "Add a writable folder (e.g. ~/data)…",
++                    t!("agent-sandbox-rw-maps"),
++                    t!("agent-sandbox-rw-maps.note"),
++                    t!("agent-sandbox-rw-maps.placeholder"),
+                     policy.rw_maps.clone(),
+                     rw_map_error,
+                 ),
+                 (
+                     EntryKind::AllowHost,
+-                    "Allowed Hosts",
+-                    "Hosts the jailed agent may reach. Each is a bare DNS name: no scheme, port, path, wildcard or IP address.",
+-                    "Add an allowed host (e.g. registry.npmjs.org)…",
++                    t!("agent-sandbox-allow-hosts"),
++                    t!("agent-sandbox-allow-hosts.note"),
++                    t!("agent-sandbox-allow-hosts.placeholder"),
+                     policy.allow_hosts.clone(),
+                     host_error,
+                 ),
+             ]
+             .into_iter()
+-            .map(
+-                |(kind, title, description, placeholder, entries, error)| {
+-                    render_list(
+-                        kind,
+-                        ListText {
+-                            title,
+-                            description,
+-                            placeholder,
+-                        },
+-                        entries,
+-                        kind.list(&own),
+-                        error,
+-                        &state,
+-                        scroll_handle,
+-                        cx,
+-                    )
+-                },
+-            )
++            .map(|(kind, title, description, placeholder, entries, error)| {
++                render_list(
++                    kind,
++                    ListText {
++                        title,
++                        description,
++                        placeholder,
++                    },
++                    entries,
++                    kind.list(&own),
++                    error,
++                    &state,
++                    scroll_handle,
++                    cx,
++                )
++            })
+             .collect::<Vec<_>>();
+             let project_switch = SwitchField::new(
+                 "agent-jail-project-enabled",
+-                Some("Run agents in ai-jail for this project"),
+-                Some(
+-                    "Start the Claude agents of this project inside ai-jail. Turning it off asks first."
+-                        .into(),
+-                ),
++                Some(t!("agent-sandbox-project-enabled")),
++                Some(t!("agent-sandbox-project-enabled.note").into()),
+                 policy.enabled,
+                 {
+                     let root = root.to_path_buf();
+@@ -1032,7 +1025,9 @@ pub(crate) fn render_agent_jail_page(
+ 
+             v_flex()
+                 .gap_4()
+-                .child(SettingsSectionHeader::new("This Project").no_padding(true))
++                .child(
++                    SettingsSectionHeader::new(t!("agent-sandbox-this-project")).no_padding(true),
++                )
+                 .child(
+                     Label::new(root.to_string_lossy().into_owned())
+                         .size(LabelSize::Small)
+@@ -1055,7 +1050,7 @@ pub(crate) fn render_agent_jail_page(
+                 .child(preview)
+                 .into_any_element()
+         }
+-        None => Label::new(project_notice(None).unwrap_or(NO_PROJECT_NOTICE))
++        None => Label::new(project_notice(None).unwrap_or_default())
+             .color(Color::Muted)
+             .into_any_element(),
+     };
+@@ -1102,7 +1097,7 @@ fn render_binary(jail: &JailProbe, cx: &App) -> AnyElement {
+             .child(Label::new(text).size(LabelSize::Small))
+     };
+     let body = match jail {
+-        JailProbe::Pending => Label::new("Looking for ai-jail…")
++        JailProbe::Pending => Label::new(t!("agent-sandbox-binary-looking"))
+             .size(LabelSize::Small)
+             .color(Color::Muted)
+             .into_any_element(),
+@@ -1111,9 +1106,9 @@ fn render_binary(jail: &JailProbe, cx: &App) -> AnyElement {
+             .when_some(banner_text(None), |this, text| this.child(warning(text)))
+             .when_some(configured.as_ref(), |this, path| {
+                 this.child(
+-                    Label::new(format!(
+-                        "Not found at {} (agent_sandbox.ai_jail_path).",
+-                        path.display()
++                    Label::new(t!(
++                        "agent-sandbox-binary-not-found",
++                        path = path.display().to_string()
+                     ))
+                     .size(LabelSize::Small)
+                     .color(Color::Muted),
+@@ -1123,9 +1118,13 @@ fn render_binary(jail: &JailProbe, cx: &App) -> AnyElement {
+         JailProbe::Found { path, binary } => v_flex()
+             .gap_1()
+             .child(
+-                Label::new(format!("ai-jail {} at {}", binary.version, path.display()))
+-                    .size(LabelSize::Small)
+-                    .buffer_font(cx),
++                Label::new(t!(
++                    "agent-sandbox-binary-found",
++                    version = binary.version.to_string(),
++                    path = path.display().to_string()
++                ))
++                .size(LabelSize::Small)
++                .buffer_font(cx),
+             )
+             .when_some(banner_text(Some(&binary.version)), |this, text| {
+                 this.child(warning(text))
+@@ -1140,8 +1139,9 @@ fn render_binary(jail: &JailProbe, cx: &App) -> AnyElement {
+             )
+             .child(
+                 Banner::new().severity(Severity::Error).child(
+-                    Label::new(format!(
+-                        "The version of ai-jail could not be read: {error}."
++                    Label::new(t!(
++                        "agent-sandbox-binary-unreadable",
++                        error = error.to_string()
+                     ))
+                     .size(LabelSize::Small),
+                 ),
+@@ -1156,9 +1156,9 @@ fn render_binary(jail: &JailProbe, cx: &App) -> AnyElement {
+ }
+ 
+ struct ListText {
+-    title: &'static str,
+-    description: &'static str,
+-    placeholder: &'static str,
++    title: String,
++    description: String,
++    placeholder: String,
+ }
+ 
+ /// One editable list: the merged entries, a remove button on the project's own ones, an add input
+@@ -1176,7 +1176,7 @@ fn render_list(
+     let mut rows = Vec::with_capacity(entries.len());
+     for (index, entry) in entries.into_iter().enumerate() {
+         let action = if own.contains(&entry) {
+-            let remove_label = format!("Remove {}", entry);
++            let remove_label = t!("agent-sandbox-list-remove", entry = entry.as_str());
+             let remove_id = format!("agent-jail-{}-remove-{index}", kind.id());
+             let button = IconButton::new(SharedString::from(remove_id.clone()), IconName::Trash)
+                 .icon_size(IconSize::Small)
+@@ -1194,7 +1194,7 @@ fn render_list(
+                 });
+             reveal(state, remove_id, scroll_handle, button, cx)
+         } else {
+-            Label::new("Default for every project")
++            Label::new(t!("agent-sandbox-default-for-every-project"))
+                 .size(LabelSize::Small)
+                 .color(Color::Muted)
+                 .into_any_element()
+@@ -1212,7 +1212,7 @@ fn render_list(
+     // The allowed hosts keep their text field.
+     let input = if kind == EntryKind::RwMap {
+         let choose_id = "agent-jail-rw-map-choose";
+-        let choose = Button::new(choose_id, "Choose Folder…")
++        let choose = Button::new(choose_id, t!("agent-sandbox-choose-folder"))
+             .start_icon(Icon::new(IconName::FolderOpen).size(IconSize::Small))
+             .label_size(LabelSize::Small)
+             .tab_index(0_isize)
+@@ -1225,7 +1225,7 @@ fn render_list(
+         let input_id = format!("agent-jail-{}-new", kind.id());
+         let input = SettingsInputField::new(SharedString::from(input_id.clone()))
+             .with_placeholder(text.placeholder)
+-            .aria_label(format!("Add to {}", text.title))
++            .aria_label(t!("agent-sandbox-list-add-to", list = text.title.as_str()))
+             .tab_index(0)
+             .with_buffer_font()
+             .display_clear_button()
+@@ -1263,7 +1263,7 @@ fn render_list(
+ 
+ /// The generated command (R3.7), read-only with a Copy button, or what replaces it while off.
+ fn render_preview(
+-    off_notice: Option<&'static str>,
++    off_notice: Option<String>,
+     preview: String,
+     memory_notices: Vec<String>,
+     state: &Entity<JailPageState>,
+@@ -1286,10 +1286,10 @@ fn render_preview(
+                         .size(LabelSize::Small)
+                         .buffer_font(cx),
+                 );
+-            let copy = Button::new("agent-jail-copy-command", "Copy Command")
++            let copy = Button::new("agent-jail-copy-command", t!("agent-sandbox-command.copy"))
+                 .label_size(LabelSize::Small)
+                 .tab_index(0_isize)
+-                .tooltip(Tooltip::text("Copy the generated ai-jail command"))
++                .tooltip(Tooltip::text(t!("agent-sandbox-command.copy-tooltip")))
+                 .on_click(move |_, _, cx| {
+                     cx.write_to_clipboard(ClipboardItem::new_string(preview.clone()));
+                 });
+@@ -1308,13 +1308,11 @@ fn render_preview(
+     };
+     v_flex()
+         .gap_0p5()
+-        .child(Label::new("Generated Command"))
++        .child(Label::new(t!("agent-sandbox-command")))
+         .child(
+-            Label::new(
+-                "What a start of this project's agent runs. Environment values are never shown.",
+-            )
+-            .size(LabelSize::Small)
+-            .color(Color::Muted),
++            Label::new(t!("agent-sandbox-command.note"))
++                .size(LabelSize::Small)
++                .color(Color::Muted),
+         )
+         .child(div().mt_2().child(body))
+         .children(memory_notices.into_iter().map(|notice| {
+@@ -1335,8 +1333,8 @@ fn render_defaults(
+ ) -> AnyElement {
+     let default_switch = SwitchField::new(
+         "agent-jail-default-enabled",
+-        Some("Run agents in ai-jail for projects without their own setting"),
+-        Some("The default for every project the switch above was never set for. Turning it off asks first.".into()),
++        Some(t!("agent-sandbox-default-enabled")),
++        Some(t!("agent-sandbox-default-enabled.note").into()),
+         sandbox.enabled,
+         |toggle, window, cx| {
+             confirm::set_default_enabled(*toggle == ToggleState::Selected, window, cx).detach();
+@@ -1351,13 +1349,13 @@ fn render_defaults(
+         default_switch,
+         cx,
+     );
+-    let defaults = |title: &'static str, entries: &[String]| {
++    let defaults = |title: String, entries: &[String]| {
+         v_flex()
+             .gap_0p5()
+             .child(Label::new(title).size(LabelSize::Small))
+             .children(if entries.is_empty() {
+                 vec![
+-                    Label::new("None")
++                    Label::new(t!("agent-sandbox-list-empty"))
+                         .size(LabelSize::Small)
+                         .color(Color::Disabled)
+                         .into_any_element(),
+@@ -1377,14 +1375,14 @@ fn render_defaults(
+     };
+     v_flex()
+         .gap_4()
+-        .child(SettingsSectionHeader::new("Other Projects").no_padding(true))
++        .child(SettingsSectionHeader::new(t!("agent-sandbox-other-projects")).no_padding(true))
+         .child(default_switch)
+         .child(defaults(
+-            "Writable folders for every project (agent_sandbox.rw_maps)",
++            t!("agent-sandbox-default-rw-maps"),
+             &sandbox.rw_maps,
+         ))
+         .child(defaults(
+-            "Allowed hosts for every project (agent_sandbox.allow_hosts)",
++            t!("agent-sandbox-default-allow-hosts"),
+             &sandbox.allow_hosts,
+         ))
+         .into_any_element()
+@@ -1392,11 +1390,6 @@ fn render_defaults(
+ 
+ /// How many recent pages the section lists (R6.3).
+ const RECENT_LIMIT: usize = 10;
+-const MEMORY_OFF: &str = "Memory is off.";
+-const MEMORY_NO_PROJECT: &str = "Open a local project to see its memory.";
+-const MEMORY_INVALID_ENDPOINT: &str =
+-    "The ai-memory endpoint in agent_memory.endpoint is not a valid URL.";
+-const FORWARD_PORT_EXPOSURE_NOTE: &str = "While the jail is on, --forward-port exposes the whole ai-memory service to the jailed agent, not only this project's pages.";
+ 
+ /// The Memory section (R6, R7.3): the `agent_memory.enabled` switch, ai-memory's status for the
+ /// project's scope, its recent pages, and Forget. While memory is off it makes no call at all.
+@@ -1549,7 +1542,11 @@ impl AgentMemorySection {
+                 match outcome {
+                     Some(Ok(())) => this.refresh(cx),
+                     Some(Err(error)) => {
+-                        this.forget_error = Some(format!("Could not forget {path}: {error}"));
++                        this.forget_error = Some(t!(
++                            "agent-memory-forget-failed",
++                            path = path.as_str(),
++                            error = error
++                        ));
+                     }
+                     None => {}
+                 }
+@@ -1562,13 +1559,13 @@ impl AgentMemorySection {
+     /// What the section shows about the server and the scope (R6.1), once ai-memory answered.
+     pub(crate) fn status_line(&self) -> Option<String> {
+         self.status.as_ref().map(|status| {
+-            format!(
+-                "ai-memory {} at {} · {}: {} pages, {} sessions",
+-                status.server_version,
+-                display_endpoint(&status.endpoint),
+-                status.scope,
+-                status.pages,
+-                status.sessions
++            t!(
++                "agent-memory-status",
++                version = status.server_version.to_string(),
++                endpoint = display_endpoint(&status.endpoint),
++                scope = status.scope.to_string(),
++                pages = status.pages,
++                sessions = status.sessions
+             )
+         })
+     }
+@@ -1623,7 +1620,7 @@ impl AgentMemorySection {
+                 "agent_memory event=settings_write_failed key=\"agent_memory.enabled\" error={error:?}"
+             );
+             this.update(cx, |this, cx| {
+-                this.write_error = Some(format!("Could not save the agent memory setting: {error}"));
++                this.write_error = Some(t!("agent-memory-save-failed", error = error.to_string()));
+                 cx.notify();
+             })
+             .log_err();
+@@ -1644,28 +1641,32 @@ impl AgentMemorySection {
+ 
+     fn render_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
+         if !self.memory.enabled {
+-            return muted_label(MEMORY_OFF).into_any_element();
++            return muted_label(t!("agent-memory-off")).into_any_element();
+         }
+         if self.root.is_none() {
+-            return muted_label(MEMORY_NO_PROJECT).into_any_element();
++            return muted_label(t!("agent-memory-no-project")).into_any_element();
+         }
+         let scope_line = self.scope.as_ref().map(|scope| {
+             let source = match scope.resolved_by {
+-                ResolvedBy::Marker => "from .ai-memory.toml",
+-                ResolvedBy::Upstream => "from the upstream remote",
+-                ResolvedBy::Origin => "from the origin remote",
+-                ResolvedBy::Folder => "from the folder name; add .ai-memory.toml to choose another",
++                ResolvedBy::Marker => "marker",
++                ResolvedBy::Upstream => "upstream",
++                ResolvedBy::Origin => "origin",
++                ResolvedBy::Folder => "folder",
+             };
+-            format!("Scope: {scope} ({source})")
++            t!(
++                "agent-memory-scope",
++                scope = scope.to_string(),
++                source = source
++            )
+         });
+         let state_line = match (self.loading, self.status_line()) {
+             (_, Some(status)) => Some(status),
+-            (true, None) => Some("Asking ai-memory…".to_string()),
++            (true, None) => Some(t!("agent-memory-asking")),
+             (false, None) => None,
+         };
+         let mut rows = Vec::with_capacity(self.pages.len());
+         for (index, page) in self.pages.clone().into_iter().enumerate() {
+-            let forget_label = format!("Forget {}", page.path);
++            let forget_label = t!("agent-memory-forget", path = page.path.as_str());
+             let forget_id = format!("agent-memory-forget-{index}");
+             let forget = IconButton::new(SharedString::from(forget_id.clone()), IconName::Trash)
+                 .icon_size(IconSize::Small)
+@@ -1697,10 +1698,10 @@ impl AgentMemorySection {
+                     .child(forget),
+             );
+         }
+-        let refresh = Button::new("agent-memory-refresh", "Refresh")
++        let refresh = Button::new("agent-memory-refresh", t!("agent-memory-refresh"))
+             .label_size(LabelSize::Small)
+             .tab_index(0_isize)
+-            .tooltip(Tooltip::text("Ask ai-memory again"))
++            .tooltip(Tooltip::text(t!("agent-memory-refresh.tooltip")))
+             .on_click(cx.listener(|this, _, _, cx| this.refresh(cx)));
+         let refresh = self.reveal("agent-memory-refresh", refresh, cx);
+         let has_pages = !self.pages().is_empty();
+@@ -1717,7 +1718,7 @@ impl AgentMemorySection {
+             .child(
+                 h_flex()
+                     .justify_between()
+-                    .child(Label::new("Recent Pages"))
++                    .child(Label::new(t!("agent-memory-recent")))
+                     .child(refresh),
+             )
+             .child(
+@@ -1725,7 +1726,7 @@ impl AgentMemorySection {
+                     .gap_1p5()
+                     .children(rows)
+                     .when(!has_pages && !self.loading && error.is_none(), |this| {
+-                        this.child(muted_label("No pages yet."))
++                        this.child(muted_label(t!("agent-memory-no-pages")))
+                     }),
+             )
+             .when_some(self.forget_error.clone(), |this, error| {
+@@ -1753,7 +1754,7 @@ fn client_for(
+     if let Some(client) = cached {
+         return Ok(client);
+     }
+-    let url = url::Url::parse(endpoint).map_err(|_| MEMORY_INVALID_ENDPOINT.to_string())?;
++    let url = url::Url::parse(endpoint).map_err(|_| t!("agent-memory-endpoint-invalid"))?;
+     let http_client = cx.update(|cx| cx.http_client());
+     let auth_token = std::env::var("AI_MEMORY_AUTH_TOKEN").ok();
+     let client = Arc::new(
+@@ -1775,11 +1776,8 @@ impl Render for AgentMemorySection {
+         let body = self.render_body(cx);
+         let memory_switch = SwitchField::new(
+             "agent-memory-enabled",
+-            Some("Let the agents use ai-memory"),
+-            Some(
+-                "The Claude agents read and write this project's ai-memory pages. Turning it off asks nothing: it is not the jail."
+-                    .into(),
+-            ),
++            Some(t!("agent-memory-enabled")),
++            Some(t!("agent-memory-enabled.note").into()),
+             self.memory.enabled,
+             cx.listener(|this, toggle: &ToggleState, _, cx| {
+                 this.set_enabled(*toggle == ToggleState::Selected, cx)
+@@ -1789,9 +1787,9 @@ impl Render for AgentMemorySection {
+         let memory_switch = self.reveal("agent-memory-enabled", memory_switch, cx);
+         v_flex()
+             .gap_4()
+-            .child(SettingsSectionHeader::new("Memory").no_padding(true))
++            .child(SettingsSectionHeader::new(t!("agent-memory")).no_padding(true))
+             .child(memory_switch)
+-            .child(muted_label(FORWARD_PORT_EXPOSURE_NOTE))
++            .child(muted_label(t!("agent-memory-forward-port-exposure")))
+             .when_some(self.endpoint_note(), |this, note| {
+                 this.child(
+                     Label::new(note)
+@@ -1866,19 +1864,22 @@ fn render_restart_notice(root: &Path) -> AnyElement {
+     h_flex()
+         .gap_2()
+         .child(
+-            Label::new(RESTART_NOTICE)
++            Label::new(t!("agent-sandbox-restart-notice"))
+                 .size(LabelSize::Small)
+                 .color(Color::Warning),
+         )
+         .child(
+-            Button::new("agent-jail-restart-agent", RESTART_BUTTON)
+-                .start_icon(Icon::new(IconName::RotateCw).size(IconSize::Small))
+-                .label_size(LabelSize::Small)
+-                .tab_index(0_isize)
+-                .tooltip(Tooltip::text(RESTART_TOOLTIP))
+-                .on_click(move |_, _, cx| {
+-                    agent_sandbox::restart_request::request_restart(&root, cx);
+-                }),
++            Button::new(
++                "agent-jail-restart-agent",
++                t!("agent-sandbox-restart-button"),
++            )
++            .start_icon(Icon::new(IconName::RotateCw).size(IconSize::Small))
++            .label_size(LabelSize::Small)
++            .tab_index(0_isize)
++            .tooltip(Tooltip::text(t!("agent-sandbox-restart-button.tooltip")))
++            .on_click(move |_, _, cx| {
++                agent_sandbox::restart_request::request_restart(&root, cx);
++            }),
+         )
+         .into_any_element()
+ }
+diff --git a/crates/settings_ui/src/pages/agent_jail_page_tests.rs b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+index 7b42588..0371c96 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+@@ -156,7 +156,7 @@ mod page {
+     #[test]
+     fn agent_jail_page_no_project_notice() {
+         assert_eq!(
+-            project_notice(None),
++            project_notice(None).as_deref(),
+             Some("Open a local project to configure it.")
+         );
+         assert_eq!(project_notice(Some(Path::new(ROOT))), None);
+@@ -367,7 +367,7 @@ mod page {
+     #[test]
+     fn agent_jail_page_preview_says_when_the_sandbox_is_off() {
+         assert_eq!(
+-            preview_off_notice(false),
++            preview_off_notice(false).as_deref(),
+             Some("Sandbox off: the agent starts without ai-jail.")
+         );
+         assert_eq!(preview_off_notice(true), None);
+diff --git a/crates/settings_ui/src/pages/agent_jail_steppers.rs b/crates/settings_ui/src/pages/agent_jail_steppers.rs
+index b43c93c..7a97e56 100644
+--- a/crates/settings_ui/src/pages/agent_jail_steppers.rs
++++ b/crates/settings_ui/src/pages/agent_jail_steppers.rs
+@@ -14,6 +14,7 @@ use agent_sandbox::SandboxLimits;
+ use agent_sandbox::disk_watch::parse_size;
+ use gpui::{Context, Entity};
+ use ui::prelude::*;
++use zeo_i18n::t;
+ 
+ use super::super::JailPageState;
+ use super::{LimitField, LimitValue};
+@@ -42,7 +43,12 @@ fn format_mib(mib: u64) -> String {
+ /// number is MiB, the unit the field steps in; a K value must be whole MiB.
+ fn parse_mib(text: &str) -> Result<u64, String> {
+     let text = text.trim();
+-    let refuse = || format!("{text:?} is not a size: a whole number with K, M, G or T (8G)");
++    let refuse = || {
++        t!(
++            "agent-sandbox-stepper-invalid-size",
++            raw = format!("{text:?}")
++        )
++    };
+     let (digits, unit) = match text.chars().last() {
+         Some(last) if last.is_ascii_alphabetic() => {
+             (&text[..text.len() - 1], last.to_ascii_uppercase())
+@@ -152,10 +158,12 @@ impl FromStr for CpuPercent {
+ 
+     fn from_str(text: &str) -> Result<Self, String> {
+         let digits = text.trim().trim_end_matches('%').trim_end();
+-        digits
+-            .parse()
+-            .map(CpuPercent)
+-            .map_err(|_| format!("{text:?} is not a percentage of one CPU"))
++        digits.parse().map(CpuPercent).map_err(|_| {
++            t!(
++                "agent-sandbox-stepper-invalid-cpu",
++                raw = format!("{text:?}")
++            )
++        })
+     }
+ }
+ 
+@@ -173,10 +181,12 @@ impl FromStr for TaskCount {
+     type Err = String;
+ 
+     fn from_str(text: &str) -> Result<Self, String> {
+-        text.trim()
+-            .parse()
+-            .map(TaskCount)
+-            .map_err(|_| format!("{text:?} is not a number of processes"))
++        text.trim().parse().map(TaskCount).map_err(|_| {
++            t!(
++                "agent-sandbox-stepper-invalid-tasks",
++                raw = format!("{text:?}")
++            )
++        })
+     }
+ }
+ 
+@@ -227,7 +237,7 @@ pub(crate) fn render_stepper(
+         LimitValue::Count(count) => count.to_string(),
+     });
+     let id = format!("agent-jail-limit-{}-stepper", field.field());
+-    let label = format!("{} limit for this project", field.title());
++    let label = t!("agent-sandbox-limit-stepper", field = field.field());
+     match field {
+         LimitField::Memory => {
+             let value = MemoryMib::from_setting(pending_text.as_deref().or(on.memory.as_deref()));
+diff --git a/crates/zeo_i18n/locales/en-US/agent-sandbox.ftl b/crates/zeo_i18n/locales/en-US/agent-sandbox.ftl
+new file mode 100644
+index 0000000..9ac6f4b
+--- /dev/null
++++ b/crates/zeo_i18n/locales/en-US/agent-sandbox.ftl
+@@ -0,0 +1,173 @@
++### The Agent Sandbox (ai-jail) settings page: settings_ui/src/pages/agent_jail_*.rs
++### (patch 0178, USE ai-jail). The English is the page's own text, byte for byte, so the
++### page reads the same in en-US as before 0178. Errors and confirmations that come from the
++### agent_sandbox crate (validation, the Turn Off / Forget dialogs) are not here yet.
++
++## Page: notices
++
++agent-sandbox-no-project = Open a local project to configure it.
++agent-sandbox-not-installed = ai-jail is not installed. Install it with `emerge sys-apps/ai-jail`, or enable USE `ai-jail` on `app-editors/zeo`.
++agent-sandbox-ai-jail-file = This project has an .ai-jail file. ai-jail reads it too, and lets it only narrow the generated jail, never widen it.
++agent-sandbox-preview-off = Sandbox off: the agent starts without ai-jail.
++agent-sandbox-memory-endpoint-invalid = No port is forwarded into the jail: the ai-memory endpoint is not a valid URL.
++agent-sandbox-memory-endpoint-remote = No port is forwarded into the jail for ai-memory at { $host }. Add { $host } to the allowed hosts for the jailed agent to reach it.
++agent-sandbox-restart-notice = Restart the agent to apply.
++agent-sandbox-restart-button = Restart Agent
++    .tooltip = Restart this project's agents that run on older settings. A thread in the middle of a turn asks first.
++
++## Page: ai-jail binary
++
++agent-sandbox-binary-looking = Looking for ai-jail…
++agent-sandbox-binary-not-found = Not found at { $path } (agent_sandbox.ai_jail_path).
++agent-sandbox-binary-found = ai-jail { $version } at { $path }
++agent-sandbox-binary-unreadable = The version of ai-jail could not be read: { $error }.
++
++## Page: this project
++
++agent-sandbox-this-project = This Project
++agent-sandbox-project-enabled = Run agents in ai-jail for this project
++    .note = Start the Claude agents of this project inside ai-jail. Turning it off asks first.
++agent-sandbox-default-for-every-project = Default for every project
++agent-sandbox-set-for-this-project = Set for this project
++
++## Page: the two lists. $kind is rw_map or allow_host.
++
++agent-sandbox-rw-maps = Writable Folders
++    .note = Folders the jailed agent may write besides the project, chosen with Choose Folder. Each must be outside the project, the Claude config directory and every other writable folder.
++    .placeholder = Add a writable folder (e.g. ~/data)…
++agent-sandbox-allow-hosts = Allowed Hosts
++    .note = Hosts the jailed agent may reach. Each is a bare DNS name: no scheme, port, path, wildcard or IP address.
++    .placeholder = Add an allowed host (e.g. registry.npmjs.org)…
++agent-sandbox-list-add-to = Add to { $list }
++agent-sandbox-list-remove = Remove { $entry }
++agent-sandbox-choose-folder = Choose Folder…
++agent-sandbox-choose-folder-prompt = Add Writable Folder
++agent-sandbox-entry-already-listed = { $kind ->
++    [rw_map] Writable folder "{ $raw }" is already in the list.
++   *[allow_host] Allowed host "{ $raw }" is already in the list.
++}
++agent-sandbox-entry-is-claude-dir = Writable folder "{ $raw }" is the Claude config directory, which the jail always maps.
++agent-sandbox-entry-is-default = { $kind ->
++    [rw_map] Writable folder "{ $raw }" applies to every project; remove it from agent_sandbox.{ $field } in settings.json.
++   *[allow_host] Allowed host "{ $raw }" applies to every project; remove it from agent_sandbox.{ $field } in settings.json.
++}
++agent-sandbox-entry-not-listed = { $kind ->
++    [rw_map] Writable folder "{ $raw }" is not in this project's list.
++   *[allow_host] Allowed host "{ $raw }" is not in this project's list.
++}
++agent-sandbox-save-failed = Could not save the agent sandbox setting: { $error }
++
++## Page: limits. $field is memory, cpu_quota, max_tasks or disk_quota.
++
++agent-sandbox-limits = Resource Limits
++    .note = Applied by ai-jail to the whole jail. Past the disk growth the agent is paused, not stopped. 0 turns a limit off for this project. Shift steps further, Alt finer; click a value to type one.
++agent-sandbox-limit-title = { $field ->
++    [memory] Memory
++    [cpu_quota] CPU
++    [max_tasks] Processes
++   *[disk_quota] Disk Growth
++}
++agent-sandbox-limit-reset = { $field ->
++    [memory] Use the default memory
++    [cpu_quota] Use the default cpu
++    [max_tasks] Use the default processes
++   *[disk_quota] Use the default disk growth
++}
++agent-sandbox-limit-stepper = { $field ->
++    [memory] Memory limit for this project
++    [cpu_quota] CPU limit for this project
++    [max_tasks] Processes limit for this project
++   *[disk_quota] Disk Growth limit for this project
++}
++agent-sandbox-limit-off = No limit
++agent-sandbox-limit-invalid-memory = { $raw } is not a memory size: a whole number with an optional K, M, G or T (8G), or 0 for none.
++agent-sandbox-limit-invalid-disk = { $raw } is not a disk size: a whole number with an optional K, M, G or T (20G), or 0 for none.
++agent-sandbox-limit-invalid-cpu = { $raw } is not a percentage of one CPU (400 is four CPUs), or 0 for none.
++agent-sandbox-limit-invalid-tasks = { $raw } is not a number of processes, or 0 for none.
++agent-sandbox-stepper-invalid-size = { $raw } is not a size: a whole number with K, M, G or T (8G)
++agent-sandbox-stepper-invalid-cpu = { $raw } is not a percentage of one CPU
++agent-sandbox-stepper-invalid-tasks = { $raw } is not a number of processes
++agent-sandbox-state-folder = State Folder
++    .note = This project's jail keeps its home, /tmp and Claude login in:
++    .login = To log in before the first start, run:
++
++## Page: host
++
++agent-sandbox-host = Host
++agent-sandbox-hide-host = Hide the Host
++    .note = The jailed agent sees only the CPUs and memory its limits allow, its own cgroup, a machine id of its own and, with ai-jail 3.5.0-r6, a host name of its own (desktop- and six characters, the same on every start of this project), instead of this machine's; with ai-jail 3.5.0-r3, also a kernel version without the build details, a generic OS name, no swap or disks, and an uptime counted from its start. Still visible: the writable folders' disk and size, the CPU numbers, cpuid and the toolchains' own version strings. It hides; it does not isolate. Restart the agent to apply.
++agent-sandbox-hide-disks = Hide the Disks
++    .note = Serve /usr, /etc and /opt through read-only overlays, so the jail's mount table names no disk of this machine for them. File walks over those folders get slower. Needs ai-jail 3.5.0-r3. Restart the agent to apply.
++agent-sandbox-hide-kernel = Hide the Kernel
++    .note = Answer uname and sysinfo from ai-jail, so the kernel version, memory, load and uptime they report match the hidden host instead of this machine's. Each of those calls makes a round trip to ai-jail. Needs ai-jail 3.5.0-r4. Restart the agent to apply.
++agent-sandbox-hide-system-config = Hide the System Config
++    .note = Show the jail only the parts of /etc its tools need -- accounts, DNS, certificates, time zone, the library loader and the shell's startup -- instead of all of this machine's configuration. /usr and /opt stay: the toolchains live there. A tool that reads another /etc file may fail. Needs ai-jail 3.5.0-r5. Restart the agent to apply.
++agent-sandbox-host-layer-off = Applies only while Hide the Host is on.
++agent-sandbox-reserve-cpus = Reserve CPUs
++    .note = Pin the jail to cores of its own, none shared with another reserving jail while enough are free. Off, the CPU quota alone limits it. Restart the agent to apply.
++    .forced = On while Hide the Host is on: its CPU files must match the cores the jail runs on.
++
++## Page: capabilities
++
++agent-sandbox-capabilities = Capabilities
++    .note = What the jailed agent may use besides the project. A project's own choice replaces the default in agent_sandbox.capabilities, field by field.
++agent-sandbox-mcp-servers = MCP Servers
++    .note = Zeo's MCP servers this project's jailed agent may use. A chosen server runs outside the jail, in Zeo, and the agent reaches it through Zeo (MCP over ACP), so its tools act with your files and network. None unless the default list (agent_sandbox.capabilities) names some; a choice applies to the next thread.
++    .none = This project has no MCP servers. Add one under MCP Servers.
++    .reset = Use the default MCP servers
++agent-sandbox-mcp-running = Running
++agent-sandbox-mcp-starting = Starting
++agent-sandbox-mcp-stopped = Stopped: handed over as configured only if the jail can start it
++agent-sandbox-mcp-failed = Failed to start
++agent-sandbox-mcp-needs-auth = Needs authentication
++agent-sandbox-mcp-carries-secret = { $status }. Carries a secret ({ $places }): asks before turning on
++agent-sandbox-mcp-zeo-lsp = The project's language servers, read-only: diagnostics, definition, references, hover, symbols
++agent-sandbox-mcp-not-configured = Not configured in this project
++agent-sandbox-skills = Skills
++    .note = Zeo's skills (~/.agents/skills and this project's .agents/skills) as plugins, mapped read-only. Restart the agent to apply.
++    .reset = Use the default for skills
++agent-sandbox-plugins = Claude Code Plugins
++    .note = Zeo has no plugin store yet, so the jail gets no Claude Code plugin: the host's ~/.claude/plugins is not mapped. Zeo's skills reach it as plugins, above.
++agent-sandbox-connectors = claude.ai Connectors
++    .note = The account's claude.ai connectors. They reach their vendors through anthropic.com, past the allowed hosts. Restart the agent to apply.
++
++## Page: generated command
++
++agent-sandbox-command = Generated Command
++    .note = What a start of this project's agent runs. Environment values are never shown.
++    .copy = Copy Command
++    .copy-tooltip = Copy the generated ai-jail command
++
++## Page: other projects
++
++agent-sandbox-other-projects = Other Projects
++agent-sandbox-default-enabled = Run agents in ai-jail for projects without their own setting
++    .note = The default for every project the switch above was never set for. Turning it off asks first.
++agent-sandbox-default-rw-maps = Writable folders for every project (agent_sandbox.rw_maps)
++agent-sandbox-default-allow-hosts = Allowed hosts for every project (agent_sandbox.allow_hosts)
++agent-sandbox-list-empty = None
++
++## Page: memory (ai-memory)
++
++agent-memory = Memory
++agent-memory-enabled = Let the agents use ai-memory
++    .note = The Claude agents read and write this project's ai-memory pages. Turning it off asks nothing: it is not the jail.
++agent-memory-off = Memory is off.
++agent-memory-no-project = Open a local project to see its memory.
++agent-memory-endpoint-invalid = The ai-memory endpoint in agent_memory.endpoint is not a valid URL.
++agent-memory-forward-port-exposure = While the jail is on, --forward-port exposes the whole ai-memory service to the jailed agent, not only this project's pages.
++agent-memory-status = ai-memory { $version } at { $endpoint } · { $scope }: { $pages } pages, { $sessions } sessions
++agent-memory-scope = { $source ->
++    [marker] Scope: { $scope } (from .ai-memory.toml)
++    [upstream] Scope: { $scope } (from the upstream remote)
++    [origin] Scope: { $scope } (from the origin remote)
++   *[folder] Scope: { $scope } (from the folder name; add .ai-memory.toml to choose another)
++}
++agent-memory-asking = Asking ai-memory…
++agent-memory-refresh = Refresh
++    .tooltip = Ask ai-memory again
++agent-memory-recent = Recent Pages
++agent-memory-no-pages = No pages yet.
++agent-memory-forget = Forget { $path }
++agent-memory-forget-failed = Could not forget { $path }: { $error }
++agent-memory-save-failed = Could not save the agent memory setting: { $error }
+diff --git a/crates/zeo_i18n/locales/pt-BR/agent-sandbox.ftl b/crates/zeo_i18n/locales/pt-BR/agent-sandbox.ftl
+new file mode 100644
+index 0000000..8375a7e
+--- /dev/null
++++ b/crates/zeo_i18n/locales/pt-BR/agent-sandbox.ftl
+@@ -0,0 +1,179 @@
++### The Agent Sandbox (ai-jail) settings page in Brazilian Portuguese (patch 0178).
++### Drafted with Lara Translate on 2026-11-24 and revised by hand; awaiting the operator's
++### review as a native speaker. Glossary: "jail", "sandbox" (o sandbox) and "thread" (a thread)
++### stay in English. "MCP Servers" names Zed's own page, which is not translated, so it stays too.
++
++## Page: notices
++
++agent-sandbox-no-project = Abra um projeto local para configurá-lo.
++agent-sandbox-not-installed = O ai-jail não está instalado. Instale com `emerge sys-apps/ai-jail` ou ative a USE `ai-jail` em `app-editors/zeo`.
++agent-sandbox-ai-jail-file = Este projeto tem um arquivo .ai-jail. O ai-jail também o lê e só o deixa restringir o jail gerado, nunca ampliá-lo.
++agent-sandbox-preview-off = Sandbox desligado: o agente inicia sem o ai-jail.
++agent-sandbox-memory-endpoint-invalid = Nenhuma porta é encaminhada para o jail: o endpoint do ai-memory não é uma URL válida.
++agent-sandbox-memory-endpoint-remote = Nenhuma porta do ai-memory em { $host } é encaminhada para o jail. Adicione { $host } aos hosts permitidos para que o agente no jail o alcance.
++agent-sandbox-restart-notice = Reinicie o agente para aplicar.
++agent-sandbox-restart-button = Reiniciar agente
++    .tooltip = Reinicia os agentes deste projeto que rodam com configurações antigas. Uma thread no meio de um turno pergunta antes.
++
++## Page: ai-jail binary
++
++agent-sandbox-binary-looking = Procurando o ai-jail…
++agent-sandbox-binary-not-found = Não encontrado em { $path } (agent_sandbox.ai_jail_path).
++agent-sandbox-binary-found = ai-jail { $version } em { $path }
++agent-sandbox-binary-unreadable = Não foi possível ler a versão do ai-jail: { $error }.
++
++## Page: this project
++
++agent-sandbox-this-project = Este projeto
++agent-sandbox-project-enabled = Rodar os agentes no ai-jail neste projeto
++    .note = Inicia os agentes Claude deste projeto dentro do ai-jail. Desligar pede confirmação.
++agent-sandbox-default-for-every-project = Padrão de todos os projetos
++agent-sandbox-set-for-this-project = Definido para este projeto
++
++## Page: the two lists. $kind is rw_map or allow_host.
++
++agent-sandbox-rw-maps = Pastas graváveis
++    .note = Pastas em que o agente no jail pode gravar além do projeto, escolhidas com Escolher pasta. Cada uma deve ficar fora do projeto, do diretório de configuração do Claude e de qualquer outra pasta gravável.
++    .placeholder = Adicionar uma pasta gravável (ex.: ~/data)…
++agent-sandbox-allow-hosts = Hosts permitidos
++    .note = Hosts que o agente no jail pode alcançar. Cada um é um nome DNS simples: sem esquema, porta, caminho, curinga ou endereço IP.
++    .placeholder = Adicionar um host permitido (ex.: registry.npmjs.org)…
++agent-sandbox-list-add-to = Adicionar a { $list }
++agent-sandbox-list-remove = Remover { $entry }
++agent-sandbox-choose-folder = Escolher pasta…
++agent-sandbox-choose-folder-prompt = Adicionar pasta gravável
++agent-sandbox-entry-already-listed = { $kind ->
++    [rw_map] A pasta gravável "{ $raw }" já está na lista.
++   *[allow_host] O host permitido "{ $raw }" já está na lista.
++}
++agent-sandbox-entry-is-claude-dir = A pasta gravável "{ $raw }" é o diretório de configuração do Claude, que o jail sempre mapeia.
++agent-sandbox-entry-is-default = { $kind ->
++    [rw_map] A pasta gravável "{ $raw }" vale para todos os projetos; remova-a de agent_sandbox.{ $field } no settings.json.
++   *[allow_host] O host permitido "{ $raw }" vale para todos os projetos; remova-o de agent_sandbox.{ $field } no settings.json.
++}
++agent-sandbox-entry-not-listed = { $kind ->
++    [rw_map] A pasta gravável "{ $raw }" não está na lista deste projeto.
++   *[allow_host] O host permitido "{ $raw }" não está na lista deste projeto.
++}
++agent-sandbox-save-failed = Não foi possível salvar a configuração do sandbox do agente: { $error }
++
++## Page: limits. $field is memory, cpu_quota, max_tasks or disk_quota.
++
++agent-sandbox-limits = Limites de recursos
++    .note = Aplicados pelo ai-jail ao jail inteiro. Passado o crescimento de disco, o agente é pausado, não encerrado. 0 desliga um limite neste projeto. Shift dá passos maiores, Alt menores; clique num valor para digitá-lo.
++agent-sandbox-limit-title = { $field ->
++    [memory] Memória
++    [cpu_quota] CPU
++    [max_tasks] Processos
++   *[disk_quota] Crescimento de disco
++}
++agent-sandbox-limit-reset = { $field ->
++    [memory] Usar o padrão de memória
++    [cpu_quota] Usar o padrão de CPU
++    [max_tasks] Usar o padrão de processos
++   *[disk_quota] Usar o padrão de crescimento de disco
++}
++agent-sandbox-limit-stepper = { $field ->
++    [memory] Limite de memória deste projeto
++    [cpu_quota] Limite de CPU deste projeto
++    [max_tasks] Limite de processos deste projeto
++   *[disk_quota] Limite de crescimento de disco deste projeto
++}
++agent-sandbox-limit-off = Sem limite
++agent-sandbox-limit-invalid-memory = { $raw } não é um tamanho de memória: um número inteiro com K, M, G ou T opcional (8G), ou 0 para nenhum.
++agent-sandbox-limit-invalid-disk = { $raw } não é um tamanho de disco: um número inteiro com K, M, G ou T opcional (20G), ou 0 para nenhum.
++agent-sandbox-limit-invalid-cpu = { $raw } não é uma porcentagem de uma CPU (400 são quatro CPUs), ou 0 para nenhum.
++agent-sandbox-limit-invalid-tasks = { $raw } não é um número de processos, ou 0 para nenhum.
++agent-sandbox-stepper-invalid-size = { $raw } não é um tamanho: um número inteiro com K, M, G ou T (8G)
++agent-sandbox-stepper-invalid-cpu = { $raw } não é uma porcentagem de uma CPU
++agent-sandbox-stepper-invalid-tasks = { $raw } não é um número de processos
++agent-sandbox-state-folder = Pasta de estado
++    .note = O jail deste projeto guarda a home, o /tmp e o login do Claude em:
++    .login = Para fazer login antes da primeira inicialização, rode:
++
++## Page: host
++
++agent-sandbox-host = Host
++agent-sandbox-hide-host = Ocultar o host
++    .note = O agente no jail vê só as CPUs e a memória que seus limites permitem, o próprio cgroup, um machine id próprio e, com o ai-jail 3.5.0-r6, um nome de host próprio (desktop- e seis caracteres, o mesmo a cada inicialização deste projeto), em vez dos desta máquina; com o ai-jail 3.5.0-r3, também uma versão do kernel sem os detalhes da compilação, um nome de sistema genérico, nenhum swap ou disco e um uptime contado desde o seu início. Ainda visíveis: o disco e o tamanho das pastas graváveis, os números das CPUs, o cpuid e as próprias strings de versão das toolchains. Oculta; não isola. Reinicie o agente para aplicar.
++agent-sandbox-hide-disks = Ocultar os discos
++    .note = Serve /usr, /etc e /opt por overlays somente leitura, para que a tabela de montagem do jail não cite nenhum disco desta máquina para eles. Varreduras de arquivos nessas pastas ficam mais lentas. Requer o ai-jail 3.5.0-r3. Reinicie o agente para aplicar.
++agent-sandbox-hide-kernel = Ocultar o kernel
++    .note = Responde uname e sysinfo pelo ai-jail, para que a versão do kernel, a memória, a carga e o uptime que informam batam com o host oculto, e não com esta máquina. Cada uma dessas chamadas faz uma ida e volta ao ai-jail. Requer o ai-jail 3.5.0-r4. Reinicie o agente para aplicar.
++agent-sandbox-hide-system-config = Ocultar a configuração do sistema
++    .note = Mostra ao jail só as partes do /etc de que suas ferramentas precisam -- contas, DNS, certificados, fuso horário, o carregador de bibliotecas e a inicialização do shell -- em vez de toda a configuração desta máquina. /usr e /opt continuam: as toolchains ficam lá. Uma ferramenta que leia outro arquivo do /etc pode falhar. Requer o ai-jail 3.5.0-r5. Reinicie o agente para aplicar.
++agent-sandbox-host-layer-off = Vale só enquanto Ocultar o host estiver ligado.
++agent-sandbox-reserve-cpus = Reservar CPUs
++    .note = Fixa o jail em núcleos próprios, que nenhum outro jail com reserva compartilha enquanto houver núcleos livres suficientes. Desligado, só a cota de CPU o limita. Reinicie o agente para aplicar.
++    .forced = Ligado enquanto Ocultar o host estiver ligado: os arquivos de CPU dele precisam bater com os núcleos em que o jail roda.
++
++## Page: capabilities
++
++agent-sandbox-capabilities = Capacidades
++    .note = O que o agente no jail pode usar além do projeto. A escolha do próprio projeto substitui o padrão de agent_sandbox.capabilities, campo a campo.
++agent-sandbox-mcp-servers = Servidores MCP
++    .note = Os servidores MCP do Zeo que o agente no jail deste projeto pode usar. Um servidor escolhido roda fora do jail, no Zeo, e o agente o alcança pelo Zeo (MCP sobre ACP), então as ferramentas dele agem com os seus arquivos e a sua rede. Nenhum, a menos que a lista padrão (agent_sandbox.capabilities) cite algum; a escolha vale para a próxima thread.
++    .none = Este projeto não tem servidores MCP. Adicione um na página MCP Servers.
++    .reset = Usar os servidores MCP padrão
++agent-sandbox-mcp-running = Rodando
++agent-sandbox-mcp-starting = Iniciando
++agent-sandbox-mcp-stopped = Parado: entregue como configurado só se o jail conseguir iniciá-lo
++agent-sandbox-mcp-failed = Falhou ao iniciar
++agent-sandbox-mcp-needs-auth = Requer autenticação
++agent-sandbox-mcp-carries-secret = { $status }. Contém um segredo ({ $places }): pergunta antes de ligar
++agent-sandbox-mcp-zeo-lsp = Os servidores de linguagem do projeto, somente leitura: diagnósticos, definição, referências, hover, símbolos
++agent-sandbox-mcp-not-configured = Não configurado neste projeto
++agent-sandbox-skills = Skills
++    .note = As skills do Zeo (~/.agents/skills e o .agents/skills deste projeto) como plugins, mapeadas somente leitura. Reinicie o agente para aplicar.
++    .reset = Usar o padrão de skills
++agent-sandbox-plugins = Plugins do Claude Code
++    .note = O Zeo ainda não tem loja de plugins, então o jail não recebe nenhum plugin do Claude Code: o ~/.claude/plugins do host não é mapeado. As skills do Zeo chegam a ele como plugins, acima.
++agent-sandbox-connectors = Conectores do claude.ai
++    .note = Os conectores do claude.ai da conta. Eles alcançam seus fornecedores pelo anthropic.com, por fora dos hosts permitidos. Reinicie o agente para aplicar.
++
++## Page: generated command
++
++agent-sandbox-command = Comando gerado
++    .note = O que uma inicialização do agente deste projeto executa. Valores de ambiente nunca aparecem.
++    .copy = Copiar comando
++    .copy-tooltip = Copiar o comando ai-jail gerado
++
++## Page: other projects
++
++agent-sandbox-other-projects = Outros projetos
++agent-sandbox-default-enabled = Rodar os agentes no ai-jail nos projetos sem configuração própria
++    .note = O padrão de todo projeto em que a chave acima nunca foi definida. Desligar pede confirmação.
++agent-sandbox-default-rw-maps = Pastas graváveis de todos os projetos (agent_sandbox.rw_maps)
++agent-sandbox-default-allow-hosts = Hosts permitidos de todos os projetos (agent_sandbox.allow_hosts)
++agent-sandbox-list-empty = Nenhum
++
++## Page: memory (ai-memory)
++
++agent-memory = Memória
++agent-memory-enabled = Deixar os agentes usarem o ai-memory
++    .note = Os agentes Claude leem e gravam as páginas do ai-memory deste projeto. Desligar não pede confirmação: isto não é o jail.
++agent-memory-off = A memória está desligada.
++agent-memory-no-project = Abra um projeto local para ver a memória dele.
++agent-memory-endpoint-invalid = O endpoint do ai-memory em agent_memory.endpoint não é uma URL válida.
++agent-memory-forward-port-exposure = Com o jail ligado, --forward-port expõe todo o serviço do ai-memory ao agente no jail, não só as páginas deste projeto.
++agent-memory-status = ai-memory { $version } em { $endpoint } · { $scope }: { $pages ->
++    [one] { $pages } página
++   *[other] { $pages } páginas
++}, { $sessions ->
++    [one] { $sessions } sessão
++   *[other] { $sessions } sessões
++}
++agent-memory-scope = { $source ->
++    [marker] Escopo: { $scope } (do .ai-memory.toml)
++    [upstream] Escopo: { $scope } (do remote upstream)
++    [origin] Escopo: { $scope } (do remote origin)
++   *[folder] Escopo: { $scope } (do nome da pasta; adicione um .ai-memory.toml para escolher outro)
++}
++agent-memory-asking = Consultando o ai-memory…
++agent-memory-refresh = Atualizar
++    .tooltip = Consultar o ai-memory de novo
++agent-memory-recent = Páginas recentes
++agent-memory-no-pages = Nenhuma página ainda.
++agent-memory-forget = Esquecer { $path }
++agent-memory-forget-failed = Não foi possível esquecer { $path }: { $error }
++agent-memory-save-failed = Não foi possível salvar a configuração de memória do agente: { $error }
+diff --git a/crates/zeo_i18n/src/catalog.rs b/crates/zeo_i18n/src/catalog.rs
+index 9a71fa4..9ed4402 100644
+--- a/crates/zeo_i18n/src/catalog.rs
++++ b/crates/zeo_i18n/src/catalog.rs
+@@ -44,6 +44,10 @@ pub static SHIPPED: &[LocaleSource] = &[
+                 "en-US/agent-tasks.ftl",
+                 include_str!("../locales/en-US/agent-tasks.ftl"),
+             ),
++            (
++                "en-US/agent-sandbox.ftl",
++                include_str!("../locales/en-US/agent-sandbox.ftl"),
++            ),
+         ],
+     },
+     LocaleSource {
+@@ -58,6 +62,10 @@ pub static SHIPPED: &[LocaleSource] = &[
+                 "pt-BR/agent-tasks.ftl",
+                 include_str!("../locales/pt-BR/agent-tasks.ftl"),
+             ),
++            (
++                "pt-BR/agent-sandbox.ftl",
++                include_str!("../locales/pt-BR/agent-sandbox.ftl"),
++            ),
+         ],
+     },
+ ];

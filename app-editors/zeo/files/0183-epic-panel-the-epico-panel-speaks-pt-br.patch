@@ -1,0 +1,430 @@
+From a0cbb8ae0139290ea4d4ff7d811b23d508476ec3 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Wed, 25 Nov 2026 03:52:58 -0300
+Subject: [PATCH] epic_panel: the Epico panel speaks pt-BR
+
+The Epico panel (0066) reads its text through zeo_i18n's t! from
+locales/<language>/epic-panel.ftl, in en-US and pt-BR: the empty states, the
+live-updates banner, Open EPICO.md, the open-failure notification, Refresh,
+the Archived and "more not shown" rows, the row badges and the problem lines
+of a row's tooltip. The en-US file is the code's English byte for byte; the
+badges select on $problem.
+
+The empty-state lines were &'static str and doubled as the selection's key;
+they are SharedString now, still compared by value. Kept as they are: the
+panel's name in the dock ("Epico Stories"), the plugin's own words (story,
+the type/scale/engineering fields, the statuses) and EPICO.md's name.
+
+In the epic group, after 0066.
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 0d50a32..3c11555 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5979,6 +5979,7 @@ dependencies = [
+  "ui",
+  "util",
+  "workspace",
++ "zeo_i18n",
+ ]
+ 
+ [[package]]
+diff --git a/crates/epic_panel/Cargo.toml b/crates/epic_panel/Cargo.toml
+index 3c53c61..9f6ae71 100644
+--- a/crates/epic_panel/Cargo.toml
++++ b/crates/epic_panel/Cargo.toml
+@@ -32,6 +32,7 @@ ui.workspace = true
+ util.workspace = true
+ workspace.workspace = true
+ 
++zeo_i18n.workspace = true
+ [dev-dependencies]
+ db = { workspace = true, features = ["test-support"] }
+ editor = { workspace = true, features = ["test-support"] }
+diff --git a/crates/epic_panel/src/panel.rs b/crates/epic_panel/src/panel.rs
+index 4892a4c..9fe2532 100644
+--- a/crates/epic_panel/src/panel.rs
++++ b/crates/epic_panel/src/panel.rs
+@@ -35,6 +35,7 @@ use workspace::{
+     dock::{DockPosition, Panel, PanelEvent},
+     workspace_error::{ErrorAction, ErrorSeverity, WorkspaceError},
+ };
++use zeo_i18n::t;
+ 
+ use crate::format::{StatusCell, progress_text};
+ use crate::scan::{
+@@ -53,8 +54,6 @@ actions!(
+     ]
+ );
+ 
+-const NO_EPIC_DIR: &str = "No .epico/ directory in this project";
+-const NO_STORIES: &str = "No stories yet";
+ /// The absent number, status or progress: U+2014, as the plugin writes it.
+ const ABSENT: &str = "\u{2014}";
+ /// The right gutter every list row keeps, so the always-visible scrollbar never covers the
+@@ -63,7 +62,6 @@ const ABSENT: &str = "\u{2014}";
+ /// `ui`). `Pixels` has no const arithmetic, so the sum is spelled out here;
+ /// `panel_polish_tests` recomputes it from `ScrollbarStyle::Regular` and fails on drift.
+ const ROW_END_PADDING: Pixels = px(14.);
+-const UNKNOWN_STATUS: &str = "Status not known to this Zeo; the epic plugin may be newer";
+ 
+ /// Registers the panel's `ToggleFocus` on every workspace created from now on. No default
+ /// keybinding (A3): the palette action and the dock button are enough.
+@@ -100,7 +98,7 @@ pub enum DisplayEntry {
+     /// A scan error or a snapshot note, at the top of that worktree's section.
+     WorktreeError { worktree: usize, message: String },
+     /// R1.4, R2.11.
+-    Empty { message: &'static str },
++    Empty { message: SharedString },
+ }
+ 
+ impl DisplayEntry {
+@@ -131,7 +129,7 @@ enum EntryKey {
+     MoreNotShown(WorktreeId),
+     WorktreeError(WorktreeId, String),
+     /// `None` for the project-wide "No .epic/ directory" line.
+-    Empty(Option<WorktreeId>, &'static str),
++    Empty(Option<WorktreeId>, SharedString),
+ }
+ 
+ struct Selection {
+@@ -563,9 +561,9 @@ impl EpicPanel {
+             .worktrees
+             .iter()
+             .filter_map(|epic| {
+-                let line = format!(
+-                    "Live updates are off: {}. Use Refresh.",
+-                    epic.watch_failure.as_deref()?
++                let line = t!(
++                    "epic-panel-live-updates-off",
++                    reason = epic.watch_failure.as_deref()?
+                 );
+                 Some(if several {
+                     format!("{}: {line}", epic.name)
+@@ -620,7 +618,7 @@ impl EpicPanel {
+         let mut entries = Vec::new();
+         if self.worktrees.is_empty() {
+             entries.push(DisplayEntry::Empty {
+-                message: NO_EPIC_DIR,
++                message: t!("epic-panel-no-epic-dir").into(),
+             });
+         }
+         let several = self.worktrees.len() > 1;
+@@ -649,7 +647,7 @@ impl EpicPanel {
+             // The totals are counted before the row cap, so a capped tree is never "empty".
+             if snapshot.active_total == 0 && snapshot.archived_total == 0 {
+                 entries.push(DisplayEntry::Empty {
+-                    message: NO_STORIES,
++                    message: t!("epic-panel-no-stories").into(),
+                 });
+             }
+             entries.extend((0..snapshot.active.len()).map(|row| DisplayEntry::Story {
+@@ -782,7 +780,7 @@ impl EpicPanel {
+                 EntryKey::WorktreeError(worktree_id(*worktree)?, message.clone())
+             }
+             DisplayEntry::Empty { message } => {
+-                EntryKey::Empty(self.empty_line_worktree(index), message)
++                EntryKey::Empty(self.empty_line_worktree(index), message.clone())
+             }
+         })
+     }
+@@ -865,7 +863,7 @@ impl EpicPanel {
+             .get(worktree)
+             .and_then(|epic| epic.snapshot.as_ref())
+             .map_or("EPICO.md", |snapshot| index_file_name(&snapshot.epic_dir));
+-        format!("Open {index_file}")
++        t!("epic-panel-open-index", file = index_file)
+     }
+ 
+     fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+@@ -961,7 +959,11 @@ impl EpicPanel {
+                 log_value(&relative),
+                 log_value(&reason)
+             );
+-            let message = format!("Could not open {worktree_name}/{relative}: {reason}");
++            let message = t!(
++                "epic-panel-open-failed",
++                path = format!("{worktree_name}/{relative}"),
++                reason = reason.as_str()
++            );
+             workspace
+                 .update(cx, |workspace, cx| {
+                     workspace.show_error(OpenFailed(message.into()), cx)
+@@ -1009,7 +1011,7 @@ impl EpicPanel {
+                 IconButton::new("epic-panel-refresh", IconName::RotateCw)
+                     .icon_size(IconSize::Small)
+                     .icon_color(Color::Muted)
+-                    .tooltip(Tooltip::text("Refresh"))
++                    .tooltip(Tooltip::text(t!("epic-panel-refresh")))
+                     // Dispatched on the panel's own node, so the click reaches the handler
+                     // whether or not the panel holds the focus (R5.5).
+                     .on_click(move |_, window, cx| {
+@@ -1082,12 +1084,12 @@ impl EpicPanel {
+                     panel.select_and_activate(index, window, cx)
+                 }))
+                 .child(
+-                    Label::new(format!("Archived ({count})"))
++                    Label::new(t!("epic-panel-archived", count = *count))
+                         .size(LabelSize::Small)
+                         .truncate(),
+                 ),
+             DisplayEntry::MoreNotShown { count, .. } => item.child(
+-                Label::new(format!("{count} more not shown"))
++                Label::new(t!("epic-panel-more-not-shown", count = *count))
+                     .size(LabelSize::Small)
+                     .color(Color::Muted)
+                     .truncate(),
+@@ -1106,7 +1108,7 @@ impl EpicPanel {
+                         .truncate(),
+                 ),
+             DisplayEntry::Empty { message } => item.child(
+-                Label::new(*message)
++                Label::new(message.clone())
+                     .size(LabelSize::Small)
+                     .color(Color::Muted)
+                     .truncate(),
+@@ -1355,13 +1357,15 @@ fn render_story(index: usize, row: &StoryRow) -> impl IntoElement {
+ 
+ /// The problem a row shows instead of its contents (R2.7, R6.1-R6.3). A problem wins over
+ /// "no story files": a row whose only file is unreadable has nothing to open either.
+-fn row_badge(row: &StoryRow) -> Option<&'static str> {
+-    match &row.problem {
+-        Some(RowProblem::Unreadable(..)) => Some("unreadable"),
+-        Some(RowProblem::TooLarge(..)) => Some("too large"),
+-        Some(RowProblem::Symlink(..)) => Some("symlink not followed"),
+-        None => row.open_target.is_none().then_some("no story files"),
+-    }
++fn row_badge(row: &StoryRow) -> Option<String> {
++    let problem = match &row.problem {
++        Some(RowProblem::Unreadable(..)) => "unreadable",
++        Some(RowProblem::TooLarge(..)) => "too_large",
++        Some(RowProblem::Symlink(..)) => "symlink",
++        None if row.open_target.is_none() => "no_files",
++        None => return None,
++    };
++    Some(t!("epic-panel-badge", problem = problem))
+ }
+ 
+ /// The title (the directory name when there is none), the `type`/`scale`/`engineering` values
+@@ -1382,14 +1386,23 @@ fn row_tooltip(row: &StoryRow) -> String {
+     }
+     match &row.problem {
+         Some(RowProblem::Unreadable(file, reason)) => {
+-            lines.push(format!("{file}: unreadable ({reason})"));
++            lines.push(t!(
++                "epic-panel-problem-unreadable",
++                file = file.as_str(),
++                reason = reason.to_string()
++            ));
+         }
+-        Some(RowProblem::TooLarge(file, bytes)) => lines.push(format!(
+-            "{file}: too large ({bytes} bytes, over the {MAX_FILE_BYTES}-byte limit)"
++        Some(RowProblem::TooLarge(file, bytes)) => lines.push(t!(
++            "epic-panel-problem-too-large",
++            file = file.as_str(),
++            bytes = *bytes,
++            limit = MAX_FILE_BYTES
+         )),
+-        Some(RowProblem::Symlink(file)) => lines.push(format!("{file}: symlink not followed")),
++        Some(RowProblem::Symlink(file)) => {
++            lines.push(t!("epic-panel-problem-symlink", file = file.as_str()))
++        }
+         None if row.open_target.is_none() => {
+-            lines.push("No story.md or tasks.md in this directory".to_string());
++            lines.push(t!("epic-panel-problem-no-files"));
+         }
+         None => {}
+     }
+@@ -1397,8 +1410,8 @@ fn row_tooltip(row: &StoryRow) -> String {
+ }
+ 
+ /// The R3.8 warning, for a status outside the lifecycle only.
+-fn status_warning(status: &StatusCell) -> Option<&'static str> {
+-    matches!(status, StatusCell::Unknown(_)).then_some(UNKNOWN_STATUS)
++fn status_warning(status: &StatusCell) -> Option<String> {
++    matches!(status, StatusCell::Unknown(_)).then(|| t!("epic-panel-unknown-status"))
+ }
+ 
+ fn saved_position(saved: Result<Option<String>>) -> DockPosition {
+@@ -1449,7 +1462,7 @@ impl Render for EpicPanel {
+         // With no `.epic/` anywhere the message stands alone, centred, as in the Agent Tasks
+         // panel; "No stories yet" is a line of its worktree's section.
+         let lone_message = match self.entries.as_slice() {
+-            [DisplayEntry::Empty { message }] => Some(*message),
++            [DisplayEntry::Empty { message }] => Some(message.clone()),
+             _ => None,
+         };
+         let entry_count = self.entries.len();
+@@ -1569,6 +1582,7 @@ impl Panel for EpicPanel {
+     }
+ 
+     fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {
++        // i18n: not text -- the panel's name in the dock, kept as it is (epic-panel.ftl header)
+         Some("Epico Stories")
+     }
+ 
+diff --git a/crates/epic_panel/src/panel_contract_tests.rs b/crates/epic_panel/src/panel_contract_tests.rs
+index 64f5026..c863ce7 100644
+--- a/crates/epic_panel/src/panel_contract_tests.rs
++++ b/crates/epic_panel/src/panel_contract_tests.rs
+@@ -62,7 +62,11 @@ fn assert_renderable(row: &StoryRow, epic: &Path, temp: &Path) {
+         None if row.open_target.is_none() => Some("no story files"),
+         None => None,
+     };
+-    assert_eq!(row_badge(row), expected_badge, "{context}: badge");
++    assert_eq!(
++        row_badge(row).as_deref(),
++        expected_badge,
++        "{context}: badge"
++    );
+ 
+     // A problem names a file relative to the story directory, with a reason or a size.
+     if let Some(problem) = &row.problem {
+@@ -205,7 +209,7 @@ fn shown(row: &StoryRow) -> String {
+     format!(
+         "{} [{}] -> {target}",
+         story_line(row),
+-        row_badge(row).unwrap_or("")
++        row_badge(row).unwrap_or_default()
+     )
+ }
+ 
+diff --git a/crates/epic_panel/src/panel_fs_log_tests.rs b/crates/epic_panel/src/panel_fs_log_tests.rs
+index 5bce402..91ae005 100644
+--- a/crates/epic_panel/src/panel_fs_log_tests.rs
++++ b/crates/epic_panel/src/panel_fs_log_tests.rs
+@@ -210,7 +210,11 @@ async fn panel_fs_log_hostile_symlinks_log_no_absolute_path(cx: &mut TestAppCont
+             Some(RowProblem::Symlink("tasks.md".to_string())),
+             "{dir_name}: {row:?}"
+         );
+-        assert_eq!(row_badge(&row), Some("symlink not followed"), "{dir_name}");
++        assert_eq!(
++            row_badge(&row).as_deref(),
++            Some("symlink not followed"),
++            "{dir_name}"
++        );
+     }
+ 
+     let captured = panel_lines();
+diff --git a/crates/epic_panel/src/panel_rows_tests.rs b/crates/epic_panel/src/panel_rows_tests.rs
+index 878c5a4..505733e 100644
+--- a/crates/epic_panel/src/panel_rows_tests.rs
++++ b/crates/epic_panel/src/panel_rows_tests.rs
+@@ -231,10 +231,16 @@ async fn panel_rows_badges_for_problem_rows(cx: &mut TestAppContext) {
+ 
+     let badge = |rig: &mut Rig, dir: &str| find_row(rig, dir).as_ref().and_then(row_badge);
+     assert_eq!(badge(&mut rig, "001-fine"), None);
+-    assert_eq!(badge(&mut rig, "002-binary"), Some("unreadable"));
+-    assert_eq!(badge(&mut rig, "003-large"), Some("too large"));
+-    assert_eq!(badge(&mut rig, "004-linked"), Some("symlink not followed"));
+-    assert_eq!(badge(&mut rig, "005-nothing"), Some("no story files"));
++    assert_eq!(badge(&mut rig, "002-binary").as_deref(), Some("unreadable"));
++    assert_eq!(badge(&mut rig, "003-large").as_deref(), Some("too large"));
++    assert_eq!(
++        badge(&mut rig, "004-linked").as_deref(),
++        Some("symlink not followed")
++    );
++    assert_eq!(
++        badge(&mut rig, "005-nothing").as_deref(),
++        Some("no story files")
++    );
+ 
+     let tooltip = row_tooltip(&find_row(&mut rig, "002-binary").expect("row"));
+     assert!(
+@@ -276,7 +282,7 @@ async fn panel_rows_unknown_status_warning(cx: &mut TestAppContext) {
+     let mut rig = rig(cx, &[("/work/project", tree)], &["/work/project"]).await;
+     let warning =
+         |rig: &mut Rig, dir: &str| status_warning(&find_row(rig, dir).expect("row").status);
+-    let expected = Some("Status not known to this Zeo; the epic plugin may be newer");
++    let expected = Some("Status not known to this Zeo; the epic plugin may be newer".to_string());
+     assert_eq!(warning(&mut rig, "001-odd"), expected);
+     assert_eq!(
+         warning(&mut rig, "003-near"),
+diff --git a/crates/zeo_i18n/locales/en-US/epic-panel.ftl b/crates/zeo_i18n/locales/en-US/epic-panel.ftl
+new file mode 100644
+index 0000000..936383c
+--- /dev/null
++++ b/crates/zeo_i18n/locales/en-US/epic-panel.ftl
+@@ -0,0 +1,23 @@
++### The Epico panel: epic_panel/src/panel.rs (patch 0183, USE epic). The English is the code's own,
++### byte for byte. Kept as they are: the panel's name in the dock ("Epico Stories"), the story
++### fields the epic plugin writes (type, scale, engineering, the statuses) and EPICO.md's name.
++
++epic-panel-no-epic-dir = No .epico/ directory in this project
++epic-panel-no-stories = No stories yet
++epic-panel-unknown-status = Status not known to this Zeo; the epic plugin may be newer
++epic-panel-live-updates-off = Live updates are off: { $reason }. Use Refresh.
++epic-panel-open-index = Open { $file }
++epic-panel-open-failed = Could not open { $path }: { $reason }
++epic-panel-refresh = Refresh
++epic-panel-archived = Archived ({ $count })
++epic-panel-more-not-shown = { $count } more not shown
++epic-panel-badge = { $problem ->
++    [unreadable] unreadable
++    [too_large] too large
++    [symlink] symlink not followed
++   *[no_files] no story files
++}
++epic-panel-problem-unreadable = { $file }: unreadable ({ $reason })
++epic-panel-problem-too-large = { $file }: too large ({ $bytes } bytes, over the { $limit }-byte limit)
++epic-panel-problem-symlink = { $file }: symlink not followed
++epic-panel-problem-no-files = No story.md or tasks.md in this directory
+diff --git a/crates/zeo_i18n/locales/pt-BR/epic-panel.ftl b/crates/zeo_i18n/locales/pt-BR/epic-panel.ftl
+new file mode 100644
+index 0000000..c7ab2d3
+--- /dev/null
++++ b/crates/zeo_i18n/locales/pt-BR/epic-panel.ftl
+@@ -0,0 +1,26 @@
++### The Epico panel in Brazilian Portuguese (patch 0183), translated by hand on 2026-11-25;
++### awaiting the operator's review as a native speaker. "story" is the plugin's own word for its
++### unit of work and stays in English, as do the file names and the plugin's field names.
++
++epic-panel-no-epic-dir = Nenhum diretório .epico/ neste projeto
++epic-panel-no-stories = Nenhuma story ainda
++epic-panel-unknown-status = Status desconhecido para este Zeo; o plugin epic pode ser mais novo
++epic-panel-live-updates-off = A atualização ao vivo está desligada: { $reason }. Use Atualizar.
++epic-panel-open-index = Abrir { $file }
++epic-panel-open-failed = Não foi possível abrir { $path }: { $reason }
++epic-panel-refresh = Atualizar
++epic-panel-archived = Arquivadas ({ $count })
++epic-panel-more-not-shown = { $count ->
++    [one] mais { $count } não mostrada
++   *[other] mais { $count } não mostradas
++}
++epic-panel-badge = { $problem ->
++    [unreadable] ilegível
++    [too_large] grande demais
++    [symlink] symlink não seguido
++   *[no_files] sem arquivos de story
++}
++epic-panel-problem-unreadable = { $file }: ilegível ({ $reason })
++epic-panel-problem-too-large = { $file }: grande demais ({ $bytes } bytes, acima do limite de { $limit } bytes)
++epic-panel-problem-symlink = { $file }: symlink não seguido
++epic-panel-problem-no-files = Nenhum story.md ou tasks.md neste diretório
+diff --git a/crates/zeo_i18n/src/catalog.rs b/crates/zeo_i18n/src/catalog.rs
+index 56c3c4e..dd9bb7b 100644
+--- a/crates/zeo_i18n/src/catalog.rs
++++ b/crates/zeo_i18n/src/catalog.rs
+@@ -60,6 +60,10 @@ pub static SHIPPED: &[LocaleSource] = &[
+                 "en-US/devtools.ftl",
+                 include_str!("../locales/en-US/devtools.ftl"),
+             ),
++            (
++                "en-US/epic-panel.ftl",
++                include_str!("../locales/en-US/epic-panel.ftl"),
++            ),
+         ],
+     },
+     LocaleSource {
+@@ -90,6 +94,10 @@ pub static SHIPPED: &[LocaleSource] = &[
+                 "pt-BR/devtools.ftl",
+                 include_str!("../locales/pt-BR/devtools.ftl"),
+             ),
++            (
++                "pt-BR/epic-panel.ftl",
++                include_str!("../locales/pt-BR/epic-panel.ftl"),
++            ),
+         ],
+     },
+ ];

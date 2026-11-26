@@ -58,6 +58,9 @@ states RELEASE_VERSION for the zeo channel instead of the zed crate's
 1.30.0, which the first Windows build showed; FILEVERSION takes its numeric
 part (0,14,0,0).
 
+(2026-11-25, Zed 6ba65ce3) upstream #67404 dropped AMD GPU Services: the AGS
+offline branch and amd_ags_x64.dll's [Files] line went with it; ConPTY's stays.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
@@ -148,7 +151,7 @@ index 3cc5e5e..e625112 100644
      END
      BLOCK "VarFileInfo"
 diff --git a/crates/zed/resources/windows/zed.iss b/crates/zed/resources/windows/zed.iss
-index b0481da..a8c0704 100644
+index 4a07795..81e48f1 100644
 --- a/crates/zed/resources/windows/zed.iss
 +++ b/crates/zed/resources/windows/zed.iss
 @@ -2,10 +2,18 @@
@@ -213,10 +216,10 @@ index b0481da..a8c0704 100644
 +#ifexist ResourcesDir + "\zeo-remote-server"
 +Source: "{#ResourcesDir}\zeo-remote-server"; DestDir: "{code:GetInstallDir}"; Flags: ignoreversion
 +#endif
- #ifexist ResourcesDir + "\amd_ags_x64.dll"
- Source: "{#ResourcesDir}\amd_ags_x64.dll"; DestDir: "{app}"; Flags: ignoreversion
+ #ifexist ResourcesDir + "\x64\OpenConsole.exe"
+ Source: "{#ResourcesDir}\x64\OpenConsole.exe"; DestDir: "{code:GetInstallDir}\x64"; Flags: ignoreversion
  #endif
-@@ -87,8 +112,10 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}.exe"; Tasks: de
+@@ -84,8 +109,10 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}.exe"; Tasks: de
  [Run]
  Filename: "{app}\{#AppExeName}.exe"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall; Check: WizardNotSilent
  
@@ -227,7 +230,7 @@ index b0481da..a8c0704 100644
  
  [Registry]
  Root: HKCU; Subkey: "Software\Classes\.ascx\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
-@@ -1256,10 +1283,18 @@ Root: HKCU; Subkey: "Software\Classes\Drive\shell\{#RegValueName}\command"; Valu
+@@ -1253,10 +1280,18 @@ Root: HKCU; Subkey: "Software\Classes\Drive\shell\{#RegValueName}\command"; Valu
  Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{code:AddToPath|{app}\bin}"; Tasks: addtopath; Check: NeedsAddToPath(ExpandConstant('{app}\bin'))
  
  ; URI Scheme
@@ -246,7 +249,7 @@ index b0481da..a8c0704 100644
  
  [Code]
  function WizardNotSilent(): Boolean;
-@@ -1269,7 +1304,13 @@ end;
+@@ -1266,7 +1301,13 @@ end;
  
  function IsWindows11OrLater(): Boolean;
  begin
@@ -261,7 +264,7 @@ index b0481da..a8c0704 100644
  
  // https://stackoverflow.com/a/23838239/261019
 diff --git a/script/bundle-windows.ps1 b/script/bundle-windows.ps1
-index a8755de..9891f91 100644
+index c3e6a68..ddb84fa 100644
 --- a/script/bundle-windows.ps1
 +++ b/script/bundle-windows.ps1
 @@ -62,6 +62,11 @@ $env:ZED_RELEASE_CHANNEL = $channel
@@ -335,24 +338,12 @@ index a8755de..9891f91 100644
      $files = "$innoDir\Zed.exe,$innoDir\cli.exe,$innoDir\auto_update_helper.exe,$innoDir\zed_explorer_command_injector.dll,$innoDir\zed_explorer_command_injector.appx"
      & "$innoDir\sign.ps1" $files
  }
-@@ -228,6 +257,11 @@ function DownloadAMDGpuServices {
-     # If you update the AGS SDK version, please also update the version in `crates/gpui/src/platform/windows/directx_renderer.rs`
-     $url = "https://codeload.github.com/GPUOpen-LibrariesAndSDKs/AGS_SDK/zip/refs/tags/v6.3.0"
-     $zipPath = ".\AGS_SDK_v6.3.0.zip"
-+    # An archive put here beforehand (pinned by hash, for an offline build) is used as it is.
-+    if (Test-Path $zipPath) {
-+        Expand-Archive -Path $zipPath -DestinationPath "." -Force
-+        return
-+    }
-     # Download the AGS SDK zip file
-     Invoke-WebRequest -Uri $url -OutFile $zipPath
-     # Extract the AGS SDK zip file
-@@ -238,16 +272,27 @@ function DownloadConpty {
+@@ -228,16 +257,27 @@ function DownloadConpty {
      # TODO: Switch back to the stable channel once Microsoft finally decides to publish v1.26
      $url = "https://github.com/microsoft/terminal/releases/download/v1.25.1912.0/Microsoft.Windows.Console.ConPTY.1.25.260710002-preview.nupkg"
      $zipPath = ".\Microsoft.Windows.Console.ConPTY.1.25.260710002-preview.nupkg"
 -    Invoke-WebRequest -Uri $url -OutFile $zipPath
-+    # As for AGS: a package put here beforehand is used as it is.
++    # A package put here beforehand (pinned by hash, for an offline build) is used as it is.
 +    if (-not (Test-Path $zipPath)) {
 +        Invoke-WebRequest -Uri $url -OutFile $zipPath
 +    }
@@ -381,7 +372,7 @@ index a8755de..9891f91 100644
      if($Architecture -eq "aarch64") {
          New-Item -Type Directory -Path "$innoDir\arm64" -Force
          Move-Item -Path ".\conpty\build\native\runtimes\arm64\OpenConsole.exe" -Destination "$innoDir\arm64\OpenConsole.exe" -Force
-@@ -308,6 +353,22 @@ function BuildInstaller {
+@@ -297,6 +337,22 @@ function BuildInstaller {
              $appShellNameShort = "Z&ed Editor Nightly"
              $appAppxFullName = "ZedIndustries.Zed.Nightly_1.0.0.0_neutral__japxn1gcva8rg"
          }
@@ -404,7 +395,7 @@ index a8755de..9891f91 100644
          "dev" {
              $appId = "{{8357632E-24A4-4F32-BA97-E575B4D1FE5D}"
              $appIconName = "app-icon-dev"
-@@ -351,6 +412,13 @@ function BuildInstaller {
+@@ -340,6 +396,13 @@ function BuildInstaller {
          "AppxFullName"   = $appAppxFullName
      }
  
@@ -418,7 +409,7 @@ index a8755de..9891f91 100644
      $defs = @()
      foreach ($key in $definitions.Keys) {
          $defs += "/d$key=`"$($definitions[$key])`""
-@@ -379,7 +447,18 @@ function BuildInstaller {
+@@ -368,7 +431,18 @@ function BuildInstaller {
      }
  }
  

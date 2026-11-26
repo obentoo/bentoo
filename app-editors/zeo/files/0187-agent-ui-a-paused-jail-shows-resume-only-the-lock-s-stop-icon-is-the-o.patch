@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Wed, 25 Nov 2026 20:39:03 -0300
+Subject: [PATCH] agent_ui: a paused jail shows Resume only; the lock's Stop
+ icon is the one Stop
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Operator, 2026-11-25: with a jailed thread paused, the controls beside the
+lock read "Paused · Resume · Stop", and the lock's own Stop icon sat right
+next to them, so the same action was offered twice, once in words.
+
+render_jail_paused keeps the label and Resume; the worded Stop and its two
+catalog entries (agent-jail-paused-stop and its tooltip, en-US and pt-BR)
+are gone. The Stop icon is drawn whenever the jail has a pid, which a paused
+jail always has, and it asks "Stop the agent?" first, as before.
+
+In the ai-jail group, at its end.
+---
+
+diff --git a/crates/agent_ui/src/agent_jail_status.rs b/crates/agent_ui/src/agent_jail_status.rs
+index 8238756..cbd0fa3 100644
+--- a/crates/agent_ui/src/agent_jail_status.rs
++++ b/crates/agent_ui/src/agent_jail_status.rs
+@@ -294,11 +294,11 @@ pub fn operator_paused_label() -> String {
+     t!("agent-jail-paused")
+ }
+ 
+-/// The paused state beside the lock: the label, Resume and Stop.
++/// The paused state beside the lock: the label and Resume. Stop is the lock's own icon beside
++/// it (operator, 2026-11-25: a second, worded Stop here said the same thing twice).
+ pub fn render_jail_paused(
+     by_operator: bool,
+     on_resume: Box<dyn Fn(&mut Window, &mut App)>,
+-    on_stop: Box<dyn Fn(&mut Window, &mut App)>,
+ ) -> AnyElement {
+     let (label, selector, resume_tooltip) = if by_operator {
+         (
+@@ -328,12 +328,6 @@ pub fn render_jail_paused(
+                 .tooltip(Tooltip::text(resume_tooltip))
+                 .on_click(move |_, window, cx| on_resume(window, cx)),
+         )
+-        .child(
+-            Button::new("agent-jail-paused-stop", t!("agent-jail-paused-stop"))
+-                .label_size(LabelSize::Small)
+-                .tooltip(Tooltip::text(t!("agent-jail-paused-stop.tooltip")))
+-                .on_click(move |_, window, cx| on_stop(window, cx)),
+-        )
+         .into_any_element()
+ }
+ 
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 2471419..ebbf697 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -7254,7 +7254,6 @@ impl ThreadView {
+                             .log_err();
+                         agent_sandbox::LaunchRegistry::set_paused(launch_id, false, cx);
+                     }),
+-                    Box::new(move |window, cx| confirm_stop(pid, true, window, cx)),
+                 )
+             }),
+             _ => None,
+diff --git a/crates/zeo_i18n/locales/en-US/agent-jail.ftl b/crates/zeo_i18n/locales/en-US/agent-jail.ftl
+index 30a3dd2..9bac2f4 100644
+--- a/crates/zeo_i18n/locales/en-US/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/en-US/agent-jail.ftl
+@@ -154,7 +154,5 @@ agent-jail-paused-disk = Paused: disk quota
+ agent-jail-resume = Resume
+     .operator = Let the agent go on where it stopped
+     .disk = Let the agent go on; it may grow by the quota again from here
+-agent-jail-paused-stop = Stop
+-    .tooltip = End the jail and everything running in it
+ agent-jail-quick-hint = Applies when the agent restarts: click the lock again once it turns amber.
+ agent-jail-quick-advanced = Advanced…
+diff --git a/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl b/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
+index 77ed097..2a280f3 100644
+--- a/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
+@@ -151,7 +151,5 @@ agent-jail-paused-disk = Pausado: cota de disco
+ agent-jail-resume = Retomar
+     .operator = Deixa o agente seguir de onde parou
+     .disk = Deixa o agente seguir; a partir daqui ele pode crescer de novo até a cota
+-agent-jail-paused-stop = Parar
+-    .tooltip = Encerra o jail e tudo o que roda nele
+ agent-jail-quick-hint = Vale quando o agente reiniciar: clique no cadeado de novo quando ele ficar âmbar.
+ agent-jail-quick-advanced = Avançado…

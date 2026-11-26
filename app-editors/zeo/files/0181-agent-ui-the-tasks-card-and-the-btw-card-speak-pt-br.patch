@@ -1,0 +1,916 @@
+From 2d025c68c25a0dc722660dec2dbf132a7e6c5301 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 23:29:10 -0300
+Subject: [PATCH] agent_ui: the tasks card and the /btw card speak pt-BR
+
+Zeo's own cards in the agent thread read their text through zeo_i18n's t!
+from locales/<language>/agent-ui.ftl, in en-US and pt-BR: the tasks card
+(0037 and the many patches since) -- its header, pill, row controls and
+their aria labels, the stop prompt, the details, the status, the sub-thread
+rows -- and the /btw side-question card (0115). The en-US file is the code's
+English byte for byte. The pill's four cases are one message selecting on
+both counts; the tool count's plural is the message's.
+
+Only surfaces that are wholly Zeo's are translated. The question card
+(elicitation) and the subagent card are Zed's with Zeo additions, the tool
+cards' menu sits in Zed's agent menu and the BTW button in Zed's queue: they
+stay English until Zed translates its part, so no screen mixes the two.
+"Waiting for you" stays English too: the Agent Tasks panel and Zed's subagent
+card share it.
+
+At the end of the claude-agent-acp-plus group, after 0176: the cards are that
+group's, and ai-jail (whose 0179 also needs agent_ui's dependency) requires it.
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 8604c50..5adfd80 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -594,6 +594,7 @@ dependencies = [
+  "watch",
+  "workspace",
+  "zed_actions",
++ "zeo_i18n",
+ ]
+ 
+ [[package]]
+diff --git a/crates/agent_ui/Cargo.toml b/crates/agent_ui/Cargo.toml
+index e6be8b3..24bd6fa 100644
+--- a/crates/agent_ui/Cargo.toml
++++ b/crates/agent_ui/Cargo.toml
+@@ -121,6 +121,7 @@ zed_actions.workspace = true
+ image.workspace = true
+ reqwest_client = { workspace = true, optional = true }
+ 
++zeo_i18n.workspace = true
+ [dev-dependencies]
+ acp_thread = { workspace = true, features = ["test-support"] }
+ agent = { workspace = true, features = ["test-support"] }
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+index 175eab8..23d5cfa 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+@@ -17,6 +17,7 @@ use ui::{
+     Icon, IconButton, IconName, IconSize, Label, LabelSize, ScrollAxes, Scrollbars, Tooltip,
+     WithScrollbar, prelude::*,
+ };
++use zeo_i18n::t;
+ 
+ use super::ThreadView;
+ use super::content_column::content_column;
+@@ -202,7 +203,7 @@ impl ThreadView {
+                             .size(IconSize::XSmall)
+                             .color(Color::Muted),
+                     )
+-                    .child(Label::new("By the way").size(LabelSize::Small))
++                    .child(Label::new(t!("agent-btw")).size(LabelSize::Small))
+                     .child(
+                         Label::new(card.question.clone())
+                             .size(LabelSize::Small)
+@@ -218,8 +219,8 @@ impl ThreadView {
+                             IconButton::new("side-question-copy", IconName::Copy)
+                                 .icon_size(IconSize::Small)
+                                 .icon_color(Color::Muted)
+-                                .aria_label("Copy the answer")
+-                                .tooltip(Tooltip::text("Copy Answer"))
++                                .aria_label(t!("agent-btw-copy.aria"))
++                                .tooltip(Tooltip::text(t!("agent-btw-copy")))
+                                 .on_click(move |_, _, cx| {
+                                     cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                                 }),
+@@ -229,8 +230,8 @@ impl ThreadView {
+                         IconButton::new("side-question-dismiss", IconName::Close)
+                             .icon_size(IconSize::Small)
+                             .icon_color(Color::Muted)
+-                            .aria_label("Dismiss the side question")
+-                            .tooltip(Tooltip::text("Dismiss"))
++                            .aria_label(t!("agent-btw-dismiss.aria"))
++                            .tooltip(Tooltip::text(t!("agent-btw-dismiss")))
+                             .on_click(cx.listener(|this, _, _, cx| {
+                                 this.side_question_card = None;
+                                 cx.notify();
+@@ -239,7 +240,7 @@ impl ThreadView {
+             );
+ 
+         let body = match &card.state {
+-            SideQuestionState::Asking => Label::new("Asking on the side…")
++            SideQuestionState::Asking => Label::new(t!("agent-btw-asking"))
+                 .size(LabelSize::Small)
+                 .color(Color::Muted)
+                 .into_any_element(),
+@@ -284,8 +285,8 @@ impl ThreadView {
+         let footer = match &card.state {
+             SideQuestionState::Answered { fallback_model, .. } => Some(
+                 Label::new(match fallback_model {
+-                    Some(model) => format!("Not added to the conversation · answered by {model}"),
+-                    None => "Not added to the conversation".to_string(),
++                    Some(model) => t!("agent-btw-footer-model", model = model.to_string()),
++                    None => t!("agent-btw-footer"),
+                 })
+                 .size(LabelSize::XSmall)
+                 .color(Color::Muted),
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index c059be2..9283d2d 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -33,6 +33,7 @@ use ui::{
+     ButtonLike, Chip, CommonAnimationExt as _, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
+     prelude::*,
+ };
++use zeo_i18n::t;
+ 
+ use crate::DEFAULT_THREAD_TITLE;
+ use crate::conversation_view::ConversationView;
+@@ -1084,9 +1085,12 @@ impl TasksCard {
+         };
+         let answer = window.prompt(
+             PromptLevel::Warning,
+-            "Stop this task?",
++            &t!("agent-tasks-card-stop-prompt"),
+             Some(description.as_ref()),
+-            &["Stop", "Cancel"],
++            &[
++                t!("agent-tasks-card-stop-button").as_str(),
++                t!("agent-tasks-card-cancel-button").as_str(),
++            ],
+             cx,
+         );
+         cx.spawn(async move |card, cx| {
+@@ -1226,7 +1230,7 @@ impl TasksCard {
+                         "tasks card: sending task {task_id} of session {session_id} \
+                          (tool call {tool_call_id}) to the background moved nothing"
+                     );
+-                    "Nothing was moved to the background".into()
++                    t!("agent-tasks-card-nothing-moved").into()
+                 }
+                 Err(error) => {
+                     // As for a stop: the agent's own text sits under the
+@@ -1352,11 +1356,7 @@ impl TasksCard {
+                 key.0,
+                 key.1
+             );
+-            self.set_row_error(
+-                key,
+-                "Could not open the log: the thread is no longer open".into(),
+-                cx,
+-            );
++            self.set_row_error(key, t!("agent-tasks-card-log-thread-closed").into(), cx);
+             return;
+         };
+         self.save_log(key, &thread, LogSave::Open, cx);
+@@ -1412,7 +1412,7 @@ impl TasksCard {
+                 match purpose {
+                     LogSave::Open => self.set_row_error(
+                         key,
+-                        format!("Could not open the log: {error:#}").into(),
++                        t!("agent-tasks-card-log-failed", error = format!("{error:#}")).into(),
+                         cx,
+                     ),
+                     // Nobody asked for this copy, so the row says nothing (R6.7).
+@@ -2234,8 +2234,14 @@ impl TasksCard {
+                         IconButton::new("tasks-card-bar-expand", IconName::ChevronUp)
+                             .icon_size(IconSize::Small)
+                             .icon_color(Color::Muted)
+-                            .aria_label(row_aria_label(format!("Show the tasks card: {label}")))
+-                            .tooltip(card_tooltip("bar-expand".into(), "Show Tasks Card".into()))
++                            .aria_label(row_aria_label(t!(
++                                "agent-tasks-card-show.aria",
++                                label = label
++                            )))
++                            .tooltip(card_tooltip(
++                                "bar-expand".into(),
++                                t!("agent-tasks-card-show").into(),
++                            ))
+                             .on_click(
+                                 cx.listener(|card, _, _, cx| card.set_docked_bottom(false, cx)),
+                             ),
+@@ -2300,10 +2306,13 @@ impl TasksCard {
+                                     ),
+                             ),
+                     )
+-                    .aria_label(row_aria_label(format!("Expand the tasks card: {label}")))
++                    .aria_label(row_aria_label(t!(
++                        "agent-tasks-card-expand.aria",
++                        label = label.to_string()
++                    )))
+                     .tooltip(card_tooltip(
+                         "pill".into(),
+-                        format!("Expand Tasks Card ({label})").into(),
++                        t!("agent-tasks-card-expand", label = label).into(),
+                     ))
+                     .track_focus(&self.pill_focus_handle)
+                     .on_click(cx.listener(|card, _, window, cx| {
+@@ -2343,9 +2352,9 @@ impl TasksCard {
+             .child(
+                 h_flex()
+                     .gap_1()
+-                    .child(Label::new("Tasks").size(LabelSize::Small))
++                    .child(Label::new(t!("agent-tasks-card")).size(LabelSize::Small))
+                     .child(
+-                        Label::new(format!("{running} running"))
++                        Label::new(t!("agent-tasks-card-running", running = running))
+                             .size(LabelSize::Small)
+                             .color(Color::Muted),
+                     ),
+@@ -2358,16 +2367,18 @@ impl TasksCard {
+                             div()
+                                 .debug_selector(|| "tasks-card-clear-finished".into())
+                                 .child(
+-                                    Button::new("tasks-card-clear-finished", "Clear finished")
+-                                        .label_size(LabelSize::Small)
+-                                        .color(Color::Muted)
+-                                        .tooltip(Tooltip::text(
+-                                            "Remove finished tasks from this card; \
+-                                         the Agent Tasks panel keeps them",
+-                                        ))
+-                                        .on_click(
+-                                            cx.listener(|card, _, _, cx| card.clear_finished(cx)),
+-                                        ),
++                                    Button::new(
++                                        "tasks-card-clear-finished",
++                                        t!("agent-tasks-card-clear-finished"),
++                                    )
++                                    .label_size(LabelSize::Small)
++                                    .color(Color::Muted)
++                                    .tooltip(Tooltip::text(t!(
++                                        "agent-tasks-card-clear-finished.tooltip"
++                                    )))
++                                    .on_click(
++                                        cx.listener(|card, _, _, cx| card.clear_finished(cx)),
++                                    ),
+                                 ),
+                         )
+                     })
+@@ -2378,10 +2389,10 @@ impl TasksCard {
+                                 IconButton::new("tasks-card-dock-bottom", IconName::ChevronDown)
+                                     .icon_size(IconSize::Small)
+                                     .icon_color(Color::Muted)
+-                                    .aria_label("Move the tasks card to the bottom")
++                                    .aria_label(t!("agent-tasks-card-dock-bottom.aria"))
+                                     .tooltip(card_tooltip(
+                                         "dock-bottom".into(),
+-                                        "Move Tasks Card to the Bottom".into(),
++                                        t!("agent-tasks-card-dock-bottom").into(),
+                                     ))
+                                     .on_click(cx.listener(|card, _, _, cx| {
+                                         card.set_docked_bottom(true, cx)
+@@ -2393,10 +2404,10 @@ impl TasksCard {
+                             IconButton::new("tasks-card-minimize", IconName::Minimize)
+                                 .icon_size(IconSize::Small)
+                                 .icon_color(Color::Muted)
+-                                .aria_label("Minimize the tasks card")
++                                .aria_label(t!("agent-tasks-card-minimize.aria"))
+                                 .tooltip(card_tooltip(
+                                     "minimize".into(),
+-                                    "Minimize Tasks Card".into(),
++                                    t!("agent-tasks-card-minimize").into(),
+                                 ))
+                                 .track_focus(&self.minimize_focus_handle)
+                                 .on_click(cx.listener(|card, _, window, cx| {
+@@ -2496,10 +2507,13 @@ impl TasksCard {
+                     )
+                 }),
+         )
+-        .aria_label(format!("Open thread: {title}"))
++        .aria_label(t!(
++            "agent-tasks-card-open-thread.aria",
++            title = title.to_string()
++        ))
+         .tooltip(card_tooltip(
+             format!("open-group-{}", session_id.0).into(),
+-            "Open Thread".into(),
++            t!("agent-tasks-card-open-thread").into(),
+         ))
+         .track_focus(&open_focus_handle)
+         .on_click(cx.listener({
+@@ -2569,9 +2583,15 @@ impl TasksCard {
+         let shown_label = display_label(&full_label);
+ 
+         let (chip_label, chip_tooltip) = if task.background {
+-            ("Background", "Running in the Background")
++            (
++                t!("agent-tasks-card-background"),
++                t!("agent-tasks-card-background.tooltip"),
++            )
+         } else {
+-            ("Foreground", "Running in the Foreground")
++            (
++                t!("agent-tasks-card-foreground"),
++                t!("agent-tasks-card-foreground.tooltip"),
++            )
+         };
+ 
+         // Every running row, watched or not, says what it is doing (story 023), on a line of its
+@@ -2626,7 +2646,7 @@ impl TasksCard {
+             let status = status_label(task.status);
+             let text = match ended_duration(&task) {
+                 Some(duration) => format!("{status} · {}", format_duration(duration)),
+-                None => status.to_string(),
++                None => status,
+             };
+             Some(
+                 div()
+@@ -2645,9 +2665,9 @@ impl TasksCard {
+ 
+         let expand_focus_handle = self.row_focus_handle(&key, RowControl::Expand, cx);
+         let (expand_icon, expand_text) = if details_open {
+-            (IconName::ChevronDown, "Collapse task")
++            (IconName::ChevronDown, t!("agent-tasks-card-collapse-task"))
+         } else {
+-            (IconName::ChevronRight, "Expand task")
++            (IconName::ChevronRight, t!("agent-tasks-card-expand-task"))
+         };
+         let expand_button = IconButton::new(
+             SharedString::from(format!("tasks-card-expand-{element_key}")),
+@@ -2655,7 +2675,7 @@ impl TasksCard {
+         )
+         .icon_size(IconSize::Small)
+         .icon_color(Color::Muted)
+-        .aria_label(row_aria_label(expand_text.to_string()))
++        .aria_label(row_aria_label(expand_text.clone()))
+         .tooltip(card_tooltip(
+             format!("expand-{task_id}").into(),
+             expand_text.into(),
+@@ -2676,9 +2696,21 @@ impl TasksCard {
+ 
+         let watch_focus_handle = self.row_focus_handle(&key, RowControl::Watch, cx);
+         let (watch_tooltip, watch_aria) = if watched {
+-            ("Stop Watching This Task", "Stop watching")
++            (
++                t!("agent-tasks-card-stop-watching"),
++                t!(
++                    "agent-tasks-card-stop-watching.aria",
++                    label = shown_label.to_string()
++                ),
++            )
+         } else {
+-            ("Watch This Task", "Watch")
++            (
++                t!("agent-tasks-card-watch"),
++                t!(
++                    "agent-tasks-card-watch.aria",
++                    label = shown_label.to_string()
++                ),
++            )
+         };
+         let watch_button = IconButton::new(
+             SharedString::from(format!("tasks-card-watch-{element_key}")),
+@@ -2688,7 +2720,7 @@ impl TasksCard {
+         .icon_color(Color::Muted)
+         .selected_icon(IconName::EyeOff)
+         .toggle_state(watched)
+-        .aria_label(row_aria_label(format!("{watch_aria}: {shown_label}")))
++        .aria_label(row_aria_label(watch_aria))
+         .tooltip(card_tooltip(
+             format!("watch-{task_id}").into(),
+             watch_tooltip.into(),
+@@ -2713,11 +2745,20 @@ impl TasksCard {
+             let refused = native_cancel == Some(false);
+             let (stop_aria, stop_tooltip) = if refused {
+                 (
+-                    format!("Stop: {shown_label}. {STOP_NOT_ALLOWED}"),
+-                    STOP_NOT_ALLOWED,
++                    t!(
++                        "agent-tasks-card-stop-refused.aria",
++                        label = shown_label.to_string()
++                    ),
++                    t!("agent-tasks-card-stop-refused"),
+                 )
+             } else {
+-                (format!("Stop: {shown_label}"), "Stop This Task")
++                (
++                    t!(
++                        "agent-tasks-card-stop.aria",
++                        label = shown_label.to_string()
++                    ),
++                    t!("agent-tasks-card-stop"),
++                )
+             };
+             let button = IconButton::new(
+                 SharedString::from(format!("tasks-card-stop-{element_key}")),
+@@ -2764,10 +2805,13 @@ impl TasksCard {
+                         )
+                         .icon_size(IconSize::Small)
+                         .icon_color(Color::Muted)
+-                        .aria_label(row_aria_label(format!("Dismiss: {shown_label}")))
++                        .aria_label(row_aria_label(t!(
++                            "agent-tasks-card-dismiss.aria",
++                            label = shown_label.to_string()
++                        )))
+                         .tooltip(card_tooltip(
+                             format!("dismiss-{task_id}").into(),
+-                            "Remove From This Card".into(),
++                            t!("agent-tasks-card-dismiss").into(),
+                         ))
+                         .on_click(cx.listener({
+                             let key = key.clone();
+@@ -2798,14 +2842,20 @@ impl TasksCard {
+             let (icon, aria, tooltip) = if on_task_thread {
+                 (
+                     IconName::Exit,
+-                    format!("Back to the main thread: {shown_label}"),
+-                    "Back to the Main Thread",
++                    t!(
++                        "agent-tasks-card-back-to-main.aria",
++                        label = shown_label.to_string()
++                    ),
++                    t!("agent-tasks-card-back-to-main"),
+                 )
+             } else {
+                 (
+                     IconName::ArrowUpRight,
+-                    format!("Open in thread: {shown_label}"),
+-                    "Open Thread at This Task",
++                    t!(
++                        "agent-tasks-card-open-at-task.aria",
++                        label = shown_label.to_string()
++                    ),
++                    t!("agent-tasks-card-open-at-task"),
+                 )
+             };
+             let open_button = IconButton::new(
+@@ -2849,10 +2899,13 @@ impl TasksCard {
+             )
+             .icon_size(IconSize::Small)
+             .icon_color(Color::Muted)
+-            .aria_label(row_aria_label(format!("Open log: {shown_label}")))
++            .aria_label(row_aria_label(t!(
++                "agent-tasks-card-open-log.aria",
++                label = shown_label.to_string()
++            )))
+             .tooltip(card_tooltip(
+                 format!("open-log-{task_id}").into(),
+-                "Open Log".into(),
++                t!("agent-tasks-card-open-log").into(),
+             ))
+             .track_focus(&open_log_focus_handle)
+             .on_click(cx.listener({
+@@ -2883,12 +2936,13 @@ impl TasksCard {
+                 )
+                 .icon_size(IconSize::Small)
+                 .icon_color(Color::Muted)
+-                .aria_label(row_aria_label(format!(
+-                    "Open subagent thread: {shown_label}"
++                .aria_label(row_aria_label(t!(
++                    "agent-tasks-card-open-thread.subagent-aria",
++                    label = shown_label.to_string()
+                 )))
+                 .tooltip(card_tooltip(
+                     format!("open-thread-{task_id}").into(),
+-                    "Open Thread".into(),
++                    t!("agent-tasks-card-open-thread").into(),
+                 ))
+                 .track_focus(&open_thread_focus_handle)
+                 .on_click(cx.listener({
+@@ -2916,10 +2970,13 @@ impl TasksCard {
+             )
+             .icon_size(IconSize::Small)
+             .icon_color(Color::Muted)
+-            .aria_label(row_aria_label(format!("Send to background: {shown_label}")))
++            .aria_label(row_aria_label(t!(
++                "agent-tasks-card-send-to-background.aria",
++                label = shown_label.to_string()
++            )))
+             .tooltip(card_tooltip(
+                 format!("background-{task_id}").into(),
+-                "Send to Background".into(),
++                t!("agent-tasks-card-send-to-background").into(),
+             ))
+             .track_focus(&background_focus_handle)
+             .on_click(cx.listener({
+@@ -3309,12 +3366,9 @@ impl Element for TasksCardOverlay {
+ /// What the pill and the bottom bar say: what runs, or what the card holds when nothing
+ /// runs -- a spinning "0" read as work in progress (operator, 2026-11-09).
+ fn pill_label(running: usize, items: usize) -> String {
+-    match (running, items) {
+-        (1, _) => "1 task running".to_string(),
+-        (0, 1) => "1 task, none running".to_string(),
+-        (0, items) => format!("{items} tasks, none running"),
+-        (running, _) => format!("{running} tasks running"),
+-    }
++    // One message, selecting on both counts: "none running" is a case of its own in English
++    // and need not be one in another language.
++    t!("agent-tasks-card-pill", running = running, items = items)
+ }
+ 
+ fn running_count(groups: &[ThreadGroup]) -> usize {
+@@ -3419,7 +3473,7 @@ fn render_tail(task: &AgentTask, background: Hsla, cx: &App) -> AnyElement {
+             .debug_selector(move || format!("tasks-card-no-output-{task_id}"))
+             .pl_1()
+             .child(
+-                Label::new("No output yet")
++                Label::new(t!("agent-tasks-card-no-output"))
+                     .size(LabelSize::XSmall)
+                     .color(Color::Muted),
+             )
+@@ -3448,9 +3502,6 @@ const SHELL_KIND: &str = "shell";
+ /// The task kind that runs in a thread of its own (R5.4).
+ const SUBAGENT_KIND: &str = "subagent";
+ 
+-/// The disabled Stop's reason on a native subagent the agent grants no cancel (R1.5).
+-const STOP_NOT_ALLOWED: &str = "This agent does not allow stopping its subagents";
+-
+ /// A tail entry on one row of the block: `single_line` stops soft wrapping, but a line break
+ /// inside the text would still start a new line and draw over the next entry.
+ fn tail_line(line: &SharedString) -> SharedString {
+@@ -3476,8 +3527,12 @@ fn running_what(thread: &AcpThread, task: &AgentTask, cx: &App) -> SharedString
+ /// An expanded row's progress details (R3.2, R4.2): tokens, tool uses, last tool, summary.
+ fn render_details(task: &AgentTask, task_id: &AgentTaskId) -> AnyElement {
+     let usage = match &task.usage {
+-        Some(usage) => format!("{} tokens · {} tool uses", usage.tokens, usage.tool_uses),
+-        None => "No usage reported yet".to_string(),
++        Some(usage) => t!(
++            "agent-tasks-card-usage",
++            tokens = usage.tokens,
++            tool_uses = usage.tool_uses
++        ),
++        None => t!("agent-tasks-card-no-usage"),
+     };
+     v_flex()
+         .debug_selector({
+@@ -3493,7 +3548,7 @@ fn render_details(task: &AgentTask, task_id: &AgentTaskId) -> AnyElement {
+         )
+         .when_some(task.last_tool.clone(), |this, last_tool| {
+             this.child(
+-                Label::new(format!("Last tool: {last_tool}"))
++                Label::new(t!("agent-tasks-card-last-tool", tool = last_tool.as_str()))
+                     .size(LabelSize::XSmall)
+                     .color(Color::Muted),
+             )
+@@ -3545,6 +3600,7 @@ fn row_activity_color(status: TaskRowStatus) -> Color {
+ }
+ 
+ /// The text the subagent card shows for `RequiresAction` too (0072), so both surfaces agree.
++// i18n: not text -- shared with the Agent Tasks panel and Zed's subagent card, neither translated yet.
+ pub const TASK_WAITING_LABEL: &str = "Waiting for you";
+ 
+ /// The last tool and the tool count, or `starting` while the feed reports no tool use.
+@@ -3552,10 +3608,13 @@ fn progress_activity(task: &AgentTask) -> String {
+     let tool_uses = task.usage.as_ref().map_or(0, |usage| usage.tool_uses);
+     match &task.last_tool {
+         Some(last_tool) if tool_uses > 0 => {
+-            let noun = if tool_uses == 1 { "tool" } else { "tools" };
+-            format!("{last_tool} · {tool_uses} {noun}")
++            t!(
++                "agent-tasks-card-activity",
++                tool = last_tool.as_str(),
++                tool_uses = tool_uses
++            )
+         }
+-        _ => "starting".to_string(),
++        _ => t!("agent-tasks-card-starting"),
+     }
+ }
+ 
+@@ -3567,14 +3626,15 @@ fn ended_duration(task: &AgentTask) -> Option<Duration> {
+         .or_else(|| task.usage.as_ref().map(|usage| usage.duration))
+ }
+ 
+-fn status_label(status: AgentTaskStatus) -> &'static str {
+-    match status {
+-        AgentTaskStatus::Running => "Running",
+-        AgentTaskStatus::Completed => "Completed",
+-        AgentTaskStatus::Failed => "Failed",
+-        AgentTaskStatus::Stopped => "Stopped",
+-        AgentTaskStatus::Interrupted => "Interrupted",
+-    }
++fn status_label(status: AgentTaskStatus) -> String {
++    let status = match status {
++        AgentTaskStatus::Running => "running",
++        AgentTaskStatus::Completed => "completed",
++        AgentTaskStatus::Failed => "failed",
++        AgentTaskStatus::Stopped => "stopped",
++        AgentTaskStatus::Interrupted => "interrupted",
++    };
++    t!("agent-tasks-card-status", status = status)
+ }
+ 
+ fn status_color(status: AgentTaskStatus) -> Color {
+diff --git a/crates/agent_ui/src/tasks_card/sub_thread_row.rs b/crates/agent_ui/src/tasks_card/sub_thread_row.rs
+index 811bf57..436b593 100644
+--- a/crates/agent_ui/src/tasks_card/sub_thread_row.rs
++++ b/crates/agent_ui/src/tasks_card/sub_thread_row.rs
+@@ -10,6 +10,7 @@ use agent_client_protocol::v2::schema as acp_v2;
+ use collections::HashSet;
+ use gpui::{AnyElement, App, Context, SharedString};
+ use ui::{Chip, prelude::*};
++use zeo_i18n::t;
+ 
+ use super::{
+     ENDED_ROW_TTL, RowControl, TaskKey, TasksCard, TasksCardEvent, ThreadGroup, card_tooltip,
+@@ -212,9 +213,12 @@ impl TasksCard {
+         let error = self.row_errors.get(&key).map(|error| error.message.clone());
+         let state = if row.running {
+             let elapsed = now.duration_since(row.started_at()).unwrap_or_default();
+-            format!("Running · {}", format_duration(elapsed))
++            t!(
++                "agent-tasks-card-sub-thread-running",
++                elapsed = format_duration(elapsed)
++            )
+         } else {
+-            "Idle".to_string()
++            t!("agent-tasks-card-sub-thread-idle")
+         };
+ 
+         let open_focus_handle = self.row_focus_handle(&key, RowControl::Open, cx);
+@@ -224,10 +228,13 @@ impl TasksCard {
+         )
+         .icon_size(IconSize::Small)
+         .icon_color(Color::Muted)
+-        .aria_label(row_aria_label(format!("Open sub-thread: {title}")))
++        .aria_label(row_aria_label(t!(
++            "agent-tasks-card-sub-thread-open.aria",
++            title = title.to_string()
++        )))
+         .tooltip(card_tooltip(
+             format!("sub-thread-open-{sub}").into(),
+-            "Open Sub-thread".into(),
++            t!("agent-tasks-card-sub-thread-open").into(),
+         ))
+         .track_focus(&open_focus_handle)
+         .on_click(cx.listener({
+@@ -242,32 +249,31 @@ impl TasksCard {
+             .flex_none()
+             .child(open_button);
+ 
+-        let line = h_flex()
+-            .gap_1()
+-            .min_w_0()
+-            .child(
+-                div()
+-                    .flex_none()
+-                    .child(Chip::new("Sub-thread").label_size(LabelSize::XSmall)),
+-            )
+-            .child(
+-                div().flex_1().min_w_0().child(
+-                    Label::new(title)
+-                        .size(LabelSize::Small)
+-                        .single_line()
+-                        .truncate(),
+-                ),
+-            )
+-            .child(
+-                Label::new(state)
+-                    .size(LabelSize::XSmall)
+-                    .color(if row.running {
+-                        Color::Accent
+-                    } else {
+-                        Color::Muted
+-                    }),
+-            )
+-            .child(open_button);
++        let line =
++            h_flex()
++                .gap_1()
++                .min_w_0()
++                .child(div().flex_none().child(
++                    Chip::new(t!("agent-tasks-card-sub-thread")).label_size(LabelSize::XSmall),
++                ))
++                .child(
++                    div().flex_1().min_w_0().child(
++                        Label::new(title)
++                            .size(LabelSize::Small)
++                            .single_line()
++                            .truncate(),
++                    ),
++                )
++                .child(
++                    Label::new(state)
++                        .size(LabelSize::XSmall)
++                        .color(if row.running {
++                            Color::Accent
++                        } else {
++                            Color::Muted
++                        }),
++                )
++                .child(open_button);
+ 
+         v_flex()
+             .id(SharedString::from(format!("tasks-card-sub-thread-{sub}")))
+diff --git a/crates/zeo_i18n/locales/en-US/agent-ui.ftl b/crates/zeo_i18n/locales/en-US/agent-ui.ftl
+new file mode 100644
+index 0000000..a62ad06
+--- /dev/null
++++ b/crates/zeo_i18n/locales/en-US/agent-ui.ftl
+@@ -0,0 +1,93 @@
++### Zeo's own cards in the agent thread (patch 0181, USE claude-agent-acp-plus): the tasks card
++### (agent_ui/src/tasks_card.rs, tasks_card/sub_thread_row.rs) and the /btw side-question card
++### (side_question_card.rs). The English is the code's own, byte for byte. Surfaces that sit
++### inside Zed's own UI -- the question card, the tool cards' menu, the queue's BTW button --
++### stay English until Zed translates its part, so no screen mixes the two.
++
++## The tasks card
++
++agent-tasks-card = Tasks
++agent-tasks-card-running = { $running } running
++agent-tasks-card-pill = { $running ->
++    [0] { $items ->
++        [one] 1 task, none running
++       *[other] { $items } tasks, none running
++    }
++    [one] 1 task running
++   *[other] { $running } tasks running
++}
++agent-tasks-card-show = Show Tasks Card
++    .aria = Show the tasks card: { $label }
++agent-tasks-card-expand = Expand Tasks Card ({ $label })
++    .aria = Expand the tasks card: { $label }
++agent-tasks-card-clear-finished = Clear finished
++    .tooltip = Remove finished tasks from this card; the Agent Tasks panel keeps them
++agent-tasks-card-dock-bottom = Move Tasks Card to the Bottom
++    .aria = Move the tasks card to the bottom
++agent-tasks-card-minimize = Minimize Tasks Card
++    .aria = Minimize the tasks card
++agent-tasks-card-open-thread = Open Thread
++    .aria = Open thread: { $title }
++    .subagent-aria = Open subagent thread: { $label }
++agent-tasks-card-background = Background
++    .tooltip = Running in the Background
++agent-tasks-card-foreground = Foreground
++    .tooltip = Running in the Foreground
++agent-tasks-card-collapse-task = Collapse task
++agent-tasks-card-expand-task = Expand task
++agent-tasks-card-watch = Watch This Task
++    .aria = Watch: { $label }
++agent-tasks-card-stop-watching = Stop Watching This Task
++    .aria = Stop watching: { $label }
++agent-tasks-card-stop = Stop This Task
++    .aria = Stop: { $label }
++agent-tasks-card-stop-refused = This agent does not allow stopping its subagents
++    .aria = Stop: { $label }. This agent does not allow stopping its subagents
++agent-tasks-card-dismiss = Remove From This Card
++    .aria = Dismiss: { $label }
++agent-tasks-card-back-to-main = Back to the Main Thread
++    .aria = Back to the main thread: { $label }
++agent-tasks-card-open-at-task = Open Thread at This Task
++    .aria = Open in thread: { $label }
++agent-tasks-card-open-log = Open Log
++    .aria = Open log: { $label }
++agent-tasks-card-send-to-background = Send to Background
++    .aria = Send to background: { $label }
++agent-tasks-card-stop-prompt = Stop this task?
++agent-tasks-card-stop-button = Stop
++agent-tasks-card-cancel-button = Cancel
++agent-tasks-card-nothing-moved = Nothing was moved to the background
++agent-tasks-card-log-thread-closed = Could not open the log: the thread is no longer open
++agent-tasks-card-log-failed = Could not open the log: { $error }
++agent-tasks-card-no-output = No output yet
++agent-tasks-card-usage = { $tokens } tokens · { $tool_uses } tool uses
++agent-tasks-card-no-usage = No usage reported yet
++agent-tasks-card-last-tool = Last tool: { $tool }
++agent-tasks-card-activity = { $tool_uses ->
++    [one] { $tool } · { $tool_uses } tool
++   *[other] { $tool } · { $tool_uses } tools
++}
++agent-tasks-card-starting = starting
++agent-tasks-card-status = { $status ->
++    [running] Running
++    [completed] Completed
++    [failed] Failed
++    [stopped] Stopped
++   *[interrupted] Interrupted
++}
++agent-tasks-card-sub-thread = Sub-thread
++agent-tasks-card-sub-thread-open = Open Sub-thread
++    .aria = Open sub-thread: { $title }
++agent-tasks-card-sub-thread-running = Running · { $elapsed }
++agent-tasks-card-sub-thread-idle = Idle
++
++## The /btw side-question card
++
++agent-btw = By the way
++agent-btw-copy = Copy Answer
++    .aria = Copy the answer
++agent-btw-dismiss = Dismiss
++    .aria = Dismiss the side question
++agent-btw-asking = Asking on the side…
++agent-btw-footer = Not added to the conversation
++agent-btw-footer-model = Not added to the conversation · answered by { $model }
+diff --git a/crates/zeo_i18n/locales/pt-BR/agent-ui.ftl b/crates/zeo_i18n/locales/pt-BR/agent-ui.ftl
+new file mode 100644
+index 0000000..d3d4181
+--- /dev/null
++++ b/crates/zeo_i18n/locales/pt-BR/agent-ui.ftl
+@@ -0,0 +1,92 @@
++### Zeo's own cards in the agent thread in Brazilian Portuguese (patch 0181), translated by hand
++### on 2026-11-24; awaiting the operator's review as a native speaker. Glossary: "thread" (a
++### thread) stays in English; "sub-thread" follows it. "Tasks" is the card's name and becomes
++### "Tarefas"; the Agent Tasks panel it mentions keeps its English name, as Zed's panels do.
++
++## The tasks card
++
++agent-tasks-card = Tarefas
++agent-tasks-card-running = { $running } rodando
++agent-tasks-card-pill = { $running ->
++    [0] { $items ->
++        [one] { $items } tarefa, nenhuma rodando
++       *[other] { $items } tarefas, nenhuma rodando
++    }
++    [one] { $running } tarefa rodando
++   *[other] { $running } tarefas rodando
++}
++agent-tasks-card-show = Mostrar o card de tarefas
++    .aria = Mostrar o card de tarefas: { $label }
++agent-tasks-card-expand = Expandir o card de tarefas ({ $label })
++    .aria = Expandir o card de tarefas: { $label }
++agent-tasks-card-clear-finished = Limpar concluídas
++    .tooltip = Tira deste card as tarefas concluídas; o painel Agent Tasks continua com elas
++agent-tasks-card-dock-bottom = Levar o card de tarefas para baixo
++    .aria = Levar o card de tarefas para baixo
++agent-tasks-card-minimize = Minimizar o card de tarefas
++    .aria = Minimizar o card de tarefas
++agent-tasks-card-open-thread = Abrir a thread
++    .aria = Abrir a thread: { $title }
++    .subagent-aria = Abrir a thread do subagente: { $label }
++agent-tasks-card-background = Segundo plano
++    .tooltip = Rodando em segundo plano
++agent-tasks-card-foreground = Primeiro plano
++    .tooltip = Rodando em primeiro plano
++agent-tasks-card-collapse-task = Recolher a tarefa
++agent-tasks-card-expand-task = Expandir a tarefa
++agent-tasks-card-watch = Acompanhar esta tarefa
++    .aria = Acompanhar: { $label }
++agent-tasks-card-stop-watching = Parar de acompanhar esta tarefa
++    .aria = Parar de acompanhar: { $label }
++agent-tasks-card-stop = Parar esta tarefa
++    .aria = Parar: { $label }
++agent-tasks-card-stop-refused = Este agente não permite parar os subagentes dele
++    .aria = Parar: { $label }. Este agente não permite parar os subagentes dele
++agent-tasks-card-dismiss = Tirar deste card
++    .aria = Dispensar: { $label }
++agent-tasks-card-back-to-main = Voltar à thread principal
++    .aria = Voltar à thread principal: { $label }
++agent-tasks-card-open-at-task = Abrir a thread nesta tarefa
++    .aria = Abrir na thread: { $label }
++agent-tasks-card-open-log = Abrir o log
++    .aria = Abrir o log: { $label }
++agent-tasks-card-send-to-background = Mandar para segundo plano
++    .aria = Mandar para segundo plano: { $label }
++agent-tasks-card-stop-prompt = Parar esta tarefa?
++agent-tasks-card-stop-button = Parar
++agent-tasks-card-cancel-button = Cancelar
++agent-tasks-card-nothing-moved = Nada foi mandado para segundo plano
++agent-tasks-card-log-thread-closed = Não foi possível abrir o log: a thread não está mais aberta
++agent-tasks-card-log-failed = Não foi possível abrir o log: { $error }
++agent-tasks-card-no-output = Nenhuma saída ainda
++agent-tasks-card-usage = { $tokens } tokens · { $tool_uses } usos de ferramenta
++agent-tasks-card-no-usage = Nenhum uso informado ainda
++agent-tasks-card-last-tool = Última ferramenta: { $tool }
++agent-tasks-card-activity = { $tool_uses ->
++    [one] { $tool } · { $tool_uses } ferramenta
++   *[other] { $tool } · { $tool_uses } ferramentas
++}
++agent-tasks-card-starting = iniciando
++agent-tasks-card-status = { $status ->
++    [running] Rodando
++    [completed] Concluída
++    [failed] Falhou
++    [stopped] Parada
++   *[interrupted] Interrompida
++}
++agent-tasks-card-sub-thread = Sub-thread
++agent-tasks-card-sub-thread-open = Abrir a sub-thread
++    .aria = Abrir a sub-thread: { $title }
++agent-tasks-card-sub-thread-running = Rodando · { $elapsed }
++agent-tasks-card-sub-thread-idle = Ociosa
++
++## The /btw side-question card
++
++agent-btw = A propósito
++agent-btw-copy = Copiar a resposta
++    .aria = Copiar a resposta
++agent-btw-dismiss = Dispensar
++    .aria = Dispensar a pergunta paralela
++agent-btw-asking = Perguntando à parte…
++agent-btw-footer = Não foi adicionada à conversa
++agent-btw-footer-model = Não foi adicionada à conversa · respondida por { $model }
+diff --git a/crates/zeo_i18n/src/catalog.rs b/crates/zeo_i18n/src/catalog.rs
+index a4c12e3..e950158 100644
+--- a/crates/zeo_i18n/src/catalog.rs
++++ b/crates/zeo_i18n/src/catalog.rs
+@@ -34,11 +34,23 @@ pub struct LocaleSource {
+ pub static SHIPPED: &[LocaleSource] = &[
+     LocaleSource {
+         language: "en-US",
+-        files: &[("en-US/zeo.ftl", include_str!("../locales/en-US/zeo.ftl"))],
++        files: &[
++            ("en-US/zeo.ftl", include_str!("../locales/en-US/zeo.ftl")),
++            (
++                "en-US/agent-ui.ftl",
++                include_str!("../locales/en-US/agent-ui.ftl"),
++            ),
++        ],
+     },
+     LocaleSource {
+         language: "pt-BR",
+-        files: &[("pt-BR/zeo.ftl", include_str!("../locales/pt-BR/zeo.ftl"))],
++        files: &[
++            ("pt-BR/zeo.ftl", include_str!("../locales/pt-BR/zeo.ftl")),
++            (
++                "pt-BR/agent-ui.ftl",
++                include_str!("../locales/pt-BR/agent-ui.ftl"),
++            ),
++        ],
+     },
+ ];
+ 

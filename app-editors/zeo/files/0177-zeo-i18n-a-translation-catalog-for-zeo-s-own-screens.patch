@@ -1,0 +1,971 @@
+From 80ecce8086ae31445530f374d9a05a98de2a0fa5 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Tue, 24 Nov 2026 19:20:20 -0300
+Subject: [PATCH] zeo_i18n: a translation catalog for Zeo's own screens
+ (Fluent, t!, ui_language)
+
+Zed has no UI translation at all: no i18n crate, no translatable-string
+macro, no UI-language setting (checked at c31063a0; upstream has only
+tracking issue #7409 and a maintainer's RFC, discussion #43592). This adds
+the infrastructure for translating the screens Zeo itself adds -- Agent
+Sandbox, Secrets, the task and question cards, /btw -- without touching any
+of Zed's own strings, which stay English (docs/I18N-PROPOSAL.md in
+zeo-workspace, phase 1). Nothing is translated by this patch: the shipped
+catalogs hold no message yet, so it changes nothing anyone sees.
+
+The design follows the RFC so the work can move onto Zed's own system if one
+lands: Fluent (.ftl) files and a macro taking a stable message id,
+t!("agent-sandbox-hide-host") or t!("...-jails", count = n), with a
+tooltip or note addressed as an attribute, t!("id.tooltip"). Plurals and
+variants live in the .ftl, never in code.
+
+- crates/zeo_i18n: fluent-bundle's concurrent bundle, one per language in
+  the chain fluent-langneg negotiates, always ending in en-US, so a message
+  missing from a translation shows in English. The catalog is a process
+  global, so t! needs no cx; a missing id renders as itself and is logged
+  once (t! runs every frame). Isolation marks are off: GPUI draws FSI/PDI as
+  boxes in some fonts and no shipped language is right-to-left.
+- The .ftl files are embedded with include_str!, not rust-embed: a handful of
+  small files, no path resolved at run time, a missing file fails the build.
+- ui_language (top-level setting, default null): a BCP 47 tag; null follows
+  the system's languages (sys-locale, already in the tree for time_format).
+  Changing it rebuilds the catalog and refreshes every window, no restart.
+  "en-XA" is a pseudo-locale -- en-US accented and padded by a third, in
+  brackets, variables untouched -- reachable only by name so a system set to
+  another English never lands on it.
+- zed's main calls zeo_i18n::init after which_key, before any window opens.
+
+New crates in Cargo.lock: fluent-bundle 0.16.0, fluent-langneg 0.13.1,
+fluent-syntax 0.12.0, intl-memoizer 0.5.3, intl_pluralrules 7.0.2,
+type-map 0.5.1, unic-langid 0.9.6, unic-langid-impl 0.9.6 -- all
+Apache-2.0 OR MIT; rustc-hash 2, smallvec, self_cell, tinystr 0.8,
+thiserror 2 and memchr were already there. UNGROUPED: every screen patch
+that translates its strings depends on it, under whatever USE flag gates
+that screen, so it sits with the unconditional patches, right after 0154.
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index e323cb6..ac42e7b 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -6474,6 +6474,41 @@ version = "0.3.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8ce81f49ae8a0482e4c55ea62ebbd7e5a686af544c00b9d090bba3ff9be97b3d"
+ 
++[[package]]
++name = "fluent-bundle"
++version = "0.16.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "01203cb8918f5711e73891b347816d932046f95f54207710bda99beaeb423bf4"
++dependencies = [
++ "fluent-langneg",
++ "fluent-syntax",
++ "intl-memoizer",
++ "intl_pluralrules",
++ "rustc-hash 2.1.3",
++ "self_cell",
++ "smallvec",
++ "unic-langid",
++]
++
++[[package]]
++name = "fluent-langneg"
++version = "0.13.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7eebbe59450baee8282d71676f3bfed5689aeab00b27545e83e5f14b1195e8b0"
++dependencies = [
++ "unic-langid",
++]
++
++[[package]]
++name = "fluent-syntax"
++version = "0.12.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "54f0d287c53ffd184d04d8677f590f4ac5379785529e5e08b1c8083acdd5c198"
++dependencies = [
++ "memchr",
++ "thiserror 2.0.21",
++]
++
+ [[package]]
+ name = "fluent-uri"
+ version = "0.4.1"
+@@ -9032,6 +9067,25 @@ dependencies = [
+  "syn 2.0.117",
+ ]
+ 
++[[package]]
++name = "intl-memoizer"
++version = "0.5.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "310da2e345f5eb861e7a07ee182262e94975051db9e4223e909ba90f392f163f"
++dependencies = [
++ "type-map",
++ "unic-langid",
++]
++
++[[package]]
++name = "intl_pluralrules"
++version = "7.0.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "078ea7b7c29a2b4df841a7f6ac8775ff6074020c6776d48491ce2268e068f972"
++dependencies = [
++ "unic-langid",
++]
++
+ [[package]]
+ name = "inventory"
+ version = "0.3.21"
+@@ -19470,6 +19524,15 @@ dependencies = [
+  "utf-8",
+ ]
+ 
++[[package]]
++name = "type-map"
++version = "0.5.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cb30dbbd9036155e74adad6812e9898d03ec374946234fbcebd5dfc7b9187b90"
++dependencies = [
++ "rustc-hash 2.1.3",
++]
++
+ [[package]]
+ name = "typed-path"
+ version = "0.13.0"
+@@ -19578,6 +19641,24 @@ version = "0.1.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
+ 
++[[package]]
++name = "unic-langid"
++version = "0.9.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a28ba52c9b05311f4f6e62d5d9d46f094bd6e84cb8df7b3ef952748d752a7d05"
++dependencies = [
++ "unic-langid-impl",
++]
++
++[[package]]
++name = "unic-langid-impl"
++version = "0.9.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "dce1bf08044d4b7a94028c93786f8566047edc11110595914de93362559bc658"
++dependencies = [
++ "tinystr",
++]
++
+ [[package]]
+ name = "unicase"
+ version = "2.8.1"
+@@ -22917,6 +22998,7 @@ dependencies = [
+  "zed_actions",
+  "zed_credentials_provider",
+  "zed_env_vars",
++ "zeo_i18n",
+  "zlog",
+  "zlog_settings",
+  "ztracing",
+@@ -23118,6 +23200,19 @@ version = "0.3.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
+ 
++[[package]]
++name = "zeo_i18n"
++version = "0.1.0"
++dependencies = [
++ "fluent-bundle",
++ "fluent-langneg",
++ "gpui",
++ "log",
++ "settings",
++ "sys-locale",
++ "unic-langid",
++]
++
+ [[package]]
+ name = "zerocopy"
+ version = "0.8.27"
+diff --git a/Cargo.toml b/Cargo.toml
+index a58ed4d..559f18d 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -251,6 +251,7 @@ members = [
+     "crates/zed_actions",
+     "crates/zed_credentials_provider",
+     "crates/zed_env_vars",
++    "crates/zeo_i18n",
+     "crates/zeta_prompt",
+     "crates/zlog",
+     "crates/zlog_settings",
+@@ -526,6 +527,7 @@ x_ai_subscribed = { path = "crates/x_ai_subscribed" }
+ zed_actions = { path = "crates/zed_actions" }
+ zed_credentials_provider = { path = "crates/zed_credentials_provider" }
+ zed_env_vars = { path = "crates/zed_env_vars" }
++zeo_i18n = { path = "crates/zeo_i18n" }
+ zeta_prompt = { path = "crates/zeta_prompt" }
+ zlog = { path = "crates/zlog" }
+ zlog_settings = { path = "crates/zlog_settings" }
+@@ -643,6 +645,8 @@ etagere = "0.2"
+ exec = "0.3.1"
+ fancy-regex = "0.19"
+ flatbuffers = "25.12"
++fluent-bundle = "0.16"
++fluent-langneg = "0.13"
+ flume = { version = "0.12", default-features = false, features = ["async"] }
+ font-kit = { git = "https://github.com/zed-industries/font-kit", rev = "94b0f28166665e8fd2f53ff6d268a14955c82269", package = "zed-font-kit", version = "0.14.1-zed", default-features = false }
+ foreign-types = "0.5"
+@@ -977,6 +981,7 @@ tree-sitter-ruby = "0.23"
+ tree-sitter-rust = "0.24.2"
+ tree-sitter-typescript = { git = "https://github.com/zed-industries/tree-sitter-typescript", rev = "e2c53597d6a5d9cf7bbe8dccde576fe1e46c5899" } # https://github.com/tree-sitter/tree-sitter-typescript/pull/347
+ tree-sitter-yaml = { git = "https://github.com/zed-industries/tree-sitter-yaml", rev = "baff0b51c64ef6a1fb1f8390f3ad6015b83ec13a" }
++unic-langid = "0.9"
+ unicase = "2.6"
+ unicode-bidi = { version = "0.3.18", default-features = false, features = [
+     "hardcoded-data",
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index 8467c2b..10051cc 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -341,6 +341,11 @@
+   // 2. Never reduce motion:
+   //    "off"
+   "reduce_motion": "off",
++  // The language of Zeo's own interface, as a BCP 47 tag such as "pt-BR".
++  // null follows the system's languages, falling back to English; "en-XA" is
++  // a pseudo-locale (accented, lengthened English) for checking layouts.
++  // Zed's own strings stay in English whatever this says.
++  "ui_language": null,
+   // Determines whether the focused panel follows the mouse location.
+   "focus_follows_mouse": {
+     "enabled": false,
+diff --git a/crates/settings/src/vscode_import.rs b/crates/settings/src/vscode_import.rs
+index 79dd8f4..4abb910 100644
+--- a/crates/settings/src/vscode_import.rs
++++ b/crates/settings/src/vscode_import.rs
+@@ -240,6 +240,7 @@ impl VsCodeSettings {
+             terminal: self.terminal_settings_content(),
+             theme: Box::new(self.theme_settings_content()),
+             title_bar: None,
++            ui_language: None,
+             vim: None,
+             vim_mode: None,
+             workspace: self.workspace_settings_content(),
+diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
+index 8e587dc..1ff5fe5 100644
+--- a/crates/settings_content/src/settings_content.rs
++++ b/crates/settings_content/src/settings_content.rs
+@@ -289,6 +289,13 @@ pub struct SettingsContent {
+     /// Default: off
+     pub reduce_motion: Option<ReduceMotionMode>,
+ 
++    /// The language of Zeo's own interface, as a BCP 47 tag such as "pt-BR".
++    /// Null follows the system's languages; "en-XA" is a pseudo-locale for
++    /// checking layouts. Zed's own strings stay in English.
++    ///
++    /// Default: null
++    pub ui_language: Option<String>,
++
+     /// The URL of the Zed server to connect to.
+     pub server_url: Option<String>,
+ 
+@@ -411,6 +418,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
+         git,
+         global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
+         journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
++        ui_language,
+         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
+         title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
+         instrumentation,
+diff --git a/crates/zed/Cargo.toml b/crates/zed/Cargo.toml
+index f4cc264..e6448b1 100644
+--- a/crates/zed/Cargo.toml
++++ b/crates/zed/Cargo.toml
+@@ -232,6 +232,7 @@ workspace.workspace = true
+ zed_actions.workspace = true
+ zed_credentials_provider.workspace = true
+ zed_env_vars.workspace = true
++zeo_i18n.workspace = true
+ zlog.workspace = true
+ zlog_settings.workspace = true
+ ztracing.workspace = true
+diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
+index 2c54f1a..c26d523 100644
+--- a/crates/zed/src/main.rs
++++ b/crates/zed/src/main.rs
+@@ -802,6 +802,7 @@ fn main() {
+         json_schema_store::init(cx);
+         miniprofiler_ui::init(*STARTUP_TIME.get().unwrap(), cx);
+         which_key::init(cx);
++        zeo_i18n::init(cx);
+         #[cfg(target_os = "windows")]
+         etw_tracing::init(cx);
+ 
+diff --git a/crates/zeo_i18n/Cargo.toml b/crates/zeo_i18n/Cargo.toml
+new file mode 100644
+index 0000000..bc463f2
+--- /dev/null
++++ b/crates/zeo_i18n/Cargo.toml
+@@ -0,0 +1,26 @@
++[package]
++name = "zeo_i18n"
++version = "0.1.0"
++edition.workspace = true
++publish.workspace = true
++license = "GPL-3.0-or-later"
++
++[lints]
++workspace = true
++
++[lib]
++path = "src/zeo_i18n.rs"
++doctest = false
++
++[dependencies]
++fluent-bundle.workspace = true
++fluent-langneg.workspace = true
++gpui.workspace = true
++log.workspace = true
++settings.workspace = true
++sys-locale.workspace = true
++unic-langid.workspace = true
++
++[dev-dependencies]
++gpui = { workspace = true, features = ["test-support"] }
++settings = { workspace = true, features = ["test-support"] }
+diff --git a/crates/zeo_i18n/locales/en-US/zeo.ftl b/crates/zeo_i18n/locales/en-US/zeo.ftl
+new file mode 100644
+index 0000000..08275a2
+--- /dev/null
++++ b/crates/zeo_i18n/locales/en-US/zeo.ftl
+@@ -0,0 +1,11 @@
++### Zeo's own UI strings, in the language every id is written against.
++###
++### Rules (docs/I18N-PROPOSAL.md in zeo-workspace, "Writing rules"):
++### - ids are kebab-case and start with the crate that shows them
++###   (agent-sandbox-hide-host); changing the English never changes the id;
++### - a tooltip or a note is an attribute of its message (.tooltip, .note);
++### - numbers, paths and names are variables, in snake_case ({ $folder_name });
++###   plurals are resolved here, never by building a sentence in code.
++###
++### Every id in this file must be used, and every id used must be here:
++### zed-patches/scripts/i18n-check.py checks both.
+diff --git a/crates/zeo_i18n/locales/pt-BR/zeo.ftl b/crates/zeo_i18n/locales/pt-BR/zeo.ftl
+new file mode 100644
+index 0000000..aeafad1
+--- /dev/null
++++ b/crates/zeo_i18n/locales/pt-BR/zeo.ftl
+@@ -0,0 +1,4 @@
++### Zeo's own UI strings in Brazilian Portuguese.
++###
++### Glossary (operator, 2026-11-24): "jail", "sandbox" and "thread" stay in
++### English. An id missing here falls back to en-US.
+diff --git a/crates/zeo_i18n/src/catalog.rs b/crates/zeo_i18n/src/catalog.rs
+new file mode 100644
+index 0000000..a4c12e3
+--- /dev/null
++++ b/crates/zeo_i18n/src/catalog.rs
+@@ -0,0 +1,179 @@
++//! The loaded translations: one Fluent bundle per language in the negotiated
++//! chain, always ending in `en-US`, so a message missing from a translation
++//! falls back to English instead of disappearing.
++
++use std::borrow::Cow;
++
++use fluent_bundle::{FluentArgs, FluentResource, concurrent::FluentBundle};
++use fluent_langneg::{NegotiationStrategy, negotiate_languages};
++use unic_langid::LanguageIdentifier;
++
++use crate::pseudo;
++
++/// The language every chain ends in, and the one the ids are written against.
++pub const FALLBACK_LANGUAGE: &str = "en-US";
++
++/// The pseudo-locale: `en-US` with every letter accented and every message
++/// lengthened, so a string left out of the catalog stands out (it stays plain
++/// English) and a layout that clips a longer translation shows it. Chosen only
++/// by name through `ui_language`, never by negotiation, so a system set to some
++/// other English can never land on it.
++pub const PSEUDO_LANGUAGE: &str = "en-XA";
++
++/// One language's `.ftl` files, embedded at build time.
++pub struct LocaleSource {
++    pub language: &'static str,
++    pub files: &'static [(&'static str, &'static str)],
++}
++
++/// What ships. A new `.ftl` file is a new line here: `include_str!` keeps the
++/// files inside the binary, so no path is resolved at run time and a missing
++/// file fails the build rather than a launch. `scripts/i18n-check.py` in
++/// zed-patches reads the same directory and fails when a file it finds is not
++/// listed here.
++pub static SHIPPED: &[LocaleSource] = &[
++    LocaleSource {
++        language: "en-US",
++        files: &[("en-US/zeo.ftl", include_str!("../locales/en-US/zeo.ftl"))],
++    },
++    LocaleSource {
++        language: "pt-BR",
++        files: &[("pt-BR/zeo.ftl", include_str!("../locales/pt-BR/zeo.ftl"))],
++    },
++];
++
++pub struct Catalog {
++    /// The languages actually in use, best first; the last is always `en-US`.
++    chain: Vec<String>,
++    bundles: Vec<FluentBundle<FluentResource>>,
++}
++
++impl Catalog {
++    /// Build the chain for `requested` (best first, BCP 47 tags) from `sources`.
++    /// A tag that does not parse is skipped, so a POSIX `C` locale simply
++    /// yields English.
++    pub fn new(requested: &[String], sources: &[LocaleSource]) -> Self {
++        if requested
++            .first()
++            .is_some_and(|tag| tag.eq_ignore_ascii_case(PSEUDO_LANGUAGE))
++        {
++            return Self::pseudo(sources);
++        }
++
++        let requested: Vec<LanguageIdentifier> = requested
++            .iter()
++            .filter_map(|tag| tag.parse().ok())
++            .collect();
++        let available: Vec<LanguageIdentifier> = sources
++            .iter()
++            .filter_map(|source| source.language.parse().ok())
++            .collect();
++        let fallback: LanguageIdentifier = FALLBACK_LANGUAGE
++            .parse()
++            .unwrap_or_else(|_| LanguageIdentifier::default());
++
++        let negotiated = negotiate_languages(
++            &requested,
++            &available,
++            Some(&fallback),
++            NegotiationStrategy::Filtering,
++        );
++
++        let mut chain: Vec<String> = negotiated.iter().map(|id| id.to_string()).collect();
++        // negotiate_languages appends the default only when it is not already
++        // there, so this holds today; it is the invariant `format` relies on.
++        if chain.last().map(String::as_str) != Some(FALLBACK_LANGUAGE) {
++            chain.retain(|language| language != FALLBACK_LANGUAGE);
++            chain.push(FALLBACK_LANGUAGE.to_string());
++        }
++
++        let bundles = chain
++            .iter()
++            .filter_map(|language| {
++                let source = sources.iter().find(|s| s.language == language)?;
++                Some(build_bundle(source, language, None))
++            })
++            .collect();
++        Self { chain, bundles }
++    }
++
++    fn pseudo(sources: &[LocaleSource]) -> Self {
++        let bundles = sources
++            .iter()
++            .find(|source| source.language == FALLBACK_LANGUAGE)
++            .map(|source| build_bundle(source, PSEUDO_LANGUAGE, Some(pseudo::transform)))
++            .into_iter()
++            .collect();
++        Self {
++            chain: vec![PSEUDO_LANGUAGE.to_string()],
++            bundles,
++        }
++    }
++
++    /// The language the catalog answers in first.
++    pub fn language(&self) -> &str {
++        self.chain
++            .first()
++            .map(String::as_str)
++            .unwrap_or(FALLBACK_LANGUAGE)
++    }
++
++    /// Format `id` — a message, or `message.attribute` — from the first bundle
++    /// in the chain that has it. `None` when no bundle does.
++    pub fn format(&self, id: &str, args: Option<&FluentArgs>) -> Option<String> {
++        let (message_id, attribute) = match id.split_once('.') {
++            Some((message, attribute)) => (message, Some(attribute)),
++            None => (id, None),
++        };
++        self.bundles.iter().find_map(|bundle| {
++            let message = bundle.get_message(message_id)?;
++            let pattern = match attribute {
++                Some(attribute) => message.get_attribute(attribute)?.value(),
++                None => message.value()?,
++            };
++            let mut errors = Vec::new();
++            let text = bundle.format_pattern(pattern, args, &mut errors);
++            if !errors.is_empty() {
++                log::warn!(
++                    "zeo_i18n: format errors id={id} language={} errors={errors:?}",
++                    bundle
++                        .locales
++                        .first()
++                        .map(|l| l.to_string())
++                        .unwrap_or_default()
++                );
++            }
++            Some(text.into_owned())
++        })
++    }
++}
++
++fn build_bundle(
++    source: &LocaleSource,
++    language: &str,
++    transform: Option<fn(&str) -> Cow<'_, str>>,
++) -> FluentBundle<FluentResource> {
++    let id: LanguageIdentifier = language
++        .parse()
++        .unwrap_or_else(|_| LanguageIdentifier::default());
++    let mut bundle = FluentBundle::new_concurrent(vec![id]);
++    // Fluent wraps every placeable in Unicode isolation marks (FSI/PDI) by
++    // default, for right-to-left text. GPUI draws them as visible boxes in
++    // some fonts, and no language Zeo ships is right-to-left yet; revisit with
++    // the first one that is.
++    bundle.set_use_isolating(false);
++    bundle.set_transform(transform);
++    for (path, text) in source.files {
++        let resource = match FluentResource::try_new((*text).to_string()) {
++            Ok(resource) => resource,
++            Err((resource, errors)) => {
++                log::error!("zeo_i18n: parse errors file={path} errors={errors:?}");
++                resource
++            }
++        };
++        if let Err(errors) = bundle.add_resource(resource) {
++            log::error!("zeo_i18n: duplicate ids file={path} errors={errors:?}");
++        }
++    }
++    bundle
++}
+diff --git a/crates/zeo_i18n/src/catalog_tests.rs b/crates/zeo_i18n/src/catalog_tests.rs
+new file mode 100644
+index 0000000..51eb2d5
+--- /dev/null
++++ b/crates/zeo_i18n/src/catalog_tests.rs
+@@ -0,0 +1,178 @@
++use crate::{Catalog, FALLBACK_LANGUAGE, FluentArgs, LocaleSource, PSEUDO_LANGUAGE, SHIPPED};
++
++const EN: &str = "\
++greeting = Hello
++only-english = Only in English
++jails = { $count ->
++    [one] One jail
++   *[other] { $count } jails
++}
++hide-host = Hide the Host
++    .tooltip = The agent sees a made-up host
++";
++
++const PT: &str = "\
++greeting = Olá
++jails = { $count ->
++    [one] Uma jail
++   *[other] { $count } jails
++}
++hide-host = Ocultar o host
++    .tooltip = O agente vê um host inventado
++";
++
++static TEST_SOURCES: &[LocaleSource] = &[
++    LocaleSource {
++        language: "en-US",
++        files: &[("en-US/test.ftl", EN)],
++    },
++    LocaleSource {
++        language: "pt-BR",
++        files: &[("pt-BR/test.ftl", PT)],
++    },
++];
++
++fn catalog(requested: &[&str]) -> Catalog {
++    let requested: Vec<String> = requested.iter().map(|s| s.to_string()).collect();
++    Catalog::new(&requested, TEST_SOURCES)
++}
++
++fn count(n: i64) -> FluentArgs<'static> {
++    let mut args = FluentArgs::new();
++    args.set("count", n);
++    args
++}
++
++#[test]
++fn a_requested_language_answers_first() {
++    let pt = catalog(&["pt-BR"]);
++    assert_eq!(pt.language(), "pt-BR");
++    assert_eq!(pt.format("greeting", None).as_deref(), Some("Olá"));
++}
++
++#[test]
++fn a_message_missing_from_a_translation_falls_back_to_english() {
++    let pt = catalog(&["pt-BR"]);
++    assert_eq!(
++        pt.format("only-english", None).as_deref(),
++        Some("Only in English")
++    );
++}
++
++#[test]
++fn an_id_missing_everywhere_is_none() {
++    assert_eq!(catalog(&["pt-BR"]).format("no-such-id", None), None);
++    assert_eq!(
++        catalog(&["pt-BR"]).format("hide-host.no-such-attr", None),
++        None
++    );
++}
++
++#[test]
++fn another_region_of_a_shipped_language_gets_it() {
++    assert_eq!(catalog(&["pt-PT"]).language(), "pt-BR");
++}
++
++#[test]
++fn an_unshipped_or_unparsable_language_gets_english() {
++    assert_eq!(catalog(&["ja-JP"]).language(), FALLBACK_LANGUAGE);
++    assert_eq!(catalog(&["C"]).language(), FALLBACK_LANGUAGE);
++    assert_eq!(catalog(&[]).language(), FALLBACK_LANGUAGE);
++}
++
++#[test]
++fn another_english_never_lands_on_the_pseudo_locale() {
++    assert_eq!(catalog(&["en-GB"]).language(), FALLBACK_LANGUAGE);
++    assert_eq!(
++        catalog(&["en-GB"]).format("greeting", None).as_deref(),
++        Some("Hello")
++    );
++}
++
++#[test]
++fn plurals_follow_the_language() {
++    let en = catalog(&["en-US"]);
++    assert_eq!(
++        en.format("jails", Some(&count(1))).as_deref(),
++        Some("One jail")
++    );
++    assert_eq!(
++        en.format("jails", Some(&count(3))).as_deref(),
++        Some("3 jails")
++    );
++    let pt = catalog(&["pt-BR"]);
++    assert_eq!(
++        pt.format("jails", Some(&count(1))).as_deref(),
++        Some("Uma jail")
++    );
++    assert_eq!(
++        pt.format("jails", Some(&count(2))).as_deref(),
++        Some("2 jails")
++    );
++}
++
++#[test]
++fn attributes_are_addressed_with_a_dot() {
++    let pt = catalog(&["pt-BR"]);
++    assert_eq!(
++        pt.format("hide-host", None).as_deref(),
++        Some("Ocultar o host")
++    );
++    assert_eq!(
++        pt.format("hide-host.tooltip", None).as_deref(),
++        Some("O agente vê um host inventado")
++    );
++}
++
++#[test]
++fn variables_carry_no_isolation_marks() {
++    let text = catalog(&["en-US"])
++        .format("jails", Some(&count(3)))
++        .unwrap_or_default();
++    assert!(
++        !text.contains('\u{2068}') && !text.contains('\u{2069}'),
++        "{text:?}"
++    );
++}
++
++#[test]
++fn the_pseudo_locale_accents_and_pads_text_but_not_variables() {
++    let xa = catalog(&[PSEUDO_LANGUAGE]);
++    assert_eq!(xa.language(), PSEUDO_LANGUAGE);
++    assert_eq!(xa.format("greeting", None).as_deref(), Some("[Ĥéļļö ~~]"));
++    let jails = xa.format("jails", Some(&count(3))).unwrap_or_default();
++    assert!(jails.starts_with('3'), "{jails:?}");
++    assert!(jails.contains("ĵàîļš"), "{jails:?}");
++}
++
++#[test]
++fn the_shipped_files_parse_and_cover_the_fallback() {
++    assert!(SHIPPED.iter().any(|s| s.language == FALLBACK_LANGUAGE));
++    for source in SHIPPED {
++        for (path, text) in source.files {
++            if let Err((_, errors)) = fluent_bundle::FluentResource::try_new(text.to_string()) {
++                panic!("{path}: {errors:?}");
++            }
++        }
++    }
++}
++
++#[test]
++fn the_global_catalog_answers_in_english_until_init() {
++    // set_language is never called by a test; if one did, this would race it.
++    assert_eq!(crate::current_language(), FALLBACK_LANGUAGE);
++}
++
++#[test]
++fn the_macro_formats_through_the_global_catalog() {
++    // The shipped catalog may hold no message yet; an unknown id comes back
++    // as itself, with or without variables.
++    assert_eq!(
++        crate::t!("zeo-i18n-test-unknown-id"),
++        "zeo-i18n-test-unknown-id"
++    );
++    assert_eq!(
++        crate::t!("zeo-i18n-test-unknown-id", count = 2, name = "x"),
++        "zeo-i18n-test-unknown-id"
++    );
++}
+diff --git a/crates/zeo_i18n/src/pseudo.rs b/crates/zeo_i18n/src/pseudo.rs
+new file mode 100644
+index 0000000..85c7b30
+--- /dev/null
++++ b/crates/zeo_i18n/src/pseudo.rs
+@@ -0,0 +1,83 @@
++//! The `en-XA` transform. Fluent calls it on every text fragment of a
++//! pattern and never on a placeable, so `{ $count }` and other variables come
++//! through untouched — which is what keeps a pseudo-localized message
++//! readable enough to check a layout with.
++
++use std::borrow::Cow;
++
++/// Accent every ASCII letter and pad the fragment by about a third, inside
++/// brackets: `Hide the Host` becomes `[Ĥîðé ţĥé Ĥöšţ ~~~~]`. The brackets show
++/// where a message starts and ends, so a clipped one is visible as a missing
++/// `]`; the padding stands for the longer languages (German, Portuguese)
++/// running about 30% past English.
++pub fn transform(text: &str) -> Cow<'_, str> {
++    if text.trim().is_empty() {
++        return Cow::Borrowed(text);
++    }
++    let accented: String = text.chars().map(accent).collect();
++    let letters = text.chars().filter(char::is_ascii_alphabetic).count();
++    let padding = "~".repeat(letters.div_ceil(3));
++    if padding.is_empty() {
++        Cow::Owned(format!("[{accented}]"))
++    } else {
++        Cow::Owned(format!("[{accented} {padding}]"))
++    }
++}
++
++fn accent(c: char) -> char {
++    match c {
++        'a' => 'à',
++        'b' => 'ƀ',
++        'c' => 'ç',
++        'd' => 'ð',
++        'e' => 'é',
++        'f' => 'ƒ',
++        'g' => 'ĝ',
++        'h' => 'ĥ',
++        'i' => 'î',
++        'j' => 'ĵ',
++        'k' => 'ķ',
++        'l' => 'ļ',
++        'm' => 'ɱ',
++        'n' => 'ñ',
++        'o' => 'ö',
++        'p' => 'þ',
++        'q' => 'ǫ',
++        'r' => 'ŕ',
++        's' => 'š',
++        't' => 'ţ',
++        'u' => 'û',
++        'v' => 'ṽ',
++        'w' => 'ŵ',
++        'x' => 'ẋ',
++        'y' => 'ý',
++        'z' => 'ž',
++        'A' => 'À',
++        'B' => 'Ɓ',
++        'C' => 'Ç',
++        'D' => 'Ð',
++        'E' => 'É',
++        'F' => 'Ƒ',
++        'G' => 'Ĝ',
++        'H' => 'Ĥ',
++        'I' => 'Î',
++        'J' => 'Ĵ',
++        'K' => 'Ķ',
++        'L' => 'Ļ',
++        'M' => 'Ṁ',
++        'N' => 'Ñ',
++        'O' => 'Ö',
++        'P' => 'Þ',
++        'Q' => 'Ǫ',
++        'R' => 'Ŕ',
++        'S' => 'Š',
++        'T' => 'Ţ',
++        'U' => 'Û',
++        'V' => 'Ṽ',
++        'W' => 'Ŵ',
++        'X' => 'Ẋ',
++        'Y' => 'Ý',
++        'Z' => 'Ž',
++        other => other,
++    }
++}
+diff --git a/crates/zeo_i18n/src/zeo_i18n.rs b/crates/zeo_i18n/src/zeo_i18n.rs
+new file mode 100644
+index 0000000..6e47a52
+--- /dev/null
++++ b/crates/zeo_i18n/src/zeo_i18n.rs
+@@ -0,0 +1,146 @@
++//! Zeo's UI translations (docs/I18N-PROPOSAL.md in zeo-workspace).
++//!
++//! Text is looked up by a stable id with [`t!`], formatted by Fluent from
++//! `locales/<language>/*.ftl`, in the language the `ui_language` setting
++//! names — or the system's when it names none. The design follows upstream's
++//! RFC (zed-industries/zed discussion #43592: Fluent, one macro taking a
++//! message id), so the ids and `.ftl` files can move onto Zed's own system if
++//! it lands.
++//!
++//! The catalog is a process global rather than a GPUI global so `t!` needs no
++//! `cx`: a render function can call it wherever it builds a label. Changing
++//! the language rebuilds the catalog and refreshes every window, and the next
++//! frame reads the new one.
++
++mod catalog;
++mod pseudo;
++
++use std::collections::HashSet;
++use std::sync::{LazyLock, Mutex, PoisonError, RwLock};
++
++use gpui::App;
++use settings::{RegisterSetting, Settings, SettingsContent, SettingsStore};
++
++pub use catalog::{Catalog, FALLBACK_LANGUAGE, LocaleSource, PSEUDO_LANGUAGE, SHIPPED};
++pub use fluent_bundle::{FluentArgs, FluentValue};
++
++/// English until [`init`] runs: only `main` applies the setting or the system's
++/// languages, so a test -- which never calls `init` -- reads the same English on
++/// a desktop set to Portuguese as on a CI runner with no locale at all.
++static CATALOG: LazyLock<RwLock<Catalog>> =
++    LazyLock::new(|| RwLock::new(Catalog::new(&[], SHIPPED)));
++
++/// Ids already reported missing: `t!` runs on every frame, so an unknown id
++/// is logged once, not sixty times a second.
++static REPORTED_MISSING: LazyLock<Mutex<HashSet<String>>> =
++    LazyLock::new(|| Mutex::new(HashSet::new()));
++
++/// Translate `id` — a message, or `message.attribute` — with optional
++/// variables:
++///
++/// ```ignore
++/// Label::new(t!("agent-sandbox-hide-host"))
++/// Tooltip::text(t!("agent-sandbox-hide-host.tooltip"))
++/// Label::new(t!("agent-sandbox-jails-running", count = jails.len()))
++/// ```
++///
++/// Variable names are Rust identifiers, so they are written in snake_case in
++/// the `.ftl` too (`{ $folder_name }`). An id missing from every language
++/// renders as the id itself and is logged once; `scripts/i18n-check.py` in
++/// zed-patches catches it before that can ship.
++#[macro_export]
++macro_rules! t {
++    ($id:literal $(,)?) => {
++        $crate::translate($id, None)
++    };
++    ($id:literal, $($name:ident = $value:expr),+ $(,)?) => {{
++        let mut args = $crate::FluentArgs::new();
++        $( args.set(stringify!($name), $value); )+
++        $crate::translate($id, Some(&args))
++    }};
++}
++
++/// What [`t!`] expands to.
++pub fn translate(id: &str, args: Option<&FluentArgs>) -> String {
++    let catalog = CATALOG.read().unwrap_or_else(PoisonError::into_inner);
++    if let Some(text) = catalog.format(id, args) {
++        return text;
++    }
++    let mut reported = REPORTED_MISSING
++        .lock()
++        .unwrap_or_else(PoisonError::into_inner);
++    if reported.insert(id.to_string()) {
++        log::warn!(
++            "zeo_i18n: missing message id={id} language={}",
++            catalog.language()
++        );
++    }
++    id.to_string()
++}
++
++/// Switch languages. `None`, an empty string or `"system"` follow the
++/// system's languages; anything else is a BCP 47 tag (`pt-BR`, or `en-XA` for
++/// the pseudo-locale). Returns the language now answering first.
++pub fn set_language(preference: Option<&str>) -> String {
++    let requested = match preference.map(str::trim) {
++        None | Some("") => system_languages(),
++        Some(tag) if tag.eq_ignore_ascii_case("system") => system_languages(),
++        Some(tag) => vec![tag.to_string()],
++    };
++    let catalog = Catalog::new(&requested, SHIPPED);
++    let language = catalog.language().to_string();
++    *CATALOG.write().unwrap_or_else(PoisonError::into_inner) = catalog;
++    language
++}
++
++/// The language answering first right now.
++pub fn current_language() -> String {
++    CATALOG
++        .read()
++        .unwrap_or_else(PoisonError::into_inner)
++        .language()
++        .to_string()
++}
++
++fn system_languages() -> Vec<String> {
++    sys_locale::get_locales().collect()
++}
++
++/// The `ui_language` setting.
++#[derive(Debug, Clone, PartialEq, Eq, RegisterSetting)]
++pub struct UiLanguageSettings {
++    pub ui_language: Option<String>,
++}
++
++impl Settings for UiLanguageSettings {
++    fn from_settings(content: &SettingsContent) -> Self {
++        Self {
++            ui_language: content.ui_language.clone(),
++        }
++    }
++}
++
++/// Apply `ui_language` now and on every settings change, refreshing the
++/// windows when the language actually changed. Called from `main` before the
++/// first window opens.
++pub fn init(cx: &mut App) {
++    UiLanguageSettings::register(cx);
++    let mut applied = UiLanguageSettings::get_global(cx).ui_language.clone();
++    let language = set_language(applied.as_deref());
++    log::info!("zeo_i18n: language={language} setting={applied:?}");
++
++    cx.observe_global::<SettingsStore>(move |cx| {
++        let wanted = UiLanguageSettings::get_global(cx).ui_language.clone();
++        if wanted == applied {
++            return;
++        }
++        let language = set_language(wanted.as_deref());
++        log::info!("zeo_i18n: language={language} setting={wanted:?}");
++        applied = wanted;
++        cx.refresh_windows();
++    })
++    .detach();
++}
++
++#[cfg(test)]
++mod catalog_tests;

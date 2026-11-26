@@ -1,0 +1,1191 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Wed, 25 Nov 2026 20:58:25 -0300
+Subject: [PATCH] agent_ui: Summarize Session -- a precise summary to copy, or
+ to start a thread or a sub-thread from
+
+Operator, 2026-11-25: a way to compile the session's content and context
+into a precise, organized summary, with options to copy it or to open a new
+thread or a sub-thread with it as the content. Asked to check Claude Code's
+own commands first: none hands a summary out. /compact summarizes, but
+replaces the session's own context; /recap is one line; /export needs the
+CLI's terminal UI and is not reachable over ACP; /branch and /fork copy the
+conversation without summarizing it.
+
+The agent panel's options menu gains "Summarize Session", which opens a card
+above the composer, where /btw's card sits, with two sources (the operator
+chose both):
+
+- Local, the default (session_digest.rs): the thread's entries put in order
+  without asking the agent -- the requests, the last answer, the files
+  changed (only edits that completed; a failed edit is listed as failed and
+  a refused one not at all), the commands run, what failed, the plan with
+  its open steps, what is still running, the files read, and how often the
+  context was compacted. No tokens; the same thread gives the same text.
+  It is an index, not a synthesis.
+- By the agent: the agent writes the summary as a /btw side question
+  (_claude/btw, Claude Agent (Plus) 0.38.0), so it reads the session's whole
+  context and the answer never enters the conversation. Offered only when
+  the agent advertises side questions. The request asks for Goal, What was
+  done, Files changed, Current state, Open items, Constraints, in the user's
+  language, inventing nothing.
+
+The card's actions take the source on screen: Copy; New Thread, a thread of
+the same agent whose composer holds the summary, unsent
+(new_thread_with_prefilled_prompt); Sub-thread, story 039's clean sub-thread,
+linked under this thread in the sidebar, the summary quoted in its composer.
+
+New Thread and Sub-thread open after the click, deferred (window.defer): the
+click is still updating this ThreadView, and opening a thread makes the
+panel keep the one leaving the screen -- this one, when it is running --
+which reads it. Seen on Xvfb as a double-lease panic before the deferral.
+A sub-thread's link shows in the sidebar after its first message, as story
+039's clean sub-thread always has.
+
+Logs: session_summary_opened (items, chars), session_summary_agent
+(outcome, chars), session_summary_open (sub_thread, chars) -- lengths only,
+never the text.
+
+Tests: session_digest_tests.rs (the digest's rules) and
+thread_view/tests/session_summary_tests.rs (the card reads the thread as it
+is; an agent without side questions offers only the local summary; Copy
+takes the text on screen; New Thread and Sub-thread close the card). The
+panic above was not reproducible in the test harness -- its stub agent never
+reaches the panel's keep-the-running-thread path -- so the Xvfb proof is
+its evidence. The agent source has no stub answering side
+questions, so it is covered by the live test.
+
+In the claude-agent-acp-plus group, at its end.
+---
+
+diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
+index fcd7814..40fc515 100644
+--- a/crates/agent_ui/src/agent_panel.rs
++++ b/crates/agent_ui/src/agent_panel.rs
+@@ -6795,6 +6795,7 @@ impl AgentPanel {
+                                     conversation_view.read(cx).root_thread_view();
+                                 if let Some(thread_view) = root_thread_view {
+                                     let workspace = workspace.clone();
++                                    let root_thread_view_for_summary = thread_view.clone();
+                                     menu = menu.entry("Open Thread as Markdown", None, {
+                                         move |window, cx| {
+                                             if let Some(workspace) = workspace.upgrade() {
+@@ -6808,6 +6809,19 @@ impl AgentPanel {
+                                             }
+                                         }
+                                     });
++                                    // Operator, 2026-11-25: a summary of the session to copy,
++                                    // or to start a new thread or a sub-thread from.
++                                    // Zed's menu, so English like its other entries.
++                                    menu = menu.entry("Summarize Session", None, {
++                                        move |_window, cx| {
++                                            root_thread_view_for_summary.update(
++                                                cx,
++                                                |thread_view, cx| {
++                                                    thread_view.show_session_summary(cx)
++                                                },
++                                            );
++                                        }
++                                    });
+                                 }
+                             }
+ 
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index c3fdabc..8a27f06 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -592,6 +592,8 @@ mod context_usage_report;
+ mod pinned_message;
+ mod queue_side_question;
+ mod queue_steering;
++mod session_digest;
++mod session_summary;
+ mod side_question_card;
+ mod tool_card_state;
+ use tool_card_state::wrap_title;
+@@ -835,6 +837,8 @@ pub struct ThreadView {
+     context_usage_card: Option<context_usage_card::ContextUsageCard>,
+     /// §6.8: the `/btw` card, while it is open.
+     side_question_card: Option<side_question_card::SideQuestionCard>,
++    /// The session summary card (operator, 2026-11-25), above the composer like `/btw`'s.
++    session_summary_card: Option<session_summary::SessionSummaryCard>,
+     /// The bottom edge, in window coordinates, of whatever floats over the top of the
+     /// conversation in the frame being drawn -- today the pinned user message -- or `None`.
+     /// Written at prepaint by the overlay itself; the tasks card reads it to sit below.
+@@ -1405,6 +1409,7 @@ impl ThreadView {
+             pinned_message_fit: Default::default(),
+             context_usage_card: None,
+             side_question_card: None,
++            session_summary_card: None,
+             top_overlay_bottom: Default::default(),
+             _cancel_task: None,
+             _save_task: None,
+@@ -16331,6 +16336,7 @@ impl Render for ThreadView {
+             .children(self.render_docked_tasks_card(cx))
+             .children(self.render_context_usage_card(cx))
+             .children(self.render_side_question_card(window, cx))
++            .children(self.render_session_summary_card(window, cx))
+             .children(self.render_pinned_elicitations(cx))
+             .children(self.render_request_elicitations(cx))
+             .child(self.render_message_editor(window, cx))
+@@ -16726,6 +16732,8 @@ mod tests {
+ 
+     mod message_time_tests;
+ 
++    mod session_summary_tests;
++
+     mod account_refresh_line_tests;
+     mod five_hour_arc_tests;
+ 
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/session_digest.rs b/crates/agent_ui/src/conversation_view/thread_view/session_digest.rs
+new file mode 100644
+index 0000000..7828338
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/session_digest.rs
+@@ -0,0 +1,194 @@
++//! The session summary's local half (operator, 2026-11-25): what the thread holds, put in order
++//! without asking the agent -- no tokens, the same input always gives the same text. It is an
++//! index of the session, not a synthesis; the agent's summary (`/btw`) is the synthesis.
++//!
++//! Pure over [`DigestItem`]s so it can be tested without a thread; `digest_items` reads them
++//! from one.
++
++use std::collections::BTreeSet;
++use std::fmt::Write as _;
++
++/// The most characters a request or the outcome keeps; the rest is the transcript's.
++const EXCERPT_MAX_CHARS: usize = 600;
++
++/// One thing the session holds, as the digest needs it.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub(crate) enum DigestItem {
++    /// What the operator asked, as written.
++    Request(String),
++    /// The agent's words (thoughts left out).
++    Answer(String),
++    /// A tool call: its title, what it is, how it ended, and the paths it named.
++    Tool {
++        title: String,
++        kind: DigestToolKind,
++        outcome: DigestOutcome,
++        paths: Vec<String>,
++    },
++    /// The context was compacted here.
++    Compaction,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum DigestToolKind {
++    Edit,
++    Execute,
++    Read,
++    Other,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum DigestOutcome {
++    Done,
++    Failed,
++    /// Rejected or cancelled by the operator.
++    Refused,
++    /// Still running, or waiting for an answer.
++    Open,
++}
++
++/// A plan step, as the agent last reported it.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub(crate) struct DigestPlanStep {
++    pub text: String,
++    pub done: bool,
++    pub running: bool,
++}
++
++/// The digest as Markdown: the title, then only the sections that have something.
++pub(crate) fn render_digest(title: &str, items: &[DigestItem], plan: &[DigestPlanStep]) -> String {
++    let mut out = String::new();
++    let _ = writeln!(out, "# Session summary: {}", one_line(title));
++
++    let requests: Vec<&str> = items
++        .iter()
++        .filter_map(|item| match item {
++            DigestItem::Request(text) => Some(text.as_str()),
++            _ => None,
++        })
++        .collect();
++    if !requests.is_empty() {
++        let _ = writeln!(out, "\n## Requests");
++        for (index, request) in requests.iter().enumerate() {
++            let _ = writeln!(out, "{}. {}", index + 1, one_line(&excerpt(request)));
++        }
++    }
++
++    let last_answer = items.iter().rev().find_map(|item| match item {
++        DigestItem::Answer(text) if !text.trim().is_empty() => Some(text.as_str()),
++        _ => None,
++    });
++    if let Some(answer) = last_answer {
++        let _ = writeln!(out, "\n## Last answer\n{}", excerpt(answer).trim());
++    }
++
++    let mut changed = BTreeSet::new();
++    let mut read = BTreeSet::new();
++    let mut commands = Vec::new();
++    let mut failed = Vec::new();
++    let mut open = Vec::new();
++    for item in items {
++        let DigestItem::Tool {
++            title,
++            kind,
++            outcome,
++            paths,
++        } = item
++        else {
++            continue;
++        };
++        match outcome {
++            DigestOutcome::Failed => failed.push(title.as_str()),
++            DigestOutcome::Open => open.push(title.as_str()),
++            DigestOutcome::Refused => {}
++            DigestOutcome::Done => match kind {
++                DigestToolKind::Edit => changed.extend(paths.iter().map(String::as_str)),
++                DigestToolKind::Read => read.extend(paths.iter().map(String::as_str)),
++                DigestToolKind::Execute => commands.push(title.as_str()),
++                DigestToolKind::Other => {}
++            },
++        }
++    }
++    list_section(
++        &mut out,
++        "Files changed",
++        changed.iter().map(|path| format!("`{path}`")),
++    );
++    list_section(
++        &mut out,
++        "Commands run",
++        commands.iter().map(|title| one_line(title)),
++    );
++    list_section(
++        &mut out,
++        "Failed",
++        failed.iter().map(|title| one_line(title)),
++    );
++
++    let mut pending: Vec<String> = plan
++        .iter()
++        .filter(|step| !step.done)
++        .map(|step| {
++            let marker = if step.running { " (in progress)" } else { "" };
++            format!("{}{marker}", one_line(&step.text))
++        })
++        .collect();
++    pending.extend(
++        open.iter()
++            .map(|title| format!("{} (still running)", one_line(title))),
++    );
++    if !plan.is_empty() {
++        let _ = writeln!(out, "\n## Plan");
++        for step in plan {
++            let mark = if step.done { "x" } else { " " };
++            let _ = writeln!(out, "- [{mark}] {}", one_line(&step.text));
++        }
++    }
++    list_section(&mut out, "Open", pending.into_iter());
++    list_section(
++        &mut out,
++        "Files read",
++        read.iter().map(|path| format!("`{path}`")),
++    );
++
++    let compactions = items
++        .iter()
++        .filter(|item| matches!(item, DigestItem::Compaction))
++        .count();
++    if compactions > 0 {
++        let _ = writeln!(
++            out,
++            "\n_The context was compacted {compactions} time(s); earlier turns are summarized in the transcript._"
++        );
++    }
++    out
++}
++
++fn list_section(out: &mut String, heading: &str, lines: impl Iterator<Item = String>) {
++    let lines: Vec<String> = lines.collect();
++    if lines.is_empty() {
++        return;
++    }
++    let _ = writeln!(out, "\n## {heading}");
++    for line in lines {
++        let _ = writeln!(out, "- {line}");
++    }
++}
++
++/// A line of the digest: inner newlines become spaces, so a list item stays one item.
++fn one_line(text: &str) -> String {
++    text.split_whitespace().collect::<Vec<_>>().join(" ")
++}
++
++/// At most [`EXCERPT_MAX_CHARS`] characters, cut on a character boundary, with an ellipsis.
++fn excerpt(text: &str) -> String {
++    let text = text.trim();
++    match text.char_indices().nth(EXCERPT_MAX_CHARS) {
++        Some((cut, _)) => format!("{}…", text[..cut].trim_end()),
++        None => text.to_string(),
++    }
++}
++
++#[cfg(test)]
++#[path = "session_digest_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/session_digest_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/session_digest_tests.rs
+new file mode 100644
+index 0000000..e80a306
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/session_digest_tests.rs
+@@ -0,0 +1,163 @@
++// The session summary's local half (operator, 2026-11-25). Hostile halves first: a failed or
++// refused edit is not a changed file; thoughts are not the last answer; an empty session has
++// only its title; a long request is cut, never split inside a character.
++
++use super::*;
++
++fn tool(title: &str, kind: DigestToolKind, outcome: DigestOutcome, paths: &[&str]) -> DigestItem {
++    DigestItem::Tool {
++        title: title.to_string(),
++        kind,
++        outcome,
++        paths: paths.iter().map(|path| path.to_string()).collect(),
++    }
++}
++
++#[test]
++fn digest_of_an_empty_session_is_its_title_only() {
++    assert_eq!(
++        render_digest("New Thread", &[], &[]),
++        "# Session summary: New Thread\n"
++    );
++}
++
++#[test]
++fn digest_lists_only_edits_that_landed() {
++    let items = [
++        DigestItem::Request("Fix the parser".into()),
++        tool(
++            "Edit src/a.rs",
++            DigestToolKind::Edit,
++            DigestOutcome::Done,
++            &["src/a.rs"],
++        ),
++        tool(
++            "Edit src/b.rs",
++            DigestToolKind::Edit,
++            DigestOutcome::Failed,
++            &["src/b.rs"],
++        ),
++        tool(
++            "Edit src/c.rs",
++            DigestToolKind::Edit,
++            DigestOutcome::Refused,
++            &["src/c.rs"],
++        ),
++        tool(
++            "Edit src/a.rs",
++            DigestToolKind::Edit,
++            DigestOutcome::Done,
++            &["src/a.rs"],
++        ),
++        DigestItem::Answer("Fixed.".into()),
++    ];
++    let digest = render_digest("Parser", &items, &[]);
++    assert!(
++        digest.contains("## Files changed\n- `src/a.rs`\n"),
++        "{digest}"
++    );
++    assert!(
++        !digest.contains("src/c.rs"),
++        "a refused edit changed nothing: {digest}"
++    );
++    let changed = digest
++        .split("## Files changed\n")
++        .nth(1)
++        .and_then(|rest| rest.split("\n## ").next())
++        .expect("the section");
++    assert!(
++        !changed.contains("src/b.rs"),
++        "a failed edit changed nothing: {digest}"
++    );
++    assert!(
++        digest.contains("## Failed\n- Edit src/b.rs\n"),
++        "a failed edit is listed as failed, not changed: {digest}"
++    );
++    assert_eq!(
++        digest.matches("src/a.rs").count(),
++        1,
++        "each file once: {digest}"
++    );
++}
++
++#[test]
++fn digest_keeps_the_order_of_requests_and_the_last_answer() {
++    let items = [
++        DigestItem::Request("first\nwith two lines".into()),
++        DigestItem::Answer("an early answer".into()),
++        DigestItem::Request("second".into()),
++        DigestItem::Answer("the final answer".into()),
++        DigestItem::Answer("  ".into()),
++    ];
++    let digest = render_digest("T", &items, &[]);
++    assert!(
++        digest.contains("## Requests\n1. first with two lines\n2. second\n"),
++        "{digest}"
++    );
++    assert!(
++        digest.contains("## Last answer\nthe final answer\n"),
++        "{digest}"
++    );
++    assert!(!digest.contains("an early answer"), "{digest}");
++}
++
++#[test]
++fn digest_shows_the_plan_and_what_is_still_open() {
++    let plan = [
++        DigestPlanStep {
++            text: "Write the test".into(),
++            done: true,
++            running: false,
++        },
++        DigestPlanStep {
++            text: "Make it pass".into(),
++            done: false,
++            running: true,
++        },
++    ];
++    let items = [
++        tool(
++            "cargo test",
++            DigestToolKind::Execute,
++            DigestOutcome::Done,
++            &[],
++        ),
++        tool(
++            "cargo build",
++            DigestToolKind::Execute,
++            DigestOutcome::Open,
++            &[],
++        ),
++        DigestItem::Compaction,
++    ];
++    let digest = render_digest("T", &items, &plan);
++    assert!(
++        digest.contains("## Commands run\n- cargo test\n"),
++        "{digest}"
++    );
++    assert!(
++        digest.contains("## Plan\n- [x] Write the test\n- [ ] Make it pass\n"),
++        "{digest}"
++    );
++    assert!(
++        digest.contains("## Open\n- Make it pass (in progress)\n- cargo build (still running)\n"),
++        "{digest}"
++    );
++    assert!(digest.contains("compacted 1 time(s)"), "{digest}");
++}
++
++#[test]
++fn digest_cuts_a_long_request_on_a_character() {
++    let long = "é".repeat(EXCERPT_MAX_CHARS + 10);
++    let digest = render_digest("T", &[DigestItem::Request(long)], &[]);
++    let line = digest
++        .lines()
++        .find(|line| line.starts_with("1. "))
++        .expect("the request");
++    assert_eq!(
++        line.chars().count(),
++        3 + EXCERPT_MAX_CHARS + 1,
++        "cut, with an ellipsis"
++    );
++    assert!(line.ends_with('…'));
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/session_summary.rs b/crates/agent_ui/src/conversation_view/thread_view/session_summary.rs
+new file mode 100644
+index 0000000..12c70e3
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/session_summary.rs
+@@ -0,0 +1,489 @@
++//! The session summary card (operator, 2026-11-25): a precise, ordered account of the session,
++//! to copy or to start a new thread or a sub-thread from.
++//!
++//! Two sources, chosen in the card. **Local**, the default: `session_digest` orders what the
++//! thread holds -- requests, the last answer, files changed, commands, the plan, what is open --
++//! with no tokens spent. **Agent**: the agent writes the summary as a `/btw` side question
++//! (`_claude/btw`), so it reads the whole session, Claude Code's own context, and the answer
++//! never enters the conversation. Claude Code has no command that hands a summary out: `/compact`
++//! replaces the session's own context, `/recap` is one line and `/export` needs its terminal UI.
++
++use acp_thread::{AgentThreadEntry, AssistantMessageChunk, SideAnswer, ToolCallStatus};
++use agent_client_protocol::v2::schema as acp_v2;
++use gpui::{AnyElement, App, ClipboardItem, Context, Entity, ScrollHandle, Task, Window, px};
++use markdown::{Markdown, MarkdownFont, MarkdownStyle};
++use ui::{
++    Button, ButtonStyle, IconButton, IconName, IconSize, Label, LabelSize, ScrollAxes, Scrollbars,
++    ToggleButtonGroup, ToggleButtonSimple, Tooltip, WithScrollbar, prelude::*,
++};
++use zeo_i18n::t;
++
++use super::ThreadView;
++use super::content_column::content_column;
++use super::session_digest::{
++    DigestItem, DigestOutcome, DigestPlanStep, DigestToolKind, render_digest,
++};
++use crate::AgentPanel;
++use crate::sub_thread::SubThreadRequest;
++use crate::thread_organization::ForkKind;
++
++/// The most of a summary the card shows before it scrolls.
++const SUMMARY_MAX_HEIGHT: f32 = 320.;
++
++/// What the agent is asked, as a side question. English on purpose: it is an instruction to the
++/// model, not text for the reader, and the model answers in the session's own language.
++pub(crate) const AGENT_SUMMARY_REQUEST: &str = "Summarize this whole session so it can be \
++     handed to someone who was not here, or pasted into a new session to carry on. Be precise \
++     and organized, in Markdown, with these sections: Goal; What was done (decisions and why); \
++     Files changed; Current state; Open items and next steps; Constraints and preferences to \
++     keep. Name files, commands and identifiers exactly. Do not invent anything the session did \
++     not contain. Answer in the language the user wrote in.";
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum SummarySource {
++    Local,
++    Agent,
++}
++
++pub(crate) enum AgentSummary {
++    NotAsked,
++    Asking,
++    Answered(Entity<Markdown>),
++    Failed(SharedString),
++}
++
++pub(crate) struct SessionSummaryCard {
++    pub(crate) source: SummarySource,
++    local: Entity<Markdown>,
++    pub(crate) agent: AgentSummary,
++    scroll: ScrollHandle,
++    _ask: Task<()>,
++}
++
++impl SessionSummaryCard {
++    /// The text the actions take: the source on screen, once it has one.
++    pub(crate) fn text(&self, cx: &App) -> Option<String> {
++        match (self.source, &self.agent) {
++            (SummarySource::Local, _) => Some(self.local.read(cx).source().to_string()),
++            (SummarySource::Agent, AgentSummary::Answered(markdown)) => {
++                Some(markdown.read(cx).source().to_string())
++            }
++            (SummarySource::Agent, _) => None,
++        }
++    }
++}
++
++/// What the digest reads from a thread's entries.
++pub(crate) fn digest_items(entries: &[AgentThreadEntry], cx: &App) -> Vec<DigestItem> {
++    entries
++        .iter()
++        .filter_map(|entry| match entry {
++            AgentThreadEntry::UserMessage(message) => {
++                Some(DigestItem::Request(message.content.to_markdown(cx)))
++            }
++            AgentThreadEntry::AssistantMessage(message) => {
++                let text: Vec<String> = message
++                    .chunks
++                    .iter()
++                    .filter_map(|chunk| match chunk {
++                        AssistantMessageChunk::Message { block, .. } => Some(block.to_markdown(cx)),
++                        AssistantMessageChunk::Thought { .. } => None,
++                    })
++                    .collect();
++                (!text.is_empty()).then(|| DigestItem::Answer(text.join("\n")))
++            }
++            AgentThreadEntry::ToolCall(call) => Some(DigestItem::Tool {
++                title: call.label.read(cx).source().to_string(),
++                kind: match call.kind() {
++                    acp_v2::ToolKind::Edit | acp_v2::ToolKind::Delete | acp_v2::ToolKind::Move => {
++                        DigestToolKind::Edit
++                    }
++                    acp_v2::ToolKind::Execute => DigestToolKind::Execute,
++                    acp_v2::ToolKind::Read => DigestToolKind::Read,
++                    _ => DigestToolKind::Other,
++                },
++                outcome: match call.status() {
++                    ToolCallStatus::Completed => DigestOutcome::Done,
++                    ToolCallStatus::Failed => DigestOutcome::Failed,
++                    ToolCallStatus::Rejected | ToolCallStatus::Canceled => DigestOutcome::Refused,
++                    ToolCallStatus::Pending
++                    | ToolCallStatus::WaitingForConfirmation
++                    | ToolCallStatus::InProgress
++                    | ToolCallStatus::Paused => DigestOutcome::Open,
++                },
++                paths: call
++                    .locations
++                    .iter()
++                    .map(|location| location.path.to_string_lossy().into_owned())
++                    .collect(),
++            }),
++            AgentThreadEntry::ContextCompaction(_) => Some(DigestItem::Compaction),
++            AgentThreadEntry::SessionMessage(_) | AgentThreadEntry::Elicitation(_) => None,
++        })
++        .collect()
++}
++
++impl ThreadView {
++    /// Opens the card on the local digest of the thread as it is now, replacing any open one.
++    pub(crate) fn show_session_summary(&mut self, cx: &mut Context<Self>) {
++        let thread = self.thread.read(cx);
++        let title = thread
++            .title()
++            .map(|title| title.to_string())
++            .unwrap_or_else(|| t!("agent-summary-untitled"));
++        let items = digest_items(thread.entries(), cx);
++        let plan: Vec<DigestPlanStep> = thread
++            .plan()
++            .map(|plan| {
++                plan.entries()
++                    .iter()
++                    .map(|entry| DigestPlanStep {
++                        text: entry.source.content.clone(),
++                        done: entry.source.status == acp_v2::PlanEntryStatus::Completed,
++                        running: entry.source.status == acp_v2::PlanEntryStatus::InProgress,
++                    })
++                    .collect()
++            })
++            .unwrap_or_default();
++        let digest = render_digest(&title, &items, &plan);
++        log::info!(
++            "agent_ui event=session_summary_opened session_id={} items={} chars={}",
++            self.session_id,
++            items.len(),
++            digest.chars().count()
++        );
++        let languages = self
++            .project
++            .upgrade()
++            .map(|project| project.read(cx).languages().clone());
++        self.session_summary_card = Some(SessionSummaryCard {
++            source: SummarySource::Local,
++            local: cx.new(|cx| Markdown::new(digest.into(), languages, None, cx)),
++            agent: AgentSummary::NotAsked,
++            scroll: ScrollHandle::new(),
++            _ask: Task::ready(()),
++        });
++        cx.notify();
++    }
++
++    /// Shows `source`; the agent's summary is asked for the first time it is shown.
++    pub(crate) fn show_summary_source(&mut self, source: SummarySource, cx: &mut Context<Self>) {
++        let asks = source == SummarySource::Agent
++            && self.session_summary_card.as_ref().is_some_and(|card| {
++                matches!(card.agent, AgentSummary::NotAsked | AgentSummary::Failed(_))
++            });
++        let Some(card) = self.session_summary_card.as_mut() else {
++            return;
++        };
++        card.source = source;
++        if asks {
++            self.ask_agent_summary(cx);
++        }
++        cx.notify();
++    }
++
++    fn ask_agent_summary(&mut self, cx: &mut Context<Self>) {
++        let connection = self.thread.read(cx).connection().clone();
++        let session_id = self.thread.read(cx).session_id().clone();
++        let request =
++            connection.ask_side_question(&session_id, AGENT_SUMMARY_REQUEST.to_string(), cx);
++        let languages = self
++            .project
++            .upgrade()
++            .map(|project| project.read(cx).languages().clone());
++        let ask = cx.spawn(async move |this, cx| {
++            let result = request.await;
++            this.update(cx, |this, cx| {
++                let Some(card) = this.session_summary_card.as_mut() else {
++                    return;
++                };
++                card.agent = match result {
++                    Ok(SideAnswer { answer, .. }) => {
++                        log::info!(
++                            "agent_ui event=session_summary_agent session_id={session_id} outcome=answered chars={}",
++                            answer.chars().count()
++                        );
++                        AgentSummary::Answered(
++                            cx.new(|cx| Markdown::new(answer.into(), languages, None, cx)),
++                        )
++                    }
++                    Err(error) => {
++                        log::warn!(
++                            "agent_ui event=session_summary_agent session_id={session_id} outcome=failed error={error:#}"
++                        );
++                        AgentSummary::Failed(error.to_string().into())
++                    }
++                };
++                cx.notify();
++            })
++            .ok();
++        });
++        if let Some(card) = self.session_summary_card.as_mut() {
++            card.agent = AgentSummary::Asking;
++            card._ask = ask;
++        }
++    }
++
++    /// Opens `text` in a new thread of the same agent (`as_sub_thread`: linked under this one in
++    /// the sidebar, as story 039's clean sub-thread), with the composer holding it, unsent.
++    pub(crate) fn open_summary_in_thread(
++        &mut self,
++        text: String,
++        as_sub_thread: bool,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        let session_id = self.thread.read(cx).session_id().clone();
++        let Some(agent) = self
++            .server_view
++            .upgrade()
++            .map(|conversation| conversation.read(cx).agent_key().clone())
++        else {
++            return;
++        };
++        let Some(panel) = self
++            .workspace
++            .upgrade()
++            .and_then(|workspace| workspace.read(cx).panel::<AgentPanel>(cx))
++        else {
++            log::warn!("agent_ui event=session_summary_open_failed reason=no_agent_panel");
++            return;
++        };
++        log::info!(
++            "agent_ui event=session_summary_open session_id={session_id} sub_thread={as_sub_thread} chars={}",
++            text.chars().count()
++        );
++        let work_dirs = self.thread.read(cx).work_dirs().cloned();
++        let parent_thread_id = self.root_thread_id;
++        // Deferred: the click is still updating this view, and opening a thread makes the panel
++        // keep the one leaving the screen -- this one, if it is running -- which reads it. Seen
++        // on Xvfb as a double-lease panic (2026-11-25).
++        window.defer(cx, move |window, cx| {
++            if as_sub_thread {
++                let request = SubThreadRequest {
++                    parent_thread_id,
++                    parent_session_id: session_id,
++                    agent,
++                    work_dirs,
++                    kind: ForkKind::Clean,
++                    excerpt: text.into(),
++                    inherited_messages: None,
++                };
++                let opening = panel.update(cx, |panel, cx| {
++                    panel.open_sub_thread(request, true, window, cx)
++                });
++                cx.spawn(async move |_| {
++                    if let Err(error) = opening.await {
++                        log::warn!(
++                            "agent_ui event=session_summary_open_failed sub_thread=true: {error:#}"
++                        );
++                    }
++                })
++                .detach();
++            } else {
++                panel.update(cx, |panel, cx| {
++                    panel
++                        .new_thread_with_prefilled_prompt(agent, session_id, text, true, window, cx)
++                });
++            }
++        });
++        self.session_summary_card = None;
++        cx.notify();
++    }
++
++    pub(super) fn render_session_summary_card(
++        &self,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> Option<AnyElement> {
++        let card = self.session_summary_card.as_ref()?;
++        let text = card.text(cx);
++        let offers_agent = self.thread.read(cx).connection().supports_side_question();
++
++        let sources = ToggleButtonGroup::single_row(
++            "session-summary-source",
++            [
++                ToggleButtonSimple::new(
++                    t!("agent-summary-local"),
++                    cx.listener(|this, _, _, cx| {
++                        this.show_summary_source(SummarySource::Local, cx)
++                    }),
++                ),
++                ToggleButtonSimple::new(
++                    t!("agent-summary-agent"),
++                    cx.listener(|this, _, _, cx| {
++                        this.show_summary_source(SummarySource::Agent, cx)
++                    }),
++                ),
++            ],
++        )
++        .selected_index(match card.source {
++            SummarySource::Local => 0,
++            SummarySource::Agent => 1,
++        })
++        .style(ui::ToggleButtonGroupStyle::Outlined)
++        .size(ui::ToggleButtonGroupSize::Default);
++
++        let header = h_flex()
++            .w_full()
++            .gap_2()
++            .justify_between()
++            .child(
++                h_flex()
++                    .gap_1p5()
++                    .child(
++                        Icon::new(IconName::ListTodo)
++                            .size(IconSize::XSmall)
++                            .color(Color::Muted),
++                    )
++                    .child(Label::new(t!("agent-summary")).size(LabelSize::Small)),
++            )
++            .child(
++                h_flex()
++                    .gap_1()
++                    .when(offers_agent, |this| {
++                        this.child(
++                            div()
++                                .debug_selector(|| "session-summary-sources".into())
++                                .child(sources),
++                        )
++                    })
++                    .child(
++                        IconButton::new("session-summary-dismiss", IconName::Close)
++                            .icon_size(IconSize::Small)
++                            .icon_color(Color::Muted)
++                            .tooltip(Tooltip::text(t!("agent-summary-dismiss")))
++                            .on_click(cx.listener(|this, _, _, cx| {
++                                this.session_summary_card = None;
++                                cx.notify();
++                            })),
++                    ),
++            );
++
++        let markdown = match (card.source, &card.agent) {
++            (SummarySource::Local, _) => Some(card.local.clone()),
++            (SummarySource::Agent, AgentSummary::Answered(markdown)) => Some(markdown.clone()),
++            _ => None,
++        };
++        let body = match (markdown, &card.agent) {
++            (Some(markdown), _) => {
++                let style = MarkdownStyle::themed(MarkdownFont::Agent, window, cx);
++                div()
++                    .w_full()
++                    .text_ui(cx)
++                    .max_h(px(SUMMARY_MAX_HEIGHT))
++                    .child(
++                        div()
++                            .id("session-summary-text")
++                            .debug_selector(|| "session-summary-text".into())
++                            .max_h(px(SUMMARY_MAX_HEIGHT))
++                            .pr_3()
++                            .overflow_y_scroll()
++                            .track_scroll(&card.scroll)
++                            .child(self.render_markdown(markdown, style, cx)),
++                    )
++                    .custom_scrollbars(
++                        Scrollbars::always_visible(ScrollAxes::Vertical)
++                            .tracked_scroll_handle(&card.scroll),
++                        window,
++                        cx,
++                    )
++                    .into_any_element()
++            }
++            (None, AgentSummary::Failed(reason)) => Label::new(reason.clone())
++                .size(LabelSize::Small)
++                .color(Color::Error)
++                .into_any_element(),
++            (None, _) => Label::new(t!("agent-summary-asking"))
++                .size(LabelSize::Small)
++                .color(Color::Muted)
++                .into_any_element(),
++        };
++
++        let action = |id: &'static str, label: String, icon: IconName| {
++            Button::new(id, label)
++                .label_size(LabelSize::Small)
++                .start_icon(Icon::new(icon).size(IconSize::XSmall))
++                .style(ButtonStyle::Subtle)
++                .disabled(text.is_none())
++        };
++        let footer = h_flex()
++            .gap_1()
++            .justify_end()
++            .child(
++                div()
++                    .debug_selector(|| "session-summary-copy".into())
++                    .child(
++                        action(
++                            "session-summary-copy",
++                            t!("agent-summary-copy"),
++                            IconName::Copy,
++                        )
++                        .on_click({
++                            let text = text.clone();
++                            move |_, _, cx| {
++                                if let Some(text) = &text {
++                                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
++                                }
++                            }
++                        }),
++                    ),
++            )
++            .child(
++                div()
++                    .debug_selector(|| "session-summary-new-thread".into())
++                    .child(
++                        action(
++                            "session-summary-new-thread",
++                            t!("agent-summary-new-thread"),
++                            IconName::Plus,
++                        )
++                        .on_click(cx.listener({
++                            let text = text.clone();
++                            move |this, _, window, cx| {
++                                if let Some(text) = text.clone() {
++                                    this.open_summary_in_thread(text, false, window, cx);
++                                }
++                            }
++                        })),
++                    ),
++            )
++            .child(
++                div()
++                    .debug_selector(|| "session-summary-sub-thread".into())
++                    .child(
++                        action(
++                            "session-summary-sub-thread",
++                            t!("agent-summary-sub-thread"),
++                            IconName::Split,
++                        )
++                        .on_click(cx.listener({
++                            let text = text.clone();
++                            move |this, _, window, cx| {
++                                if let Some(text) = text.clone() {
++                                    this.open_summary_in_thread(text, true, window, cx);
++                                }
++                            }
++                        })),
++                    ),
++            );
++
++        let colors = cx.theme().colors();
++        let card = v_flex()
++            .id("session-summary-card")
++            .debug_selector(|| "session-summary-card".into())
++            .mx_2()
++            .mb_1()
++            .p_2()
++            .gap_1p5()
++            .rounded_md()
++            .border_1()
++            .border_color(colors.border)
++            .bg(colors.panel_background)
++            .shadow_sm()
++            .child(header)
++            .child(body)
++            .child(footer);
++        Some(content_column(card, cx).into_any_element())
++    }
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/session_summary_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/session_summary_tests.rs
+new file mode 100644
+index 0000000..ffc11b7
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/tests/session_summary_tests.rs
+@@ -0,0 +1,144 @@
++// Operator, 2026-11-25: "Summarize Session" opens a card with a precise, ordered account of the
++// session, to copy or to open as a new thread or a sub-thread. Hostile halves first: an agent
++// that cannot answer side questions must not offer the agent's summary; the card reads the
++// thread as it is when opened, not an empty draft.
++
++use agent_client_protocol::v1::schema as acp_v1;
++use gpui::TestAppContext;
++
++use super::elicitation_decline_harness::*;
++use crate::conversation_view::ThreadView;
++
++fn replay(
++    thread: &gpui::Entity<acp_thread::AcpThread>,
++    update: acp_v1::SessionUpdate,
++    cx: &mut gpui::VisualTestContext,
++) {
++    thread.update(cx, |thread, cx| {
++        thread
++            .handle_session_update(update, cx)
++            .expect("update applies")
++    });
++}
++
++async fn summarized(
++    cx: &mut TestAppContext,
++) -> (gpui::Entity<ThreadView>, gpui::VisualTestContext) {
++    let (view, thread, mut cx) = setup(cx).await;
++    replay(
++        &thread,
++        acp_v1::SessionUpdate::UserMessageChunk(acp_v1::ContentChunk::new("Fix the build".into())),
++        &mut cx,
++    );
++    replay(
++        &thread,
++        acp_v1::SessionUpdate::AgentMessageChunk(acp_v1::ContentChunk::new(
++            "Fixed: the missing feature flag.".into(),
++        )),
++        &mut cx,
++    );
++    view.update(&mut cx, |view, cx| view.show_session_summary(cx));
++    draw(&mut cx);
++    (view, cx)
++}
++
++/// As `summarized`, on a thread that has sent a message and is still running -- a thread the
++/// panel keeps when another one takes the screen, which reads this view.
++async fn summarized_while_running(
++    cx: &mut TestAppContext,
++) -> (gpui::Entity<ThreadView>, gpui::VisualTestContext) {
++    let (view, _thread, mut cx) = setup(cx).await;
++    let panel = view.read_with(&cx, |view, cx| {
++        view.workspace
++            .upgrade()
++            .and_then(|workspace| workspace.read(cx).panel::<crate::AgentPanel>(cx))
++            .expect("the agent panel")
++    });
++    crate::test_support::send_message(&panel, &mut cx);
++    cx.run_until_parked();
++    view.update(&mut cx, |view, cx| view.show_session_summary(cx));
++    draw(&mut cx);
++    (view, cx)
++}
++
++fn card_text(view: &gpui::Entity<ThreadView>, cx: &mut gpui::VisualTestContext) -> String {
++    view.read_with(cx, |view, cx| {
++        view.session_summary_card
++            .as_ref()
++            .and_then(|card| card.text(cx))
++            .expect("the card has text")
++    })
++}
++
++#[gpui::test]
++async fn session_summary_shows_the_thread_as_it_is(cx: &mut TestAppContext) {
++    let (view, mut cx) = summarized(cx).await;
++    assert!(
++        cx.debug_bounds("session-summary-card").is_some(),
++        "the card is drawn"
++    );
++    assert!(cx.debug_bounds("session-summary-text").is_some());
++    let text = card_text(&view, &mut cx);
++    assert!(text.contains("## Requests\n1. Fix the build\n"), "{text}");
++    assert!(
++        text.contains("## Last answer\nFixed: the missing feature flag.\n"),
++        "{text}"
++    );
++}
++
++#[gpui::test]
++async fn session_summary_without_side_questions_offers_only_the_local_one(cx: &mut TestAppContext) {
++    let (_view, mut cx) = summarized(cx).await;
++    assert!(
++        cx.debug_bounds("session-summary-sources").is_none(),
++        "the stub agent answers no side questions, so there is no agent summary to pick"
++    );
++    for action in [
++        "session-summary-copy",
++        "session-summary-new-thread",
++        "session-summary-sub-thread",
++    ] {
++        assert!(cx.debug_bounds(action).is_some(), "{action} is offered");
++    }
++}
++
++#[gpui::test]
++async fn session_summary_copy_takes_the_text_on_screen(cx: &mut TestAppContext) {
++    let (view, mut cx) = summarized(cx).await;
++    let copy = cx.debug_bounds("session-summary-copy").expect("Copy");
++    cx.simulate_click(copy.center(), gpui::Modifiers::default());
++    cx.run_until_parked();
++    let copied = cx
++        .read_from_clipboard()
++        .and_then(|item| item.text())
++        .expect("something was copied");
++    assert_eq!(copied, card_text(&view, &mut cx));
++}
++
++/// Seen on Xvfb, 2026-11-25: New Thread and Sub-thread panicked (the panel read the summary's
++/// own ThreadView while the click was still updating it). Both now open a thread and close the
++/// card.
++#[gpui::test]
++async fn session_summary_new_thread_opens_without_a_panic(cx: &mut TestAppContext) {
++    let (view, mut cx) = summarized_while_running(cx).await;
++    let new_thread = cx
++        .debug_bounds("session-summary-new-thread")
++        .expect("New Thread");
++    cx.simulate_click(new_thread.center(), gpui::Modifiers::default());
++    cx.run_until_parked();
++    assert!(
++        view.read_with(&cx, |view, _| view.session_summary_card.is_none()),
++        "the card closes once the thread is opened"
++    );
++}
++
++#[gpui::test]
++async fn session_summary_sub_thread_opens_without_a_panic(cx: &mut TestAppContext) {
++    let (view, mut cx) = summarized_while_running(cx).await;
++    let sub_thread = cx
++        .debug_bounds("session-summary-sub-thread")
++        .expect("Sub-thread");
++    cx.simulate_click(sub_thread.center(), gpui::Modifiers::default());
++    cx.run_until_parked();
++    assert!(view.read_with(&cx, |view, _| view.session_summary_card.is_none()));
++}
+diff --git a/crates/zeo_i18n/locales/en-US/agent-ui.ftl b/crates/zeo_i18n/locales/en-US/agent-ui.ftl
+index a62ad06..44348a0 100644
+--- a/crates/zeo_i18n/locales/en-US/agent-ui.ftl
++++ b/crates/zeo_i18n/locales/en-US/agent-ui.ftl
+@@ -91,3 +91,14 @@ agent-btw-dismiss = Dismiss
+ agent-btw-asking = Asking on the side…
+ agent-btw-footer = Not added to the conversation
+ agent-btw-footer-model = Not added to the conversation · answered by { $model }
++
++## The session summary card (operator, 2026-11-25)
++agent-summary = Session summary
++agent-summary-untitled = Untitled thread
++agent-summary-local = Local
++agent-summary-agent = By the agent
++agent-summary-asking = The agent is writing the summary…
++agent-summary-dismiss = Dismiss
++agent-summary-copy = Copy
++agent-summary-new-thread = New Thread
++agent-summary-sub-thread = Sub-thread
+diff --git a/crates/zeo_i18n/locales/pt-BR/agent-ui.ftl b/crates/zeo_i18n/locales/pt-BR/agent-ui.ftl
+index d3d4181..f400330 100644
+--- a/crates/zeo_i18n/locales/pt-BR/agent-ui.ftl
++++ b/crates/zeo_i18n/locales/pt-BR/agent-ui.ftl
+@@ -90,3 +90,14 @@ agent-btw-dismiss = Dispensar
+ agent-btw-asking = Perguntando à parte…
+ agent-btw-footer = Não foi adicionada à conversa
+ agent-btw-footer-model = Não foi adicionada à conversa · respondida por { $model }
++
++## The session summary card (operator, 2026-11-25)
++agent-summary = Resumo da sessão
++agent-summary-untitled = Thread sem título
++agent-summary-local = Local
++agent-summary-agent = Pelo agente
++agent-summary-asking = O agente está escrevendo o resumo…
++agent-summary-dismiss = Dispensar
++agent-summary-copy = Copiar
++agent-summary-new-thread = Nova thread
++agent-summary-sub-thread = Sub-thread

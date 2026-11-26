@@ -1,0 +1,1179 @@
+From 5008602cb399a72a0ae413b3ff63e095e1461c69 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Wed, 25 Nov 2026 03:51:01 -0300
+Subject: [PATCH] agent_tasks_panel: the Agent Tasks panel speaks pt-BR
+
+The Agent Tasks panel (0035 and the patches since) reads its text through
+zeo_i18n's t! from locales/<language>/agent-tasks.ftl, in en-US and pt-BR:
+the filters and their tooltips, the filter input, the empty states, the
+pages, the notices, the toolbar and selection actions, the delete prompt,
+every row control and its aria label, the status and usage line, the
+preview, the log tabs and the sub-thread rows. The en-US file is the code's
+English byte for byte. The filters select on $filter, the status on $status;
+the delete prompt's and the tool count's plurals are the messages'.
+
+Kept as they are: the panel's name in the dock ("Agent Tasks", a name like
+"Agent Sandbox"), "Waiting for you" (shared with Zed's subagent card), and the
+English strings that are keys rather than text -- the filter buttons' element
+ids and the sub-thread state behind its selector -- marked "i18n: not text".
+
+At the end of the claude-agent-acp-plus group, after 0181.
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 5adfd80..1e07605 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -488,6 +488,7 @@ dependencies = [
+  "ui",
+  "watch",
+  "workspace",
++ "zeo_i18n",
+ ]
+ 
+ [[package]]
+diff --git a/crates/agent_tasks_panel/Cargo.toml b/crates/agent_tasks_panel/Cargo.toml
+index ea7b097..ac3e3bc 100644
+--- a/crates/agent_tasks_panel/Cargo.toml
++++ b/crates/agent_tasks_panel/Cargo.toml
+@@ -29,6 +29,7 @@ settings.workspace = true
+ ui.workspace = true
+ workspace.workspace = true
+ 
++zeo_i18n.workspace = true
+ [dev-dependencies]
+ acp_thread = { workspace = true, features = ["test-support"] }
+ action_log.workspace = true
+diff --git a/crates/agent_tasks_panel/src/panel.rs b/crates/agent_tasks_panel/src/panel.rs
+index eb5e74f..a17336f 100644
+--- a/crates/agent_tasks_panel/src/panel.rs
++++ b/crates/agent_tasks_panel/src/panel.rs
+@@ -40,6 +40,7 @@ use workspace::{
+     Workspace,
+     dock::{DockPosition, Panel, PanelEvent},
+ };
++use zeo_i18n::t;
+ 
+ use crate::{Availability, HistoryEntry, TaskHistoryStore, TaskKey, TaskOrigin};
+ 
+@@ -48,8 +49,9 @@ mod pagination;
+ mod sub_thread_row;
+ 
+ /// What a native subagent row says when only its parent could be shown (R2.4).
+-const PARENT_ONLY_NOTICE: &str =
+-    "This subagent's transcript is only available from its parent thread";
++fn parent_only_notice() -> String {
++    t!("agent-tasks-panel-parent-only")
++}
+ 
+ /// The child session of a native subagent row: the live record names it; a recorded one is
+ /// told by its origin, and its task id carries the child after the prefix.
+@@ -68,10 +70,14 @@ fn native_subagent_child(key: &TaskKey, records: &[HistoryEntry]) -> Option<acp_
+ 
+ /// What a row says when its thread opened but holds no entry for the task's starting tool call:
+ /// no id was recorded, or the call belongs to a nested subagent (story 023 R3.3).
+-const NO_ENTRY_NOTICE: &str = "Opened the thread; this task has no entry to jump to";
++fn no_entry_notice() -> String {
++    t!("agent-tasks-panel-no-entry")
++}
+ 
+ /// What a row says when its task's saved log file is gone (story 041 R5.8).
+-const LOG_GONE_NOTICE: &str = "Log no longer available";
++fn log_gone_notice() -> String {
++    t!("agent-tasks-panel-log-gone")
++}
+ 
+ actions!(
+     agent_tasks_panel,
+@@ -124,25 +130,35 @@ impl TaskFilter {
+         TaskFilter::Archived,
+     ];
+ 
+-    fn label(self) -> &'static str {
++    /// The `$filter` the filter messages select on (locales/*/agent-tasks.ftl).
++    fn key(self) -> &'static str {
+         match self {
+-            TaskFilter::Active => "Active",
+-            TaskFilter::Finished => "Finished",
+-            TaskFilter::Failed => "Failed",
+-            TaskFilter::Archived => "Archived",
++            TaskFilter::Active => "active",
++            TaskFilter::Finished => "finished",
++            TaskFilter::Failed => "failed",
++            TaskFilter::Archived => "archived",
+         }
+     }
+ 
+-    fn tooltip(self, enabled: bool) -> &'static str {
+-        match (self, enabled) {
+-            (TaskFilter::Active, false) => "Show Running Tasks",
+-            (TaskFilter::Active, true) => "Hide Running Tasks",
+-            (TaskFilter::Finished, false) => "Show Completed, Stopped and Interrupted Tasks",
+-            (TaskFilter::Finished, true) => "Hide Completed, Stopped and Interrupted Tasks",
+-            (TaskFilter::Failed, false) => "Show Failed Tasks",
+-            (TaskFilter::Failed, true) => "Hide Failed Tasks",
+-            (TaskFilter::Archived, false) => "Show Archived Tasks",
+-            (TaskFilter::Archived, true) => "Hide Archived Tasks",
++    fn label(self) -> String {
++        t!("agent-tasks-panel-filter", filter = self.key())
++    }
++
++    /// The filter's element id: stable English, whatever the UI language (tests and selectors).
++    fn id_label(self) -> &'static str {
++        match self {
++            TaskFilter::Active => "Active",     // i18n: not text
++            TaskFilter::Finished => "Finished", // i18n: not text
++            TaskFilter::Failed => "Failed",     // i18n: not text
++            TaskFilter::Archived => "Archived", // i18n: not text
++        }
++    }
++
++    fn tooltip(self, enabled: bool) -> String {
++        if enabled {
++            t!("agent-tasks-panel-filter-hide", filter = self.key())
++        } else {
++            t!("agent-tasks-panel-filter-show", filter = self.key())
+         }
+     }
+ }
+@@ -469,7 +485,7 @@ impl AgentTasksPanel {
+                 font_size: Some(text_size.into()),
+                 ..Default::default()
+             });
+-            editor.set_placeholder_text("Filter tasks…", window, cx);
++            editor.set_placeholder_text(&t!("agent-tasks-panel-filter-input"), window, cx);
+             editor
+         });
+         let subscriptions = vec![
+@@ -685,9 +701,9 @@ impl AgentTasksPanel {
+             return None;
+         }
+         Some(if self.filter_query.trim().is_empty() {
+-            SharedString::new_static("No tasks match the selected filters")
++            SharedString::from(t!("agent-tasks-panel-no-match-filters"))
+         } else {
+-            SharedString::new_static("No tasks match the filter")
++            SharedString::from(t!("agent-tasks-panel-no-match-query"))
+         })
+     }
+ 
+@@ -775,7 +791,7 @@ impl AgentTasksPanel {
+                                 IconButton::new("agent-tasks-page-previous", IconName::ChevronLeft)
+                                     .icon_size(IconSize::Small)
+                                     .disabled(!page.has_previous())
+-                                    .tooltip(Tooltip::text("Previous Page"))
++                                    .tooltip(Tooltip::text(t!("agent-tasks-panel-previous-page")))
+                                     .on_click(
+                                         cx.listener(|panel, _, _, cx| panel.turn_page(-1, cx)),
+                                     ),
+@@ -793,7 +809,7 @@ impl AgentTasksPanel {
+                                 IconButton::new("agent-tasks-page-next", IconName::ChevronRight)
+                                     .icon_size(IconSize::Small)
+                                     .disabled(!page.has_next())
+-                                    .tooltip(Tooltip::text("Next Page"))
++                                    .tooltip(Tooltip::text(t!("agent-tasks-panel-next-page")))
+                                     .on_click(
+                                         cx.listener(|panel, _, _, cx| panel.turn_page(1, cx)),
+                                     ),
+@@ -803,10 +819,13 @@ impl AgentTasksPanel {
+             .child(
+                 PopoverMenu::new("agent-tasks-page-size")
+                     .trigger(
+-                        Button::new("agent-tasks-page-size-button", format!("{size} per page"))
+-                            .label_size(LabelSize::Small)
+-                            .color(Color::Muted)
+-                            .end_icon(Icon::new(IconName::ChevronDown).size(IconSize::XSmall)),
++                        Button::new(
++                            "agent-tasks-page-size-button",
++                            t!("agent-tasks-panel-per-page", size = size),
++                        )
++                        .label_size(LabelSize::Small)
++                        .color(Color::Muted)
++                        .end_icon(Icon::new(IconName::ChevronDown).size(IconSize::XSmall)),
+                     )
+                     .menu(move |window, cx| {
+                         let panel = panel.clone();
+@@ -814,7 +833,7 @@ impl AgentTasksPanel {
+                             for option in pagination::PAGE_SIZES {
+                                 let panel = panel.clone();
+                                 menu = menu.toggleable_entry(
+-                                    format!("{option} per page"),
++                                    t!("agent-tasks-panel-per-page", size = option),
+                                     option == size,
+                                     IconPosition::End,
+                                     None,
+@@ -1032,7 +1051,7 @@ impl AgentTasksPanel {
+                 "agent tasks panel: not opening task {task_id} of session {session_id}: \
+                  its thread no longer exists"
+             );
+-            self.set_notice(key, "Thread no longer exists", cx);
++            self.set_notice(key, t!("agent-tasks-panel-thread-gone"), cx);
+             return;
+         }
+         // "Open at Task" (story 023): the router scrolls to the call that started the task.
+@@ -1096,7 +1115,7 @@ impl AgentTasksPanel {
+                 "agent tasks panel: not opening subagent {child} of session {session_id}: its \
+                  parent thread no longer exists"
+             );
+-            self.set_notice(key, "Thread no longer exists", cx);
++            self.set_notice(key, t!("agent-tasks-panel-thread-gone"), cx);
+             return;
+         }
+         let parent = session_id.clone();
+@@ -1139,7 +1158,7 @@ impl AgentTasksPanel {
+     ) {
+         let (session_id, task_id) = key;
+         match opened {
+-            Ok(opened) if !opened.child_shown => self.set_notice(key, PARENT_ONLY_NOTICE, cx),
++            Ok(opened) if !opened.child_shown => self.set_notice(key, parent_only_notice(), cx),
+             Ok(_) => {
+                 if self.notices.remove(key).is_some() {
+                     cx.notify();
+@@ -1167,7 +1186,7 @@ impl AgentTasksPanel {
+         let (session_id, task_id) = key;
+         match opened {
+             Ok(opened) if !opened.scrolled_to_tool_call => {
+-                self.set_notice(key, NO_ENTRY_NOTICE, cx);
++                self.set_notice(key, no_entry_notice(), cx);
+             }
+             Ok(_) => {
+                 if self.notices.remove(key).is_some() {
+@@ -1228,8 +1247,10 @@ impl AgentTasksPanel {
+                     key.1,
+                     path.display()
+                 );
+-                this.update(cx, |panel, cx| panel.set_notice(&key, LOG_GONE_NOTICE, cx))
+-                    .ok();
++                this.update(cx, |panel, cx| {
++                    panel.set_notice(&key, log_gone_notice(), cx)
++                })
++                .ok();
+                 return;
+             }
+             let opened = match workspace.update_in(cx, |workspace, window, cx| {
+@@ -1280,7 +1301,11 @@ impl AgentTasksPanel {
+                     "agent_task_log event=failed session_id={session_id} task_id={task_id} \
+                      reason=open_tab source=agent_tasks_panel error={error:#}"
+                 );
+-                self.set_notice(key, format!("Could not open the log: {error:#}"), cx);
++                self.set_notice(
++                    key,
++                    t!("agent-tasks-panel-log-failed", error = format!("{error:#}")),
++                    cx,
++                );
+             }
+         }
+     }
+@@ -1381,17 +1406,20 @@ impl AgentTasksPanel {
+                         .px_2()
+                         .py_0p5()
+                         .child(
+-                            Label::new(format!("Preview \u{00b7} {}", display_label(&label)))
+-                                .size(LabelSize::Small)
+-                                .color(Color::Muted)
+-                                .single_line()
+-                                .truncate(),
++                            Label::new(t!(
++                                "agent-tasks-panel-preview",
++                                label = display_label(&label).to_string()
++                            ))
++                            .size(LabelSize::Small)
++                            .color(Color::Muted)
++                            .single_line()
++                            .truncate(),
+                         )
+                         .child(
+                             IconButton::new("agent-tasks-preview-close", IconName::Close)
+                                 .icon_size(IconSize::Small)
+                                 .icon_color(Color::Muted)
+-                                .tooltip(Tooltip::text("Close Preview"))
++                                .tooltip(Tooltip::text(t!("agent-tasks-panel-close-preview")))
+                                 .on_click(cx.listener(move |panel, _, _, cx| {
+                                     panel.toggle_preview(&key, cx)
+                                 })),
+@@ -1417,7 +1445,7 @@ impl AgentTasksPanel {
+                                 }))
+                             }
+                             None => body.child(
+-                                Label::new("No output yet")
++                                Label::new(t!("agent-tasks-panel-no-output"))
+                                     .size(LabelSize::XSmall)
+                                     .color(Color::Muted),
+                             ),
+@@ -1557,15 +1585,15 @@ impl AgentTasksPanel {
+     }
+ 
+     fn confirm_delete(&mut self, keys: Vec<TaskKey>, window: &mut Window, cx: &mut Context<Self>) {
+-        let message = match keys.len() {
+-            1 => "Delete 1 task record?".to_string(),
+-            count => format!("Delete {count} task records?"),
+-        };
++        let message = t!("agent-tasks-panel-delete-prompt", count = keys.len());
++        let detail = t!("agent-tasks-panel-delete-detail");
++        let delete = t!("agent-tasks-panel-delete-button");
++        let cancel = t!("agent-tasks-panel-cancel-button");
+         let answer = window.prompt(
+             PromptLevel::Warning,
+             &message,
+-            Some("The threads are not affected."),
+-            &["Delete", "Cancel"],
++            Some(&detail),
++            &[delete.as_str(), cancel.as_str()],
+             cx,
+         );
+         let store = self.store.clone();
+@@ -1767,7 +1795,7 @@ impl AgentTasksPanel {
+         match self.store.read(cx).availability() {
+             Availability::Available => None,
+             Availability::Unavailable(cause) => {
+-                Some(format!("Task history is unavailable: {cause}").into())
++                Some(t!("agent-tasks-panel-unavailable", cause = cause.to_string()).into())
+             }
+         }
+     }
+@@ -1785,7 +1813,9 @@ impl AgentTasksPanel {
+                 h_flex()
+                     .id("agent-tasks-filter")
+                     .role(Role::SearchInput)
+-                    .aria_label(control_aria_label("Filter tasks".to_string()))
++                    .aria_label(control_aria_label(t!(
++                        "agent-tasks-panel-filter-input.aria"
++                    )))
+                     .flex_1()
+                     .min_w_0()
+                     .px_1()
+@@ -1806,8 +1836,8 @@ impl AgentTasksPanel {
+                         action_button(
+                             "agent-tasks-close-panel".into(),
+                             IconName::Close,
+-                            "Close Agent Tasks panel".to_string(),
+-                            "Close Panel",
++                            t!("agent-tasks-panel-close.aria"),
++                            t!("agent-tasks-panel-close"),
+                             &self.close_focus_handle,
+                         )
+                         .on_click(cx.listener(|_, _, _, cx| cx.emit(PanelEvent::Close))),
+@@ -1828,8 +1858,11 @@ impl AgentTasksPanel {
+             action_button(
+                 "agent-tasks-archive-selected".into(),
+                 IconName::Archive,
+-                format!("Archive selected tasks: {archivable}"),
+-                "Archive Selected Tasks",
++                t!(
++                    "agent-tasks-panel-archive-selected.aria",
++                    count = archivable
++                ),
++                t!("agent-tasks-panel-archive-selected"),
+                 &self.archive_selected_focus_handle,
+             )
+             .on_click(cx.listener(|panel, _, _, cx| panel.archive_selected(cx)))
+@@ -1839,8 +1872,8 @@ impl AgentTasksPanel {
+             action_button(
+                 "agent-tasks-delete-selected".into(),
+                 IconName::Trash,
+-                format!("Delete selected records: {deletable}"),
+-                "Delete Selected Records",
++                t!("agent-tasks-panel-delete-selected.aria", count = deletable),
++                t!("agent-tasks-panel-delete-selected"),
+                 &self.delete_selected_focus_handle,
+             )
+             .on_click(cx.listener(|panel, _, window, cx| panel.request_delete_selected(window, cx)))
+@@ -1854,9 +1887,12 @@ impl AgentTasksPanel {
+                 .border_b_1()
+                 .border_color(cx.theme().colors().border)
+                 .child(
+-                    Label::new(format!("{} selected", self.selection.len()))
+-                        .size(LabelSize::Small)
+-                        .color(Color::Muted),
++                    Label::new(t!(
++                        "agent-tasks-panel-selected",
++                        count = self.selection.len()
++                    ))
++                    .size(LabelSize::Small)
++                    .color(Color::Muted),
+                 )
+                 .child(
+                     h_flex()
+@@ -1867,8 +1903,8 @@ impl AgentTasksPanel {
+                             action_button(
+                                 "agent-tasks-clear-selection".into(),
+                                 IconName::Close,
+-                                "Clear selection".to_string(),
+-                                "Clear Selection",
++                                t!("agent-tasks-panel-clear-selection.aria"),
++                                t!("agent-tasks-panel-clear-selection"),
+                                 &self.clear_selection_focus_handle,
+                             )
+                             .on_click(cx.listener(|panel, _, _, cx| panel.clear_selection(cx))),
+@@ -1885,18 +1921,24 @@ impl AgentTasksPanel {
+             .records()
+             .iter()
+             .any(|entry| entry.archived && in_project(entry, project.as_ref(), cx));
+-        let delete_all =
+-            (self.filters.archived && has_archived).then(|| {
+-                Button::new("agent-tasks-delete-all-archived", "Delete All Archived")
+-                    .label_size(LabelSize::Small)
+-                    .style(ButtonStyle::Subtle)
+-                    .aria_label(control_aria_label("Delete All Archived".to_string()))
+-                    .tooltip(Tooltip::text("Delete Every Archived Task Record"))
+-                    .track_focus(&self.delete_all_focus_handle)
+-                    .on_click(cx.listener(|panel, _, window, cx| {
+-                        panel.request_delete_all_archived(window, cx)
+-                    }))
+-            });
++        let delete_all = (self.filters.archived && has_archived).then(|| {
++            Button::new(
++                "agent-tasks-delete-all-archived",
++                t!("agent-tasks-panel-delete-all-archived"),
++            )
++            .label_size(LabelSize::Small)
++            .style(ButtonStyle::Subtle)
++            .aria_label(control_aria_label(t!(
++                "agent-tasks-panel-delete-all-archived"
++            )))
++            .tooltip(Tooltip::text(t!(
++                "agent-tasks-panel-delete-all-archived.tooltip"
++            )))
++            .track_focus(&self.delete_all_focus_handle)
++            .on_click(
++                cx.listener(|panel, _, window, cx| panel.request_delete_all_archived(window, cx)),
++            )
++        });
+         h_flex()
+             .p_1()
+             .gap_1()
+@@ -1910,7 +1952,7 @@ impl AgentTasksPanel {
+                     .map(|(filter, focus_handle)| {
+                         let enabled = self.filters.is_enabled(filter);
+                         Button::new(
+-                            SharedString::from(format!("agent-tasks-filter-{}", filter.label())),
++                            SharedString::from(format!("agent-tasks-filter-{}", filter.id_label())),
+                             filter.label(),
+                         )
+                         .label_size(LabelSize::Small)
+@@ -2022,8 +2064,11 @@ fn render_header(
+         action_button(
+             ElementId::NamedChild(Arc::new(header_id.clone()), "archive".into()),
+             IconName::Archive,
+-            format!("Archive the finished tasks of {title}"),
+-            "Archive This Thread's Finished Tasks",
++            t!(
++                "agent-tasks-panel-archive-thread.aria",
++                title = title.to_string()
++            ),
++            t!("agent-tasks-panel-archive-thread"),
+             archive_focus,
+         )
+         .on_click(cx.listener({
+@@ -2183,9 +2228,15 @@ fn render_row(
+                     .child(detail_label),
+             )
+             .aria_label(control_aria_label(if selected {
+-                format!("Open thread: {shown_label}, selected")
++                t!(
++                    "agent-tasks-panel-open-thread-aria-selected",
++                    label = shown_label.to_string()
++                )
+             } else {
+-                format!("Open thread: {shown_label}")
++                t!(
++                    "agent-tasks-panel-open-thread-aria",
++                    label = shown_label.to_string()
++                )
+             }))
+             .tooltip(open_thread_tooltip(task_id, full_label))
+             .track_focus(&focus.open)
+@@ -2222,8 +2273,11 @@ fn render_row(
+             action_button(
+                 control_id("rename"),
+                 IconName::Pencil,
+-                format!("Rename: {shown_label}"),
+-                "Rename This Task",
++                t!(
++                    "agent-tasks-panel-rename.aria",
++                    label = shown_label.to_string()
++                ),
++                t!("agent-tasks-panel-rename"),
+                 &focus.rename,
+             )
+             .on_click(cx.listener({
+@@ -2245,8 +2299,11 @@ fn render_row(
+                 action_button(
+                     control_id("open-log"),
+                     IconName::FileTextOutlined,
+-                    format!("Open log: {shown_label}"),
+-                    "Open Log",
++                    t!(
++                        "agent-tasks-panel-open-log.aria",
++                        label = shown_label.to_string()
++                    ),
++                    t!("agent-tasks-panel-open-log"),
+                     &focus.open_log,
+                 )
+                 .on_click(cx.listener({
+@@ -2269,8 +2326,11 @@ fn render_row(
+                 action_button(
+                     control_id("follow-log"),
+                     IconName::Terminal,
+-                    format!("Follow log: {shown_label}"),
+-                    "Follow Log in a Tab",
++                    t!(
++                        "agent-tasks-panel-follow-log.aria",
++                        label = shown_label.to_string()
++                    ),
++                    t!("agent-tasks-panel-follow-log"),
+                     &focus.follow_log,
+                 )
+                 .on_click(cx.listener({
+@@ -2285,9 +2345,9 @@ fn render_row(
+     // Zeo next §6.21: the card's eye, ↑ and ↓, with the card's icons and conditions.
+     let watch_button = row.can_stop.then(|| {
+         let (icon, tooltip) = if row.watched {
+-            (IconName::EyeOff, "Stop Watching This Task")
++            (IconName::EyeOff, t!("agent-tasks-panel-stop-watching"))
+         } else {
+-            (IconName::Eye, "Watch This Task")
++            (IconName::Eye, t!("agent-tasks-panel-watch"))
+         };
+         div()
+             .debug_selector({
+@@ -2298,7 +2358,10 @@ fn render_row(
+                 action_button(
+                     control_id("watch"),
+                     icon,
+-                    format!("Preview: {shown_label}"),
++                    t!(
++                        "agent-tasks-panel-preview-aria",
++                        label = shown_label.to_string()
++                    ),
+                     tooltip,
+                     &focus.watch,
+                 )
+@@ -2323,8 +2386,11 @@ fn render_row(
+                 action_button(
+                     control_id("open-at-task"),
+                     IconName::ArrowUpRight,
+-                    format!("Open at task: {shown_label}"),
+-                    "Open Thread at This Task",
++                    t!(
++                        "agent-tasks-panel-open-at-task.aria",
++                        label = shown_label.to_string()
++                    ),
++                    t!("agent-tasks-panel-open-at-task"),
+                     &focus.open_at_task,
+                 )
+                 .on_click(cx.listener({
+@@ -2346,8 +2412,11 @@ fn render_row(
+                 action_button(
+                     control_id("background"),
+                     IconName::ArrowDown,
+-                    format!("Background: {shown_label}"),
+-                    "Send to Background",
++                    t!(
++                        "agent-tasks-panel-send-to-background.aria",
++                        label = shown_label.to_string()
++                    ),
++                    t!("agent-tasks-panel-send-to-background"),
+                     &focus.background,
+                 )
+                 .on_click(cx.listener({
+@@ -2363,8 +2432,11 @@ fn render_row(
+         action_button(
+             control_id("stop"),
+             IconName::Stop,
+-            format!("Stop: {shown_label}"),
+-            "Stop This Task",
++            t!(
++                "agent-tasks-panel-stop.aria",
++                label = shown_label.to_string()
++            ),
++            t!("agent-tasks-panel-stop"),
+             &focus.stop,
+         )
+         .on_click(cx.listener({
+@@ -2376,8 +2448,11 @@ fn render_row(
+         action_button(
+             control_id("delete"),
+             IconName::Trash,
+-            format!("Delete: {shown_label}"),
+-            "Delete This Record",
++            t!(
++                "agent-tasks-panel-delete.aria",
++                label = shown_label.to_string()
++            ),
++            t!("agent-tasks-panel-delete"),
+             &focus.delete,
+         )
+         .on_click(cx.listener({
+@@ -2390,8 +2465,11 @@ fn render_row(
+             action_button(
+                 control_id("unarchive"),
+                 IconName::Undo,
+-                format!("Unarchive: {shown_label}"),
+-                "Unarchive This Task",
++                t!(
++                    "agent-tasks-panel-unarchive.aria",
++                    label = shown_label.to_string()
++                ),
++                t!("agent-tasks-panel-unarchive"),
+                 &focus.archive,
+             )
+             .on_click(cx.listener(move |panel, _, _, cx| panel.unarchive(&key, cx))),
+@@ -2401,8 +2479,11 @@ fn render_row(
+             action_button(
+                 control_id("archive"),
+                 IconName::Archive,
+-                format!("Archive: {shown_label}"),
+-                "Archive This Task",
++                t!(
++                    "agent-tasks-panel-archive.aria",
++                    label = shown_label.to_string()
++                ),
++                t!("agent-tasks-panel-archive"),
+                 &focus.archive,
+             )
+             .on_click(cx.listener({
+@@ -2475,7 +2556,7 @@ fn action_button(
+     id: ElementId,
+     icon: IconName,
+     aria_label: String,
+-    tooltip: &'static str,
++    tooltip: String,
+     focus_handle: &FocusHandle,
+ ) -> IconButton {
+     IconButton::new(id, icon)
+@@ -2488,7 +2569,7 @@ fn action_button(
+ 
+ /// A failure is an error; "opened, with nothing to jump to" is an outcome, not one (R3.3).
+ fn notice_color(notice: &str) -> Color {
+-    if notice == NO_ENTRY_NOTICE {
++    if notice == no_entry_notice() {
+         Color::Muted
+     } else {
+         Color::Error
+@@ -2514,7 +2595,7 @@ fn open_thread_tooltip(
+                     .child(text.clone())
+                     .into_any_element()
+             })
+-            .meta("Open at Task")
++            .meta(t!("agent-tasks-panel-open-at-task-meta"))
+         })
+         .into()
+     }
+@@ -2582,31 +2663,29 @@ fn parse_dock_position(text: &str) -> Option<DockPosition> {
+ /// subagent waiting on the operator reads `Waiting for you` in place of `Running` (R1.8).
+ fn row_detail(record: &TaskRecord) -> String {
+     let status = if record.waiting && record.status.is_running() {
+-        TASK_WAITING_LABEL
++        TASK_WAITING_LABEL.to_string()
+     } else {
+         status_label(record.status)
+     };
+-    let mut parts = vec![status.to_string()];
++    let mut parts = vec![status];
+     if let Some(tokens) = record.tokens {
+-        parts.push(format!("{tokens} tokens"));
++        parts.push(t!("agent-tasks-panel-tokens", tokens = tokens));
+     }
+     if let Some(tool_uses) = record.tool_uses {
+-        parts.push(match tool_uses {
+-            1 => "1 tool use".to_string(),
+-            count => format!("{count} tool uses"),
+-        });
++        parts.push(t!("agent-tasks-panel-tool-uses", count = tool_uses));
+     }
+     parts.join(" · ")
+ }
+ 
+-fn status_label(status: AgentTaskStatus) -> &'static str {
+-    match status {
+-        AgentTaskStatus::Running => "Running",
+-        AgentTaskStatus::Completed => "Completed",
+-        AgentTaskStatus::Failed => "Failed",
+-        AgentTaskStatus::Stopped => "Stopped",
+-        AgentTaskStatus::Interrupted => "Interrupted",
+-    }
++fn status_label(status: AgentTaskStatus) -> String {
++    let status = match status {
++        AgentTaskStatus::Running => "running",
++        AgentTaskStatus::Completed => "completed",
++        AgentTaskStatus::Failed => "failed",
++        AgentTaskStatus::Stopped => "stopped",
++        AgentTaskStatus::Interrupted => "interrupted",
++    };
++    t!("agent-tasks-panel-status", status = status)
+ }
+ 
+ fn status_color(status: AgentTaskStatus) -> Color {
+@@ -2958,6 +3037,7 @@ impl Panel for AgentTasksPanel {
+     }
+ 
+     fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {
++        // i18n: not text -- the panel's name, kept like "Agent Sandbox" (agent-tasks.ftl header)
+         Some("Agent Tasks")
+     }
+ 
+diff --git a/crates/agent_tasks_panel/src/panel/log_tabs.rs b/crates/agent_tasks_panel/src/panel/log_tabs.rs
+index 3d1080d..99babc2 100644
+--- a/crates/agent_tasks_panel/src/panel/log_tabs.rs
++++ b/crates/agent_tasks_panel/src/panel/log_tabs.rs
+@@ -19,6 +19,7 @@ use gpui::{
+ use ui::{
+     ButtonCommon, Clickable, IconButton, IconName, IconSize, Label, LabelSize, Tooltip, prelude::*,
+ };
++use zeo_i18n::t;
+ 
+ use super::AgentTasksPanel;
+ use crate::TaskKey;
+@@ -234,7 +235,7 @@ impl AgentTasksPanel {
+         let next_byte = tab.buffer.next_byte();
+         let Some(thread) = self.log_thread(key, cx) else {
+             let tab = self.log_tabs.iter_mut().find(|tab| &tab.key == key)?;
+-            tab.error = Some("The task's thread is no longer open".into());
++            tab.error = Some(t!("agent-tasks-panel-log-thread-closed").into());
+             tab.ended = true;
+             cx.notify();
+             return None;
+@@ -286,7 +287,13 @@ impl AgentTasksPanel {
+                     key.0,
+                     key.1
+                 );
+-                tab.error = Some(format!("Could not read the log: {error:#}").into());
++                tab.error = Some(
++                    t!(
++                        "agent-tasks-panel-log-read-failed",
++                        error = format!("{error:#}")
++                    )
++                    .into(),
++                );
+                 if was_running {
+                     LogReadNext::Later
+                 } else {
+@@ -315,7 +322,7 @@ impl AgentTasksPanel {
+             .border_b_1()
+             .border_color(cx.theme().colors().border_variant)
+             .child(
+-                Button::new("agent-tasks-tab-list", "Tasks")
++                Button::new("agent-tasks-tab-list", t!("agent-tasks-panel-tab-list"))
+                     .label_size(LabelSize::Small)
+                     .toggle_state(list_active)
+                     .on_click(cx.listener(|panel, _, _, cx| panel.show_task_list(cx))),
+@@ -339,7 +346,7 @@ impl AgentTasksPanel {
+                     .child(
+                         IconButton::new(("agent-tasks-tab-close", ix), IconName::Close)
+                             .icon_size(IconSize::XSmall)
+-                            .tooltip(Tooltip::text("Close Log Tab"))
++                            .tooltip(Tooltip::text(t!("agent-tasks-panel-close-log-tab")))
+                             .on_click(cx.listener({
+                                 let key = tab.key.clone();
+                                 move |panel, _, _, cx| panel.close_log_tab(&key, cx)
+@@ -356,11 +363,11 @@ impl AgentTasksPanel {
+         let status: SharedString = if let Some(error) = &tab.error {
+             error.clone()
+         } else if tab.ended {
+-            "Task ended".into()
++            t!("agent-tasks-panel-log-ended").into()
+         } else if tab.follow {
+-            "Following".into()
++            t!("agent-tasks-panel-log-following").into()
+         } else {
+-            "Paused".into()
++            t!("agent-tasks-panel-log-paused").into()
+         };
+         let lines: Vec<String> = tab.buffer.lines().collect();
+         let count = lines.len();
+@@ -383,9 +390,12 @@ impl AgentTasksPanel {
+                             },
+                         ))
+                         .children((tab.buffer.dropped() > 0).then(|| {
+-                            Label::new(format!("{} earlier lines not kept", tab.buffer.dropped()))
+-                                .size(LabelSize::XSmall)
+-                                .color(Color::Muted)
++                            Label::new(t!(
++                                "agent-tasks-panel-log-dropped",
++                                count = tab.buffer.dropped()
++                            ))
++                            .size(LabelSize::XSmall)
++                            .color(Color::Muted)
+                         }))
+                         .children((!tab.follow && !tab.ended).then(|| {
+                             div()
+diff --git a/crates/agent_tasks_panel/src/panel/pagination.rs b/crates/agent_tasks_panel/src/panel/pagination.rs
+index 0aa0e12..3b2cf96 100644
+--- a/crates/agent_tasks_panel/src/panel/pagination.rs
++++ b/crates/agent_tasks_panel/src/panel/pagination.rs
+@@ -39,11 +39,16 @@ impl Page {
+     /// "11–20 of 134"; "0 of 0" for nothing.
+     pub(crate) fn range_label(&self) -> String {
+         if self.total_rows == 0 {
+-            return "0 of 0".to_string();
++            return zeo_i18n::t!("agent-tasks-panel-range-empty");
+         }
+         let first = self.index * self.size + 1;
+         let last = ((self.index + 1) * self.size).min(self.total_rows);
+-        format!("{first}\u{2013}{last} of {}", self.total_rows)
++        zeo_i18n::t!(
++            "agent-tasks-panel-range",
++            first = first,
++            last = last,
++            total = self.total_rows
++        )
+     }
+ }
+ 
+diff --git a/crates/agent_tasks_panel/src/panel/sub_thread_row.rs b/crates/agent_tasks_panel/src/panel/sub_thread_row.rs
+index a8ce884..a66651a 100644
+--- a/crates/agent_tasks_panel/src/panel/sub_thread_row.rs
++++ b/crates/agent_tasks_panel/src/panel/sub_thread_row.rs
+@@ -10,6 +10,7 @@ use agent_client_protocol::v2::schema as acp_v2;
+ use agent_ui::TaskRecord;
+ use gpui::{AnyElement, SharedString};
+ use ui::{Chip, Tooltip, prelude::*};
++use zeo_i18n::t;
+ 
+ use crate::history_db::SUB_THREAD_TASK_PREFIX;
+ use crate::{HistoryEntry, TaskKey, TaskOrigin};
+@@ -22,9 +23,9 @@ pub(super) fn is_sub_thread(entry: &HistoryEntry) -> bool {
+ /// on a reporter, and an interrupted item after a restart is simply idle (R5.4, R7.1).
+ pub(super) fn sub_thread_state(record: &TaskRecord) -> &'static str {
+     if record.status == AgentTaskStatus::Running {
+-        "Running"
++        "Running" // i18n: not text -- a selector key; the label is translated where it is drawn
+     } else {
+-        "Idle"
++        "Idle" // i18n: not text
+     }
+ }
+ 
+@@ -40,7 +41,14 @@ pub(super) fn sub_thread_state_label(record: &TaskRecord, color: Color) -> AnyEl
+             )
+         })
+         .min_w_0()
+-        .child(Label::new(state).size(LabelSize::XSmall).color(color))
++        .child(
++            Label::new(t!(
++                "agent-tasks-panel-sub-thread-state",
++                state = state.to_lowercase()
++            ))
++            .size(LabelSize::XSmall)
++            .color(color),
++        )
+         .into_any_element()
+ }
+ 
+@@ -52,8 +60,8 @@ pub(super) fn sub_thread_chip(record: &TaskRecord) -> AnyElement {
+         )))
+         .debug_selector(move || format!("agent-tasks-sub-thread-chip-{task_id}"))
+         .flex_none()
+-        .tooltip(Tooltip::text("A sub-thread of this thread"))
+-        .child(Chip::new("Sub-thread").label_size(LabelSize::XSmall))
++        .tooltip(Tooltip::text(t!("agent-tasks-panel-sub-thread.tooltip")))
++        .child(Chip::new(t!("agent-tasks-panel-sub-thread")).label_size(LabelSize::XSmall))
+         .into_any_element()
+ }
+ 
+diff --git a/crates/zeo_i18n/locales/en-US/agent-tasks.ftl b/crates/zeo_i18n/locales/en-US/agent-tasks.ftl
+new file mode 100644
+index 0000000..3b8d6e8
+--- /dev/null
++++ b/crates/zeo_i18n/locales/en-US/agent-tasks.ftl
+@@ -0,0 +1,131 @@
++### The Agent Tasks panel: agent_tasks_panel/src/panel.rs, panel/log_tabs.rs, panel/pagination.rs,
++### panel/sub_thread_row.rs (patch 0182, USE claude-agent-acp-plus). The English is the code's
++### own, byte for byte. The panel's name in the dock ("Agent Tasks") stays as it is, a name like
++### "Agent Sandbox"; "Waiting for you" stays English, shared with Zed's subagent card.
++
++## Filters ($filter: active, finished, failed, archived)
++
++agent-tasks-panel-filter = { $filter ->
++    [active] Active
++    [finished] Finished
++    [failed] Failed
++   *[archived] Archived
++}
++agent-tasks-panel-filter-show = { $filter ->
++    [active] Show Running Tasks
++    [finished] Show Completed, Stopped and Interrupted Tasks
++    [failed] Show Failed Tasks
++   *[archived] Show Archived Tasks
++}
++agent-tasks-panel-filter-hide = { $filter ->
++    [active] Hide Running Tasks
++    [finished] Hide Completed, Stopped and Interrupted Tasks
++    [failed] Hide Failed Tasks
++   *[archived] Hide Archived Tasks
++}
++agent-tasks-panel-filter-input = Filter tasks…
++    .aria = Filter tasks
++agent-tasks-panel-no-match-filters = No tasks match the selected filters
++agent-tasks-panel-no-match-query = No tasks match the filter
++
++## Pages
++
++agent-tasks-panel-previous-page = Previous Page
++agent-tasks-panel-next-page = Next Page
++agent-tasks-panel-per-page = { $size } per page
++agent-tasks-panel-range = { $first }–{ $last } of { $total }
++agent-tasks-panel-range-empty = 0 of 0
++
++## Notices
++
++agent-tasks-panel-parent-only = This subagent's transcript is only available from its parent thread
++agent-tasks-panel-no-entry = Opened the thread; this task has no entry to jump to
++agent-tasks-panel-log-gone = Log no longer available
++agent-tasks-panel-thread-gone = Thread no longer exists
++agent-tasks-panel-log-failed = Could not open the log: { $error }
++agent-tasks-panel-unavailable = Task history is unavailable: { $cause }
++
++## Toolbar and selection
++
++agent-tasks-panel-close = Close Panel
++    .aria = Close Agent Tasks panel
++agent-tasks-panel-selected = { $count } selected
++agent-tasks-panel-archive-selected = Archive Selected Tasks
++    .aria = Archive selected tasks: { $count }
++agent-tasks-panel-delete-selected = Delete Selected Records
++    .aria = Delete selected records: { $count }
++agent-tasks-panel-clear-selection = Clear Selection
++    .aria = Clear selection
++agent-tasks-panel-delete-all-archived = Delete All Archived
++    .tooltip = Delete Every Archived Task Record
++agent-tasks-panel-delete-prompt = { $count ->
++    [one] Delete 1 task record?
++   *[other] Delete { $count } task records?
++}
++agent-tasks-panel-delete-detail = The threads are not affected.
++agent-tasks-panel-delete-button = Delete
++agent-tasks-panel-cancel-button = Cancel
++
++## A thread's header and a task's row
++
++agent-tasks-panel-archive-thread = Archive This Thread's Finished Tasks
++    .aria = Archive the finished tasks of { $title }
++agent-tasks-panel-open-thread-aria = Open thread: { $label }
++agent-tasks-panel-open-thread-aria-selected = Open thread: { $label }, selected
++agent-tasks-panel-open-at-task-meta = Open at Task
++agent-tasks-panel-rename = Rename This Task
++    .aria = Rename: { $label }
++agent-tasks-panel-open-log = Open Log
++    .aria = Open log: { $label }
++agent-tasks-panel-follow-log = Follow Log in a Tab
++    .aria = Follow log: { $label }
++agent-tasks-panel-watch = Watch This Task
++agent-tasks-panel-stop-watching = Stop Watching This Task
++agent-tasks-panel-preview-aria = Preview: { $label }
++agent-tasks-panel-open-at-task = Open Thread at This Task
++    .aria = Open at task: { $label }
++agent-tasks-panel-send-to-background = Send to Background
++    .aria = Background: { $label }
++agent-tasks-panel-stop = Stop This Task
++    .aria = Stop: { $label }
++agent-tasks-panel-delete = Delete This Record
++    .aria = Delete: { $label }
++agent-tasks-panel-unarchive = Unarchive This Task
++    .aria = Unarchive: { $label }
++agent-tasks-panel-archive = Archive This Task
++    .aria = Archive: { $label }
++agent-tasks-panel-status = { $status ->
++    [running] Running
++    [completed] Completed
++    [failed] Failed
++    [stopped] Stopped
++   *[interrupted] Interrupted
++}
++agent-tasks-panel-tokens = { $tokens } tokens
++agent-tasks-panel-tool-uses = { $count ->
++    [one] 1 tool use
++   *[other] { $count } tool uses
++}
++
++## Preview and log tabs
++
++agent-tasks-panel-preview = Preview · { $label }
++agent-tasks-panel-close-preview = Close Preview
++agent-tasks-panel-no-output = No output yet
++agent-tasks-panel-tab-list = Tasks
++agent-tasks-panel-close-log-tab = Close Log Tab
++agent-tasks-panel-log-thread-closed = The task's thread is no longer open
++agent-tasks-panel-log-read-failed = Could not read the log: { $error }
++agent-tasks-panel-log-ended = Task ended
++agent-tasks-panel-log-following = Following
++agent-tasks-panel-log-paused = Paused
++agent-tasks-panel-log-dropped = { $count } earlier lines not kept
++
++## Sub-thread rows ($state: running, idle)
++
++agent-tasks-panel-sub-thread-state = { $state ->
++    [running] Running
++   *[idle] Idle
++}
++agent-tasks-panel-sub-thread = Sub-thread
++    .tooltip = A sub-thread of this thread
+diff --git a/crates/zeo_i18n/locales/pt-BR/agent-tasks.ftl b/crates/zeo_i18n/locales/pt-BR/agent-tasks.ftl
+new file mode 100644
+index 0000000..3ab4506
+--- /dev/null
++++ b/crates/zeo_i18n/locales/pt-BR/agent-tasks.ftl
+@@ -0,0 +1,136 @@
++### The Agent Tasks panel in Brazilian Portuguese (patch 0182), translated by hand on 2026-11-25;
++### awaiting the operator's review as a native speaker. Same vocabulary as the tasks card
++### (agent-ui.ftl): "thread" and "sub-thread" stay, "log" stays, a task is "tarefa".
++
++## Filters
++
++agent-tasks-panel-filter = { $filter ->
++    [active] Ativas
++    [finished] Concluídas
++    [failed] Falharam
++   *[archived] Arquivadas
++}
++agent-tasks-panel-filter-show = { $filter ->
++    [active] Mostrar as tarefas rodando
++    [finished] Mostrar as tarefas concluídas, paradas e interrompidas
++    [failed] Mostrar as tarefas que falharam
++   *[archived] Mostrar as tarefas arquivadas
++}
++agent-tasks-panel-filter-hide = { $filter ->
++    [active] Ocultar as tarefas rodando
++    [finished] Ocultar as tarefas concluídas, paradas e interrompidas
++    [failed] Ocultar as tarefas que falharam
++   *[archived] Ocultar as tarefas arquivadas
++}
++agent-tasks-panel-filter-input = Filtrar tarefas…
++    .aria = Filtrar tarefas
++agent-tasks-panel-no-match-filters = Nenhuma tarefa nos filtros escolhidos
++agent-tasks-panel-no-match-query = Nenhuma tarefa corresponde ao filtro
++
++## Pages
++
++agent-tasks-panel-previous-page = Página anterior
++agent-tasks-panel-next-page = Próxima página
++agent-tasks-panel-per-page = { $size } por página
++agent-tasks-panel-range = { $first }–{ $last } de { $total }
++agent-tasks-panel-range-empty = 0 de 0
++
++## Notices
++
++agent-tasks-panel-parent-only = A transcrição deste subagente só está disponível pela thread dele
++agent-tasks-panel-no-entry = A thread abriu; esta tarefa não tem uma entrada para onde pular
++agent-tasks-panel-log-gone = O log não está mais disponível
++agent-tasks-panel-thread-gone = A thread não existe mais
++agent-tasks-panel-log-failed = Não foi possível abrir o log: { $error }
++agent-tasks-panel-unavailable = O histórico de tarefas não está disponível: { $cause }
++
++## Toolbar and selection
++
++agent-tasks-panel-close = Fechar o painel
++    .aria = Fechar o painel Agent Tasks
++agent-tasks-panel-selected = { $count ->
++    [one] { $count } selecionada
++   *[other] { $count } selecionadas
++}
++agent-tasks-panel-archive-selected = Arquivar as tarefas selecionadas
++    .aria = Arquivar as tarefas selecionadas: { $count }
++agent-tasks-panel-delete-selected = Apagar os registros selecionados
++    .aria = Apagar os registros selecionados: { $count }
++agent-tasks-panel-clear-selection = Limpar a seleção
++    .aria = Limpar a seleção
++agent-tasks-panel-delete-all-archived = Apagar todas as arquivadas
++    .tooltip = Apagar todos os registros de tarefas arquivadas
++agent-tasks-panel-delete-prompt = { $count ->
++    [one] Apagar { $count } registro de tarefa?
++   *[other] Apagar { $count } registros de tarefas?
++}
++agent-tasks-panel-delete-detail = As threads não são afetadas.
++agent-tasks-panel-delete-button = Apagar
++agent-tasks-panel-cancel-button = Cancelar
++
++## A thread's header and a task's row
++
++agent-tasks-panel-archive-thread = Arquivar as tarefas concluídas desta thread
++    .aria = Arquivar as tarefas concluídas de { $title }
++agent-tasks-panel-open-thread-aria = Abrir a thread: { $label }
++agent-tasks-panel-open-thread-aria-selected = Abrir a thread: { $label }, selecionada
++agent-tasks-panel-open-at-task-meta = Abrir na tarefa
++agent-tasks-panel-rename = Renomear esta tarefa
++    .aria = Renomear: { $label }
++agent-tasks-panel-open-log = Abrir o log
++    .aria = Abrir o log: { $label }
++agent-tasks-panel-follow-log = Acompanhar o log numa aba
++    .aria = Acompanhar o log: { $label }
++agent-tasks-panel-watch = Acompanhar esta tarefa
++agent-tasks-panel-stop-watching = Parar de acompanhar esta tarefa
++agent-tasks-panel-preview-aria = Prévia: { $label }
++agent-tasks-panel-open-at-task = Abrir a thread nesta tarefa
++    .aria = Abrir na tarefa: { $label }
++agent-tasks-panel-send-to-background = Mandar para segundo plano
++    .aria = Segundo plano: { $label }
++agent-tasks-panel-stop = Parar esta tarefa
++    .aria = Parar: { $label }
++agent-tasks-panel-delete = Apagar este registro
++    .aria = Apagar: { $label }
++agent-tasks-panel-unarchive = Desarquivar esta tarefa
++    .aria = Desarquivar: { $label }
++agent-tasks-panel-archive = Arquivar esta tarefa
++    .aria = Arquivar: { $label }
++agent-tasks-panel-status = { $status ->
++    [running] Rodando
++    [completed] Concluída
++    [failed] Falhou
++    [stopped] Parada
++   *[interrupted] Interrompida
++}
++agent-tasks-panel-tokens = { $tokens } tokens
++agent-tasks-panel-tool-uses = { $count ->
++    [one] { $count } uso de ferramenta
++   *[other] { $count } usos de ferramenta
++}
++
++## Preview and log tabs
++
++agent-tasks-panel-preview = Prévia · { $label }
++agent-tasks-panel-close-preview = Fechar a prévia
++agent-tasks-panel-no-output = Nenhuma saída ainda
++agent-tasks-panel-tab-list = Tarefas
++agent-tasks-panel-close-log-tab = Fechar a aba do log
++agent-tasks-panel-log-thread-closed = A thread da tarefa não está mais aberta
++agent-tasks-panel-log-read-failed = Não foi possível ler o log: { $error }
++agent-tasks-panel-log-ended = A tarefa terminou
++agent-tasks-panel-log-following = Acompanhando
++agent-tasks-panel-log-paused = Pausado
++agent-tasks-panel-log-dropped = { $count ->
++    [one] { $count } linha anterior não foi mantida
++   *[other] { $count } linhas anteriores não foram mantidas
++}
++
++## Sub-thread rows
++
++agent-tasks-panel-sub-thread-state = { $state ->
++    [running] Rodando
++   *[idle] Ociosa
++}
++agent-tasks-panel-sub-thread = Sub-thread
++    .tooltip = Uma sub-thread desta thread
+diff --git a/crates/zeo_i18n/src/catalog.rs b/crates/zeo_i18n/src/catalog.rs
+index e950158..9a71fa4 100644
+--- a/crates/zeo_i18n/src/catalog.rs
++++ b/crates/zeo_i18n/src/catalog.rs
+@@ -40,6 +40,10 @@ pub static SHIPPED: &[LocaleSource] = &[
+                 "en-US/agent-ui.ftl",
+                 include_str!("../locales/en-US/agent-ui.ftl"),
+             ),
++            (
++                "en-US/agent-tasks.ftl",
++                include_str!("../locales/en-US/agent-tasks.ftl"),
++            ),
+         ],
+     },
+     LocaleSource {
+@@ -50,6 +54,10 @@ pub static SHIPPED: &[LocaleSource] = &[
+                 "pt-BR/agent-ui.ftl",
+                 include_str!("../locales/pt-BR/agent-ui.ftl"),
+             ),
++            (
++                "pt-BR/agent-tasks.ftl",
++                include_str!("../locales/pt-BR/agent-tasks.ftl"),
++            ),
+         ],
+     },
+ ];

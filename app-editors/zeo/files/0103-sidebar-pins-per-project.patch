@@ -569,7 +569,7 @@ index 0000000..70b54af
 +    assert!(pins_of(&order, |_| None::<&str>, Some(&"alpha")).is_empty());
 +}
 diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
-index bac4824..938d529 100644
+index e5634f2..c472878 100644
 --- a/crates/sidebar/src/sidebar.rs
 +++ b/crates/sidebar/src/sidebar.rs
 @@ -1,4 +1,5 @@
@@ -578,7 +578,7 @@ index bac4824..938d529 100644
  mod thread_switcher;
  
  use acp_thread::ThreadStatus;
-@@ -494,6 +495,8 @@ enum ListEntry {
+@@ -496,6 +497,8 @@ enum ListEntry {
      Terminal(TerminalEntry),
      PinnedHeader {
          has_notifications: bool,
@@ -587,7 +587,7 @@ index bac4824..938d529 100644
      },
  }
  
-@@ -617,6 +620,7 @@ enum EntryShape {
+@@ -619,6 +622,7 @@ enum EntryShape {
      Terminal(TerminalId),
      PinnedHeader {
          is_collapsed: bool,
@@ -595,7 +595,7 @@ index bac4824..938d529 100644
      },
      // Distinct from `Thread` so pinning or unpinning never reuses the other row's measurement.
      PinnedThread(ThreadId),
-@@ -992,9 +996,12 @@ fn create_worktree_in_workspace(
+@@ -1051,9 +1055,12 @@ fn create_worktree_in_workspace(
  /// append-only domain, where a step can never be edited once it ships.
  pub(crate) const PINNED_COLLAPSED_KEY: &str = "zeo_sidebar_pinned_collapsed";
  
@@ -610,7 +610,7 @@ index bac4824..938d529 100644
          .log_err()
          .flatten()
          .is_some_and(|value| value == "true")
-@@ -1064,7 +1071,9 @@ pub struct Sidebar {
+@@ -1123,7 +1130,9 @@ pub struct Sidebar {
      cross_channel_import_channels: Vec<SharedString>,
      /// Never serialized: the Pinned section's collapsed state lasts for the session.
      pinned_collapsed: bool,
@@ -621,7 +621,7 @@ index bac4824..938d529 100644
      /// a quick collapse-then-expand cannot land in the store in the wrong order.
      pinned_collapsed_write: Option<Task<()>>,
  }
-@@ -1154,6 +1163,15 @@ impl Sidebar {
+@@ -1213,6 +1222,15 @@ impl Sidebar {
          {
              cx.observe(&store, |_, _store, cx| cx.notify()).detach();
          }
@@ -637,7 +637,7 @@ index bac4824..938d529 100644
  
          cx.observe(&ThreadMetadataStore::global(cx), |this, _store, cx| {
              this.schedule_update_entries(false, cx);
-@@ -1224,13 +1242,39 @@ impl Sidebar {
+@@ -1283,13 +1301,39 @@ impl Sidebar {
              update_task: None,
              import_banners_use_verbose_labels: None,
              cross_channel_import_channels: Vec::new(),
@@ -680,7 +680,7 @@ index bac4824..938d529 100644
      fn toggle_pin(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) {
          let Some(store) = ThreadOrganizationStore::try_global(cx) else {
              return;
-@@ -1243,11 +1287,43 @@ impl Sidebar {
+@@ -1302,11 +1346,43 @@ impl Sidebar {
                  store.pin(thread_id, cx)
              }
          });
@@ -724,7 +724,7 @@ index bac4824..938d529 100644
      /// Whether `thread_id` is pinned, as every pin entry point must read it to name and perform
      /// the toggle: by its `pinned_position`, never by which section its row is in.
      fn is_pinned_in(
-@@ -1839,7 +1915,21 @@ impl Sidebar {
+@@ -1898,7 +1974,21 @@ impl Sidebar {
              }
          }
  
@@ -747,7 +747,7 @@ index bac4824..938d529 100644
          // Pinned threads are listed in their own section, so every group path skips them. The
          // first group that would have listed one claims it, as an unpinned thread is listed by the
          // first group that finds it, so that group still counts as having threads.
-@@ -2380,42 +2470,51 @@ impl Sidebar {
+@@ -2439,42 +2529,51 @@ impl Sidebar {
              }
          }
  
@@ -834,7 +834,7 @@ index bac4824..938d529 100644
              }
          }
  
-@@ -2561,8 +2660,9 @@ impl Sidebar {
+@@ -2620,8 +2719,9 @@ impl Sidebar {
              }
              ListEntry::Thread(thread) => EntryShape::Thread(thread.metadata.thread_id),
              ListEntry::Terminal(terminal) => EntryShape::Terminal(terminal.metadata.terminal_id),
@@ -846,7 +846,7 @@ index bac4824..938d529 100644
              },
          })
      }
-@@ -2718,8 +2818,11 @@ impl Sidebar {
+@@ -2777,8 +2877,11 @@ impl Sidebar {
              ListEntry::Terminal(terminal) => {
                  self.render_terminal(ix, terminal, is_active, is_selected, cx)
              }
@@ -860,7 +860,7 @@ index bac4824..938d529 100644
              }
          };
  
-@@ -3701,12 +3804,17 @@ impl Sidebar {
+@@ -3793,12 +3896,17 @@ impl Sidebar {
          &self,
          ix: usize,
          is_sticky: bool,
@@ -879,7 +879,7 @@ index bac4824..938d529 100644
              IconName::ChevronRight
          } else {
              IconName::ChevronDown
-@@ -3728,8 +3836,8 @@ impl Sidebar {
+@@ -3820,8 +3928,8 @@ impl Sidebar {
              } else {
                  gpui::transparent_black()
              })
@@ -890,7 +890,7 @@ index bac4824..938d529 100644
                  this.child(
                      Icon::new(IconName::Circle)
                          .size(IconSize::Small)
-@@ -3744,9 +3852,10 @@ impl Sidebar {
+@@ -3836,9 +3944,10 @@ impl Sidebar {
                  )
              })
              .cursor_pointer()
@@ -903,7 +903,7 @@ index bac4824..938d529 100644
                  }
              }))
              .block_mouse_except_scroll()
-@@ -3758,8 +3867,32 @@ impl Sidebar {
+@@ -3850,8 +3959,32 @@ impl Sidebar {
      // The tests' handle on the section; the UI toggles it through set_pinned_section_collapsed.
      #[cfg(test)]
      fn set_pinned_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
@@ -938,7 +938,7 @@ index bac4824..938d529 100644
              let store = KeyValueStore::global(cx);
              let previous = self.pinned_collapsed_write.take();
              self.pinned_collapsed_write = Some(cx.background_spawn(async move {
-@@ -3767,13 +3900,13 @@ impl Sidebar {
+@@ -3859,13 +3992,13 @@ impl Sidebar {
                      previous.await;
                  }
                  store
@@ -955,7 +955,7 @@ index bac4824..938d529 100644
              let len = self.contents.entries.len();
              if self.selection.is_some_and(|ix| ix >= len) {
                  self.selection = len.checked_sub(1);
-@@ -3829,9 +3962,17 @@ impl Sidebar {
+@@ -3921,9 +4054,17 @@ impl Sidebar {
                  *has_threads,
                  cx,
              ),
@@ -976,7 +976,7 @@ index bac4824..938d529 100644
              ListEntry::Thread(_) | ListEntry::Terminal(_) => return None,
          };
  
-@@ -4238,8 +4379,10 @@ impl Sidebar {
+@@ -4330,8 +4471,10 @@ impl Sidebar {
                  let workspace = terminal.workspace.clone();
                  self.activate_terminal_entry(metadata, workspace, false, window, cx);
              }
@@ -989,7 +989,7 @@ index bac4824..938d529 100644
              }
          }
      }
-@@ -4896,8 +5039,11 @@ impl Sidebar {
+@@ -4988,8 +5131,11 @@ impl Sidebar {
                  self.set_group_expanded(&key, true, cx);
                  self.update_entries(cx);
              }
@@ -1003,7 +1003,7 @@ index bac4824..938d529 100644
              }
              Some(ListEntry::ProjectHeader { .. } | ListEntry::PinnedHeader { .. })
                  if ix + 1 < self.contents.entries.len() =>
-@@ -4938,16 +5084,20 @@ impl Sidebar {
+@@ -5030,16 +5176,20 @@ impl Sidebar {
                          }
                          // Pinned rows follow the last group: stopping here keeps a pinned row
                          // from collapsing that group.
@@ -1027,7 +1027,7 @@ index bac4824..938d529 100644
              None => {}
          }
      }
-@@ -4985,11 +5135,13 @@ impl Sidebar {
+@@ -5077,11 +5227,13 @@ impl Sidebar {
                      }
                      self.update_entries(cx);
                  }
@@ -1044,7 +1044,7 @@ index bac4824..938d529 100644
                  }
                  Some(ListEntry::Thread(_) | ListEntry::Terminal(_)) | None => {}
              }
-@@ -6405,7 +6557,7 @@ impl Sidebar {
+@@ -6497,7 +6649,7 @@ impl Sidebar {
              return;
          }
          let thread_id = thread.metadata.thread_id;
@@ -1053,7 +1053,7 @@ index bac4824..938d529 100644
      }
  
      fn rename_selected_thread(
-@@ -7077,7 +7229,7 @@ impl Sidebar {
+@@ -7169,7 +7321,7 @@ impl Sidebar {
                              }
                          })
                          .on_click(cx.listener(move |this, _, _window, cx| {
@@ -1062,7 +1062,7 @@ index bac4824..938d529 100644
                          }))
                  });
  
-@@ -7237,6 +7389,11 @@ impl Sidebar {
+@@ -7329,6 +7481,11 @@ impl Sidebar {
                              "Pin Thread"
                          }
                      });
@@ -1074,7 +1074,7 @@ index bac4824..938d529 100644
                      ContextMenu::build(_window, cx, move |mut menu, _window, _cx| {
                          menu = menu.entry("Rename Title", None, {
                              let sidebar = sidebar.clone();
-@@ -7322,7 +7479,30 @@ impl Sidebar {
+@@ -7414,7 +7571,30 @@ impl Sidebar {
                                  move |_window, cx| {
                                      sidebar
                                          .update(cx, |sidebar, cx| {

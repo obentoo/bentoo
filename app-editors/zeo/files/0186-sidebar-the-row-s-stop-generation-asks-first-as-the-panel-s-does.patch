@@ -1,0 +1,206 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Wed, 25 Nov 2026 20:39:03 -0300
+Subject: [PATCH] sidebar: the row's Stop Generation asks first, as the panel's
+ does
+
+Operator, 2026-11-25, after the live test of 0.27.0: the Stop button on a
+running thread's row in the sidebar stopped the turn at once, while the
+agent panel's Stop Generation asked first (0166). The row went straight to
+AgentPanel::cancel_thread, which calls ThreadView::cancel_generation and
+skips the confirmation.
+
+AgentPanel::confirm_cancel_thread finds the thread's view the same way and
+calls ThreadView::confirm_cancel_generation instead, so every Stop the
+operator starts goes through one prompt ("Stop generation?", Stop / Keep
+Going). The sidebar's stop_thread takes the window for it. A thread with no
+turn running stops without asking, as the panel's button already does.
+
+The other cancel_thread caller in the sidebar, archiving a running thread,
+is left alone: 0167 has already asked "Archive?" by then.
+
+Tests (sidebar_stop_confirm_tests.rs): Keep Going leaves the turn running,
+and nothing stops before the answer; Stop stops it.
+
+In the claude-agent-acp-plus group, where 0166 and 0167 are, at its end.
+---
+
+diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
+index f70b0a8..fcd7814 100644
+--- a/crates/agent_ui/src/agent_panel.rs
++++ b/crates/agent_ui/src/agent_panel.rs
+@@ -4922,6 +4922,32 @@ impl AgentPanel {
+         false
+     }
+ 
++    /// Stop Generation started outside the thread's own view -- the sidebar's row button
++    /// (operator, 2026-11-25) -- asks through the same confirmation as the view's own button
++    /// (0166's `ThreadView::confirm_cancel_generation`), so no surface stops a turn unasked.
++    /// Returns whether this panel holds the thread.
++    pub fn confirm_cancel_thread(
++        &self,
++        thread_id: &ThreadId,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) -> bool {
++        let conversation_views = self
++            .active_conversation_view()
++            .into_iter()
++            .chain(self.retained_threads.values());
++
++        for conversation_view in conversation_views {
++            if *thread_id == conversation_view.read(cx).thread_id {
++                if let Some(thread_view) = conversation_view.read(cx).root_thread_view() {
++                    thread_view.update(cx, |view, cx| view.confirm_cancel_generation(window, cx));
++                    return true;
++                }
++            }
++        }
++        false
++    }
++
+     fn update_thread_work_dirs(&self, cx: &mut Context<Self>) {
+         let new_work_dirs = self.project.read(cx).default_path_list(cx);
+         let new_worktree_paths = self.project.read(cx).worktree_paths(cx);
+diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
+index 34c0352..61d5a3c 100644
+--- a/crates/sidebar/src/sidebar.rs
++++ b/crates/sidebar/src/sidebar.rs
+@@ -101,6 +101,8 @@ mod sidebar_pinned_persist_tests;
+ #[cfg(test)]
+ mod sidebar_pinned_tests;
+ #[cfg(test)]
++mod sidebar_stop_confirm_tests;
++#[cfg(test)]
+ mod sidebar_sub_thread_tests;
+ #[cfg(test)]
+ mod sidebar_task_feed_background_tests;
+@@ -5292,7 +5294,14 @@ impl Sidebar {
+         self.update_entries(cx);
+     }
+ 
+-    fn stop_thread(&mut self, thread_id: &agent_ui::ThreadId, cx: &mut Context<Self>) {
++    /// The row's Stop Generation asks first, as the agent panel's button does (operator,
++    /// 2026-11-25: the sidebar's stopped at once).
++    fn stop_thread(
++        &mut self,
++        thread_id: &agent_ui::ThreadId,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
+         let Some(multi_workspace) = self.multi_workspace.upgrade() else {
+             return;
+         };
+@@ -5300,8 +5309,9 @@ impl Sidebar {
+         let workspaces: Vec<_> = multi_workspace.read(cx).workspaces().cloned().collect();
+         for workspace in workspaces {
+             if let Some(agent_panel) = workspace.read(cx).panel::<AgentPanel>(cx) {
+-                let cancelled =
+-                    agent_panel.update(cx, |panel, cx| panel.cancel_thread(thread_id, cx));
++                let cancelled = agent_panel.update(cx, |panel, cx| {
++                    panel.confirm_cancel_thread(thread_id, window, cx)
++                });
+                 if cancelled {
+                     return;
+                 }
+@@ -7440,8 +7450,8 @@ impl Sidebar {
+                                     "Stop Generation"
+                                 },
+                             ))
+-                            .on_click(cx.listener(move |this, _, _window, cx| {
+-                                this.stop_thread(&thread_id_for_actions, cx);
++                            .on_click(cx.listener(move |this, _, window, cx| {
++                                this.stop_thread(&thread_id_for_actions, window, cx);
+                             }))
+                             .into_any_element(),
+                     )
+diff --git a/crates/sidebar/src/sidebar_stop_confirm_tests.rs b/crates/sidebar/src/sidebar_stop_confirm_tests.rs
+new file mode 100644
+index 0000000..ee659dc
+--- /dev/null
++++ b/crates/sidebar/src/sidebar_stop_confirm_tests.rs
+@@ -0,0 +1,84 @@
++// Operator, 2026-11-25: the sidebar row's Stop Generation stopped the turn at once, while the
++// agent panel's asked first (0166). Both now go through `ThreadView::confirm_cancel_generation`.
++//
++// Hostile half first: "Keep Going" must leave the turn running -- a stop that skipped the
++// prompt, or cancelled before the answer, fails it. Then "Stop" stops it.
++
++use super::*;
++use crate::sidebar_tests::{init_test_project_with_agent_panel, setup_sidebar_with_agent_panel};
++use acp_thread::{AcpThread, StubAgentConnection, ThreadStatus};
++use agent_ui::test_support::{active_thread_id, open_thread_with_connection, send_message};
++use gpui::{TestAppContext, VisualTestContext};
++
++async fn generating_thread(
++    cx: &mut TestAppContext,
++) -> (
++    Entity<Sidebar>,
++    Entity<AcpThread>,
++    agent_ui::ThreadId,
++    &mut VisualTestContext,
++) {
++    let project = init_test_project_with_agent_panel("/project-a", cx).await;
++    let (multi_workspace, cx) =
++        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
++    let (sidebar, panel) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
++    open_thread_with_connection(&panel, StubAgentConnection::new(), cx);
++    send_message(&panel, cx);
++    cx.run_until_parked();
++    let thread = panel.read_with(cx, |panel, cx| {
++        panel.active_agent_thread(cx).expect("the thread")
++    });
++    let thread_id = active_thread_id(&panel, cx);
++    (sidebar, thread, thread_id, cx)
++}
++
++fn status(thread: &Entity<AcpThread>, cx: &mut VisualTestContext) -> ThreadStatus {
++    thread.read_with(cx, |thread, _| thread.status())
++}
++
++#[gpui::test]
++async fn test_sidebar_stop_asks_and_keep_going_keeps_the_turn(cx: &mut TestAppContext) {
++    let (sidebar, thread, thread_id, cx) = generating_thread(cx).await;
++    assert_eq!(
++        status(&thread, cx),
++        ThreadStatus::Generating,
++        "precondition"
++    );
++
++    sidebar.update_in(cx, |sidebar, window, cx| {
++        sidebar.stop_thread(&thread_id, window, cx)
++    });
++    cx.run_until_parked();
++    assert!(cx.has_pending_prompt(), "the row's Stop asks first");
++    assert_eq!(
++        status(&thread, cx),
++        ThreadStatus::Generating,
++        "nothing stops before the answer"
++    );
++
++    cx.simulate_prompt_answer("Keep Going");
++    cx.run_until_parked();
++    assert_eq!(
++        status(&thread, cx),
++        ThreadStatus::Generating,
++        "Keep Going keeps the turn"
++    );
++}
++
++#[gpui::test]
++async fn test_sidebar_stop_confirmed_stops_the_turn(cx: &mut TestAppContext) {
++    let (sidebar, thread, thread_id, cx) = generating_thread(cx).await;
++
++    sidebar.update_in(cx, |sidebar, window, cx| {
++        sidebar.stop_thread(&thread_id, window, cx)
++    });
++    cx.run_until_parked();
++    assert!(cx.has_pending_prompt());
++    cx.simulate_prompt_answer("Stop");
++    cx.run_until_parked();
++    assert_eq!(
++        status(&thread, cx),
++        ThreadStatus::Idle,
++        "Stop stops the turn"
++    );
++}
