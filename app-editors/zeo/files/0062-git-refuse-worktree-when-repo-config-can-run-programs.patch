@@ -67,6 +67,23 @@ real git, a filter driver in .git/config and one in config.worktree,
 includeIf, and an unreadable config are each refused with no directory,
 branch or worktree created and the filter never run, and the settings
 Zed already overrides still create a worktree.
+
+Amended 2026-11-26 (security audit 2026-11-21, docs/assets/security-audit-
+2026-11-21/ in the hub; PROPOSAL §6.61). The screen read config.worktree
+only when extensions.worktreeConfig matched `true`/`yes`/`on`/`1`, but git
+parses that key as a boolean, and any non-zero integer is true -- `2`, `01`,
+`1k` and `-1` all turn config.worktree on, so a filter driver there passed
+the screen and `git worktree add` ran it. The audit's suggested fix, reading
+`--worktree` unconditionally, is wrong too: with the extension off and a
+second worktree, git refuses `config --worktree` outright (measured on git
+2.56.1), which would refuse every worktree in such a repository. The screen
+now asks git itself: `git config --local --includes --type=bool --get
+extensions.worktreeConfig` (exit 1 with nothing on stderr = unset = off; a
+value git cannot read as a boolean is Unreadable, since git would stop on it
+too). Tests against real git: a filter in config.worktree under each of the
+four spellings is refused and never runs (Red on the old screen), an
+unparseable value is refused, and a third worktree with the extension off
+is still created.
 ---
 
 diff --git a/crates/git/src/git.rs b/crates/git/src/git.rs
@@ -82,7 +99,7 @@ index d12f001..b4005fe 100644
  pub use crate::hosting_provider::*;
  pub use crate::remote::*;
 diff --git a/crates/git/src/repository.rs b/crates/git/src/repository.rs
-index 7729da5..fd035d7 100644
+index 7729da5..6836854 100644
 --- a/crates/git/src/repository.rs
 +++ b/crates/git/src/repository.rs
 @@ -2324,8 +2324,14 @@ impl GitRepository for RealGitRepository {
@@ -100,7 +117,7 @@ index 7729da5..fd035d7 100644
                  std::fs::create_dir_all(path.parent().unwrap_or(&path))?;
                  let output = git.build_command(&args).output().await?;
                  if output.status.success() {
-@@ -6447,6 +6453,201 @@ mod tests {
+@@ -6447,6 +6453,292 @@ mod tests {
          assert_eq!(missing, None);
      }
  
@@ -212,6 +229,97 @@ index 7729da5..fd035d7 100644
 +        assert!(!worktree_path.exists());
 +    }
 +
++    /// Security audit 2026-11-21: git reads `extensions.worktreeConfig` as a
++    /// boolean, so every non-zero integer turns `config.worktree` on, and the
++    /// screen used to read it only for `true`/`yes`/`on`/`1`.
++    #[gpui::test]
++    async fn test_create_worktree_refuses_a_per_worktree_filter_under_any_true_spelling(
++        cx: &mut TestAppContext,
++    ) {
++        disable_git_global_config();
++        cx.executor().allow_parking();
++
++        for spelling in ["2", "01", "1k", "-1"] {
++            let temp_dir = tempfile::tempdir().unwrap();
++            let (repo_dir, repo) = repository_with_one_commit(temp_dir.path(), cx);
++            let marker = temp_dir.path().join("smudge-ran");
++            git_command(&repo_dir, ["config", "extensions.worktreeConfig", spelling]);
++            git_command(
++                &repo_dir,
++                [
++                    OsString::from("config"),
++                    OsString::from("--worktree"),
++                    OsString::from("filter.evil.smudge"),
++                    OsString::from(format!("touch '{}'; cat", marker.display())),
++                ],
++            );
++
++            let worktree_path = temp_dir.path().join("worktrees").join("refused");
++            let error = repo
++                .create_worktree(new_branch_target("refused"), worktree_path.clone())
++                .await
++                .expect_err("config.worktree counts whenever git reads the extension as true");
++            assert_eq!(
++                error.downcast_ref::<crate::worktree_config::UnsafeWorktreeConfig>(),
++                Some(
++                    &crate::worktree_config::UnsafeWorktreeConfig::FilterDriver {
++                        key: "filter.evil.smudge".to_string()
++                    }
++                ),
++                "extensions.worktreeConfig = {spelling}: {error:#}"
++            );
++            assert!(!marker.exists(), "{spelling}: the filter must not have run");
++            assert!(!worktree_path.exists(), "{spelling}");
++        }
++    }
++
++    #[gpui::test]
++    async fn test_create_worktree_refuses_an_unparseable_worktree_config_extension(
++        cx: &mut TestAppContext,
++    ) {
++        disable_git_global_config();
++        cx.executor().allow_parking();
++
++        let temp_dir = tempfile::tempdir().unwrap();
++        let (repo_dir, repo) = repository_with_one_commit(temp_dir.path(), cx);
++        git_command(&repo_dir, ["config", "extensions.worktreeConfig", "maybe"]);
++
++        let worktree_path = temp_dir.path().join("worktrees").join("refused");
++        let error = repo
++            .create_worktree(new_branch_target("refused"), worktree_path.clone())
++            .await
++            .expect_err("a value git cannot read as a boolean cannot be screened");
++        assert!(
++            matches!(
++                error.downcast_ref::<crate::worktree_config::UnsafeWorktreeConfig>(),
++                Some(crate::worktree_config::UnsafeWorktreeConfig::Unreadable { .. })
++            ),
++            "{error:#}"
++        );
++        assert!(!worktree_path.exists());
++    }
++
++    /// With the extension off, git refuses `config --worktree` once a second
++    /// worktree exists; the screen must not turn that into a refusal.
++    #[gpui::test]
++    async fn test_create_worktree_accepts_a_third_worktree_with_the_extension_off(
++        cx: &mut TestAppContext,
++    ) {
++        disable_git_global_config();
++        cx.executor().allow_parking();
++
++        let temp_dir = tempfile::tempdir().unwrap();
++        let (repo_dir, repo) = repository_with_one_commit(temp_dir.path(), cx);
++        git_command(&repo_dir, ["config", "extensions.worktreeConfig", "0"]);
++        let worktrees_dir = temp_dir.path().join("worktrees");
++        for name in ["second", "third"] {
++            repo.create_worktree(new_branch_target(name), worktrees_dir.join(name))
++                .await
++                .unwrap_or_else(|error| panic!("{name}: {error:#}"));
++        }
++        assert_eq!(repo.worktrees().await.unwrap().len(), 3);
++    }
++
 +    #[gpui::test]
 +    async fn test_create_worktree_refuses_a_conditional_include(cx: &mut TestAppContext) {
 +        disable_git_global_config();
@@ -304,10 +412,10 @@ index 7729da5..fd035d7 100644
          disable_git_global_config();
 diff --git a/crates/git/src/worktree_config.rs b/crates/git/src/worktree_config.rs
 new file mode 100644
-index 0000000..fef826b
+index 0000000..8bc0516
 --- /dev/null
 +++ b/crates/git/src/worktree_config.rs
-@@ -0,0 +1,452 @@
+@@ -0,0 +1,488 @@
 +//! Screens a repository's own git config before `git worktree add` runs.
 +//!
 +//! `git worktree add` checks out a whole tree, and a checkout runs whatever
@@ -509,16 +617,7 @@ index 0000000..fef826b
 +    check_readable(git_dir, common_dir)?;
 +
 +    let mut entries = read_config_scope(git, "--local").await?;
-+    let worktree_config = entries.iter().any(|entry| {
-+        entry.key.eq_ignore_ascii_case("extensions.worktreeconfig")
-+            && entry.value.as_deref().is_none_or(|value| {
-+                matches!(
-+                    value.trim().to_lowercase().as_str(),
-+                    "true" | "yes" | "on" | "1"
-+                )
-+            })
-+    });
-+    if worktree_config {
++    if worktree_config_enabled(git).await? {
 +        entries.extend(read_config_scope(git, "--worktree").await?);
 +    }
 +
@@ -540,6 +639,51 @@ index 0000000..fef826b
 +        Err(error) => Err(UnsafeWorktreeConfig::Unreadable {
 +            detail: format!("{}: {error}", config.display()),
 +        }),
++    }
++}
++
++/// Whether git reads `config.worktree`, as git itself answers it.
++///
++/// Git parses `extensions.worktreeConfig` as a boolean, and a boolean there is
++/// any non-zero integer too (`2`, `01`, `1k`, `-1`): matching a list of
++/// spellings let a filter driver in `config.worktree` past the screen (security
++/// audit 2026-11-21, `docs/assets/security-audit-2026-11-21/`). Reading the
++/// `--worktree` scope unconditionally is not the fix either: with the extension
++/// off and more than one worktree, git refuses `--worktree` outright, which
++/// would refuse every worktree in such a repository.
++async fn worktree_config_enabled(git: &GitBinary) -> Result<bool> {
++    let output = git
++        .build_command(&[
++            "config",
++            "--local",
++            "--includes",
++            "--type=bool",
++            "--get",
++            "extensions.worktreeConfig",
++        ])
++        .env("LC_ALL", "C")
++        .output()
++        .await
++        .map_err(|error| UnsafeWorktreeConfig::Unreadable {
++            detail: format!("could not run git config extensions.worktreeConfig: {error}"),
++        })?;
++    let stderr = String::from_utf8_lossy(&output.stderr);
++    match output.status.code() {
++        Some(0) => Ok(String::from_utf8_lossy(&output.stdout).trim() == "true"),
++        // `git config --get` exits 1 when the key is not set.
++        Some(1) if stderr.trim().is_empty() => Ok(false),
++        _ if stderr.contains("unable to read config file") && stderr.contains("No such file") => {
++            Ok(false)
++        }
++        // A value git cannot read as a boolean: git would stop too, and a
++        // screen that cannot tell whether `config.worktree` counts refuses.
++        _ => Err(UnsafeWorktreeConfig::Unreadable {
++            detail: format!(
++                "git config could not read extensions.worktreeConfig as a boolean: {}",
++                stderr.trim()
++            ),
++        }
++        .into()),
 +    }
 +}
 +

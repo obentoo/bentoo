@@ -19,8 +19,8 @@ this uses the same path rather than a new one:
 
   agent_registry_store.rs adds two npx entries, claude-agent-acp-plus and
   claude-agent-tui, to whatever the registry returned -- and to an empty
-  list, so they exist before the first fetch and offline. A registry entry
-  with the same id wins over Zeo's.
+  list, so they exist before the first fetch and offline. Their two ids
+  are reserved: a registry entry using one is dropped (amended 2026-11-26).
 
   default.json enables both as `{ "type": "registry" }` under agent_servers,
   so they are thread options with no configuration. User settings merge on
@@ -37,7 +37,7 @@ that CLI on the system; its description says so. Claude Agent (Plus) bundles
 its CLI and needs nothing.
 
 Tests: the two entries exist with no registry, a registry entry with the same
-id is kept instead of duplicated, `@latest` reaches npm intact, and
+id is dropped and Zeo's package stands, `@latest` reaches npm intact, and
 SettingsStore::test reports both enabled as registry agents.
 
 Never-empty list (fixed 2026-10-09): `AgentRegistryStore::init_global` fetched
@@ -50,6 +50,17 @@ The guard is now "nothing but Zeo's built-ins" (`is_zeo_agent`). The tests that
 count agents expect the two built-ins after the registry's:
 `registry_refresh_does_not_block_sequentially_on_hung_icon_downloads` (3 + 2)
 and remote_server's `test_remote_external_agent_server` ("foo" plus both ids).
+
+Amended 2026-11-26 (security audit 2026-11-21, PROPOSAL §6.61 in the hub):
+a public ACP registry entry with one of these ids used to win over Zeo's,
+which let the third-party registry (cdn.agentclientprotocol.com) choose what
+the default-enabled agent runs -- its npm package or a Binary download --
+and, through distribution_env and args, what even 0046's /usr/bin adapter
+was started with. Whether the registry lets a third party claim the ids is
+a hosted governance fact Zeo cannot check, so the ids are reserved instead:
+with_zeo_agents drops such an entry, logs it at WARN with the id, and adds
+Zeo's own. The test that pinned "the registry wins" now pins the opposite
+(Red on the old code).
 ---
 
 diff --git a/assets/settings/default.json b/assets/settings/default.json
@@ -74,7 +85,7 @@ index 5e6493c..f1a7c58 100644
      "stepping_granularity": "line",
      "save_breakpoints": true,
 diff --git a/crates/project/src/agent_registry_store.rs b/crates/project/src/agent_registry_store.rs
-index 20647be..288a63f 100644
+index 20647be..4cafc22 100644
 --- a/crates/project/src/agent_registry_store.rs
 +++ b/crates/project/src/agent_registry_store.rs
 @@ -148,7 +148,9 @@ impl AgentRegistryStore {
@@ -115,7 +126,7 @@ index 20647be..288a63f 100644
                  cx.notify();
              })?;
  
-@@ -331,6 +333,70 @@ impl AgentRegistryStore {
+@@ -331,6 +333,79 @@ impl AgentRegistryStore {
      }
  }
  
@@ -172,21 +183,30 @@ index 20647be..288a63f 100644
 +    id == ZEO_PLUS_AGENT_ID || id == ZEO_TUI_AGENT_ID
 +}
 +
-+/// `agents` plus Zeo's own, unless the registry already lists an agent with the
-+/// same id -- the registry's entry then wins.
++/// `agents` plus Zeo's own. Zeo's two ids are reserved: a registry entry that
++/// uses one is dropped, because it would otherwise choose the package (or the
++/// binary) the default agent runs and the args and env handed even to the
++/// system adapter -- the public registry is not Zeo's to trust with that
++/// (security audit 2026-11-21, `docs/assets/security-audit-2026-11-21/`).
 +fn with_zeo_agents(mut agents: Vec<RegistryAgent>) -> Vec<RegistryAgent> {
-+    for zeo_agent in zeo_agents() {
-+        if !agents.iter().any(|agent| agent.id() == zeo_agent.id()) {
-+            agents.push(zeo_agent);
++    agents.retain(|agent| {
++        let reserved = is_zeo_agent(agent);
++        if reserved {
++            log::warn!(
++                "agent registry: dropped an entry using a Zeo default agent id agent_id={}",
++                agent.id().0
++            );
 +        }
-+    }
++        !reserved
++    });
++    agents.extend(zeo_agents());
 +    agents
 +}
 +
  struct RegistryFetchResult {
      index: RegistryIndex,
      raw_body: Vec<u8>,
-@@ -696,3 +762,61 @@ mod tests {
+@@ -696,3 +771,73 @@ mod tests {
          assert!(platform_keys("linux", "riscv64", false).is_empty());
      }
  }
@@ -232,20 +252,32 @@ index 20647be..288a63f 100644
 +        }
 +    }
 +
-+    /// The public registry's entries are kept, and one that already uses a Zeo
-+    /// id wins over Zeo's built-in instead of being duplicated.
++    /// Hostile: the public registry's entries are kept, but one that uses a Zeo
++    /// id is dropped, so Zeo's own package, args and env are what that id runs.
 +    #[test]
-+    fn registry_entries_are_kept_and_win_on_the_same_id() {
++    fn registry_entries_are_kept_but_cannot_take_a_zeo_id() {
 +        let agents = with_zeo_agents(vec![
++            npx(ZEO_TUI_AGENT_ID, "registry-provided-tui@1.0.0"),
 +            npx("claude-acp", "@agentclientprotocol/claude-agent-acp@1.0.0"),
 +            npx(ZEO_PLUS_AGENT_ID, "registry-provided@1.0.0"),
 +        ]);
 +        let ids: Vec<&str> = agents.iter().map(|agent| agent.id().0.as_ref()).collect();
 +        assert_eq!(ids, vec!["claude-acp", ZEO_PLUS_AGENT_ID, ZEO_TUI_AGENT_ID]);
-+        let RegistryAgent::Npx(plus) = &agents[1] else {
-+            panic!("plus should be an npx agent");
-+        };
-+        assert_eq!(plus.package.as_ref(), "registry-provided@1.0.0");
++        let packages: Vec<&str> = agents
++            .iter()
++            .map(|agent| match agent {
++                RegistryAgent::Npx(agent) => agent.package.as_ref(),
++                _ => panic!("{} should be an npx agent", agent.id().0),
++            })
++            .collect();
++        assert_eq!(
++            packages,
++            vec![
++                "@agentclientprotocol/claude-agent-acp@1.0.0",
++                ZEO_PLUS_NPM_SPEC,
++                ZEO_TUI_NPM_SPEC,
++            ]
++        );
 +    }
 +}
 diff --git a/crates/project/src/agent_server_store.rs b/crates/project/src/agent_server_store.rs

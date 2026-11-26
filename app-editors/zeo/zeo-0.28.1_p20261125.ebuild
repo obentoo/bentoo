@@ -2454,6 +2454,8 @@ src_prepare() {
 			"${FILESDIR}/0187-agent-ui-a-paused-jail-shows-resume-only-the-lock-s-stop-icon-is-the-o.patch"
 			# 0188: the lock's modal under the lock; turning on asks and restarts. On 0174/0179.
 			"${FILESDIR}/0188-agent-ui-the-lock-s-small-modal-opens-under-the-lock-turning-the-jail.patch"
+			# 0190: a repository a jailed agent can write runs none of its own git drivers.
+			"${FILESDIR}/0190-agent-sandbox-git-a-repository-a-jailed-agent-can-write-runs-none-of-its.patch"
 		)
 	fi
 

@@ -1,0 +1,1246 @@
+From 3372560c78c84332603c2170cb6c170c6482c769 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Thu, 26 Nov 2026 01:06:38 -0300
+Subject: [PATCH] agent_sandbox, git: a repository a jailed agent can write
+ runs none of its own drivers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A jail keeps the agent away from the host, but the project it works in
+stays writable, all but <root>/.git and <root>/.zed (0057's two read-only
+maps, unchanged by 0141). The security audit of 2026-11-21 (lead 1, PROPOSAL
+§6.61 in the hub) asked whether that is enough, and on 2026-11-26 a probe in
+project's integration tests answered no: with a project open, plain
+processes standing in for the agent ran `git init sub`, set
+`filter.x.clean = touch <marker>; cat`, wrote `* filter=x` into
+.gitattributes and changed a file, and the editor's own scan registered
+`sub` and ran `git status` in it -- running the filter on the host, outside
+the jail, with no click. GitBinary overrides hooks, ssh, credential helpers
+and external diff for an untrusted repository, but never filter or diff
+drivers, and a nested repository inherits its project's trust anyway.
+
+The operator chose on 2026-11-26 (options 1 and 3 of §6.61):
+
+  - git: every repository a jailed agent can write (AgentReach::Writable)
+    runs untrusted whatever the worktree trust says, with every filter and
+    diff driver its own config defines switched off, and with commit
+    signing pinned to git's own programs (gpg.program, gpg.ssh.program,
+    gpg.x509.program, gpg.ssh.defaultKeyCommand);
+  - the jailed root's own .git (AgentReach::RootGitDir) keeps its trust
+    but still has its own drivers switched off. That is option 3's case:
+    the jail cannot stop the agent from creating <root>/.git when the
+    project had none, nor from writing a file that config includes. Option
+    3 as first proposed -- create and map an empty <root>/.git -- was not
+    built: the worktree scanner takes the first `.git` it finds as the
+    repository root, so a placeholder would hide the enclosing repository
+    of every project opened as a subfolder.
+
+How a driver is switched off: `-c filter.<name>.clean= -c
+filter.<name>.smudge= -c filter.<name>.process= -c
+filter.<name>.required=false` and `-c diff.<name>.textconv= -c
+diff.<name>.command=`, the empty command being git's own "no driver" (the
+Claude Code VS Code extension does the same before `git worktree add`).
+The names come from `git config --includes --show-scope --name-only
+--get-regexp '^(filter|diff)\..+\.(clean|smudge|process|textconv|command)$'`,
+run before each command; only the `local` and `worktree` scopes count, and
+a file either includes reports their scope (measured on git 2.56.1, with
+the include in the working tree). Global and system config are the user's
+own and are left alone, so a globally installed LFS filter still runs. A
+driver name -c cannot address (it holds `=` or a newline), or a listing
+that fails, refuses the command: GIT_DIR points at a path that does not
+exist, so git stops before reading the tree. What it costs: in a jailed
+project, a file such a driver converts (an LFS pointer from a local filter
+definition, a git-crypt blob) reads as modified in Zeo's git views. Merge
+drivers are not screened: git runs one only for a merge the user starts.
+
+Which repositories: agent_sandbox::git_reach keeps the jailed project
+roots (launch::project_root of every open local project whose jail
+effective_enabled says is on) and their writable folders, each as written
+and canonical, current on every settings change and worktree add/remove,
+so it holds before the agent's first launch too -- a repository planted in
+an earlier session is screened from the first `git status`. It registers
+project::git_store::GitAgentReach, a gpui Global; LocalRepositoryState::new
+hands its check to the backend (GitRepository::set_agent_reach_check, a
+no-op default for backends that run no git binary), and the backend asks it
+on every command, so turning the jail on or off needs no reopen. A
+repository is Writable when its working or common directory is under a
+writable folder, or under a jailed root without its common directory being
+that root's own .git; RootGitDir when it is; the widest reach wins when two
+jailed roots nest.
+
+Tests: git -- the listing parser (local/worktree only, a dotted name kept
+whole, an unaddressable name refused) and, against real git, a fixture
+whose filter and textconv touch markers: with no check both run (the
+baseline), Writable and RootGitDir run neither with the drivers in
+.git/config or in an included working-tree file, and an unaddressable name
+refuses the command. agent_sandbox -- classify (root .git, nested, a .git
+file pointing outside, a look-alike prefix, a bare git dir in the project,
+a writable folder, nested roots) and, end to end with RealFs, the probe's
+fixture: the filter runs with the jail off (the control) and does not with
+it on. Red seen: with the screen switched off three git tests fail, and
+without git_reach::init the end-to-end jailed test fails.
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index a8206a2..d20086b 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -382,6 +382,7 @@ dependencies = [
+  "context_server",
+  "fs",
+  "futures 0.3.34",
++ "git",
+  "gpui",
+  "http_client",
+  "libc",
+@@ -406,6 +407,7 @@ dependencies = [
+  "url",
+  "which",
+  "workspace",
++ "worktree",
+  "zeo_i18n",
+ ]
+ 
+diff --git a/crates/agent_sandbox/Cargo.toml b/crates/agent_sandbox/Cargo.toml
+index 4fb5e76..063a254 100644
+--- a/crates/agent_sandbox/Cargo.toml
++++ b/crates/agent_sandbox/Cargo.toml
+@@ -17,6 +17,7 @@ doctest = false
+ anyhow.workspace = true
+ context_server.workspace = true
+ futures.workspace = true
++git.workspace = true
+ gpui.workspace = true
+ http_client.workspace = true
+ libc.workspace = true
+@@ -51,3 +52,4 @@ serde_json_lenient.workspace = true
+ settings = { workspace = true, features = ["test-support"] }
+ tempfile.workspace = true
+ workspace = { workspace = true, features = ["test-support"] }
++worktree = { workspace = true, features = ["test-support"] }
+diff --git a/crates/agent_sandbox/src/agent_sandbox.rs b/crates/agent_sandbox/src/agent_sandbox.rs
+index e20dc3f..120adc0 100644
+--- a/crates/agent_sandbox/src/agent_sandbox.rs
++++ b/crates/agent_sandbox/src/agent_sandbox.rs
+@@ -11,6 +11,7 @@ pub mod confirm;
+ pub mod control;
+ pub mod cpu_reserve;
+ pub mod disk_watch;
++pub mod git_reach;
+ pub mod host_view;
+ pub mod jail_hostname;
+ pub mod launch;
+@@ -41,6 +42,7 @@ pub fn init(cx: &mut App) {
+     })
+     .detach();
+     project_keys::init(cx);
++    git_reach::init(cx);
+ }
+ 
+ #[cfg(test)]
+@@ -48,6 +50,8 @@ mod command_tests;
+ #[cfg(test)]
+ mod confirm_tests;
+ #[cfg(test)]
++mod git_reach_tests;
++#[cfg(test)]
+ mod host_view_launch_tests;
+ #[cfg(test)]
+ mod host_view_layer_tests;
+diff --git a/crates/agent_sandbox/src/git_reach.rs b/crates/agent_sandbox/src/git_reach.rs
+new file mode 100644
+index 0000000..1599831
+--- /dev/null
++++ b/crates/agent_sandbox/src/git_reach.rs
+@@ -0,0 +1,161 @@
++//! Which repositories a jailed agent can write, for the git screen of patch 0190.
++//!
++//! The jail maps the project root writable but for `<root>/.git` and `<root>/.zed`, plus the
++//! project's writable folders. A repository under either is one the agent may have configured,
++//! and git run on it by the unjailed editor runs whatever drivers that config names, on the host
++//! (security audit 2026-11-21, confirmed 2026-11-26). `git::agent_reach` switches those drivers
++//! off; this module tells it which repositories need that, from the settings and the open
++//! projects, so it applies before the agent's first launch too — a repository planted in an
++//! earlier session is screened from the first `git status`.
++
++use git::agent_reach::{AgentReach, AgentReachCheck};
++use gpui::{App, Global, WeakEntity};
++use project::Project;
++use project::git_store::GitAgentReach;
++use settings::{Settings as _, SettingsStore};
++use std::path::{Path, PathBuf};
++use std::sync::{Arc, RwLock};
++
++use crate::AgentSandboxSettings;
++use crate::validate::expand_tilde;
++
++/// The jailed project roots and writable folders, each as written and, when it resolves, as its
++/// canonical path: repositories reach the screen spelled either way.
++#[derive(Clone, Debug, Default, PartialEq, Eq)]
++pub struct JailReach {
++    pub roots: Vec<PathBuf>,
++    pub writable_folders: Vec<PathBuf>,
++}
++
++impl JailReach {
++    /// How far a jailed agent reaches the repository working in `work_dir` with the common git
++    /// directory `common_dir`. A repository under several entries gets the widest reach.
++    pub fn classify(&self, work_dir: &Path, common_dir: &Path) -> AgentReach {
++        let under = |base: &Path| work_dir.starts_with(base) || common_dir.starts_with(base);
++        if self.writable_folders.iter().any(|folder| under(folder)) {
++            return AgentReach::Writable;
++        }
++        let mut reach = AgentReach::None;
++        for root in &self.roots {
++            let own_git_dir = common_dir == root.join(".git");
++            if own_git_dir {
++                reach = reach.max(AgentReach::RootGitDir);
++            } else if under(root) {
++                return AgentReach::Writable;
++            }
++        }
++        reach
++    }
++
++    fn push(list: &mut Vec<PathBuf>, path: PathBuf) {
++        if let Ok(canonical) = std::fs::canonicalize(&path)
++            && !list.contains(&canonical)
++        {
++            list.push(canonical);
++        }
++        if !list.contains(&path) {
++            list.push(path);
++        }
++    }
++}
++
++struct GitReachState {
++    reach: Arc<RwLock<JailReach>>,
++    projects: Vec<WeakEntity<Project>>,
++}
++
++impl Global for GitReachState {}
++
++/// Registers the screen with the git store and keeps it current. Call once, before a project
++/// opens.
++pub fn init(cx: &mut App) {
++    let reach = Arc::new(RwLock::new(JailReach::default()));
++    let check: AgentReachCheck = Arc::new({
++        let reach = reach.clone();
++        move |work_dir, common_dir| {
++            let reach = reach
++                .read()
++                .unwrap_or_else(|poisoned| poisoned.into_inner());
++            reach.classify(work_dir, common_dir)
++        }
++    });
++    cx.set_global(GitAgentReach(check));
++    cx.set_global(GitReachState {
++        reach,
++        projects: Vec::new(),
++    });
++
++    cx.observe_global::<SettingsStore>(refresh).detach();
++    cx.observe_new(|_: &mut Project, _, cx| {
++        let project = cx.entity();
++        cx.defer(move |cx| {
++            cx.global_mut::<GitReachState>()
++                .projects
++                .push(project.downgrade());
++            cx.subscribe(&project, |_, event: &project::Event, cx| {
++                if matches!(
++                    event,
++                    project::Event::WorktreeAdded(_)
++                        | project::Event::WorktreeRemoved(_)
++                        | project::Event::WorktreeOrderChanged
++                ) {
++                    refresh(cx);
++                }
++            })
++            .detach();
++            refresh(cx);
++        });
++    })
++    .detach();
++}
++
++/// Recomputes [`JailReach`] from the settings and every open local project.
++fn refresh(cx: &mut App) {
++    let Some(state) = cx.try_global::<GitReachState>() else {
++        return;
++    };
++    let projects: Vec<_> = state
++        .projects
++        .iter()
++        .filter_map(WeakEntity::upgrade)
++        .collect();
++    let reach = state.reach.clone();
++    let settings = AgentSandboxSettings::get_global(cx);
++    let home = paths::home_dir();
++
++    let mut next = JailReach::default();
++    for project in &projects {
++        if !project.read(cx).is_local() {
++            continue;
++        }
++        let Some(root) = crate::launch::project_root(project, cx) else {
++            continue;
++        };
++        if !settings.effective_enabled(&root) {
++            continue;
++        }
++        for folder in settings.project_policy(&root).rw_maps {
++            JailReach::push(&mut next.writable_folders, expand_tilde(&folder, home));
++        }
++        JailReach::push(&mut next.roots, root);
++    }
++
++    let counts = (next.roots.len(), next.writable_folders.len());
++    let changed = {
++        let mut current = reach
++            .write()
++            .unwrap_or_else(|poisoned| poisoned.into_inner());
++        let changed = *current != next;
++        *current = next;
++        changed
++    };
++    if changed {
++        log::debug!(
++            "agent sandbox git reach: updated roots={} writable_folders={}",
++            counts.0,
++            counts.1
++        );
++    }
++    let live = projects.iter().map(|project| project.downgrade()).collect();
++    cx.global_mut::<GitReachState>().projects = live;
++}
+diff --git a/crates/agent_sandbox/src/git_reach_tests.rs b/crates/agent_sandbox/src/git_reach_tests.rs
+new file mode 100644
+index 0000000..ecfba94
+--- /dev/null
++++ b/crates/agent_sandbox/src/git_reach_tests.rs
+@@ -0,0 +1,192 @@
++// Patch 0190 — which repositories a jailed agent can write, and the git screen end to end.
++// Wired in the crate root `src/agent_sandbox.rs`. Validation filter: `git_reach`.
++//
++// Hostile halves:
++//   - classify, wrongly COLLAPSE: a repository beside the root (`/w/app2`) is not under `/w/app`;
++//     the root's own `.git` is not `Writable`, but a nested one is.
++//   - end to end: the fixture of the 2026-11-26 probe — a nested repository planted while the
++//     project is open, its clean filter touching a marker — runs the filter with the jail off
++//     (the control) and does not with the jail on.
++
++use git::agent_reach::AgentReach;
++use gpui::{TestAppContext, UpdateGlobal as _};
++use project::Project;
++use serde_json::json;
++use settings::SettingsStore;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++use worktree::WorktreeModelHandle as _;
++
++use crate::git_reach::JailReach;
++
++fn reach(roots: &[&str], folders: &[&str]) -> JailReach {
++    JailReach {
++        roots: roots.iter().map(PathBuf::from).collect(),
++        writable_folders: folders.iter().map(PathBuf::from).collect(),
++    }
++}
++
++#[test]
++fn git_reach_classify_tells_the_root_git_dir_from_a_writable_repository() {
++    let jail = reach(&["/w/app"], &["/data/shared"]);
++    let classify = |work: &str, common: &str| jail.classify(Path::new(work), Path::new(common));
++    assert_eq!(classify("/w/app", "/w/app/.git"), AgentReach::RootGitDir);
++    assert_eq!(
++        classify("/w/app/sub", "/w/app/sub/.git"),
++        AgentReach::Writable
++    );
++    // A linked worktree of the root shares its read-only common directory.
++    assert_eq!(classify("/w/app/wt", "/w/app/.git"), AgentReach::RootGitDir);
++    // A `.git` file pointing a repository inside the project at a git dir outside it.
++    assert_eq!(
++        classify("/w/app/sub", "/elsewhere/.git"),
++        AgentReach::Writable
++    );
++    // A repository outside every jail, one whose name only starts like the root's, one whose
++    // git dir merely lives in the project.
++    assert_eq!(classify("/w/other", "/w/other/.git"), AgentReach::None);
++    assert_eq!(classify("/w/app2", "/w/app2/.git"), AgentReach::None);
++    assert_eq!(
++        classify("/w/other", "/w/app/hidden.git"),
++        AgentReach::Writable
++    );
++    assert_eq!(
++        classify("/data/shared/repo", "/data/shared/repo/.git"),
++        AgentReach::Writable
++    );
++}
++
++#[test]
++fn git_reach_classify_takes_the_widest_reach() {
++    // `/w/app/inner` is a jailed root of its own, inside the jailed `/w/app`.
++    let jail = reach(&["/w/app/inner", "/w/app"], &[]);
++    assert_eq!(
++        jail.classify(Path::new("/w/app/inner"), Path::new("/w/app/inner/.git")),
++        AgentReach::Writable
++    );
++    assert_eq!(
++        JailReach::default().classify(Path::new("/w/app"), Path::new("/w/app/.git")),
++        AgentReach::None
++    );
++}
++
++#[allow(clippy::disallowed_methods)]
++fn git(dir: &Path, args: &[&str]) {
++    let output = Command::new("git")
++        .current_dir(dir)
++        .env("GIT_CONFIG_GLOBAL", "")
++        .env("GIT_CONFIG_SYSTEM", "")
++        .args(args)
++        .output()
++        .expect("git runs");
++    assert!(
++        output.status.success(),
++        "git {args:?}: {}",
++        String::from_utf8_lossy(&output.stderr)
++    );
++}
++
++fn init(cx: &mut TestAppContext) {
++    // SAFETY: every git test of the workspace sets the same two values.
++    unsafe {
++        std::env::set_var("GIT_CONFIG_GLOBAL", "");
++        std::env::set_var("GIT_CONFIG_SYSTEM", "");
++    }
++    cx.update(|cx| {
++        let store = SettingsStore::test(cx);
++        cx.set_global(store);
++        release_channel::init(semver::Version::new(0, 0, 0), cx);
++        crate::init(cx);
++    });
++}
++
++fn set_jail(root: &Path, enabled: bool, cx: &mut TestAppContext) {
++    let settings = json!({
++        "agent_sandbox": { "projects": { root.to_string_lossy(): { "enabled": enabled } } }
++    });
++    cx.update(|cx| {
++        SettingsStore::update_global(cx, |store, cx| {
++            store
++                .set_user_settings(&settings.to_string(), cx)
++                .result()
++                .expect("user settings parse");
++        })
++    });
++    cx.run_until_parked();
++}
++
++/// Opens a project on a committed repository, lets the jailed "agent" (plain processes here)
++/// plant `sub/.git` with a clean filter while it is open, and answers whether the editor's scan
++/// ran that filter on the host.
++async fn planted_filter_runs(jailed: bool, cx: &mut TestAppContext) -> bool {
++    init(cx);
++    cx.executor().allow_parking();
++    let dir = tempfile::tempdir().unwrap();
++    let root = std::fs::canonicalize(dir.path()).unwrap().join("project");
++    std::fs::create_dir(&root).unwrap();
++    git(&root, &["init", "-q", "-b", "main"]);
++    std::fs::write(root.join("a.txt"), "a").unwrap();
++    let identity = ["-c", "user.name=test", "-c", "user.email=test@zed.dev"];
++    git(&root, &["add", "a.txt"]);
++    git(
++        &root,
++        &[&identity[..], &["commit", "-q", "-m", "initial"]].concat(),
++    );
++    set_jail(&root, jailed, cx);
++
++    let project = Project::test(fs::RealFs::new(None, cx.executor()), [root.as_path()], cx).await;
++    let tree = project.read_with(cx, |project, cx| project.worktrees(cx).next().unwrap());
++    tree.flush_fs_events(cx).await;
++    project
++        .update(cx, |project, cx| project.git_scans_complete(cx))
++        .await;
++    cx.run_until_parked();
++
++    let marker = dir.path().join("FILTER-RAN");
++    let sub = root.join("sub");
++    std::fs::create_dir(&sub).unwrap();
++    git(&sub, &["init", "-q", "-b", "main"]);
++    std::fs::write(sub.join("f.txt"), "one").unwrap();
++    git(&sub, &["add", "f.txt"]);
++    git(
++        &sub,
++        &[&identity[..], &["commit", "-q", "-m", "sub"]].concat(),
++    );
++    let clean = format!("touch '{}'; cat", marker.display());
++    git(&sub, &["config", "filter.x.clean", &clean]);
++    std::fs::write(sub.join(".gitattributes"), "* filter=x\n").unwrap();
++    std::thread::sleep(std::time::Duration::from_millis(1100));
++    std::fs::write(sub.join("f.txt"), "two").unwrap();
++
++    let mut sub_seen = false;
++    for _ in 0..20 {
++        tree.flush_fs_events(cx).await;
++        project
++            .update(cx, |project, cx| project.git_scans_complete(cx))
++            .await;
++        cx.run_until_parked();
++        sub_seen = project.read_with(cx, |project, cx| {
++            project
++                .repositories(cx)
++                .values()
++                .any(|repo| repo.read(cx).work_directory_abs_path.ends_with("sub"))
++        });
++        if marker.exists() || (sub_seen && jailed) {
++            break;
++        }
++        std::thread::sleep(std::time::Duration::from_millis(250));
++    }
++    assert!(sub_seen, "the scan must find the planted repository");
++    marker.exists()
++}
++
++/// The control: with the jail off the fixture does run the filter on the host.
++#[gpui::test]
++async fn git_reach_a_planted_filter_runs_when_the_jail_is_off(cx: &mut TestAppContext) {
++    assert!(planted_filter_runs(false, cx).await);
++}
++
++#[gpui::test]
++async fn git_reach_a_planted_filter_does_not_run_in_a_jailed_project(cx: &mut TestAppContext) {
++    assert!(!planted_filter_runs(true, cx).await);
++}
+diff --git a/crates/git/src/agent_reach.rs b/crates/git/src/agent_reach.rs
+new file mode 100644
+index 0000000..be0b254
+--- /dev/null
++++ b/crates/git/src/agent_reach.rs
+@@ -0,0 +1,216 @@
++//! Git run on a repository a jailed agent can write.
++//!
++//! A jail (ai-jail, `agent_sandbox`) keeps the agent away from the host, but the project it
++//! works in stays writable, all but `<root>/.git` and `<root>/.zed`. A repository there is
++//! therefore one the agent may have configured: it can `git init sub`, name a program in
++//! `filter.<name>.clean` and select it from `.gitattributes`, and the unjailed editor runs that
++//! program on the host the next time it asks for `git status` — no click needed (security audit
++//! 2026-11-21, confirmed 2026-11-26; PROPOSAL §6.61 in the hub).
++//!
++//! What is done about it, decided by the operator on 2026-11-26 (options 1 and 3):
++//!
++//! - every repository the agent can write runs as an untrusted one (Zed's own overrides of
++//!   hooks, ssh, credential helpers and external diff), and with every filter and diff driver
++//!   its own config defines switched off, and with commit signing pinned to git's defaults;
++//! - the project root's own `.git`, read-only inside the jail, keeps its trust, but still has its
++//!   own drivers switched off: the jail cannot stop the agent from creating `<root>/.git` when the
++//!   project had none, nor from writing a file that config includes.
++//!
++//! A driver is switched off with an empty command, which is how git spells "no driver" (the
++//! Claude Code VS Code extension does the same before `git worktree add`). Measured on git
++//! 2.56.1: `-c filter.<n>.clean=` and `-c diff.<n>.textconv=` stop both programs from running in
++//! `status` and `diff`. What it costs: a file such a driver converts (an LFS pointer, a
++//! git-crypt blob) reads as modified in a jailed project. Global and system config are the
++//! user's own and are left alone.
++
++use std::path::Path;
++use std::sync::Arc;
++
++/// How far a jailed agent reaches a repository.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
++pub enum AgentReach {
++    /// No jailed project contains it.
++    #[default]
++    None,
++    /// The jailed project root's own `.git`: read-only in the jail, but possibly created, or
++    /// configured through an included file, by the agent.
++    RootGitDir,
++    /// Anything else under a jailed project or one of its writable folders.
++    Writable,
++}
++
++/// Answers [`AgentReach`] for a repository, from its working directory (its git directory for a
++/// bare one) and its common git directory. Asked on every command, so it always reflects the
++/// current settings; it must be cheap and must not block.
++pub type AgentReachCheck = Arc<dyn Fn(&Path, &Path) -> AgentReach + Send + Sync>;
++
++/// The pattern for the config keys that name a program git runs on its own while reading the
++/// working tree: filter drivers (`status`, `add`, `checkout`) and diff drivers (`diff`).
++pub(crate) const DRIVER_KEYS_PATTERN: &str =
++    r"^(filter|diff)\..+\.(clean|smudge|process|textconv|command)$";
++
++/// Commit signing, pinned for a writable repository: each of these names a program git runs.
++pub(crate) const WRITABLE_SIGNING_OVERRIDES: &[&str] = &[
++    "gpg.program=gpg",
++    "gpg.ssh.program=ssh-keygen",
++    "gpg.x509.program=gpgsm",
++    "gpg.ssh.defaultKeyCommand=",
++];
++
++/// Why the drivers could not be listed. The command is then refused rather than run unscreened.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum UnscreenableDrivers {
++    /// A driver name git's `-c` could not address (it holds `=` or a newline).
++    UnaddressableName(String),
++    /// The listing itself failed.
++    Listing(String),
++}
++
++impl std::fmt::Display for UnscreenableDrivers {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::UnaddressableName(name) => write!(
++                f,
++                "a driver name `{}` cannot be switched off with -c",
++                name.escape_debug()
++            ),
++            Self::Listing(detail) => write!(f, "the driver listing failed: {detail}"),
++        }
++    }
++}
++
++/// The `-c` arguments switching off every driver in `listing`, the output of
++/// `git config --includes --show-scope --name-only --get-regexp DRIVER_KEYS_PATTERN`. Only the
++/// repository's own scopes count (`local`, `worktree`; an included file reports the scope of the
++/// file that includes it).
++pub(crate) fn driver_overrides(listing: &str) -> Result<Vec<String>, UnscreenableDrivers> {
++    let mut drivers: Vec<(String, String)> = Vec::new();
++    for line in listing.lines() {
++        let Some((scope, name)) = line.split_once('\t') else {
++            continue;
++        };
++        if !matches!(scope, "local" | "worktree") {
++            continue;
++        }
++        let (Some(first_dot), Some(last_dot)) = (name.find('.'), name.rfind('.')) else {
++            continue;
++        };
++        if last_dot <= first_dot + 1 {
++            continue;
++        }
++        let section = name[..first_dot].to_ascii_lowercase();
++        let driver = &name[first_dot + 1..last_dot];
++        if driver.contains('=') || driver.contains('\n') {
++            return Err(UnscreenableDrivers::UnaddressableName(driver.to_string()));
++        }
++        let entry = (section, driver.to_string());
++        if !drivers.contains(&entry) {
++            drivers.push(entry);
++        }
++    }
++
++    let mut args = Vec::new();
++    for (section, driver) in drivers {
++        let keys: &[&str] = match section.as_str() {
++            "filter" => &["clean=", "smudge=", "process=", "required=false"],
++            "diff" => &["textconv=", "command="],
++            _ => continue,
++        };
++        for key in keys {
++            args.push("-c".to_string());
++            args.push(format!("{section}.{driver}.{key}"));
++        }
++    }
++    Ok(args)
++}
++
++/// Lists the drivers the repository at `working_directory` defines and returns the `-c`
++/// arguments that switch them off. Runs `git config` synchronously: it reads files and starts no
++/// program the repository names.
++#[allow(clippy::disallowed_methods)]
++pub(crate) fn list_driver_overrides(
++    git_binary_path: &Path,
++    working_directory: &Path,
++    envs: &collections::HashMap<String, String>,
++) -> Result<Vec<String>, UnscreenableDrivers> {
++    let output = std::process::Command::new(git_binary_path)
++        .current_dir(working_directory)
++        .envs(envs)
++        .env("LC_ALL", "C")
++        .args([
++            "config",
++            "--includes",
++            "--show-scope",
++            "--name-only",
++            "--get-regexp",
++            DRIVER_KEYS_PATTERN,
++        ])
++        .output()
++        .map_err(|error| UnscreenableDrivers::Listing(error.to_string()))?;
++    let stderr = String::from_utf8_lossy(&output.stderr);
++    match output.status.code() {
++        Some(0) => driver_overrides(&String::from_utf8_lossy(&output.stdout)),
++        // `--get-regexp` exits 1 when nothing matches.
++        Some(1) if stderr.trim().is_empty() => Ok(Vec::new()),
++        _ => Err(UnscreenableDrivers::Listing(format!(
++            "git config exited with {:?}: {}",
++            output.status.code(),
++            stderr.trim()
++        ))),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn test_driver_overrides_switches_off_local_and_worktree_drivers_only() {
++        let listing = "local\tfilter.x.clean\n\
++                       local\tfilter.x.smudge\n\
++                       worktree\tdiff.t.textconv\n\
++                       global\tfilter.lfs.clean\n\
++                       system\tdiff.sys.textconv\n";
++        assert_eq!(
++            driver_overrides(listing).unwrap(),
++            [
++                "-c",
++                "filter.x.clean=",
++                "-c",
++                "filter.x.smudge=",
++                "-c",
++                "filter.x.process=",
++                "-c",
++                "filter.x.required=false",
++                "-c",
++                "diff.t.textconv=",
++                "-c",
++                "diff.t.command=",
++            ]
++        );
++    }
++
++    #[test]
++    fn test_driver_overrides_keeps_a_dotted_driver_name_whole() {
++        assert_eq!(
++            driver_overrides("local\tfilter.My.Driver.process\n").unwrap()[1],
++            "filter.My.Driver.clean="
++        );
++    }
++
++    #[test]
++    fn test_driver_overrides_refuses_a_name_dash_c_cannot_address() {
++        assert_eq!(
++            driver_overrides("local\tfilter.a=b.clean\n"),
++            Err(UnscreenableDrivers::UnaddressableName("a=b".to_string()))
++        );
++    }
++
++    #[test]
++    fn test_driver_overrides_ignores_what_is_not_a_driver() {
++        assert_eq!(
++            driver_overrides("local\tfilter.clean\nlocal\tnot-a-line\n\n").unwrap(),
++            Vec::<String>::new()
++        );
++    }
++}
+diff --git a/crates/git/src/agent_reach_tests.rs b/crates/git/src/agent_reach_tests.rs
+new file mode 100644
+index 0000000..e435d66
+--- /dev/null
++++ b/crates/git/src/agent_reach_tests.rs
+@@ -0,0 +1,210 @@
++//! Patch 0190 against real git: a repository a jailed agent configured runs none of its drivers.
++//!
++//! Each fixture repository routes every file through a clean filter and a textconv that touch a
++//! marker, then changes a tracked file without changing its size, more than a second later, so
++//! `git status` has to read the content again: that is when git runs the clean filter.
++
++use crate::agent_reach::{AgentReach, AgentReachCheck};
++use crate::repository::{GitRepository as _, RealGitRepository};
++use gpui::TestAppContext;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++use std::sync::Arc;
++
++#[allow(clippy::disallowed_methods)]
++fn git(dir: &Path, args: &[&str]) {
++    let output = Command::new("git")
++        .current_dir(dir)
++        .env("GIT_CONFIG_GLOBAL", "")
++        .env("GIT_CONFIG_SYSTEM", "")
++        .args(args)
++        .output()
++        .expect("git runs");
++    assert!(
++        output.status.success(),
++        "git {args:?}: {}",
++        String::from_utf8_lossy(&output.stderr)
++    );
++}
++
++fn disable_git_global_config() {
++    // SAFETY: the same calls `repository::tests` makes; every test here sets the same values.
++    unsafe {
++        std::env::set_var("GIT_CONFIG_GLOBAL", "");
++        std::env::set_var("GIT_CONFIG_SYSTEM", "");
++    }
++}
++
++struct Fixture {
++    _dir: tempfile::TempDir,
++    repo_dir: PathBuf,
++    filter_marker: PathBuf,
++    textconv_marker: PathBuf,
++}
++
++/// A repository whose own config names `driver` as a filter and a diff driver, both touching a
++/// marker, with `f.txt` staged and then changed. `include` puts the drivers in a file of the
++/// working tree that `.git/config` includes, which a jailed agent can write even when `.git` is
++/// read-only.
++fn repository_with_drivers(driver: &str, include: bool) -> Fixture {
++    let dir = tempfile::tempdir().unwrap();
++    let repo_dir = dir.path().join("repo");
++    std::fs::create_dir(&repo_dir).unwrap();
++    git(&repo_dir, &["init", "-q", "-b", "main"]);
++    std::fs::write(repo_dir.join("f.txt"), "one").unwrap();
++    std::fs::write(
++        repo_dir.join(".gitattributes"),
++        format!("* filter={driver} diff={driver}\n"),
++    )
++    .unwrap();
++    let off_clean = format!("filter.{driver}.clean=");
++    git(
++        &repo_dir,
++        &["-c", &off_clean, "add", "f.txt", ".gitattributes"],
++    );
++    let identity = ["-c", "user.name=test", "-c", "user.email=test@zed.dev"];
++    git(
++        &repo_dir,
++        &[
++            &identity[..],
++            &["-c", &off_clean, "commit", "-q", "-m", "initial"],
++        ]
++        .concat(),
++    );
++
++    let filter_marker = dir.path().join("filter-ran");
++    let textconv_marker = dir.path().join("textconv-ran");
++    let clean = format!("touch '{}'; cat", filter_marker.display());
++    let textconv = format!(
++        "sh -c 'touch \"{}\"; cat \"$0\"'",
++        textconv_marker.display()
++    );
++    if include {
++        let body = format!(
++            "[filter \"{driver}\"]\n\tclean = {clean}\n[diff \"{driver}\"]\n\ttextconv = {textconv}\n"
++        );
++        std::fs::write(repo_dir.join("shared.gitconfig"), body).unwrap();
++        git(
++            &repo_dir,
++            &["config", "include.path", "../shared.gitconfig"],
++        );
++    } else {
++        git(
++            &repo_dir,
++            &["config", &format!("filter.{driver}.clean"), &clean],
++        );
++        git(
++            &repo_dir,
++            &["config", &format!("diff.{driver}.textconv"), &textconv],
++        );
++    }
++
++    std::thread::sleep(std::time::Duration::from_millis(1100));
++    std::fs::write(repo_dir.join("f.txt"), "two").unwrap();
++    Fixture {
++        _dir: dir,
++        repo_dir,
++        filter_marker,
++        textconv_marker,
++    }
++}
++
++fn open(
++    fixture: &Fixture,
++    reach: Option<AgentReach>,
++    cx: &mut TestAppContext,
++) -> RealGitRepository {
++    let repo = RealGitRepository::new(
++        &fixture.repo_dir.join(".git"),
++        None,
++        Some("git".into()),
++        cx.executor(),
++    )
++    .unwrap();
++    repo.set_trusted(true);
++    if let Some(reach) = reach {
++        let check: AgentReachCheck = Arc::new(move |_, _| reach);
++        repo.set_agent_reach_check(check);
++    }
++    repo
++}
++
++async fn status_and_diff(repo: &RealGitRepository) -> anyhow::Result<usize> {
++    let status = repo.status(&[]).await?;
++    repo.diff(crate::repository::DiffType::HeadToWorktree)
++        .await
++        .ok();
++    Ok(status.entries.len())
++}
++
++/// Hostile baseline: with no reach the drivers run, so the fixture really reproduces the attack.
++#[gpui::test]
++async fn test_without_a_reach_check_the_drivers_run(cx: &mut TestAppContext) {
++    disable_git_global_config();
++    cx.executor().allow_parking();
++    let fixture = repository_with_drivers("x", false);
++    let repo = open(&fixture, None, cx);
++    status_and_diff(&repo).await.unwrap();
++    assert!(
++        fixture.filter_marker.exists(),
++        "the fixture must trigger the filter"
++    );
++    assert!(
++        fixture.textconv_marker.exists(),
++        "the fixture must trigger the textconv"
++    );
++}
++
++#[gpui::test]
++async fn test_a_writable_repository_runs_none_of_its_drivers(cx: &mut TestAppContext) {
++    disable_git_global_config();
++    cx.executor().allow_parking();
++    for include in [false, true] {
++        let fixture = repository_with_drivers("x", include);
++        let repo = open(&fixture, Some(AgentReach::Writable), cx);
++        let entries = status_and_diff(&repo).await.unwrap();
++        assert!(entries > 0, "include={include}: status still answers");
++        assert!(
++            !fixture.filter_marker.exists(),
++            "include={include}: filter ran"
++        );
++        assert!(
++            !fixture.textconv_marker.exists(),
++            "include={include}: textconv ran"
++        );
++    }
++}
++
++#[gpui::test]
++async fn test_the_root_git_dir_runs_none_of_its_drivers(cx: &mut TestAppContext) {
++    disable_git_global_config();
++    cx.executor().allow_parking();
++    for include in [false, true] {
++        let fixture = repository_with_drivers("x", include);
++        let repo = open(&fixture, Some(AgentReach::RootGitDir), cx);
++        status_and_diff(&repo).await.unwrap();
++        assert!(
++            !fixture.filter_marker.exists(),
++            "include={include}: filter ran"
++        );
++        assert!(
++            !fixture.textconv_marker.exists(),
++            "include={include}: textconv ran"
++        );
++    }
++}
++
++/// Hostile: a driver name `-c` cannot address refuses the command instead of running it.
++#[gpui::test]
++async fn test_an_unaddressable_driver_name_refuses_the_command(cx: &mut TestAppContext) {
++    disable_git_global_config();
++    cx.executor().allow_parking();
++    let fixture = repository_with_drivers("a=b", false);
++    let repo = open(&fixture, Some(AgentReach::Writable), cx);
++    let refused = repo.status(&[]).await;
++    assert!(refused.is_err(), "{refused:?}");
++    assert!(
++        !fixture.filter_marker.exists(),
++        "the filter must not have run"
++    );
++}
+diff --git a/crates/git/src/git.rs b/crates/git/src/git.rs
+index b4005fe..816c52f 100644
+--- a/crates/git/src/git.rs
++++ b/crates/git/src/git.rs
+@@ -1,3 +1,4 @@
++pub mod agent_reach;
+ pub mod blame;
+ pub mod commit;
+ mod hosting_provider;
+@@ -6,6 +7,8 @@ pub mod repository;
+ pub mod stash;
+ pub mod status;
+ pub mod worktree_config;
++#[cfg(test)]
++mod agent_reach_tests;
+ 
+ pub use crate::hosting_provider::*;
+ pub use crate::remote::*;
+diff --git a/crates/git/src/repository.rs b/crates/git/src/repository.rs
+index 6836854..35588dc 100644
+--- a/crates/git/src/repository.rs
++++ b/crates/git/src/repository.rs
+@@ -1113,6 +1113,9 @@ pub trait GitRepository: Send + Sync {
+     fn repair_worktrees(&self) -> BoxFuture<'_, Result<()>>;
+ 
+     fn set_trusted(&self, trusted: bool);
++    /// Zeo (patch 0190): how far a jailed agent reaches this repository, asked on every
++    /// command. A backend that runs no git binary has nothing to screen.
++    fn set_agent_reach_check(&self, _check: crate::agent_reach::AgentReachCheck) {}
+     fn is_trusted(&self) -> bool;
+ 
+     fn git_binary_path(&self) -> Option<PathBuf> {
+@@ -1155,6 +1158,7 @@ pub struct RealGitRepository {
+     any_git_binary_help_output: Arc<Mutex<Option<SharedString>>>,
+     executor: BackgroundExecutor,
+     is_trusted: Arc<AtomicBool>,
++    agent_reach_check: Arc<Mutex<Option<crate::agent_reach::AgentReachCheck>>>,
+ }
+ 
+ #[derive(Debug)]
+@@ -1253,9 +1257,26 @@ impl RealGitRepository {
+             executor,
+             any_git_binary_help_output: Arc::new(Mutex::new(None)),
+             is_trusted: Arc::new(AtomicBool::new(false)),
++            agent_reach_check: Arc::new(Mutex::new(None)),
+         })
+     }
+ 
++    /// Zeo (patch 0190): the reach the check answers now, `None` without a check.
++    fn agent_reach(&self) -> crate::agent_reach::AgentReach {
++        let check = self.agent_reach_check.lock().clone();
++        check.map_or_else(Default::default, |check| {
++            check(&self.command_directory(), &self.common_dir)
++        })
++    }
++
++    /// The trust a command gets and the reach it is screened for: a repository the agent can
++    /// write never runs trusted, whatever the worktree trust says.
++    fn trust_and_reach(&self) -> (bool, crate::agent_reach::AgentReach) {
++        let reach = self.agent_reach();
++        let trusted = self.is_trusted() && reach != crate::agent_reach::AgentReach::Writable;
++        (trusted, reach)
++    }
++
+     fn working_directory(&self) -> Result<PathBuf> {
+         self.working_directory
+             .clone()
+@@ -1269,23 +1290,27 @@ impl RealGitRepository {
+     }
+ 
+     fn git_binary_in_worktree(&self) -> Result<GitBinary> {
++        let (is_trusted, reach) = self.trust_and_reach();
+         Ok(GitBinary::new(
+             self.any_git_binary_path.clone(),
+             self.working_directory()?,
+             self.path(),
+             self.executor.clone(),
+-            self.is_trusted(),
+-        ))
++            is_trusted,
++        )
++        .with_agent_reach(reach))
+     }
+ 
+     fn git_binary(&self) -> GitBinary {
++        let (is_trusted, reach) = self.trust_and_reach();
+         GitBinary::new(
+             self.any_git_binary_path.clone(),
+             self.command_directory(),
+             self.path(),
+             self.executor.clone(),
+-            self.is_trusted(),
++            is_trusted,
+         )
++        .with_agent_reach(reach)
+     }
+ 
+     fn edit_ref(&self, edit: RefEdit) -> BoxFuture<'_, Result<()>> {
+@@ -2385,13 +2410,15 @@ impl GitRepository for RealGitRepository {
+         worktree_path: PathBuf,
+         create: bool,
+     ) -> BoxFuture<'_, Result<()>> {
++        let (is_trusted, reach) = self.trust_and_reach();
+         let git_binary = GitBinary::new(
+             self.any_git_binary_path.clone(),
+             worktree_path,
+             self.path(),
+             self.executor.clone(),
+-            self.is_trusted(),
+-        );
++            is_trusted,
++        )
++        .with_agent_reach(reach);
+ 
+         self.executor
+             .spawn(async move {
+@@ -2877,7 +2904,7 @@ impl GitRepository for RealGitRepository {
+         let git_directory = self.path();
+         let executor = cx.background_executor().clone();
+         let git_binary_path = self.system_git_binary_path.clone();
+-        let is_trusted = self.is_trusted();
++        let (is_trusted, reach) = self.trust_and_reach();
+         // Note: Do not spawn this command on the background thread, it might pop open the credential helper
+         // which we want to block on.
+         async move {
+@@ -2888,7 +2915,8 @@ impl GitRepository for RealGitRepository {
+                 git_directory,
+                 executor,
+                 is_trusted,
+-            );
++            )
++            .with_agent_reach(reach);
+             git.run_remote_command(Some(askpass), &env, &["push"], |command| {
+                 command
+                     .args(options.map(|option| match option {
+@@ -2919,7 +2947,7 @@ impl GitRepository for RealGitRepository {
+         let git_directory = self.path();
+         let executor = cx.background_executor().clone();
+         let git_binary_path = self.system_git_binary_path.clone();
+-        let is_trusted = self.is_trusted();
++        let (is_trusted, reach) = self.trust_and_reach();
+         // Note: Do not spawn this command on the background thread, it might pop open the credential helper
+         // which we want to block on.
+         async move {
+@@ -2930,7 +2958,8 @@ impl GitRepository for RealGitRepository {
+                 git_directory,
+                 executor,
+                 is_trusted,
+-            );
++            )
++            .with_agent_reach(reach);
+             git.run_remote_command(Some(askpass), &env, &["pull"], |command| {
+                 if rebase {
+                     command.arg("--rebase");
+@@ -2959,7 +2988,7 @@ impl GitRepository for RealGitRepository {
+         let remote_name = format!("{}", fetch_options);
+         let git_binary_path = self.system_git_binary_path.clone();
+         let executor = cx.background_executor().clone();
+-        let is_trusted = self.is_trusted();
++        let (is_trusted, reach) = self.trust_and_reach();
+         // Note: Do not spawn this command on the background thread, it might pop open the credential helper
+         // which we want to block on.
+         async move {
+@@ -2970,7 +2999,8 @@ impl GitRepository for RealGitRepository {
+                 git_directory,
+                 executor,
+                 is_trusted,
+-            );
++            )
++            .with_agent_reach(reach);
+             git.run_remote_command(askpass, &env, &["fetch", &remote_name], |command| {
+                 command.stdout(Stdio::piped()).stderr(Stdio::piped());
+             })
+@@ -3502,6 +3532,10 @@ impl GitRepository for RealGitRepository {
+             .store(trusted, std::sync::atomic::Ordering::Release);
+     }
+ 
++    fn set_agent_reach_check(&self, check: crate::agent_reach::AgentReachCheck) {
++        *self.agent_reach_check.lock() = Some(check);
++    }
++
+     fn is_trusted(&self) -> bool {
+         self.is_trusted.load(std::sync::atomic::Ordering::Acquire)
+     }
+@@ -3710,8 +3744,13 @@ pub(crate) struct GitBinary {
+     index_file_path: Option<PathBuf>,
+     envs: HashMap<String, String>,
+     is_trusted: bool,
++    agent_reach: crate::agent_reach::AgentReach,
+ }
+ 
++/// Where a command refused by the agent-reach screen points git: no repository is there, so git
++/// stops before reading the working tree, and its error says why.
++const UNSCREENABLE_GIT_DIR: &str = "/nonexistent/zeo-refused-unscreenable-git-config";
++
+ impl GitBinary {
+     pub(crate) fn new(
+         git_binary_path: PathBuf,
+@@ -3728,9 +3767,17 @@ impl GitBinary {
+             index_file_path: None,
+             envs: HashMap::default(),
+             is_trusted,
++            agent_reach: crate::agent_reach::AgentReach::None,
+         }
+     }
+ 
++    /// Zeo (patch 0190): screen every command for `reach`. A `Writable` repository is also never
++    /// trusted; callers pass the trust [`RealGitRepository::trust_and_reach`] gives.
++    pub(crate) fn with_agent_reach(mut self, reach: crate::agent_reach::AgentReach) -> Self {
++        self.agent_reach = reach;
++        self
++    }
++
+     fn envs(mut self, envs: HashMap<String, String>) -> Self {
+         self.envs = envs;
+         self
+@@ -3837,6 +3884,9 @@ impl GitBinary {
+             command.args(["-c", "protocol.ext.allow=never"]);
+             command.args(["-c", "diff.external="]);
+         }
++        if self.agent_reach != crate::agent_reach::AgentReach::None {
++            self.screen_for_agent_reach(&mut command);
++        }
+         for (key, value) in config {
+             command.args(["-c", &format!("{key}={value}")]);
+         }
+@@ -3863,6 +3913,35 @@ impl GitBinary {
+         command
+     }
+ 
++    /// Zeo (patch 0190): switch off the drivers this repository's own config names, and for a
++    /// writable one pin commit signing too. A config whose drivers cannot be listed or addressed
++    /// refuses the command instead of running it unscreened.
++    fn screen_for_agent_reach(&self, command: &mut util::command::Command) {
++        let listed = crate::agent_reach::list_driver_overrides(
++            &self.git_binary_path,
++            &self.working_directory,
++            &self.envs,
++        );
++        match listed {
++            Ok(overrides) => {
++                command.args(overrides);
++            }
++            Err(reason) => {
++                log::warn!(
++                    "git agent reach: refusing a command reach={:?} working_directory={} reason={reason}",
++                    self.agent_reach,
++                    self.working_directory.display()
++                );
++                command.env("GIT_DIR", UNSCREENABLE_GIT_DIR);
++            }
++        }
++        if self.agent_reach == crate::agent_reach::AgentReach::Writable {
++            for setting in crate::agent_reach::WRITABLE_SIGNING_OVERRIDES {
++                command.args(["-c", setting]);
++            }
++        }
++    }
++
+     /// Git, credential helpers, and SSH have separate prompting mechanisms, so
+     /// omitting an askpass delegate must configure more than Zed's prompt path.
+     async fn run_remote_command<S>(
+diff --git a/crates/project/src/git_store.rs b/crates/project/src/git_store.rs
+index 375037f..64916b1 100644
+--- a/crates/project/src/git_store.rs
++++ b/crates/project/src/git_store.rs
+@@ -974,6 +974,12 @@ impl LocalRepositoryState {
+             })
+             .await?;
+         backend.set_trusted(is_trusted);
++        if let Some(check) = cx.update(|cx| {
++            cx.try_global::<GitAgentReach>()
++                .map(|reach| reach.0.clone())
++        }) {
++            backend.set_agent_reach_check(check);
++        }
+         Ok(LocalRepositoryState {
+             backend,
+             environment: Arc::new(environment),
+@@ -982,6 +988,13 @@ impl LocalRepositoryState {
+     }
+ }
+ 
++/// Zeo (patch 0190): how far a jailed agent reaches each local repository. `agent_sandbox` sets
++/// it; every repository opened afterwards screens its git commands with it. Without it, nothing
++/// is screened.
++pub struct GitAgentReach(pub git::agent_reach::AgentReachCheck);
++
++impl gpui::Global for GitAgentReach {}
++
+ #[derive(Clone)]
+ pub struct RemoteRepositoryState {
+     pub project_id: ProjectId,
