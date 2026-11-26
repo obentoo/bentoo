@@ -1,0 +1,702 @@
+From 7363fdd03e3e5763b04cbc874680b49ee4d99274 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Thu, 26 Nov 2026 15:57:13 -0300
+Subject: [PATCH] agent_ui: cards fade out when closed; the floating "N new"
+ label fades in
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next §6.52, second half of its first step (0193 did the fade-in; operator, 2026-11-26:
+0204 then 0205). A card closed from Zeo's own controls no longer vanishes: it stays on screen
+for CARD_FADE_OUT (150 ms, the fade-in's length, so opening and closing read as one motion
+played both ways) while its opacity falls to 0, and only then does its owner run the close it
+used to run at once. Under reduce_motion the close is instant, as before.
+
+Where: the /btw card's Close; a tasks-card row's dismiss and "Clear finished". When every row
+on show is leaving, the whole card (expanded, pill or bottom bar) fades out with them, so its
+frame does not pop away after its rows faded, and the rows do not fade a second time inside it.
+
+Why nothing is copied: a leaving card is still the card -- the /btw card keeps its state with
+a `leaving` task; a tasks-card row is still a row (counted, ordered, able to change status),
+marked in `leaving_rows` until a detached timer runs the old dismissal. That is also why the
+question card is not faded out (operator, 2026-11-26): it closes because the agent resolved the
+question, and by then what it showed is gone; keeping a copy for 150 ms is not worth the code.
+
+A leaving card draws under its own id (`<id>-out`), so the fade-out starts fresh rather than
+continuing the fade-in's clock. A second Close while the /btw card fades changes nothing; a new
+question replaces the leaving card and drops its timer with it.
+
+The floating thread controls are always present, so there is nothing of them to fade; the
+"N new" label that appears beside them while auto-scroll is paused fades in like a card. It
+goes at once on resume, in the same click that jumps to the end.
+
+Tests: card_fade (fade_out_opacity's ends), thread_view::tests::card_fade_out_tests (the /btw
+card stays while leaving and goes after the fade; reduce motion closes at once; a second Close
+does not restart the clock; a new question survives the old fade), tasks_card::dismiss_tests
+(dismiss and "Clear finished" keep the rows while they fade; reduce motion dismisses at once).
+---
+ crates/agent_ui/src/card_fade.rs              |  70 +++++++++--
+ .../src/conversation_view/thread_view.rs      |  17 ++-
+ .../thread_view/side_question_card.rs         |  49 +++++++-
+ .../thread_view/tests/card_fade_out_tests.rs  | 107 +++++++++++++++++
+ crates/agent_ui/src/tasks_card.rs             | 110 ++++++++++++++++--
+ .../agent_ui/src/tasks_card/dismiss_tests.rs  |  59 +++++++++-
+ .../src/tasks_card/native_subagent_tests.rs   |   4 +
+ 7 files changed, 390 insertions(+), 26 deletions(-)
+ create mode 100644 crates/agent_ui/src/conversation_view/thread_view/tests/card_fade_out_tests.rs
+
+diff --git a/crates/agent_ui/src/card_fade.rs b/crates/agent_ui/src/card_fade.rs
+index 285c161..75dd426 100644
+--- a/crates/agent_ui/src/card_fade.rs
++++ b/crates/agent_ui/src/card_fade.rs
+@@ -9,27 +9,49 @@
+ //!
+ //! GPUI keeps an animation's start in the element state of its id, and drops that state when the
+ //! element is not drawn in a frame, so a card fades again each time it reappears -- and not on the
+-//! frames in between, where it is redrawn with the same id. Only appearing is animated: fading out
+-//! needs the card kept on screen after its state says it is gone, which no card here supports yet.
+-//! The floating thread controls are left alone: they are always present, and their hover change is
+-//! a style, not an appearance.
++//! frames in between, where it is redrawn with the same id.
++//!
++//! Leaving (§6.52, patch 0204): a card closed from Zeo's own controls -- the `/btw` card's close,
++//! a tasks-card row's dismiss and "Clear finished" -- stays on screen for [`CARD_FADE_OUT`] while
++//! it fades to invisible, and only then does its owner run the close it would have run at once.
++//! Nothing is copied to draw it: the card's state is still there, marked as leaving, which is why
++//! the question card is not faded out -- it closes because the agent resolved the question, and
++//! by then what it showed is gone. A leaving card draws under its own id (`<id>-out`), so the
++//! fade-out starts fresh rather than continuing the fade-in's clock. The floating thread controls
++//! are always present; only their "N new" label appears, and it fades in like a card.
+ 
+ use std::time::Duration;
+ 
+ use gpui::{
+-    Animation, AnimationExt as _, AnyElement, App, ElementId, IntoElement, Styled, ease_out_quint,
++    Animation, AnimationExt as _, AnyElement, App, ElementId, IntoElement, SharedString, Styled,
++    ease_out_quint,
+ };
+ 
+ /// How long a card takes to fade in: short enough to read as a response to what caused it.
+ pub(crate) const CARD_FADE_IN: Duration = Duration::from_millis(150);
+ 
++/// How long a closed card stays on screen fading out before its owner removes it. The same as
++/// the fade-in, so opening and closing read as one motion played both ways.
++pub(crate) const CARD_FADE_OUT: Duration = CARD_FADE_IN;
++
+ /// The opacity a fade-in draws at `delta`, the animation's eased progress in `0.0..=1.0`.
+ pub(crate) fn fade_in_opacity(delta: f32) -> f32 {
+     delta.clamp(0., 1.)
+ }
+ 
+-/// A card's root, fading in when it appears.
+-pub(crate) trait FadeIn: Styled + IntoElement + 'static {
++/// The opacity a fade-out draws at `delta`: the fade-in played backwards.
++pub(crate) fn fade_out_opacity(delta: f32) -> f32 {
++    1. - fade_in_opacity(delta)
++}
++
++/// Whether a close should wait for a fade-out: not when the platform asks for reduced motion,
++/// where the card goes at once, as it did before 0204.
++pub(crate) fn close_waits_for_fade(cx: &App) -> bool {
++    !cx.reduce_motion()
++}
++
++/// A card's root, fading in when it appears and out while it leaves.
++pub(crate) trait CardFade: Styled + IntoElement + 'static {
+     /// This card as an element that fades in under `id` unless the platform asks for reduced
+     /// motion. `id` must be stable while the card stays up and unique among the cards.
+     fn fade_in(self, id: impl Into<ElementId>, cx: &App) -> AnyElement {
+@@ -43,9 +65,32 @@ pub(crate) trait FadeIn: Styled + IntoElement + 'static {
+         )
+         .into_any_element()
+     }
++
++    /// This card fading out under `id` -- a leaving card's own id, never its fade-in's. It ends
++    /// invisible and stays so until its owner stops drawing it.
++    fn fade_out(self, id: impl Into<ElementId>, cx: &App) -> AnyElement {
++        if cx.reduce_motion() {
++            return self.into_any_element();
++        }
++        self.with_animation(
++            id,
++            Animation::new(CARD_FADE_OUT).with_easing(ease_out_quint()),
++            |card, delta| card.opacity(fade_out_opacity(delta)),
++        )
++        .into_any_element()
++    }
++
++    /// [`Self::fade_in`] under `id`, or [`Self::fade_out`] under `<id>-out` while `leaving`.
++    fn fade(self, id: &'static str, leaving: bool, cx: &App) -> AnyElement {
++        if leaving {
++            self.fade_out(SharedString::from(format!("{id}-out")), cx)
++        } else {
++            self.fade_in(id, cx)
++        }
++    }
+ }
+ 
+-impl<E: Styled + IntoElement + 'static> FadeIn for E {}
++impl<E: Styled + IntoElement + 'static> CardFade for E {}
+ 
+ #[cfg(test)]
+ mod tests {
+@@ -64,5 +109,14 @@ mod tests {
+     #[test]
+     fn card_fade_is_short_enough_to_read_as_a_response() {
+         assert!(CARD_FADE_IN <= Duration::from_millis(200));
++        assert!(CARD_FADE_OUT <= Duration::from_millis(200));
++    }
++
++    #[test]
++    fn card_fade_out_starts_opaque_and_ends_invisible() {
++        assert_eq!(fade_out_opacity(0.), 1.);
++        assert_eq!(fade_out_opacity(1.), 0.);
++        assert_eq!(fade_out_opacity(1.2), 0.);
++        assert_eq!(fade_out_opacity(-0.1), 1.);
+     }
+ }
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 0a2695b..a67701a 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -1,4 +1,4 @@
+-use crate::card_fade::FadeIn as _;
++use crate::card_fade::CardFade as _;
+ use crate::{
+     CycleResponseSpeed, DEFAULT_THREAD_TITLE, RecallNewerMessage, RecallOlderMessage,
+     SelectPermissionGranularity,
+@@ -10035,10 +10035,17 @@ impl ThreadView {
+                     })),
+             )
+             .when(new_while_paused > 0, |this| {
++                // It appears while the controls stay put, so it fades in like a card (0204);
++                // a new count redraws it under the same id and does not fade again.
+                 this.child(
+-                    Label::new(format!("{new_while_paused} new"))
+-                        .size(LabelSize::Small)
+-                        .color(Color::Accent),
++                    div()
++                        .debug_selector(|| "thread-floating-new-while-paused".into())
++                        .child(
++                            Label::new(format!("{new_while_paused} new"))
++                                .size(LabelSize::Small)
++                                .color(Color::Accent),
++                        )
++                        .fade_in("thread-floating-new-while-paused-fade", cx),
+                 )
+             })
+             .child({
+@@ -17437,6 +17444,8 @@ mod tests {
+     mod account_refresh_line_tests;
+     mod five_hour_arc_tests;
+ 
++    mod card_fade_out_tests;
++
+     use super::*;
+     use gpui::UpdateGlobal;
+     use project::{FakeFs, Project};
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+index 9bf39d6..f07949c 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+@@ -8,7 +8,7 @@
+ //!
+ //! An agent that does not advertise `_claude/btw` gets the text as before, as a prompt.
+ 
+-use crate::card_fade::FadeIn as _;
++use crate::card_fade::{CARD_FADE_OUT, CardFade as _, close_waits_for_fade};
+ use acp_thread::{SIDE_QUESTION_MAX_CHARS, SideAnswer};
+ use gpui::{
+     AnyElement, App, ClipboardItem, Context, Entity, ScrollHandle, SharedString, Task, Window, px,
+@@ -88,6 +88,9 @@ pub(crate) struct SideQuestionCard {
+     state: SideQuestionState,
+     scroll: ScrollHandle,
+     _ask: Task<()>,
++    /// Set by Close while the card fades out (0204); the task removes it when the fade ends.
++    /// A new question replaces the whole card, dropping this task with the leaving one.
++    leaving: Option<Task<()>>,
+ }
+ 
+ impl ThreadView {
+@@ -179,10 +182,45 @@ impl ThreadView {
+             state,
+             scroll: ScrollHandle::new(),
+             _ask: ask,
++            leaving: None,
+         });
+         cx.notify();
+     }
+ 
++    /// Close: the card fades out and then goes, or goes at once under reduced motion. A second
++    /// Close while it fades changes nothing.
++    pub(super) fn dismiss_side_question(&mut self, cx: &mut Context<Self>) {
++        let waits = close_waits_for_fade(cx);
++        let Some(card) = self.side_question_card.as_mut() else {
++            return;
++        };
++        if !waits {
++            self.side_question_card = None;
++            cx.notify();
++            return;
++        }
++        if card.leaving.is_some() {
++            return;
++        }
++        card.leaving = Some(cx.spawn(async move |this, cx| {
++            cx.background_executor().timer(CARD_FADE_OUT).await;
++            this.update(cx, |this, cx| {
++                this.side_question_card = None;
++                cx.notify();
++            })
++            .ok();
++        }));
++        cx.notify();
++    }
++
++    /// Whether the card is fading out after Close.
++    #[cfg(test)]
++    pub(super) fn side_question_card_is_leaving(&self) -> bool {
++        self.side_question_card
++            .as_ref()
++            .is_some_and(|card| card.leaving.is_some())
++    }
++
+     pub(super) fn render_side_question_card(
+         &self,
+         window: &mut Window,
+@@ -234,8 +272,7 @@ impl ThreadView {
+                             .aria_label(t!("agent-btw-dismiss.aria"))
+                             .tooltip(Tooltip::text(t!("agent-btw-dismiss")))
+                             .on_click(cx.listener(|this, _, _, cx| {
+-                                this.side_question_card = None;
+-                                cx.notify();
++                                this.dismiss_side_question(cx);
+                             })),
+                     ),
+             );
+@@ -313,7 +350,11 @@ impl ThreadView {
+             .child(body)
+             .children(footer);
+         // The composer's column (§6.30), as the context card beside it.
+-        Some(content_column(card, cx).fade_in("side-question-card-fade", cx))
++        let leaving = self
++            .side_question_card
++            .as_ref()
++            .is_some_and(|card| card.leaving.is_some());
++        Some(content_column(card, cx).fade("side-question-card-fade", leaving, cx))
+     }
+ }
+ 
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/tests/card_fade_out_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/tests/card_fade_out_tests.rs
+new file mode 100644
+index 0000000..6fd04a9
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/tests/card_fade_out_tests.rs
+@@ -0,0 +1,107 @@
++//! Zeo: the `/btw` card fades out when closed, and only then goes (proposal §6.52, patch 0204);
++//! under reduce motion it goes at once, as before. Filter: `card_fade_out_tests`.
++//!
++//! The card is opened with the bare `/btw` usage note, which asks the agent nothing, so the
++//! stub connection needs no side-question support.
++//!
++//! Resolves to `crates/agent_ui/src/conversation_view/thread_view/tests/card_fade_out_tests.rs`.
++
++use std::time::Duration;
++
++use gpui::VisualTestContext;
++
++use super::super::side_question_card::SideQuestionInvocation;
++use super::elicitation_decline_harness::*;
++use crate::card_fade::CARD_FADE_OUT;
++
++fn open_card(view: &gpui::Entity<super::super::ThreadView>, cx: &mut VisualTestContext) {
++    view.update(cx, |view, cx| {
++        view.show_side_question(SideQuestionInvocation::Usage, cx)
++    });
++    draw(cx);
++}
++
++fn close_card(view: &gpui::Entity<super::super::ThreadView>, cx: &mut VisualTestContext) {
++    view.update(cx, |view, cx| view.dismiss_side_question(cx));
++    draw(cx);
++}
++
++fn card_is_open(view: &gpui::Entity<super::super::ThreadView>, cx: &VisualTestContext) -> bool {
++    view.read_with(cx, |view, _| view.side_question_card.is_some())
++}
++
++fn card_is_leaving(view: &gpui::Entity<super::super::ThreadView>, cx: &VisualTestContext) -> bool {
++    view.read_with(cx, |view, _| view.side_question_card_is_leaving())
++}
++
++fn past_the_fade(cx: &mut VisualTestContext) {
++    cx.executor()
++        .advance_clock(CARD_FADE_OUT + Duration::from_millis(50));
++    draw(cx);
++}
++
++#[gpui::test]
++async fn a_closed_card_stays_while_it_fades_then_goes(cx: &mut gpui::TestAppContext) {
++    let (view, _thread, mut cx) = setup(cx).await;
++    open_card(&view, &mut cx);
++    assert!(card_is_open(&view, &cx), "fixture: the usage card is up");
++
++    close_card(&view, &mut cx);
++    assert!(
++        card_is_open(&view, &cx) && card_is_leaving(&view, &cx),
++        "right after Close the card is still drawn, fading out"
++    );
++    assert!(
++        cx.debug_bounds("side-question-card").is_some(),
++        "the leaving card is painted"
++    );
++
++    past_the_fade(&mut cx);
++    assert!(!card_is_open(&view, &cx), "the fade over, the card is gone");
++}
++
++#[gpui::test]
++async fn reduce_motion_closes_at_once(cx: &mut gpui::TestAppContext) {
++    let (view, _thread, mut cx) = setup(cx).await;
++    cx.update(|_, cx| cx.set_reduce_motion(true));
++    open_card(&view, &mut cx);
++
++    close_card(&view, &mut cx);
++    assert!(!card_is_open(&view, &cx), "no fade: Close removes the card");
++}
++
++#[gpui::test]
++async fn a_second_close_while_fading_changes_nothing(cx: &mut gpui::TestAppContext) {
++    let (view, _thread, mut cx) = setup(cx).await;
++    open_card(&view, &mut cx);
++    close_card(&view, &mut cx);
++    cx.executor().advance_clock(CARD_FADE_OUT / 2);
++    close_card(&view, &mut cx);
++
++    // Had the second Close restarted the clock, the card would still be here.
++    cx.executor()
++        .advance_clock(CARD_FADE_OUT / 2 + Duration::from_millis(20));
++    draw(&mut cx);
++    assert!(
++        !card_is_open(&view, &cx),
++        "the first Close's fade decides when the card goes"
++    );
++}
++
++#[gpui::test]
++async fn a_new_question_replaces_a_leaving_card_and_stays(cx: &mut gpui::TestAppContext) {
++    let (view, _thread, mut cx) = setup(cx).await;
++    open_card(&view, &mut cx);
++    close_card(&view, &mut cx);
++    open_card(&view, &mut cx);
++    assert!(
++        card_is_open(&view, &cx) && !card_is_leaving(&view, &cx),
++        "the new card is not leaving"
++    );
++
++    past_the_fade(&mut cx);
++    assert!(
++        card_is_open(&view, &cx),
++        "the old card's fade went with it and did not close the new one"
++    );
++}
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index f805a1a..64eeb3d 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -11,7 +11,7 @@
+ //! threads and receiving their events in every state — and so keeps emitting
+ //! `TaskActivity`, which feeds the task history (story 014, patch `0035`).
+ 
+-use crate::card_fade::FadeIn as _;
++use crate::card_fade::{CARD_FADE_OUT, CardFade as _, close_waits_for_fade};
+ use std::{
+     cmp::Reverse,
+     path::PathBuf,
+@@ -471,6 +471,13 @@ pub struct TasksCard {
+     /// proposal §5.2). Card only: the Agent Tasks panel keeps the record. A row that turns
+     /// Running again is shown again, since the filter only hides `Unknown`.
+     dismissed_unknown: HashSet<TaskKey>,
++    /// Rows dismissed or cleared that are still drawn while they fade out (§6.52, 0204); a
++    /// detached timer runs the dismissal itself when the fade ends. A row stays a row meanwhile
++    /// -- it is counted, ordered and can still change status -- so nothing about it is copied.
++    leaving_rows: HashSet<TaskKey>,
++    /// Set on each render: every row on show is leaving, so the whole card fades out with them
++    /// and its rows do not fade a second time inside it.
++    card_leaving: bool,
+     /// The list's scroll position, so its scrollbar can be drawn always visible (§5.2):
+     /// `Scrollbars::new` hides the thumb a second after the pointer enters.
+     list_scroll: ScrollHandle,
+@@ -581,13 +588,45 @@ impl TasksCard {
+             native_statuses: HashMap::default(),
+             native_subscriptions: HashMap::default(),
+             dismissed_unknown: HashSet::default(),
++            leaving_rows: HashSet::default(),
++            card_leaving: false,
+             list_scroll: ScrollHandle::new(),
+         }
+     }
+ 
+     /// Removes one row from the card (§5.2): an ended row leaves before its linger runs out,
+     /// an `Unknown` row is hidden while it stays `Unknown`. Running rows have Stop instead.
++    /// The row fades out first (0204), unless the platform asks for reduced motion.
+     pub fn dismiss_row(&mut self, key: TaskKey, status: TaskRowStatus, cx: &mut Context<Self>) {
++        if !(status.is_terminal() || status == TaskRowStatus::Unknown) {
++            return;
++        }
++        if !close_waits_for_fade(cx) {
++            self.dismiss_row_now(key, status, cx);
++            return;
++        }
++        if !self.leaving_rows.insert(key.clone()) {
++            return;
++        }
++        cx.spawn(async move |card, cx| {
++            cx.background_executor().timer(CARD_FADE_OUT).await;
++            card.update(cx, |card, cx| {
++                card.leaving_rows.remove(&key);
++                card.dismiss_row_now(key, status, cx);
++            })
++            .ok();
++        })
++        .detach();
++        cx.notify();
++    }
++
++    /// Whether `key`'s row is fading out after a dismissal or "Clear finished".
++    #[cfg(test)]
++    pub(crate) fn row_is_leaving(&self, key: &TaskKey) -> bool {
++        self.leaving_rows.contains(key)
++    }
++
++    fn dismiss_row_now(&mut self, key: TaskKey, status: TaskRowStatus, cx: &mut Context<Self>) {
+         if status.is_terminal() {
+             self.ended.remove(&key);
+         } else if status == TaskRowStatus::Unknown {
+@@ -599,8 +638,45 @@ impl TasksCard {
+     }
+ 
+     /// "Clear finished" (§5.2): every ended row leaves, and every `Unknown` row on show is
+-    /// hidden. Running and waiting rows stay.
++    /// hidden. Running and waiting rows stay. Those rows fade out first (0204), unless the
++    /// platform asks for reduced motion; a row that ends during the fade goes with them.
+     pub fn clear_finished(&mut self, cx: &mut Context<Self>) {
++        if !close_waits_for_fade(cx) {
++            self.clear_finished_now(cx);
++            return;
++        }
++        let leaving: Vec<TaskKey> = self
++            .rows(cx)
++            .into_iter()
++            .flat_map(|group| {
++                let session_id = group.session_id;
++                group
++                    .rows
++                    .into_iter()
++                    .filter(|row| row.status.is_terminal() || row.status == TaskRowStatus::Unknown)
++                    .map(move |row| (session_id.clone(), row.task.id))
++            })
++            .filter(|key| !self.leaving_rows.contains(key))
++            .collect();
++        if leaving.is_empty() {
++            return;
++        }
++        self.leaving_rows.extend(leaving.iter().cloned());
++        cx.spawn(async move |card, cx| {
++            cx.background_executor().timer(CARD_FADE_OUT).await;
++            card.update(cx, |card, cx| {
++                for key in &leaving {
++                    card.leaving_rows.remove(key);
++                }
++                card.clear_finished_now(cx);
++            })
++            .ok();
++        })
++        .detach();
++        cx.notify();
++    }
++
++    fn clear_finished_now(&mut self, cx: &mut Context<Self>) {
+         let unknown: Vec<TaskKey> = self
+             .rows(cx)
+             .into_iter()
+@@ -2174,6 +2250,13 @@ impl Render for TasksCard {
+         if !AgentSettings::get_global(cx).tasks_card.enabled || groups.is_empty() {
+             return gpui::Empty.into_any_element();
+         }
++        self.card_leaving = groups.iter().all(|group| {
++            group.sub_threads.is_empty()
++                && group.rows.iter().all(|row| {
++                    self.leaving_rows
++                        .contains(&(group.session_id.clone(), row.task.id.clone()))
++                })
++        });
+         if self.is_docked_bottom() {
+             return self.render_bottom_bar(running_count(&groups), item_count(&groups), cx);
+         }
+@@ -2248,7 +2331,7 @@ impl TasksCard {
+                             ),
+                     ),
+             )
+-            .fade_in("tasks-card-fade-bar", cx)
++            .fade("tasks-card-fade-bar", self.card_leaving, cx)
+     }
+ 
+     /// The minimized card. It spins and counts what runs while something runs; with nothing
+@@ -2320,7 +2403,7 @@ impl TasksCard {
+                         card.toggle_minimized_keeping_focus(window, cx)
+                     })),
+             )
+-            .fade_in("tasks-card-fade-pill", cx)
++            .fade("tasks-card-fade-pill", self.card_leaving, cx)
+     }
+ 
+     fn render_expanded(
+@@ -2466,7 +2549,7 @@ impl TasksCard {
+             .shadow_md()
+             .child(header)
+             .child(list)
+-            .fade_in("tasks-card-fade-expanded", cx)
++            .fade("tasks-card-fade-expanded", self.card_leaving, cx)
+     }
+ 
+     fn render_group(
+@@ -2533,10 +2616,19 @@ impl TasksCard {
+             .py_1()
+             .gap_0p5()
+             .child(header)
+-            .children(
+-                rows.into_iter()
+-                    .map(|row| self.render_row(&session_id, row, now, cx)),
+-            )
++            .children(rows.into_iter().map(|row| {
++                let key: TaskKey = (session_id.clone(), row.task.id.clone());
++                let element = self.render_row(&session_id, row, now, cx);
++                // A leaving row fades on its own unless the whole card is fading out with it.
++                if self.leaving_rows.contains(&key) && !self.card_leaving {
++                    div().w_full().child(element).fade_out(
++                        SharedString::from(format!("tasks-card-row-out-{}-{}", key.0.0, key.1)),
++                        cx,
++                    )
++                } else {
++                    element
++                }
++            }))
+             .children(
+                 sub_threads
+                     .into_iter()
+diff --git a/crates/agent_ui/src/tasks_card/dismiss_tests.rs b/crates/agent_ui/src/tasks_card/dismiss_tests.rs
+index 7097c7c..58678fa 100644
+--- a/crates/agent_ui/src/tasks_card/dismiss_tests.rs
++++ b/crates/agent_ui/src/tasks_card/dismiss_tests.rs
+@@ -6,10 +6,20 @@
+ // native-subagent fixture), and the always-visible scrollbar, which only an Xvfb capture
+ // proves (GPUI tests do not see auto-hide).
+ 
++use std::time::Duration;
++
+ use super::TaskRowStatus;
+ use super::test_helpers::*;
++use crate::card_fade::CARD_FADE_OUT;
+ use gpui::TestAppContext;
+ 
++/// Past a dismissal's fade-out (0204), when the row is really gone.
++fn past_the_fade(cx: &mut gpui::VisualTestContext) {
++    cx.executor()
++        .advance_clock(CARD_FADE_OUT + Duration::from_millis(50));
++    cx.run_until_parked();
++}
++
+ #[gpui::test]
+ async fn an_ended_row_dismissed_leaves_before_its_linger(cx: &mut TestAppContext) {
+     let (panel, mut cx) = setup_card_panel(cx).await;
+@@ -30,14 +40,49 @@ async fn an_ended_row_dismissed_leaves_before_its_linger(cx: &mut TestAppContext
+     let row = find_row(&card, &session, "t1", &mut cx).expect("fixture: the ended row lingers");
+     assert!(row.status.is_terminal(), "fixture: the row has ended");
+ 
++    let key = (session.clone(), row.task.id.clone());
+     card.update(&mut cx, |card, cx| {
+-        card.dismiss_row((session.clone(), row.task.id.clone()), row.status, cx)
++        card.dismiss_row(key.clone(), row.status, cx)
+     });
++    assert!(
++        find_row(&card, &session, "t1", &mut cx).is_some()
++            && card.read_with(&cx, |card, _| card.row_is_leaving(&key)),
++        "0204: the dismissed row is still drawn while it fades out"
++    );
+ 
++    past_the_fade(&mut cx);
+     assert!(find_row(&card, &session, "t1", &mut cx).is_none());
+     assert!(!visible(&card, &mut cx), "nothing left: the card hides");
+ }
+ 
++/// Under reduce motion a dismissal is instant, as it was before 0204.
++#[gpui::test]
++async fn reduce_motion_dismisses_at_once(cx: &mut TestAppContext) {
++    let (panel, mut cx) = setup_card_panel(cx).await;
++    cx.update(|_, cx| cx.set_reduce_motion(true));
++    let connection = TaskActionsConnection::new();
++    let thread = open_titled_thread(&panel, &connection, "Thread", &mut cx);
++    send_tasks(
++        &thread,
++        vec![wire_task("t1", "running", true, 1_000)],
++        &mut cx,
++    );
++    send_tasks(
++        &thread,
++        vec![wire_task("t1", "completed", true, 1_000)],
++        &mut cx,
++    );
++    let card = card(&panel, &cx);
++    let session = session_of(&thread, &cx);
++    let row = find_row(&card, &session, "t1", &mut cx).expect("fixture: the ended row lingers");
++
++    card.update(&mut cx, |card, cx| {
++        card.dismiss_row((session.clone(), row.task.id.clone()), row.status, cx)
++    });
++
++    assert!(find_row(&card, &session, "t1", &mut cx).is_none());
++}
++
+ #[gpui::test]
+ async fn a_running_row_cannot_be_dismissed(cx: &mut TestAppContext) {
+     let (panel, mut cx) = setup_card_panel(cx).await;
+@@ -92,7 +137,19 @@ async fn clear_finished_removes_ended_rows_and_keeps_running_ones(cx: &mut TestA
+     );
+ 
+     card.update(&mut cx, |card, cx| card.clear_finished(cx));
++    assert_eq!(
++        row_ids(&rows_of(&card, &session, &mut cx)),
++        vec!["done".to_string(), "live".to_string()],
++        "0204: the cleared row is still drawn while it fades out"
++    );
++    let done = (session.clone(), "done".to_string().into());
++    let live = (session.clone(), "live".to_string().into());
++    card.read_with(&cx, |card, _| {
++        assert!(card.row_is_leaving(&done), "the ended row fades out");
++        assert!(!card.row_is_leaving(&live), "the running row does not");
++    });
+ 
++    past_the_fade(&mut cx);
+     assert_eq!(
+         row_ids(&rows_of(&card, &session, &mut cx)),
+         vec!["live".to_string()]
+diff --git a/crates/agent_ui/src/tasks_card/native_subagent_tests.rs b/crates/agent_ui/src/tasks_card/native_subagent_tests.rs
+index 563c86d..f1222c0 100644
+--- a/crates/agent_ui/src/tasks_card/native_subagent_tests.rs
++++ b/crates/agent_ui/src/tasks_card/native_subagent_tests.rs
+@@ -380,6 +380,10 @@ async fn test_dismissing_the_last_unknown_row_hides_the_card(cx: &mut TestAppCon
+     card.update(&mut rig.cx, |card, cx| {
+         card.dismiss_row(key, row.status, cx)
+     });
++    // Past the row's fade-out (0204).
++    rig.cx
++        .executor()
++        .advance_clock(crate::card_fade::CARD_FADE_OUT + std::time::Duration::from_millis(50));
+     rig.cx.run_until_parked();
+ 
+     assert!(rig.row_of(&alpha).is_none(), "the row left");
+-- 
+2.56.1
+

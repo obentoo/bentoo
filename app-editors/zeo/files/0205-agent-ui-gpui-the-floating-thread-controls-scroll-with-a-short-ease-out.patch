@@ -1,0 +1,509 @@
+From 5fdff1bf7a8c6a5d11b324b40b8023a49d8dbc54 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Thu, 26 Nov 2026 16:07:42 -0300
+Subject: [PATCH] agent_ui, gpui: the floating thread controls scroll with a
+ short ease-out
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next §6.52, second step (operator, 2026-11-26). The floating controls' four jumps --
+previous and next user message, top, end -- move the list over 200 ms with an ease-out, one
+step per frame, instead of cutting to the target, and end on the same `scroll_to` (or
+`scroll_to_end`) they used before: where the view lands is unchanged, only the way there is
+seen.
+
+gpui: ListState gains `pixel_offset_of(ListOffset)`, `scroll_top_pixel_offset()` and
+`scroll_to_pixel_offset(Pixels)`, the "pixel offset of an item" the proposal said this needs.
+They read and set the scroll top by the heights measured so far. `scroll_to_pixel_offset`
+calls no scroll handler, so the thread's handler, which already runs on every wheel event,
+tells the user's scrolling from the program's and ends the animation where it stands.
+
+Why a jump starts one viewport short: the thread list measures only around the viewport
+(2048 px of overdraw, no measure_all), so pixel offsets far away are guesses and sliding
+through unmeasured rows would lay them out frame after frame. A jump longer than a viewport
+therefore begins a viewport before its target, on the side it comes from, inside measured
+rows; ending on `scroll_to` absorbs whatever the guesses were off by.
+
+Where it does not animate: under reduce_motion; to the end while the agent writes (following
+the tail is a scroll of its own, and two would fight); and every other `scroll_to` in the
+thread -- sending, restoring a position, opening at a task -- which nobody asked to watch.
+Dragging the scrollbar ends the animation too (the drag calls no handler, so `render` checks).
+
+Tests: gpui list `test_pixel_offsets_and_scrolling_to_one` (offsets on 20 px rows, clamped at
+the top, no handler call); agent_ui thread_view::scroll_animation::tests (start one viewport
+short either way, short jumps start in place, reduce motion and a written tail do not animate,
+frame steps move forward and land exactly on scroll_to, nothing to do when already there).
+Not covered by a test: the wheel ending the animation inside a thread view.
+---
+ .../src/conversation_view/thread_view.rs      |  67 +++++++++-
+ .../thread_view/scroll_animation.rs           | 107 ++++++++++++++++
+ .../thread_view/scroll_animation_tests.rs     | 115 ++++++++++++++++++
+ crates/gpui/src/elements/list.rs              |  67 ++++++++++
+ 4 files changed, 352 insertions(+), 4 deletions(-)
+ create mode 100644 crates/agent_ui/src/conversation_view/thread_view/scroll_animation.rs
+ create mode 100644 crates/agent_ui/src/conversation_view/thread_view/scroll_animation_tests.rs
+
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 00c66af..a8ced5d 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -593,6 +593,7 @@ mod context_usage_report;
+ mod pinned_message;
+ mod queue_side_question;
+ mod queue_steering;
++pub(crate) mod scroll_animation;
+ mod session_digest;
+ mod session_summary;
+ mod side_question_card;
+@@ -827,6 +828,9 @@ pub struct ThreadView {
+     /// The entry count when auto-scroll was paused (Zeo next proposal §5.8), or `None` while
+     /// the view follows the tail. Per thread: each thread view holds its own.
+     pub(crate) auto_scroll_paused_at: Option<usize>,
++    /// A floating control's scroll in progress (§6.52, 0205), stepped once per frame in
++    /// `render` and dropped by a wheel event.
++    scroll_animation: Option<scroll_animation::ScrollAnimation>,
+     /// The pinned user message shown whole, by entry index (Zeo next §6.3); any other pinned
+     /// message shows minimized.
+     pinned_message_expanded: Option<usize>,
+@@ -1433,6 +1437,7 @@ impl ThreadView {
+             pending_sandbox_status_key: None,
+             multi_root_callout_dismissed: false,
+             generating_indicator_in_list: false,
++            scroll_animation: None,
+             skill_loading_issues: Vec::new(),
+             dismissed_skill_loading_issues: HashSet::default(),
+             thread_search_bar: None,
+@@ -1456,6 +1461,8 @@ impl ThreadView {
+                 cx.defer(move |cx| {
+                     let scroll_top = list_state.logical_scroll_top();
+                     let _ = thread_view.update(cx, |this, cx| {
++                        // The user scrolled: an animated scroll ends where it stands (0205).
++                        this.scroll_animation = None;
+                         if let Some(thread) = this.as_native_thread(cx) {
+                             thread.update(cx, |thread, _cx| {
+                                 thread.set_ui_scroll_position(Some(scroll_top));
+@@ -9661,7 +9668,9 @@ impl ThreadView {
+                 .disabled(previous_user_message.is_none())
+                 .tooltip(Tooltip::text("Scroll to Previous User Message"))
+                 .on_click(cx.listener(move |this, _, _, cx| {
+-                    if let Some(ix) = previous_user_message {
++                    if let Some(ix) = previous_user_message
++                        && !this.start_scroll_animation(Self::message_target(ix), cx)
++                    {
+                         this.scroll_to_user_message_index(Some(ix), cx);
+                     }
+                 })),
+@@ -9676,7 +9685,9 @@ impl ThreadView {
+                 .disabled(next_user_message.is_none())
+                 .tooltip(Tooltip::text("Scroll to Next User Message"))
+                 .on_click(cx.listener(move |this, _, _, cx| {
+-                    if let Some(ix) = next_user_message {
++                    if let Some(ix) = next_user_message
++                        && !this.start_scroll_animation(Self::message_target(ix), cx)
++                    {
+                         this.scroll_to_user_message_index(Some(ix), cx);
+                     }
+                 })),
+@@ -9687,7 +9698,10 @@ impl ThreadView {
+                     .icon_color(Color::Muted)
+                     .tooltip(Tooltip::text("Scroll to Top"))
+                     .on_click(cx.listener(|this, _, _, cx| {
+-                        this.scroll_to_top(cx);
++                        let top = scroll_animation::ScrollTarget::Offset(ListOffset::default());
++                        if !this.start_scroll_animation(top, cx) {
++                            this.scroll_to_top(cx);
++                        }
+                     })),
+             )
+             .child(
+@@ -9696,7 +9710,9 @@ impl ThreadView {
+                     .icon_color(Color::Muted)
+                     .tooltip(Tooltip::text("Scroll to Bottom"))
+                     .on_click(cx.listener(|this, _, _, cx| {
+-                        this.scroll_to_end(cx);
++                        if !this.start_scroll_animation(scroll_animation::ScrollTarget::End, cx) {
++                            this.scroll_to_end(cx);
++                        }
+                     })),
+             );
+         // At the right edge of the entries' column, not of the panel (§6.30): on a wide panel
+@@ -10140,6 +10156,37 @@ impl ThreadView {
+         cx.notify();
+     }
+ 
++    /// Where `scroll_to_user_message_index(Some(ix))` puts the list: the message's top.
++    fn message_target(ix: usize) -> scroll_animation::ScrollTarget {
++        scroll_animation::ScrollTarget::Offset(ListOffset {
++            item_ix: ix,
++            offset_in_item: px(0.),
++        })
++    }
++
++    /// Starts a floating control's jump as an animation (§6.52, 0205), unless reduced motion
++    /// asks otherwise, the target is the end while the agent writes, or there is less than a
++    /// pixel to go. `false` when it did not start: the caller jumps as it did before 0205, and
++    /// the animation, once it lands, puts the list exactly where that jump would.
++    fn start_scroll_animation(
++        &mut self,
++        target: scroll_animation::ScrollTarget,
++        cx: &mut Context<Self>,
++    ) -> bool {
++        self.scroll_animation = None;
++        let generating = self.is_last_turn_in_progress(cx);
++        let now = cx.background_executor().now();
++        if scroll_animation::animates(target, cx.reduce_motion(), generating) {
++            self.scroll_animation =
++                scroll_animation::ScrollAnimation::start(&self.list_state, target, now);
++        }
++        let started = self.scroll_animation.is_some();
++        if started {
++            cx.notify();
++        }
++        started
++    }
++
+     pub(crate) fn scroll_to_entry(&mut self, entry_ix: usize, cx: &mut Context<Self>) {
+         self.list_state.scroll_to(ListOffset {
+             item_ix: entry_ix,
+@@ -15954,6 +16001,18 @@ impl SlashCommandButton {
+ 
+ impl Render for ThreadView {
+     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++        // A floating control's scroll (0205): one step per frame until it lands. Dragging the
++        // scrollbar ends it, as the wheel does through the scroll handler.
++        if self.list_state.is_scrollbar_dragging() {
++            self.scroll_animation = None;
++        }
++        if let Some(animation) = &self.scroll_animation {
++            if animation.step(&self.list_state, cx.background_executor().now()) {
++                window.request_animation_frame();
++            } else {
++                self.scroll_animation = None;
++            }
++        }
+         // Keep the message editor's local slash commands in sync with the
+         // current availability of feedback/sharing, which can change between
+         // renders (settings, connection state, feature flags).
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/scroll_animation.rs b/crates/agent_ui/src/conversation_view/thread_view/scroll_animation.rs
+new file mode 100644
+index 0000000..e6e496e
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/scroll_animation.rs
+@@ -0,0 +1,107 @@
++//! The floating thread controls scroll with a short ease-out instead of jumping (Zeo next
++//! §6.52, second step; operator, 2026-11-26).
++//!
++//! A jump to a message, the top or the end moves the list's top over [`SCROLL_ANIMATION`],
++//! one step per frame, from where it is to where `scroll_to` would put it, and ends on that
++//! very `scroll_to` -- so where it lands is exactly where the jump landed before, whatever the
++//! pixel steps on the way were. The steps are pixels by the heights GPUI has measured
++//! (`ListState::pixel_offset_of`, zed-patches 0205), and the list measures only around the
++//! viewport (2048 px of overdraw), so a jump longer than a viewport starts one viewport short of
++//! its target, inside measured items, instead of sliding through rows it would have to lay out
++//! on every frame.
++//!
++//! It is the floating controls' four buttons only: every other `scroll_to` (sending, restoring a
++//! position, opening at a task) stays instant, since nobody asked to watch those move. No
++//! animation under reduce motion, and none to the end while the agent is writing -- following
++//! the tail is a scroll of its own, and two would fight. A wheel event ends the animation where
++//! it stands: the thread's scroll handler hears only the user, since `scroll_to_pixel_offset`
++//! calls no handler.
++
++use std::time::{Duration, Instant};
++
++use gpui::{ListOffset, ListState, Pixels, ease_out_quint, px};
++
++/// Long enough to see where the view went, short enough not to wait for it.
++pub(crate) const SCROLL_ANIMATION: Duration = Duration::from_millis(200);
++
++/// Where a floating control scrolls to.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub(crate) enum ScrollTarget {
++    Offset(ListOffset),
++    End,
++}
++
++/// Whether a jump to `target` is animated: not under reduce motion, and not to the end while
++/// the agent is writing.
++pub(crate) fn animates(target: ScrollTarget, reduce_motion: bool, generating: bool) -> bool {
++    !reduce_motion && !(target == ScrollTarget::End && generating)
++}
++
++/// Where the animation starts: where the list is, unless the target is more than a viewport
++/// away, then one viewport short of it, on the side the list is coming from.
++pub(crate) fn start_from(current: Pixels, to: Pixels, viewport: Pixels) -> Pixels {
++    if to - current > viewport {
++        (to - viewport).max(px(0.))
++    } else if current - to > viewport {
++        to + viewport
++    } else {
++        current
++    }
++}
++
++/// A scroll in progress.
++pub(crate) struct ScrollAnimation {
++    from: Pixels,
++    to: Pixels,
++    target: ScrollTarget,
++    started: Instant,
++}
++
++impl ScrollAnimation {
++    /// The animation from where `list` is to `target`, or `None` when there is less than a
++    /// pixel to go -- the caller lands at once.
++    pub(crate) fn start(list: &ListState, target: ScrollTarget, now: Instant) -> Option<Self> {
++        let to = match target {
++            ScrollTarget::Offset(offset) => list.pixel_offset_of(offset),
++            ScrollTarget::End => list.max_offset_for_scrollbar().y,
++        };
++        let viewport = list.viewport_bounds().size.height;
++        let from = start_from(list.scroll_top_pixel_offset(), to, viewport);
++        if (to - from).abs() < px(1.) {
++            return None;
++        }
++        list.scroll_to_pixel_offset(from);
++        Some(Self {
++            from,
++            to,
++            target,
++            started: now,
++        })
++    }
++
++    /// Moves `list` to where the animation is at `now`. `false` once it has landed on the
++    /// target, which is then exactly where `scroll_to` puts it.
++    pub(crate) fn step(&self, list: &ListState, now: Instant) -> bool {
++        let elapsed = now.saturating_duration_since(self.started);
++        let progress = elapsed.as_secs_f32() / SCROLL_ANIMATION.as_secs_f32();
++        if progress >= 1. {
++            land(list, self.target);
++            return false;
++        }
++        let eased = ease_out_quint()(progress.clamp(0., 1.));
++        list.scroll_to_pixel_offset(self.from + (self.to - self.from) * eased);
++        true
++    }
++}
++
++/// Puts `list` exactly where a jump to `target` puts it without an animation.
++pub(crate) fn land(list: &ListState, target: ScrollTarget) {
++    match target {
++        ScrollTarget::Offset(offset) => list.scroll_to(offset),
++        ScrollTarget::End => list.scroll_to_end(),
++    }
++}
++
++#[cfg(test)]
++#[path = "scroll_animation_tests.rs"]
++mod tests;
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/scroll_animation_tests.rs b/crates/agent_ui/src/conversation_view/thread_view/scroll_animation_tests.rs
+new file mode 100644
+index 0000000..aba0e40
+--- /dev/null
++++ b/crates/agent_ui/src/conversation_view/thread_view/scroll_animation_tests.rs
+@@ -0,0 +1,115 @@
++//! Zeo next §6.52 (zed-patches 0205): the floating controls' animated scroll. The list is a
++//! plain GPUI list of 20 px rows, so every pixel is known.
++//!
++//! Not covered here: a wheel event ending the animation inside a thread view (the handler
++//! clears it; an Xvfb run is where that is seen), and frame timing.
++
++use std::time::Duration;
++
++use gpui::{
++    AppContext as _, Context, IntoElement, ListAlignment, ListOffset, ListState, Render,
++    Styled as _, TestAppContext, Window, div, list, point, px, size,
++};
++
++use super::*;
++
++struct Rows(ListState);
++
++impl Render for Rows {
++    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++        list(self.0.clone(), |_, _, _| {
++            div().h(px(20.)).w_full().into_any_element()
++        })
++        .w_full()
++        .h_full()
++    }
++}
++
++fn offset(item_ix: usize) -> ListOffset {
++    ListOffset {
++        item_ix,
++        offset_in_item: px(0.),
++    }
++}
++
++#[test]
++fn a_short_jump_starts_where_the_list_is() {
++    assert_eq!(start_from(px(100.), px(150.), px(100.)), px(100.));
++    assert_eq!(start_from(px(150.), px(100.), px(100.)), px(150.));
++}
++
++#[test]
++fn a_long_jump_starts_one_viewport_short_on_the_side_it_comes_from() {
++    assert_eq!(start_from(px(0.), px(800.), px(100.)), px(700.));
++    assert_eq!(start_from(px(800.), px(0.), px(100.)), px(100.));
++}
++
++#[test]
++fn reduce_motion_and_following_the_tail_do_not_animate() {
++    let message = ScrollTarget::Offset(offset(3));
++    assert!(animates(message, false, false));
++    assert!(
++        animates(message, false, true),
++        "a message while writing still animates"
++    );
++    assert!(!animates(message, true, false), "reduce motion");
++    assert!(animates(ScrollTarget::End, false, false));
++    assert!(
++        !animates(ScrollTarget::End, false, true),
++        "the tail is being followed"
++    );
++}
++
++#[gpui::test]
++fn the_animation_moves_frame_by_frame_and_lands_on_scroll_to(cx: &mut TestAppContext) {
++    let cx = cx.add_empty_window();
++    let state = ListState::new(50, ListAlignment::Top, px(2048.));
++    cx.draw(point(px(0.), px(0.)), size(px(100.), px(100.)), |_, cx| {
++        cx.new(|_| Rows(state.clone())).into_any_element()
++    });
++    let start = std::time::Instant::now();
++
++    let animation = ScrollAnimation::start(&state, ScrollTarget::Offset(offset(40)), start)
++        .expect("800 px to go");
++    assert_eq!(
++        state.scroll_top_pixel_offset(),
++        px(700.),
++        "a jump of 800 px starts one 100 px viewport short"
++    );
++
++    assert!(animation.step(&state, start + SCROLL_ANIMATION / 4));
++    let early = state.scroll_top_pixel_offset();
++    assert!(
++        early > px(700.) && early < px(800.),
++        "on its way: {early:?}"
++    );
++    assert!(animation.step(&state, start + SCROLL_ANIMATION / 2));
++    assert!(
++        state.scroll_top_pixel_offset() >= early,
++        "it never moves back"
++    );
++
++    assert!(!animation.step(&state, start + SCROLL_ANIMATION + Duration::from_millis(1)));
++    assert_eq!(
++        state.logical_scroll_top(),
++        offset(40),
++        "it lands exactly where scroll_to puts it"
++    );
++}
++
++#[gpui::test]
++fn nothing_to_animate_when_already_there(cx: &mut TestAppContext) {
++    let cx = cx.add_empty_window();
++    let state = ListState::new(50, ListAlignment::Top, px(2048.));
++    cx.draw(point(px(0.), px(0.)), size(px(100.), px(100.)), |_, cx| {
++        cx.new(|_| Rows(state.clone())).into_any_element()
++    });
++    assert!(
++        ScrollAnimation::start(
++            &state,
++            ScrollTarget::Offset(offset(0)),
++            std::time::Instant::now()
++        )
++        .is_none()
++    );
++}
+diff --git a/crates/gpui/src/elements/list.rs b/crates/gpui/src/elements/list.rs
+index eecfd76..cc181d7 100644
+--- a/crates/gpui/src/elements/list.rs
++++ b/crates/gpui/src/elements/list.rs
+@@ -675,6 +675,40 @@ impl ListState {
+         state.set_scroll_anchor(Some(scroll_top));
+     }
+ 
++    /// The distance of `offset` from the top of the list, by the heights measured so far: an
++    /// item not measured yet counts as its size hint, or nothing. What an animated scroll
++    /// interpolates between (Zeo, zed-patches 0205); exact only where the items are measured,
++    /// which is why such a scroll ends on [`Self::scroll_to`] rather than on a pixel value.
++    pub fn pixel_offset_of(&self, offset: ListOffset) -> Pixels {
++        self.0.borrow().scroll_top(&offset)
++    }
++
++    /// The current [`Self::logical_scroll_top`] as a distance from the top of the list.
++    pub fn scroll_top_pixel_offset(&self) -> Pixels {
++        let state = self.0.borrow();
++        state.scroll_top(&state.logical_scroll_top())
++    }
++
++    /// Scroll so the top of the viewport sits `pixels` from the top of the list, by the
++    /// heights measured so far, clamped at the top. Like [`Self::scroll_to`], it stops
++    /// following the tail; unlike a wheel event, it calls no scroll handler, so a handler can
++    /// tell the user's scrolling from the program's (Zeo, zed-patches 0205).
++    pub fn scroll_to_pixel_offset(&self, pixels: Pixels) {
++        let state = &mut *self.0.borrow_mut();
++        let (start, ..) =
++            state
++                .items
++                .find::<ListItemSummary, _>((), &Height(pixels.max(px(0.))), Bias::Right);
++        let scroll_top = ListOffset {
++            item_ix: start.count,
++            offset_in_item: pixels.max(px(0.)) - start.height,
++        };
++        if scroll_top.item_ix < state.items.summary().count {
++            state.follow_state.stop_following();
++        }
++        state.set_scroll_anchor(Some(scroll_top));
++    }
++
+     /// Scroll the list to the given item, such that the item is fully visible.
+     pub fn scroll_to_reveal_item(&self, ix: usize) {
+         let state = &mut *self.0.borrow_mut();
+@@ -3871,6 +3905,39 @@ mod test {
+         }
+     }
+ 
++    /// Zeo (zed-patches 0205): the pixel offset of a list position, and scrolling to one, as an
++    /// animated scroll uses them -- with no scroll handler called, so a handler hears only the
++    /// user.
++    #[gpui::test]
++    fn test_pixel_offsets_and_scrolling_to_one(cx: &mut TestAppContext) {
++        let cx = cx.add_empty_window();
++        let state = ListState::new(10, crate::ListAlignment::Top, px(10.));
++        let handled = std::rc::Rc::new(std::cell::Cell::new(0));
++        state.set_scroll_handler({
++            let handled = handled.clone();
++            move |_, _, _| handled.set(handled.get() + 1)
++        });
++        cx.draw(point(px(0.), px(0.)), size(px(100.), px(60.)), |_, cx| {
++            cx.new(|_| TestListView(state.clone())).into_any_element()
++        });
++
++        // Twenty-pixel items: item 3 starts at 60.
++        assert_eq!(state.pixel_offset_of(list_offset(3, 5.)), px(65.));
++        assert_eq!(state.scroll_top_pixel_offset(), px(0.));
++
++        state.scroll_to_pixel_offset(px(45.));
++        assert_eq!(state.logical_scroll_top(), list_offset(2, 5.));
++        assert_eq!(state.scroll_top_pixel_offset(), px(45.));
++
++        state.scroll_to_pixel_offset(px(-30.));
++        assert_eq!(state.logical_scroll_top(), list_offset(0, 0.));
++        assert_eq!(
++            handled.get(),
++            0,
++            "no scroll handler for a scroll the program made"
++        );
++    }
++
+     struct TestListView(ListState);
+     impl Render for TestListView {
+         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+-- 
+2.56.1
+

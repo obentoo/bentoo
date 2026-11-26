@@ -2393,6 +2393,10 @@ src_prepare() {
 			# 0193: the agent panel's cards fade in (150 ms, off under reduce_motion); the latency
 			# report measures frames (§6.52 first step).
 			"${FILESDIR}/0193-agent-ui-the-agent-panel-s-cards-fade-in-the-latency-report-measures-fr.patch"
+			# 0204: cards fade out when closed; the floating "N new" label fades in. On 0193.
+			"${FILESDIR}/0204-agent-ui-cards-fade-out-when-closed-the-floating-n-new-label-fades-in.patch"
+			# 0205: the floating controls' jumps scroll with a short ease-out. On 0204.
+			"${FILESDIR}/0205-agent-ui-gpui-the-floating-thread-controls-scroll-with-a-short-ease-out.patch"
 		)
 	fi
 
