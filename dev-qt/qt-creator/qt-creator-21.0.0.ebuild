@@ -3,9 +3,6 @@
 
 EAPI=8
 
-# Mirrored from ::gentoo at the same version, byte-identical apart from this
-# comment: bentoo follows qt-creator 21.0.x with autoupdate, ahead of ::gentoo's
-# bumps. Drop the copy (enabled = false) if it stops getting ahead.
 LLVM_COMPAT=( {20..23} )
 LLVM_OPTIONAL=1
 PYTHON_COMPAT=( python3_{12..15} )
