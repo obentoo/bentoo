@@ -42,6 +42,15 @@ Apache-2.0 OR MIT; rustc-hash 2, smallvec, self_cell, tinystr 0.8,
 thiserror 2 and memchr were already there. UNGROUPED: every screen patch
 that translates its strings depends on it, under whatever USE flag gates
 that screen, so it sits with the unconditional patches, right after 0154.
+
+Changed 2026-11-25 (bump to Zed 6ba65ce3): build.rs lists every
+locales/<language>/*.ftl into $OUT_DIR and catalog.rs includes it as SHIPPED.
+The list used to be kept by hand in catalog.rs, and the screen patches of each
+USE group (0178-0185) appended to the same lines; the Windows release, which
+has no ai-jail, then could not apply 0184 after 0180's entry was missing. A
+screen patch now adds only its .ftl file. scripts/i18n-check.py knows the
+generated list (no file can be unlisted or absent).
+
 ---
 
 diff --git a/Cargo.lock b/Cargo.lock
@@ -332,6 +341,71 @@ index 0000000..bc463f2
 +[dev-dependencies]
 +gpui = { workspace = true, features = ["test-support"] }
 +settings = { workspace = true, features = ["test-support"] }
+diff --git a/crates/zeo_i18n/build.rs b/crates/zeo_i18n/build.rs
+new file mode 100644
+index 0000000..efbca57
+--- /dev/null
++++ b/crates/zeo_i18n/build.rs
+@@ -0,0 +1,59 @@
++//! Lists every `locales/<language>/*.ftl` into `$OUT_DIR/shipped.rs`, which catalog.rs
++//! includes as `SHIPPED`. Each USE group's patch then adds only its own `.ftl` file: a list
++//! kept by hand in catalog.rs had patches of different groups edit the same lines, so a
++//! build without one group (the Windows release has no ai-jail) could not apply the next
++//! (bump to Zed 6ba65ce3, 2026-11-25). Sorted, so the same tree always writes the same file.
++
++use std::{env, fs, path::Path};
++
++fn main() {
++    let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
++    let out_dir = env::var("OUT_DIR").expect("cargo sets OUT_DIR");
++    let locales = Path::new(&manifest_dir).join("locales");
++    println!("cargo:rerun-if-changed={}", locales.display());
++
++    let mut languages: Vec<String> = fs::read_dir(&locales)
++        .expect("zeo_i18n has a locales/ directory")
++        .filter_map(Result::ok)
++        .filter(|entry| entry.path().is_dir())
++        .map(|entry| {
++            entry
++                .file_name()
++                .into_string()
++                .expect("a language directory name is UTF-8")
++        })
++        .collect();
++    languages.sort();
++
++    let mut shipped = String::from("pub static SHIPPED: &[LocaleSource] = &[\n");
++    for language in &languages {
++        let language_dir = locales.join(language);
++        println!("cargo:rerun-if-changed={}", language_dir.display());
++        let mut files: Vec<String> = fs::read_dir(&language_dir)
++            .expect("a language directory is readable")
++            .filter_map(Result::ok)
++            .map(|entry| {
++                entry
++                    .file_name()
++                    .into_string()
++                    .expect("an .ftl file name is UTF-8")
++            })
++            .filter(|name| name.ends_with(".ftl"))
++            .collect();
++        files.sort();
++        shipped.push_str(&format!(
++            "    LocaleSource {{\n        language: {language:?},\n        files: &[\n"
++        ));
++        for file in &files {
++            let relative = format!("{language}/{file}");
++            let absolute = language_dir.join(file);
++            shipped.push_str(&format!(
++                "            ({relative:?}, include_str!({:?})),\n",
++                absolute.display().to_string()
++            ));
++        }
++        shipped.push_str("        ],\n    },\n");
++    }
++    shipped.push_str("];\n");
++    fs::write(Path::new(&out_dir).join("shipped.rs"), shipped).expect("OUT_DIR is writable");
++}
 diff --git a/crates/zeo_i18n/locales/en-US/zeo.ftl b/crates/zeo_i18n/locales/en-US/zeo.ftl
 new file mode 100644
 index 0000000..08275a2
@@ -361,10 +435,10 @@ index 0000000..aeafad1
 +### English. An id missing here falls back to en-US.
 diff --git a/crates/zeo_i18n/src/catalog.rs b/crates/zeo_i18n/src/catalog.rs
 new file mode 100644
-index 0000000..a4c12e3
+index 0000000..67eaaa6
 --- /dev/null
 +++ b/crates/zeo_i18n/src/catalog.rs
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,168 @@
 +//! The loaded translations: one Fluent bundle per language in the negotiated
 +//! chain, always ending in `en-US`, so a message missing from a translation
 +//! falls back to English instead of disappearing.
@@ -393,21 +467,10 @@ index 0000000..a4c12e3
 +    pub files: &'static [(&'static str, &'static str)],
 +}
 +
-+/// What ships. A new `.ftl` file is a new line here: `include_str!` keeps the
-+/// files inside the binary, so no path is resolved at run time and a missing
-+/// file fails the build rather than a launch. `scripts/i18n-check.py` in
-+/// zed-patches reads the same directory and fails when a file it finds is not
-+/// listed here.
-+pub static SHIPPED: &[LocaleSource] = &[
-+    LocaleSource {
-+        language: "en-US",
-+        files: &[("en-US/zeo.ftl", include_str!("../locales/en-US/zeo.ftl"))],
-+    },
-+    LocaleSource {
-+        language: "pt-BR",
-+        files: &[("pt-BR/zeo.ftl", include_str!("../locales/pt-BR/zeo.ftl"))],
-+    },
-+];
++/// What ships: every `locales/<language>/*.ftl`, listed by build.rs into `$OUT_DIR`.
++/// `include_str!` keeps the files inside the binary, so no path is resolved at run time;
++/// a new `.ftl` file ships by being there, and no patch edits this file to add one.
++include!(concat!(env!("OUT_DIR"), "/shipped.rs"));
 +
 +pub struct Catalog {
 +    /// The languages actually in use, best first; the last is always `en-US`.
