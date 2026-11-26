@@ -1,0 +1,530 @@
+From 3220a5bee3fd40fcd553974b8a106155a5c6200d Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Thu, 26 Nov 2026 00:55:30 -0300
+Subject: [PATCH] settings_ui, zeo_i18n: a Language page picks Zeo's interface
+ language
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The ui_language setting (0177) could only be changed in settings.json. A
+Language page now offers it as a picker: System (follow the desktop's
+languages), every language zeo_i18n ships, each named in itself
+("Português (Brasil)", read from that language's own zeo-language-name
+message so a new language brings its name along), and the en-XA
+pseudo-locale. Picking applies at once: zeo_i18n already observes the
+settings store and refreshes every window.
+
+ui_language becomes a UiLanguageName newtype, serde-transparent, so
+settings.json is unchanged and the settings UI can give the type its own
+renderer, the way ThemeName gets the theme picker. Ungrouped, right after
+0177, so it touches only lines every USE combination has; settings_ui
+depends on zeo_i18n here rather than in 0178.
+---
+
+diff --git a/Cargo.lock b/Cargo.lock
+index ac42e7ba..ce1feaa1 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -16811,6 +16811,7 @@ dependencies = [
+  "workspace",
+  "zed_actions",
+  "zed_credentials_provider",
++ "zeo_i18n",
+ ]
+ 
+ [[package]]
+diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
+index 1ff5fe50..89fb2900 100644
+--- a/crates/settings_content/src/settings_content.rs
++++ b/crates/settings_content/src/settings_content.rs
+@@ -294,7 +294,7 @@ pub struct SettingsContent {
+     /// checking layouts. Zed's own strings stay in English.
+     ///
+     /// Default: null
+-    pub ui_language: Option<String>,
++    pub ui_language: Option<UiLanguageName>,
+ 
+     /// The URL of the Zed server to connect to.
+     pub server_url: Option<String>,
+@@ -597,6 +597,13 @@ impl From<Option<String>> for AudioInputDeviceName {
+     }
+ }
+ 
++/// A `ui_language` tag such as "pt-BR". Its own type, not a bare `String`, so the
++/// settings UI can offer the languages Zeo ships instead of a free text field;
++/// `transparent` keeps settings.json exactly as it was.
++#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq, Eq)]
++#[serde(transparent)]
++pub struct UiLanguageName(pub String);
++
+ #[derive(Clone, Default, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq, Eq)]
+ #[serde(transparent)]
+ pub struct AudioInputDeviceName(pub Option<String>);
+diff --git a/crates/settings_ui/Cargo.toml b/crates/settings_ui/Cargo.toml
+index 62865a2a..c4d3902d 100644
+--- a/crates/settings_ui/Cargo.toml
++++ b/crates/settings_ui/Cargo.toml
+@@ -73,6 +73,7 @@ util.workspace = true
+ workspace.workspace = true
+ zed_actions.workspace = true
+ zed_credentials_provider.workspace = true
++zeo_i18n.workspace = true
+ 
+ [dev-dependencies]
+ credentials_provider = { workspace = true, features = ["test-support"] }
+diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_data.rs
+index 2c2e62e5..a62a3d8c 100644
+--- a/crates/settings_ui/src/page_data.rs
++++ b/crates/settings_ui/src/page_data.rs
+@@ -65,6 +65,7 @@ macro_rules! concat_sections {
+ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
+     vec![
+         general_page(cx),
++        language_page(),
+         appearance_page(),
+         keymap_page(),
+         editor_page(),
+@@ -553,6 +554,33 @@ fn general_page(cx: &App) -> SettingsPage {
+     }
+ }
+ 
++/// Zeo's interface language (zed-patches 0194). Its own page rather than a row
++/// under General so the setting is found where people look for it; the picker
++/// is `pages::render_ui_language_picker`, chosen by the field's type.
++fn language_page() -> SettingsPage {
++    SettingsPage {
++        title: "Language",
++        items: vec![
++            SettingsPageItem::SectionHeader("Interface"),
++            SettingsPageItem::SettingItem(SettingItem {
++                title: "Interface Language",
++                description: "The language of Zeo's interface. System follows your desktop's languages; a screen not translated yet stays in English.",
++                field: Box::new(SettingField {
++                    organization_override: None,
++                    json_path: Some("ui_language"),
++                    pick: |settings_content| settings_content.ui_language.as_ref(),
++                    write: |settings_content, value, _| {
++                        settings_content.ui_language = value;
++                    },
++                }),
++                metadata: None,
++                files: USER,
++            }),
++        ]
++        .into(),
++    }
++}
++
+ fn appearance_page() -> SettingsPage {
+     fn theme_section() -> [SettingsPageItem; 3] {
+         [
+diff --git a/crates/settings_ui/src/pages.rs b/crates/settings_ui/src/pages.rs
+index d1634c96..6ebf0084 100644
+--- a/crates/settings_ui/src/pages.rs
++++ b/crates/settings_ui/src/pages.rs
+@@ -9,6 +9,7 @@ mod sandbox_settings;
+ mod skill_creator;
+ mod skills_setup;
+ mod tool_permissions_setup;
++mod ui_language_picker;
+ 
+ pub(crate) use audio_input_output_setup::{
+     render_input_audio_device_dropdown, render_output_audio_device_dropdown,
+@@ -36,6 +37,7 @@ pub(crate) use skills_setup::{DeletedSkill, render_skills_setup_page};
+ #[cfg(test)]
+ pub(crate) use skills_setup::{copy_skill_share_link, trash_skill};
+ pub(crate) use tool_permissions_setup::render_tool_permissions_setup_page;
++pub(crate) use ui_language_picker::render_ui_language_picker;
+ 
+ pub use tool_permissions_setup::{
+     render_copy_path_tool_config, render_create_directory_tool_config,
+diff --git a/crates/settings_ui/src/pages/ui_language_picker.rs b/crates/settings_ui/src/pages/ui_language_picker.rs
+new file mode 100644
+index 00000000..eccc4785
+--- /dev/null
++++ b/crates/settings_ui/src/pages/ui_language_picker.rs
+@@ -0,0 +1,116 @@
++//! The Language page's picker for `ui_language` (zed-patches 0194): System,
++//! then every language zeo_i18n ships, each named in itself, then the
++//! pseudo-locale. Picking applies at once: zeo_i18n observes the settings
++//! store and refreshes every window.
++
++use gpui::{AnyElement, App, ReadGlobal, SharedString, Window};
++use settings::{SettingsStore, UiLanguageName};
++use ui::{ContextMenu, DropdownMenu, DropdownStyle, FluentBuilder, IconPosition, IntoElement};
++use util::ResultExt;
++use zeo_i18n::{PSEUDO_LANGUAGE, t};
++
++use crate::{SettingField, SettingsFieldMetadata, SettingsUiFile, update_settings_file};
++
++/// One entry of the picker: `None` clears the setting (follow the system).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct UiLanguageChoice {
++    pub(crate) tag: Option<String>,
++    pub(crate) label: String,
++}
++
++/// The entries in the order the menu shows them.
++pub(crate) fn ui_language_choices() -> Vec<UiLanguageChoice> {
++    let mut choices = vec![UiLanguageChoice {
++        tag: None,
++        label: t!("settings-ui-language-system"),
++    }];
++    choices.extend(
++        zeo_i18n::shipped_languages()
++            .into_iter()
++            .map(|language| UiLanguageChoice {
++                tag: Some(language.tag.to_string()),
++                label: language.name,
++            }),
++    );
++    choices.push(UiLanguageChoice {
++        tag: Some(PSEUDO_LANGUAGE.to_string()),
++        label: t!("settings-ui-language-pseudo"),
++    });
++    choices
++}
++
++/// Whether `choice` is what settings.json holds. Tags compare without case, as
++/// BCP 47 does; an empty value is the same as none.
++pub(crate) fn ui_language_matches(choice: &UiLanguageChoice, stored: Option<&str>) -> bool {
++    let stored = stored.map(str::trim).filter(|tag| !tag.is_empty());
++    match (choice.tag.as_deref(), stored) {
++        (None, None) => true,
++        (Some(tag), Some(stored)) => tag.eq_ignore_ascii_case(stored),
++        _ => false,
++    }
++}
++
++/// What the trigger shows for the stored value. A tag Zeo does not ship (typed
++/// by hand in settings.json) is shown as written, so the picker never hides
++/// what the file says.
++pub(crate) fn ui_language_label(choices: &[UiLanguageChoice], stored: Option<&str>) -> String {
++    choices
++        .iter()
++        .find(|choice| ui_language_matches(choice, stored))
++        .map(|choice| choice.label.clone())
++        .unwrap_or_else(|| stored.map(str::trim).unwrap_or_default().to_string())
++}
++
++pub(crate) fn render_ui_language_picker(
++    field: SettingField<UiLanguageName>,
++    file: SettingsUiFile,
++    _metadata: Option<&SettingsFieldMetadata>,
++    title: &'static str,
++    description: &'static str,
++    window: &mut Window,
++    cx: &mut App,
++) -> AnyElement {
++    let (_, stored) = SettingsStore::global(cx).get_value_from_file(file.to_settings(), field.pick);
++    let stored: Option<String> = stored.map(|name| name.0.clone());
++    let choices = ui_language_choices();
++    let current = ui_language_label(&choices, stored.as_deref());
++
++    let menu = ContextMenu::build(window, cx, move |mut menu, _, _| {
++        for choice in &choices {
++            let selected = ui_language_matches(choice, stored.as_deref());
++            let tag = choice.tag.clone();
++            let file = file.clone();
++            menu = menu.toggleable_entry(
++                choice.label.clone(),
++                selected,
++                IconPosition::Start,
++                None,
++                move |window, cx| {
++                    let value = tag.clone().map(UiLanguageName);
++                    update_settings_file(
++                        file.clone(),
++                        field.json_path,
++                        window,
++                        cx,
++                        move |settings, app| (field.write)(settings, value, app),
++                    )
++                    .log_err();
++                },
++            );
++        }
++        menu
++    });
++
++    DropdownMenu::new("ui-language-picker", current, menu) // i18n: not text
++        .style(DropdownStyle::Outlined)
++        .full_width(true)
++        .aria_label(SharedString::new_static(title))
++        .when(!description.is_empty(), |this| {
++            this.aria_description(SharedString::new_static(description))
++        })
++        .into_any_element()
++}
++
++#[cfg(test)]
++#[path = "ui_language_picker_tests.rs"]
++mod ui_language_picker_tests;
+diff --git a/crates/settings_ui/src/pages/ui_language_picker_tests.rs b/crates/settings_ui/src/pages/ui_language_picker_tests.rs
+new file mode 100644
+index 00000000..2acc0224
+--- /dev/null
++++ b/crates/settings_ui/src/pages/ui_language_picker_tests.rs
+@@ -0,0 +1,36 @@
++use super::{ui_language_choices, ui_language_label, ui_language_matches};
++
++#[test]
++fn the_picker_offers_system_then_the_shipped_languages_then_the_pseudo_locale() {
++    let choices = ui_language_choices();
++    let tags: Vec<Option<&str>> = choices.iter().map(|c| c.tag.as_deref()).collect();
++    assert_eq!(tags.first(), Some(&None));
++    assert_eq!(tags.get(1), Some(&Some("en-US")));
++    assert!(tags.contains(&Some("pt-BR")));
++    assert_eq!(tags.last(), Some(&Some(zeo_i18n::PSEUDO_LANGUAGE)));
++    // Tests never call zeo_i18n::init, so the catalog answers in English.
++    assert_eq!(choices[0].label, "System");
++}
++
++#[test]
++fn the_trigger_names_what_settings_json_holds() {
++    let choices = ui_language_choices();
++    assert_eq!(ui_language_label(&choices, None), "System");
++    assert_eq!(ui_language_label(&choices, Some("  ")), "System");
++    assert_eq!(ui_language_label(&choices, Some("PT-br")), "Português (Brasil)");
++    // A tag typed by hand that Zeo does not ship is shown as written.
++    assert_eq!(ui_language_label(&choices, Some("eo")), "eo");
++}
++
++#[test]
++fn exactly_one_entry_is_checked_for_a_shipped_value() {
++    let choices = ui_language_choices();
++    for stored in [None, Some("en-US"), Some("pt-br"), Some("en-XA")] {
++        let checked = choices
++            .iter()
++            .filter(|choice| ui_language_matches(choice, stored))
++            .count();
++        assert_eq!(checked, 1, "stored {stored:?}");
++    }
++    assert!(!choices.iter().any(|choice| ui_language_matches(choice, Some("eo"))));
++}
+diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/settings_ui.rs
+index d89d4729..dd6d8377 100644
+--- a/crates/settings_ui/src/settings_ui.rs
++++ b/crates/settings_ui/src/settings_ui.rs
+@@ -60,7 +60,7 @@ use crate::components::{
+ };
+ use crate::pages::{
+     CustomAgentForm, LlmProviderForm, McpServerForm, render_input_audio_device_dropdown,
+-    render_output_audio_device_dropdown,
++    render_output_audio_device_dropdown, render_ui_language_picker,
+ };
+ 
+ const NAVBAR_CONTAINER_TAB_INDEX: isize = 0;
+@@ -680,6 +680,7 @@ fn init_renderers(cx: &mut App) {
+         .add_basic_renderer::<settings::AudioInputDeviceName>(render_input_audio_device_dropdown)
+         .add_basic_renderer::<settings::AudioOutputDeviceName>(render_output_audio_device_dropdown)
+         .add_basic_renderer::<settings::TerminalBell>(render_dropdown)
++        .add_basic_renderer::<settings::UiLanguageName>(render_ui_language_picker)
+         // please semicolon stay on next line
+         ;
+ }
+diff --git a/crates/zeo_i18n/locales/en-US/settings-language.ftl b/crates/zeo_i18n/locales/en-US/settings-language.ftl
+new file mode 100644
+index 00000000..b2552b9e
+--- /dev/null
++++ b/crates/zeo_i18n/locales/en-US/settings-language.ftl
+@@ -0,0 +1,6 @@
++### The Language page's picker (settings_ui, pages/ui_language_picker.rs).
++
++# The entry that clears `ui_language`, so Zeo follows the desktop's languages.
++settings-ui-language-system = System
++# en-XA: English with every letter accented and lengthened, for checking layouts.
++settings-ui-language-pseudo = Pseudo-locale (en-XA)
+diff --git a/crates/zeo_i18n/locales/en-US/zeo.ftl b/crates/zeo_i18n/locales/en-US/zeo.ftl
+index 08275a25..cfca6140 100644
+--- a/crates/zeo_i18n/locales/en-US/zeo.ftl
++++ b/crates/zeo_i18n/locales/en-US/zeo.ftl
+@@ -9,3 +9,7 @@
+ ###
+ ### Every id in this file must be used, and every id used must be here:
+ ### zed-patches/scripts/i18n-check.py checks both.
++
++# What this language calls itself, shown in the Language page's picker
++# (catalog.rs LANGUAGE_NAME_ID). Read by zeo_i18n, never through t!.
++zeo-language-name = English (United States)
+diff --git a/crates/zeo_i18n/locales/pt-BR/settings-language.ftl b/crates/zeo_i18n/locales/pt-BR/settings-language.ftl
+new file mode 100644
+index 00000000..c578a39e
+--- /dev/null
++++ b/crates/zeo_i18n/locales/pt-BR/settings-language.ftl
+@@ -0,0 +1,4 @@
++### O seletor da página Language (settings_ui, pages/ui_language_picker.rs).
++
++settings-ui-language-system = Sistema
++settings-ui-language-pseudo = Pseudo-idioma (en-XA)
+diff --git a/crates/zeo_i18n/locales/pt-BR/zeo.ftl b/crates/zeo_i18n/locales/pt-BR/zeo.ftl
+index aeafad1f..08bf5ca5 100644
+--- a/crates/zeo_i18n/locales/pt-BR/zeo.ftl
++++ b/crates/zeo_i18n/locales/pt-BR/zeo.ftl
+@@ -2,3 +2,5 @@
+ ###
+ ### Glossary (operator, 2026-11-24): "jail", "sandbox" and "thread" stay in
+ ### English. An id missing here falls back to en-US.
++
++zeo-language-name = Português (Brasil)
+diff --git a/crates/zeo_i18n/src/catalog.rs b/crates/zeo_i18n/src/catalog.rs
+index 67eaaa66..7d224efb 100644
+--- a/crates/zeo_i18n/src/catalog.rs
++++ b/crates/zeo_i18n/src/catalog.rs
+@@ -26,11 +26,56 @@ pub struct LocaleSource {
+     pub files: &'static [(&'static str, &'static str)],
+ }
+ 
+-/// What ships: every `locales/<language>/*.ftl`, listed by build.rs into `$OUT_DIR`.
+-/// `include_str!` keeps the files inside the binary, so no path is resolved at run time;
+-/// a new `.ftl` file ships by being there, and no patch edits this file to add one.
++// What ships: every `locales/<language>/*.ftl`, listed by build.rs into `$OUT_DIR`.
++// `include_str!` keeps the files inside the binary, so no path is resolved at run time;
++// a new `.ftl` file ships by being there, and no patch edits this file to add one.
++// A plain comment: rustdoc documents no macro invocation, and `///` here was clippy's
++// unused_doc_comments (found by 0194's lab run, 2026-11-26).
+ include!(concat!(env!("OUT_DIR"), "/shipped.rs"));
+ 
++/// The message every language names itself with, in its own `zeo.ftl`: a
++/// picker shows "Português (Brasil)", not "Portuguese", because the person
++/// looking for it may not read the language the UI is in now.
++pub const LANGUAGE_NAME_ID: &str = "zeo-language-name";
++
++/// A language a picker can offer.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ShippedLanguage {
++    /// Its BCP 47 tag, the value `ui_language` takes.
++    pub tag: &'static str,
++    /// Its name in itself; the tag when its `zeo.ftl` gives none.
++    pub name: String,
++}
++
++/// Every language in `sources`, English first, the rest by tag. A name comes
++/// only from the language's own bundle, never from the English fallback, so a
++/// translation without the message shows its tag rather than "English".
++pub fn shipped_languages(sources: &[LocaleSource]) -> Vec<ShippedLanguage> {
++    let mut languages: Vec<ShippedLanguage> = sources
++        .iter()
++        .map(|source| {
++            let bundle = build_bundle(source, source.language, None);
++            let name = bundle
++                .get_message(LANGUAGE_NAME_ID)
++                .and_then(|message| message.value())
++                .map(|pattern| {
++                    let mut errors = Vec::new();
++                    bundle
++                        .format_pattern(pattern, None, &mut errors)
++                        .into_owned()
++                })
++                .filter(|name| !name.trim().is_empty())
++                .unwrap_or_else(|| source.language.to_string());
++            ShippedLanguage {
++                tag: source.language,
++                name,
++            }
++        })
++        .collect();
++    languages.sort_by_key(|language| (language.tag != FALLBACK_LANGUAGE, language.tag));
++    languages
++}
++
+ pub struct Catalog {
+     /// The languages actually in use, best first; the last is always `en-US`.
+     chain: Vec<String>,
+diff --git a/crates/zeo_i18n/src/catalog_tests.rs b/crates/zeo_i18n/src/catalog_tests.rs
+index 51eb2d5a..37c18f3c 100644
+--- a/crates/zeo_i18n/src/catalog_tests.rs
++++ b/crates/zeo_i18n/src/catalog_tests.rs
+@@ -176,3 +176,52 @@ fn the_macro_formats_through_the_global_catalog() {
+         "zeo-i18n-test-unknown-id"
+     );
+ }
++
++#[test]
++fn a_picker_lists_english_first_each_language_named_in_itself() {
++    static SOURCES: &[LocaleSource] = &[
++        LocaleSource {
++            language: "pt-BR",
++            files: &[("pt-BR/zeo.ftl", "zeo-language-name = Português (Brasil)\n")],
++        },
++        LocaleSource {
++            language: "de-DE",
++            // No name of its own: the picker shows the tag, not English's name.
++            files: &[("de-DE/zeo.ftl", "greeting = Hallo\n")],
++        },
++        LocaleSource {
++            language: "en-US",
++            files: &[("en-US/zeo.ftl", "zeo-language-name = English (United States)\n")],
++        },
++    ];
++    let languages = crate::catalog::shipped_languages(SOURCES);
++    let shown: Vec<(&str, &str)> = languages
++        .iter()
++        .map(|language| (language.tag, language.name.as_str()))
++        .collect();
++    assert_eq!(
++        shown,
++        [
++            ("en-US", "English (United States)"),
++            ("de-DE", "de-DE"),
++            ("pt-BR", "Português (Brasil)"),
++        ]
++    );
++}
++
++#[test]
++fn every_shipped_language_names_itself() {
++    let languages = crate::shipped_languages();
++    assert_eq!(
++        languages.first().map(|language| language.tag),
++        Some(FALLBACK_LANGUAGE)
++    );
++    for language in &languages {
++        assert_ne!(
++            language.name, language.tag,
++            "{}/zeo.ftl has no {}",
++            language.tag,
++            crate::LANGUAGE_NAME_ID
++        );
++    }
++}
+diff --git a/crates/zeo_i18n/src/zeo_i18n.rs b/crates/zeo_i18n/src/zeo_i18n.rs
+index 6e47a527..b4b4dc99 100644
+--- a/crates/zeo_i18n/src/zeo_i18n.rs
++++ b/crates/zeo_i18n/src/zeo_i18n.rs
+@@ -21,7 +21,10 @@ use std::sync::{LazyLock, Mutex, PoisonError, RwLock};
+ use gpui::App;
+ use settings::{RegisterSetting, Settings, SettingsContent, SettingsStore};
+ 
+-pub use catalog::{Catalog, FALLBACK_LANGUAGE, LocaleSource, PSEUDO_LANGUAGE, SHIPPED};
++pub use catalog::{
++    Catalog, FALLBACK_LANGUAGE, LANGUAGE_NAME_ID, LocaleSource, PSEUDO_LANGUAGE, SHIPPED,
++    ShippedLanguage,
++};
+ pub use fluent_bundle::{FluentArgs, FluentValue};
+ 
+ /// English until [`init`] runs: only `main` applies the setting or the system's
+@@ -102,6 +105,13 @@ pub fn current_language() -> String {
+         .to_string()
+ }
+ 
++/// The languages a picker can offer: every shipped one, each named in itself,
++/// English first. The pseudo-locale is not among them; a picker that wants it
++/// adds [`PSEUDO_LANGUAGE`] on its own.
++pub fn shipped_languages() -> Vec<ShippedLanguage> {
++    catalog::shipped_languages(SHIPPED)
++}
++
+ fn system_languages() -> Vec<String> {
+     sys_locale::get_locales().collect()
+ }
+@@ -115,7 +125,7 @@ pub struct UiLanguageSettings {
+ impl Settings for UiLanguageSettings {
+     fn from_settings(content: &SettingsContent) -> Self {
+         Self {
+-            ui_language: content.ui_language.clone(),
++            ui_language: content.ui_language.as_ref().map(|name| name.0.clone()),
+         }
+     }
+ }

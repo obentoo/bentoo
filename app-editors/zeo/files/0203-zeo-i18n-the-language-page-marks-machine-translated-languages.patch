@@ -1,0 +1,369 @@
+From e37b706f80eab7afb14897ef1e8a710ea44a0bd8 Mon Sep 17 00:00:00 2001
+From: zed-patches <zed-patches@localhost>
+Date: Thu, 26 Nov 2026 13:06:35 -0300
+Subject: [PATCH] zeo_i18n, settings_ui: the Language page marks a translation
+ nobody native reviewed
+
+0194-0202 ship eight translations drafted with Lara and revised by the agent; none has been
+reviewed by a native speaker (docs/assets/zeo-i18n-0194-0202-2026-11-26/README.md lists the
+known faults). The operator chose to release them all with that said on screen (2026-11-26),
+so a person picking "Deutsch" knows it is a draft before trusting a label.
+
+The mark lives in the translation itself: a language's own zeo.ftl carries
+zeo-language-machine-translated, read like zeo-language-name from that language's bundle
+alone, so English never lends it and a fallback never hides it. A native reviewer deletes the
+line and the mark is gone; no code, list or patch has to change. es, fr, it, de, ru, ja and
+zh-CN carry it; pt-BR does not -- it shipped in 0.28.0 and its review is the operator's.
+
+The picker shows "Deutsch (machine translation)" with the suffix in the language the UI is in
+now, since that is the one the person choosing can read. The trigger shows the same label, so
+the choice stays visible after it is made.
+
+i18n-check.py learns that the mark exists only in translations (TRANSLATION_ONLY): English
+lacking it is not staleness.
+
+Ungrouped, after 0202: it touches only 0177/0194's files and the language directories.
+---
+ .../src/pages/ui_language_picker.rs           | 11 ++++-
+ .../src/pages/ui_language_picker_tests.rs     |  9 ++++
+ .../zeo_i18n/locales/de/settings-language.ftl |  1 +
+ crates/zeo_i18n/locales/de/zeo.ftl            |  4 ++
+ .../locales/en-US/settings-language.ftl       |  2 +
+ .../zeo_i18n/locales/es/settings-language.ftl |  1 +
+ crates/zeo_i18n/locales/es/zeo.ftl            |  4 ++
+ .../zeo_i18n/locales/fr/settings-language.ftl |  1 +
+ crates/zeo_i18n/locales/fr/zeo.ftl            |  4 ++
+ .../zeo_i18n/locales/it/settings-language.ftl |  1 +
+ crates/zeo_i18n/locales/it/zeo.ftl            |  4 ++
+ .../zeo_i18n/locales/ja/settings-language.ftl |  1 +
+ crates/zeo_i18n/locales/ja/zeo.ftl            |  4 ++
+ .../locales/pt-BR/settings-language.ftl       |  1 +
+ .../zeo_i18n/locales/ru/settings-language.ftl |  1 +
+ crates/zeo_i18n/locales/ru/zeo.ftl            |  4 ++
+ .../locales/zh-CN/settings-language.ftl       |  1 +
+ crates/zeo_i18n/locales/zh-CN/zeo.ftl         |  4 ++
+ crates/zeo_i18n/src/catalog.rs                | 12 ++++++
+ crates/zeo_i18n/src/catalog_tests.rs          | 42 +++++++++++++++++++
+ crates/zeo_i18n/src/zeo_i18n.rs               |  4 +-
+ 21 files changed, 112 insertions(+), 4 deletions(-)
+
+diff --git a/crates/settings_ui/src/pages/ui_language_picker.rs b/crates/settings_ui/src/pages/ui_language_picker.rs
+index eccc4785..753574df 100644
+--- a/crates/settings_ui/src/pages/ui_language_picker.rs
++++ b/crates/settings_ui/src/pages/ui_language_picker.rs
+@@ -1,7 +1,8 @@
+ //! The Language page's picker for `ui_language` (zed-patches 0194): System,
+ //! then every language zeo_i18n ships, each named in itself, then the
+ //! pseudo-locale. Picking applies at once: zeo_i18n observes the settings
+-//! store and refreshes every window.
++//! store and refreshes every window. A translation no native speaker has
++//! reviewed carries "(machine translation)" after its name (0203).
+ 
+ use gpui::{AnyElement, App, ReadGlobal, SharedString, Window};
+ use settings::{SettingsStore, UiLanguageName};
+@@ -29,7 +30,13 @@ pub(crate) fn ui_language_choices() -> Vec<UiLanguageChoice> {
+             .into_iter()
+             .map(|language| UiLanguageChoice {
+                 tag: Some(language.tag.to_string()),
+-                label: language.name,
++                // A draft nobody native has reviewed says so (0203), in the language
++                // the UI is in now, so the person choosing can read the warning.
++                label: if language.machine_translated {
++                    t!("settings-ui-language-machine-translated", name = language.name)
++                } else {
++                    language.name
++                },
+             }),
+     );
+     choices.push(UiLanguageChoice {
+diff --git a/crates/settings_ui/src/pages/ui_language_picker_tests.rs b/crates/settings_ui/src/pages/ui_language_picker_tests.rs
+index 2acc0224..d1421542 100644
+--- a/crates/settings_ui/src/pages/ui_language_picker_tests.rs
++++ b/crates/settings_ui/src/pages/ui_language_picker_tests.rs
+@@ -34,3 +34,12 @@ fn exactly_one_entry_is_checked_for_a_shipped_value() {
+     }
+     assert!(!choices.iter().any(|choice| ui_language_matches(choice, Some("eo"))));
+ }
++
++#[test]
++fn an_unreviewed_translation_says_so_and_a_reviewed_one_does_not() {
++    let choices = ui_language_choices();
++    // Tests never call zeo_i18n::init, so the suffix is the English one.
++    assert_eq!(ui_language_label(&choices, Some("de")), "Deutsch (machine translation)");
++    assert_eq!(ui_language_label(&choices, Some("pt-BR")), "Português (Brasil)");
++    assert_eq!(ui_language_label(&choices, Some("en-US")), "English (United States)");
++}
+diff --git a/crates/zeo_i18n/locales/de/settings-language.ftl b/crates/zeo_i18n/locales/de/settings-language.ftl
+index c61f333c..7e93cb7f 100644
+--- a/crates/zeo_i18n/locales/de/settings-language.ftl
++++ b/crates/zeo_i18n/locales/de/settings-language.ftl
+@@ -5,3 +5,4 @@
+ 
+ settings-ui-language-system = System
+ settings-ui-language-pseudo = Pseudo-Locale (en-XA)
++settings-ui-language-machine-translated = { $name } (maschinelle Übersetzung)
+diff --git a/crates/zeo_i18n/locales/de/zeo.ftl b/crates/zeo_i18n/locales/de/zeo.ftl
+index 8c5820fc..2eab8bdc 100644
+--- a/crates/zeo_i18n/locales/de/zeo.ftl
++++ b/crates/zeo_i18n/locales/de/zeo.ftl
+@@ -4,3 +4,7 @@
+ ### (das Jail, die Sandbox, der Thread). Formal address (Sie).
+ 
+ zeo-language-name = Deutsch
++
++# No native speaker has reviewed this translation yet, so the Language page marks it
++# (zed-patches 0203). Delete this line once one has; nothing else needs to change.
++zeo-language-machine-translated = yes
+diff --git a/crates/zeo_i18n/locales/en-US/settings-language.ftl b/crates/zeo_i18n/locales/en-US/settings-language.ftl
+index b2552b9e..fdc364e1 100644
+--- a/crates/zeo_i18n/locales/en-US/settings-language.ftl
++++ b/crates/zeo_i18n/locales/en-US/settings-language.ftl
+@@ -4,3 +4,5 @@
+ settings-ui-language-system = System
+ # en-XA: English with every letter accented and lengthened, for checking layouts.
+ settings-ui-language-pseudo = Pseudo-locale (en-XA)
++# A language whose translation no native speaker has reviewed yet, as the picker lists it.
++settings-ui-language-machine-translated = { $name } (machine translation)
+diff --git a/crates/zeo_i18n/locales/es/settings-language.ftl b/crates/zeo_i18n/locales/es/settings-language.ftl
+index 248a9a0f..f83d0d84 100644
+--- a/crates/zeo_i18n/locales/es/settings-language.ftl
++++ b/crates/zeo_i18n/locales/es/settings-language.ftl
+@@ -4,3 +4,4 @@
+ 
+ settings-ui-language-system = Sistema
+ settings-ui-language-pseudo = Pseudolocale (en-XA)
++settings-ui-language-machine-translated = { $name } (traducción automática)
+diff --git a/crates/zeo_i18n/locales/es/zeo.ftl b/crates/zeo_i18n/locales/es/zeo.ftl
+index 7f528f65..1305f578 100644
+--- a/crates/zeo_i18n/locales/es/zeo.ftl
++++ b/crates/zeo_i18n/locales/es/zeo.ftl
+@@ -3,3 +3,7 @@
+ ### Glossary: "jail", "sandbox" and "thread" stay in English.
+ 
+ zeo-language-name = Español
++
++# No native speaker has reviewed this translation yet, so the Language page marks it
++# (zed-patches 0203). Delete this line once one has; nothing else needs to change.
++zeo-language-machine-translated = yes
+diff --git a/crates/zeo_i18n/locales/fr/settings-language.ftl b/crates/zeo_i18n/locales/fr/settings-language.ftl
+index 6a2eeae5..ff13bfcd 100644
+--- a/crates/zeo_i18n/locales/fr/settings-language.ftl
++++ b/crates/zeo_i18n/locales/fr/settings-language.ftl
+@@ -4,3 +4,4 @@
+ 
+ settings-ui-language-system = Système
+ settings-ui-language-pseudo = Pseudo-locale (en-XA)
++settings-ui-language-machine-translated = { $name } (traduction automatique)
+diff --git a/crates/zeo_i18n/locales/fr/zeo.ftl b/crates/zeo_i18n/locales/fr/zeo.ftl
+index f6116b25..6dd13625 100644
+--- a/crates/zeo_i18n/locales/fr/zeo.ftl
++++ b/crates/zeo_i18n/locales/fr/zeo.ftl
+@@ -3,3 +3,7 @@
+ ### Glossary: "jail", "sandbox" and "thread" stay in English.
+ 
+ zeo-language-name = Français
++
++# No native speaker has reviewed this translation yet, so the Language page marks it
++# (zed-patches 0203). Delete this line once one has; nothing else needs to change.
++zeo-language-machine-translated = yes
+diff --git a/crates/zeo_i18n/locales/it/settings-language.ftl b/crates/zeo_i18n/locales/it/settings-language.ftl
+index cd91c9b4..f888d2e3 100644
+--- a/crates/zeo_i18n/locales/it/settings-language.ftl
++++ b/crates/zeo_i18n/locales/it/settings-language.ftl
+@@ -4,3 +4,4 @@
+ 
+ settings-ui-language-system = Sistema
+ settings-ui-language-pseudo = Pseudo-locale (en-XA)
++settings-ui-language-machine-translated = { $name } (traduzione automatica)
+diff --git a/crates/zeo_i18n/locales/it/zeo.ftl b/crates/zeo_i18n/locales/it/zeo.ftl
+index ca7620e4..1a9aacc3 100644
+--- a/crates/zeo_i18n/locales/it/zeo.ftl
++++ b/crates/zeo_i18n/locales/it/zeo.ftl
+@@ -3,3 +3,7 @@
+ ### Glossary: "jail", "sandbox" and "thread" stay in English.
+ 
+ zeo-language-name = Italiano
++
++# No native speaker has reviewed this translation yet, so the Language page marks it
++# (zed-patches 0203). Delete this line once one has; nothing else needs to change.
++zeo-language-machine-translated = yes
+diff --git a/crates/zeo_i18n/locales/ja/settings-language.ftl b/crates/zeo_i18n/locales/ja/settings-language.ftl
+index 231cd302..09ad8242 100644
+--- a/crates/zeo_i18n/locales/ja/settings-language.ftl
++++ b/crates/zeo_i18n/locales/ja/settings-language.ftl
+@@ -4,3 +4,4 @@
+ 
+ settings-ui-language-system = システム
+ settings-ui-language-pseudo = 疑似ロケール (en-XA)
++settings-ui-language-machine-translated = { $name }（機械翻訳）
+diff --git a/crates/zeo_i18n/locales/ja/zeo.ftl b/crates/zeo_i18n/locales/ja/zeo.ftl
+index 89bc9275..2a7bc1bc 100644
+--- a/crates/zeo_i18n/locales/ja/zeo.ftl
++++ b/crates/zeo_i18n/locales/ja/zeo.ftl
+@@ -3,3 +3,7 @@
+ ### Glossary: "jail", "sandbox" and "thread" stay in English.
+ 
+ zeo-language-name = 日本語
++
++# No native speaker has reviewed this translation yet, so the Language page marks it
++# (zed-patches 0203). Delete this line once one has; nothing else needs to change.
++zeo-language-machine-translated = yes
+diff --git a/crates/zeo_i18n/locales/pt-BR/settings-language.ftl b/crates/zeo_i18n/locales/pt-BR/settings-language.ftl
+index c578a39e..d6e8916e 100644
+--- a/crates/zeo_i18n/locales/pt-BR/settings-language.ftl
++++ b/crates/zeo_i18n/locales/pt-BR/settings-language.ftl
+@@ -2,3 +2,4 @@
+ 
+ settings-ui-language-system = Sistema
+ settings-ui-language-pseudo = Pseudo-idioma (en-XA)
++settings-ui-language-machine-translated = { $name } (tradução automática)
+diff --git a/crates/zeo_i18n/locales/ru/settings-language.ftl b/crates/zeo_i18n/locales/ru/settings-language.ftl
+index df9bca02..2a9abbc6 100644
+--- a/crates/zeo_i18n/locales/ru/settings-language.ftl
++++ b/crates/zeo_i18n/locales/ru/settings-language.ftl
+@@ -4,3 +4,4 @@
+ 
+ settings-ui-language-system = Системный
+ settings-ui-language-pseudo = Псевдолокаль (en-XA)
++settings-ui-language-machine-translated = { $name } (машинный перевод)
+diff --git a/crates/zeo_i18n/locales/ru/zeo.ftl b/crates/zeo_i18n/locales/ru/zeo.ftl
+index cd51ce87..43686c47 100644
+--- a/crates/zeo_i18n/locales/ru/zeo.ftl
++++ b/crates/zeo_i18n/locales/ru/zeo.ftl
+@@ -3,3 +3,7 @@
+ ### Glossary: "jail", "sandbox" and "thread" stay in English.
+ 
+ zeo-language-name = Русский
++
++# No native speaker has reviewed this translation yet, so the Language page marks it
++# (zed-patches 0203). Delete this line once one has; nothing else needs to change.
++zeo-language-machine-translated = yes
+diff --git a/crates/zeo_i18n/locales/zh-CN/settings-language.ftl b/crates/zeo_i18n/locales/zh-CN/settings-language.ftl
+index 23138a6f..40b1cf06 100644
+--- a/crates/zeo_i18n/locales/zh-CN/settings-language.ftl
++++ b/crates/zeo_i18n/locales/zh-CN/settings-language.ftl
+@@ -5,3 +5,4 @@
+ settings-ui-language-system = 跟随系统
+ # en-XA: English with every letter accented and lengthened, for checking layouts.
+ settings-ui-language-pseudo = 伪区域设置（en-XA）
++settings-ui-language-machine-translated = { $name }（机器翻译）
+diff --git a/crates/zeo_i18n/locales/zh-CN/zeo.ftl b/crates/zeo_i18n/locales/zh-CN/zeo.ftl
+index c6d64fc0..48ca7a43 100644
+--- a/crates/zeo_i18n/locales/zh-CN/zeo.ftl
++++ b/crates/zeo_i18n/locales/zh-CN/zeo.ftl
+@@ -5,3 +5,7 @@
+ # What this language calls itself, shown in the Language page's picker
+ # (catalog.rs LANGUAGE_NAME_ID). Read by zeo_i18n, never through t!.
+ zeo-language-name = 简体中文
++
++# No native speaker has reviewed this translation yet, so the Language page marks it
++# (zed-patches 0203). Delete this line once one has; nothing else needs to change.
++zeo-language-machine-translated = yes
+diff --git a/crates/zeo_i18n/src/catalog.rs b/crates/zeo_i18n/src/catalog.rs
+index 22340dbb..57147da4 100644
+--- a/crates/zeo_i18n/src/catalog.rs
++++ b/crates/zeo_i18n/src/catalog.rs
+@@ -38,6 +38,12 @@ include!(concat!(env!("OUT_DIR"), "/shipped.rs"));
+ /// looking for it may not read the language the UI is in now.
+ pub const LANGUAGE_NAME_ID: &str = "zeo-language-name";
+ 
++/// Present, with any value, in the `zeo.ftl` of a translation no native speaker
++/// has reviewed yet (zed-patches 0203): the picker marks that language, so
++/// nobody takes a drafted translation for a checked one. A reviewer deletes the
++/// line; nothing else has to change for the mark to go.
++pub const MACHINE_TRANSLATED_ID: &str = "zeo-language-machine-translated";
++
+ /// A language a picker can offer.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct ShippedLanguage {
+@@ -45,6 +51,8 @@ pub struct ShippedLanguage {
+     pub tag: &'static str,
+     /// Its name in itself; the tag when its `zeo.ftl` gives none.
+     pub name: String,
++    /// Whether its own `zeo.ftl` carries [`MACHINE_TRANSLATED_ID`].
++    pub machine_translated: bool,
+ }
+ 
+ /// Every language in `sources`, English first, the rest by tag. A name comes
+@@ -66,9 +74,13 @@ pub fn shipped_languages(sources: &[LocaleSource]) -> Vec<ShippedLanguage> {
+                 })
+                 .filter(|name| !name.trim().is_empty())
+                 .unwrap_or_else(|| source.language.to_string());
++            // The language's own bundle only: English never carries the mark, and
++            // a fallback must not lend it to (or hide it from) anyone.
++            let machine_translated = bundle.has_message(MACHINE_TRANSLATED_ID);
+             ShippedLanguage {
+                 tag: source.language,
+                 name,
++                machine_translated,
+             }
+         })
+         .collect();
+diff --git a/crates/zeo_i18n/src/catalog_tests.rs b/crates/zeo_i18n/src/catalog_tests.rs
+index 37c18f3c..92481b1c 100644
+--- a/crates/zeo_i18n/src/catalog_tests.rs
++++ b/crates/zeo_i18n/src/catalog_tests.rs
+@@ -225,3 +225,45 @@ fn every_shipped_language_names_itself() {
+         );
+     }
+ }
++
++#[test]
++fn a_translation_is_marked_only_by_its_own_zeo_ftl() {
++    static SOURCES: &[LocaleSource] = &[
++        LocaleSource {
++            language: "de",
++            files: &[(
++                "de/zeo.ftl",
++                "zeo-language-name = Deutsch\nzeo-language-machine-translated = yes\n",
++            )],
++        },
++        LocaleSource {
++            language: "pt-BR",
++            files: &[("pt-BR/zeo.ftl", "zeo-language-name = Português (Brasil)\n")],
++        },
++        LocaleSource {
++            language: "en-US",
++            // Even if English carried the mark, no other language would inherit it.
++            files: &[(
++                "en-US/zeo.ftl",
++                "zeo-language-name = English (United States)\nzeo-language-machine-translated = yes\n",
++            )],
++        },
++    ];
++    let marked: Vec<(&str, bool)> = crate::catalog::shipped_languages(SOURCES)
++        .iter()
++        .map(|language| (language.tag, language.machine_translated))
++        .collect();
++    assert_eq!(marked, [("en-US", true), ("de", true), ("pt-BR", false)]);
++}
++
++#[test]
++fn the_shipped_drafts_are_marked_and_english_and_pt_br_are_not() {
++    // Reviewed state as of 0203 (2026-11-26): nobody native has reviewed es, fr, it, de, ru, ja
++    // or zh-CN. When a reviewer deletes a mark, this list loses that language.
++    let marked: Vec<&str> = crate::shipped_languages()
++        .into_iter()
++        .filter(|language| language.machine_translated)
++        .map(|language| language.tag)
++        .collect();
++    assert_eq!(marked, ["de", "es", "fr", "it", "ja", "ru", "zh-CN"]);
++}
+diff --git a/crates/zeo_i18n/src/zeo_i18n.rs b/crates/zeo_i18n/src/zeo_i18n.rs
+index b33ab274..8a02fe32 100644
+--- a/crates/zeo_i18n/src/zeo_i18n.rs
++++ b/crates/zeo_i18n/src/zeo_i18n.rs
+@@ -23,8 +23,8 @@ use gpui::App;
+ use settings::{RegisterSetting, Settings, SettingsContent, SettingsStore};
+ 
+ pub use catalog::{
+-    Catalog, FALLBACK_LANGUAGE, LANGUAGE_NAME_ID, LocaleSource, PSEUDO_LANGUAGE, SHIPPED,
+-    ShippedLanguage,
++    Catalog, FALLBACK_LANGUAGE, LANGUAGE_NAME_ID, LocaleSource, MACHINE_TRANSLATED_ID,
++    PSEUDO_LANGUAGE, SHIPPED, ShippedLanguage,
+ };
+ pub use fluent_bundle::{FluentArgs, FluentValue};
+ pub use core_text::{core_id, fnv1a64};
+-- 
+2.56.1
+

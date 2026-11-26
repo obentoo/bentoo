@@ -1,0 +1,351 @@
+From f3f9cbbc7788d1519318dc8c4c753c3e73b36f56 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Thu, 26 Nov 2026 10:33:35 -0300
+Subject: [PATCH] agent_ui: the agent panel's cards fade in; the latency report
+ measures frames
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next §6.52, first step (ask 76; operator, 2026-11-17: start with the
+cheapest and measure it). A card that appears in the agent panel now fades
+in over 150 ms with an ease-out instead of popping in: the tasks card in
+each of its three states (expanded, the pill, the bar docked at the
+bottom), the /btw answer card, the question card and its minimized bar.
+With reduced motion (the `reduce_motion` setting, which Zed already
+honours for the cursor and the scrollbar) a card appears at once.
+
+How: agent_ui::card_fade gives a card's root a `.fade_in(id, cx)` in place
+of its final `.into_any_element()`, so the animation sits on the card's own
+root and no wrapper changes its layout -- the tasks card is placed by its
+overlay from the root's size, and a wrapping div would have stretched the
+pill to the free area. GPUI keeps an animation's start in the element
+state of its id and drops that state when the element is not drawn in a
+frame, so a card fades again each time it reappears and not on the frames
+in between. Only appearing is animated: fading out needs the card kept on
+screen after its state says it is gone, which none of these cards supports
+yet. The floating thread controls are left alone: they are always present,
+and their hover change is a style, not an appearance.
+
+Measured, not assumed: `dev: dump input latency histogram` now ends with
+the window's frame durations -- how long a frame took to draw (p50, p90,
+p99, max) and, when GPUI recorded any, the intervals between frames
+presented while animating -- from gpui's own frame profiler
+(Window::frame_duration_snapshot). On Xvfb (llvmpipe, a debug build), the
+same steps -- a prompt that brings the tasks card up, then five round
+trips between the expanded card and the bottom bar, ten fades -- were run
+with `reduce_motion` on and off (hub docs/assets/zeo-6.52-card-fades-
+2026-11-26/):
+
+                    reduce_motion on    fades
+  frames drawn            166            262
+  draw p50             19.22 ms       19.28 ms
+  draw p90             31.21 ms       24.92 ms
+  draw p99             50.43 ms       42.37 ms
+  draw max             64.19 ms       63.41 ms
+
+A fade adds its frames (about ten each) and costs nothing per frame. GPUI
+recorded no frame as "presented while animating" on Xvfb in either run, so
+the interval between animated frames is not measured at this rung, and a
+debug build on llvmpipe draws above a 60 Hz budget with or without fades;
+a release build on a GPU is the operator's live check.
+
+Tests: card_fade's end state (fully opaque at the end, invisible at the
+start, clamped against an easing's overshoot) and its duration bound; the
+frame section of the report (percentiles named, the slowest frame kept,
+"No frames recorded yet." without frames). The agent_ui suites that paint
+these cards (tasks card, /btw, question card) pass with the fades on.
+---
+
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index 0ef3979f..d76ea14c 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -5,6 +5,7 @@ mod agent_panel;
+ mod agent_registry_ui;
+ mod agent_session_router;
+ mod buffer_codegen;
++mod card_fade;
+ mod completion_provider;
+ mod composer_blocks;
+ mod composer_quotations;
+diff --git a/crates/agent_ui/src/card_fade.rs b/crates/agent_ui/src/card_fade.rs
+new file mode 100644
+index 00000000..285c1617
+--- /dev/null
++++ b/crates/agent_ui/src/card_fade.rs
+@@ -0,0 +1,68 @@
++//! The agent panel's cards fade in (Zeo next §6.52, first step; operator, 2026-11-17: start with
++//! the cheapest and measure it).
++//!
++//! A card that appears -- the tasks card in each of its three states, the `/btw` answer, the
++//! question card and its minimized bar -- fades in over [`CARD_FADE_IN`] with an ease-out, and
++//! appears at once when the platform asks for reduced motion. The fade is applied to the card's
++//! own root rather than to a wrapper, so no layout changes: the tasks card is positioned by its
++//! overlay from the root's size, and a wrapper would stretch the pill to the free area.
++//!
++//! GPUI keeps an animation's start in the element state of its id, and drops that state when the
++//! element is not drawn in a frame, so a card fades again each time it reappears -- and not on the
++//! frames in between, where it is redrawn with the same id. Only appearing is animated: fading out
++//! needs the card kept on screen after its state says it is gone, which no card here supports yet.
++//! The floating thread controls are left alone: they are always present, and their hover change is
++//! a style, not an appearance.
++
++use std::time::Duration;
++
++use gpui::{
++    Animation, AnimationExt as _, AnyElement, App, ElementId, IntoElement, Styled, ease_out_quint,
++};
++
++/// How long a card takes to fade in: short enough to read as a response to what caused it.
++pub(crate) const CARD_FADE_IN: Duration = Duration::from_millis(150);
++
++/// The opacity a fade-in draws at `delta`, the animation's eased progress in `0.0..=1.0`.
++pub(crate) fn fade_in_opacity(delta: f32) -> f32 {
++    delta.clamp(0., 1.)
++}
++
++/// A card's root, fading in when it appears.
++pub(crate) trait FadeIn: Styled + IntoElement + 'static {
++    /// This card as an element that fades in under `id` unless the platform asks for reduced
++    /// motion. `id` must be stable while the card stays up and unique among the cards.
++    fn fade_in(self, id: impl Into<ElementId>, cx: &App) -> AnyElement {
++        if cx.reduce_motion() {
++            return self.into_any_element();
++        }
++        self.with_animation(
++            id,
++            Animation::new(CARD_FADE_IN).with_easing(ease_out_quint()),
++            |card, delta| card.opacity(fade_in_opacity(delta)),
++        )
++        .into_any_element()
++    }
++}
++
++impl<E: Styled + IntoElement + 'static> FadeIn for E {}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn card_fade_ends_fully_opaque_and_starts_invisible() {
++        assert_eq!(fade_in_opacity(0.), 0.);
++        assert_eq!(fade_in_opacity(1.), 1.);
++        // An easing may overshoot; the card never draws past opaque or below invisible.
++        assert_eq!(fade_in_opacity(1.2), 1.);
++        assert_eq!(fade_in_opacity(-0.1), 0.);
++        assert!(ease_out_quint()(1.) >= 1. - f32::EPSILON);
++    }
++
++    #[test]
++    fn card_fade_is_short_enough_to_read_as_a_response() {
++        assert!(CARD_FADE_IN <= Duration::from_millis(200));
++    }
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 8a27f066..e708f924 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -1,3 +1,4 @@
++use crate::card_fade::FadeIn as _;
+ use crate::{
+     CycleResponseSpeed, DEFAULT_THREAD_TITLE, RecallNewerMessage, RecallOlderMessage,
+     SelectPermissionGranularity,
+@@ -10014,7 +10015,7 @@ impl ThreadView {
+                     .child(card),
+                 cx,
+             )
+-            .into_any_element(),
++            .fade_in("pinned-elicitations-fade", cx),
+         )
+     }
+ 
+@@ -10074,7 +10075,7 @@ impl ThreadView {
+                     })),
+             );
+         // The card it stands for keeps to the composer's column, and so does the bar (§6.30).
+-        content_column::content_column(bar, cx).into_any_element()
++        content_column::content_column(bar, cx).fade_in("question-card-bar-fade", cx)
+     }
+ 
+     pub(crate) fn toggle_question_card(
+diff --git a/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+index 23d5cfa8..9bf39d6b 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view/side_question_card.rs
+@@ -8,6 +8,7 @@
+ //!
+ //! An agent that does not advertise `_claude/btw` gets the text as before, as a prompt.
+ 
++use crate::card_fade::FadeIn as _;
+ use acp_thread::{SIDE_QUESTION_MAX_CHARS, SideAnswer};
+ use gpui::{
+     AnyElement, App, ClipboardItem, Context, Entity, ScrollHandle, SharedString, Task, Window, px,
+@@ -312,7 +313,7 @@ impl ThreadView {
+             .child(body)
+             .children(footer);
+         // The composer's column (§6.30), as the context card beside it.
+-        Some(content_column(card, cx).into_any_element())
++        Some(content_column(card, cx).fade_in("side-question-card-fade", cx))
+     }
+ }
+ 
+diff --git a/crates/agent_ui/src/tasks_card.rs b/crates/agent_ui/src/tasks_card.rs
+index 9283d2d0..f805a1ab 100644
+--- a/crates/agent_ui/src/tasks_card.rs
++++ b/crates/agent_ui/src/tasks_card.rs
+@@ -11,6 +11,7 @@
+ //! threads and receiving their events in every state — and so keeps emitting
+ //! `TaskActivity`, which feeds the task history (story 014, patch `0035`).
+ 
++use crate::card_fade::FadeIn as _;
+ use std::{
+     cmp::Reverse,
+     path::PathBuf,
+@@ -2247,7 +2248,7 @@ impl TasksCard {
+                             ),
+                     ),
+             )
+-            .into_any_element()
++            .fade_in("tasks-card-fade-bar", cx)
+     }
+ 
+     /// The minimized card. It spins and counts what runs while something runs; with nothing
+@@ -2319,7 +2320,7 @@ impl TasksCard {
+                         card.toggle_minimized_keeping_focus(window, cx)
+                     })),
+             )
+-            .into_any_element()
++            .fade_in("tasks-card-fade-pill", cx)
+     }
+ 
+     fn render_expanded(
+@@ -2465,7 +2466,7 @@ impl TasksCard {
+             .shadow_md()
+             .child(header)
+             .child(list)
+-            .into_any_element()
++            .fade_in("tasks-card-fade-expanded", cx)
+     }
+ 
+     fn render_group(
+diff --git a/crates/input_latency_ui/src/input_latency_ui.rs b/crates/input_latency_ui/src/input_latency_ui.rs
+index 1f64a112..ada9487e 100644
+--- a/crates/input_latency_ui/src/input_latency_ui.rs
++++ b/crates/input_latency_ui/src/input_latency_ui.rs
+@@ -30,6 +30,9 @@ pub struct InputLatencyReportData {
+     /// Set when the report will be placed in a buffer visible to other
+     /// collaborators, so it's clear whose latency was measured.
+     reported_by: Option<String>,
++    /// Zeo (patch 0193): the window's frame durations, so a change to what the window draws --
++    /// an animation above all -- is measured, not assumed (Zeo next §6.52).
++    frames: gpui::FrameDurationSnapshot,
+ }
+ 
+ /// Captures the input-to-frame latency histogram for the given window, along
+@@ -50,6 +53,7 @@ pub fn snapshot_input_latency_report(
+         previous_timestamp: state.previous_timestamp.take(),
+         timestamp,
+         reported_by,
++        frames: window.frame_duration_snapshot(),
+     };
+ 
+     state.previous_snapshot = Some(snapshot);
+@@ -62,7 +66,43 @@ pub fn snapshot_input_latency_report(
+ /// [`InputLatencyReportData`]. If the capture included a previous snapshot,
+ /// includes a delta section showing changes since that report.
+ pub fn format_input_latency_report(data: &InputLatencyReportData) -> String {
+-    format_report(data)
++    let mut report = format_report(data);
++    write_frame_durations(&mut report, &data.frames);
++    report
++}
++
++/// Zeo (patch 0193): how long the window takes to draw a frame, and how far apart frames are
++/// presented while it animates, both since the window opened. A frame budget is 16.67 ms at
++/// 60 Hz; an animation that pushes the intervals past it drops frames.
++fn write_frame_durations(report: &mut String, frames: &gpui::FrameDurationSnapshot) {
++    const PERCENTILES: &[(&str, f64)] = &[
++        ("p50  ", 0.50),
++        ("p90  ", 0.90),
++        ("p99  ", 0.99),
++        ("max  ", 1.0),
++    ];
++    report.push_str("\nFrame Durations (since the window opened)\n");
++    report.push_str("=========================================\n");
++    let draws = &frames.draw_duration_histogram;
++    if draws.len() == 0 {
++        report.push_str("No frames recorded yet.\n");
++        return;
++    }
++    report.push_str(&format!("Frames drawn: {}\n", draws.len()));
++    write_latency_percentiles(report, "Draw duration", draws, PERCENTILES);
++    let animating = &frames.present_interval_histogram;
++    report.push_str(&format!(
++        "\nFrames presented while animating: {}\n",
++        animating.len()
++    ));
++    if animating.len() > 0 {
++        write_latency_percentiles(
++            report,
++            "Interval between frames while animating",
++            animating,
++            PERCENTILES,
++        );
++    }
+ }
+ 
+ #[derive(Default)]
+@@ -559,3 +599,51 @@ fn write_latency_distribution(report: &mut String, heading: &str, histogram: &Hi
+         ));
+     }
+ }
++
++#[cfg(test)]
++mod zeo_frame_duration_tests {
++    use super::*;
++
++    fn histogram(values_ms: &[u64]) -> Histogram<u64> {
++        let mut histogram = Histogram::<u64>::new(3).unwrap();
++        for value in values_ms {
++            histogram.record(value * 1_000_000).unwrap();
++        }
++        histogram
++    }
++
++    fn snapshot(draws_ms: &[u64], intervals_ms: &[u64]) -> gpui::FrameDurationSnapshot {
++        gpui::FrameDurationSnapshot {
++            dirty_to_present_histogram: histogram(&[]),
++            draw_duration_histogram: histogram(draws_ms),
++            present_interval_histogram: histogram(intervals_ms),
++            by_refresh_interval: Vec::new(),
++        }
++    }
++
++    #[test]
++    fn frame_report_gives_draw_and_animation_percentiles() {
++        let mut report = String::new();
++        write_frame_durations(&mut report, &snapshot(&[2, 3, 40], &[16, 17]));
++        assert!(report.contains("Frames drawn: 3"), "{report}");
++        assert!(report.contains("Draw duration:"), "{report}");
++        assert!(
++            report.contains("Frames presented while animating: 2"),
++            "{report}"
++        );
++        assert!(
++            report.contains("Interval between frames while animating:"),
++            "{report}"
++        );
++        // The slowest frame is reported, not averaged away.
++        assert!(report.contains("40.0"), "{report}");
++    }
++
++    #[test]
++    fn frame_report_without_frames_says_so() {
++        let mut report = String::new();
++        write_frame_durations(&mut report, &snapshot(&[], &[]));
++        assert!(report.contains("No frames recorded yet."), "{report}");
++        assert!(!report.contains("Draw duration"), "{report}");
++    }
++}

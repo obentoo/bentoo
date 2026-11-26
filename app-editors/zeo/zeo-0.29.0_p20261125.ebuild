@@ -1945,6 +1945,21 @@ src_prepare() {
 		# t!, the ui_language setting). Ships no message yet. Ungrouped: every
 		# screen that translates its strings needs it, under whatever flag gates it.
 		"${FILESDIR}/0177-zeo-i18n-a-translation-catalog-for-zeo-s-own-screens.patch"
+		# 0194: a Language page picks ui_language (System, the shipped languages, en-XA).
+		"${FILESDIR}/0194-settings-ui-a-language-page-picks-zeo-s-interface-language.patch"
+		# 0195: Zed's own labels, buttons, tooltips, menus and palette names ask the catalog.
+		"${FILESDIR}/0195-ui-zeo-i18n-zed-s-own-labels-buttons-and-tooltips-ask-the-catalog.patch"
+		# 0196: Spanish, for Zed's strings and Zeo's own screens.
+		"${FILESDIR}/0196-zeo-i18n-spanish-es-zed-s-strings-and-zeo-s-own-screens-pilot.patch"
+		# 0197-0202: French, Italian, German, Russian, Japanese, Simplified Chinese.
+		"${FILESDIR}/0197-zeo-i18n-french-fr-zed-s-strings-and-zeo-s-own-screens.patch"
+		"${FILESDIR}/0198-zeo-i18n-italian-it-zed-s-strings-and-zeo-s-own-screens.patch"
+		"${FILESDIR}/0199-zeo-i18n-german-de-zed-s-strings-and-zeo-s-own-screens.patch"
+		"${FILESDIR}/0200-zeo-i18n-russian-ru-zed-s-strings-and-zeo-s-own-screens.patch"
+		"${FILESDIR}/0201-zeo-i18n-japanese-ja-zed-s-strings-and-zeo-s-own-screens.patch"
+		"${FILESDIR}/0202-zeo-i18n-simplified-chinese-zh-cn-zed-s-strings-and-zeo-s-own-screens.patch"
+		# 0203: the Language page marks a translation no native speaker has reviewed.
+		"${FILESDIR}/0203-zeo-i18n-the-language-page-marks-machine-translated-languages.patch"
 	)
 
 	if use claude-agent-acp-plus; then
@@ -2375,6 +2390,9 @@ src_prepare() {
 			"${FILESDIR}/0186-sidebar-the-row-s-stop-generation-asks-first-as-the-panel-s-does.patch"
 			# 0189: Summarize Session (local digest, or the agent's via /btw). On 0070/0115/0177.
 			"${FILESDIR}/0189-agent-ui-summarize-session-a-precise-summary-to-copy-or-to-start-a-thr.patch"
+			# 0193: the agent panel's cards fade in (150 ms, off under reduce_motion); the latency
+			# report measures frames (§6.52 first step).
+			"${FILESDIR}/0193-agent-ui-the-agent-panel-s-cards-fade-in-the-latency-report-measures-fr.patch"
 		)
 	fi
 
