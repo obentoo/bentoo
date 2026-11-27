@@ -1,0 +1,184 @@
+From a30787b42b883c75c4dea3fe349cbbe7307c3830 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 27 Nov 2026 08:36:11 -0300
+Subject: [PATCH] agent_ui: the kill switch from the palette
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next §6.53. The lock's Stop (0141) ended a jail; the proposal asks
+for one "Stop agent" action in the agent panel and the palette that
+kills the jail's process tree and cuts its egress.
+
+- `agent::StopJailedAgent` reaches the active thread's jail from the
+  palette, wherever focus is, asking first exactly as the lock's Stop
+  does. Without a running jail it does nothing and logs that.
+- `agent_sandbox::control::kill_switch` is what both call: it thaws a
+  paused jail (a frozen process acts on the signal only once it runs),
+  then sends ai-jail its SIGTERM. ai-jail's egress proxy lives in that
+  process, so ending it ends every connection the jail had open -- the
+  egress cut needs no second step.
+- Each press is logged as `event=kill_switch_pressed` with its source
+  (`button`, `palette`) and whether the jail was paused; the signal's
+  outcome keeps its own `event=kill_switch` line.
+
+Not yet: killing §6.9's restricted ssh-agent, which does not exist
+yet; it joins kill_switch when it does.
+
+Test: control.rs -- the kill switch terminates a running process and
+refuses pid 1.
+---
+
+diff --git a/crates/agent_sandbox/src/control.rs b/crates/agent_sandbox/src/control.rs
+index 5b50b11..7fb97bc 100644
+--- a/crates/agent_sandbox/src/control.rs
++++ b/crates/agent_sandbox/src/control.rs
+@@ -27,6 +27,22 @@ pub fn stop_jail(pid: u32) -> io::Result<()> {
+     }
+ }
+ 
++/// The kill switch (Zeo next §6.53): thaws a paused jail first -- a frozen process only acts on
++/// the signal once it runs again -- then stops it. Killing ai-jail also ends its egress proxy,
++/// which lives in that process, so every connection the jail had open ends with it. `source`
++/// says where the operator pressed it (`button`, `palette`), for the log line.
++pub fn kill_switch(pid: u32, paused: bool, source: &'static str) -> io::Result<()> {
++    if paused {
++        if let Err(error) = jail_scope_dir(pid).and_then(|scope| set_frozen(&scope, false)) {
++            log::warn!(
++                "agent_sandbox event=kill_switch_thaw pid={pid} source={source} outcome=failed error={error}"
++            );
++        }
++    }
++    log::info!("agent_sandbox event=kill_switch_pressed pid={pid} source={source} paused={paused}");
++    stop_jail(pid)
++}
++
+ #[cfg(not(unix))]
+ pub fn stop_jail(_pid: u32) -> io::Result<()> {
+     Err(io::Error::new(
+@@ -91,6 +107,23 @@ pub fn set_frozen(scope_dir: &std::path::Path, frozen: bool) -> io::Result<()> {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    #[allow(
++        clippy::disallowed_methods,
++        reason = "the signal must reach a real child, outside any executor"
++    )]
++    fn the_kill_switch_terminates_a_running_jail() {
++        use std::os::unix::process::ExitStatusExt as _;
++        let mut child = std::process::Command::new("sleep")
++            .arg("30")
++            .spawn()
++            .expect("sleep");
++        kill_switch(child.id(), false, "test").expect("signalled");
++        let status = child.wait().expect("wait");
++        assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
++        assert!(kill_switch(1, false, "test").is_err(), "pid 1 is init");
++    }
++
+     #[test]
+     #[allow(
+         clippy::disallowed_methods,
+diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_panel.rs
+index 95d1ed5..e640af6 100644
+--- a/crates/agent_ui/src/agent_panel.rs
++++ b/crates/agent_ui/src/agent_panel.rs
+@@ -603,6 +603,22 @@ pub fn init(cx: &mut App) {
+                 .register_action(|_workspace, _: &ResetTrialEndUpsell, _window, cx| {
+                     TrialEndUpsell::set_dismissed(false, cx);
+                 })
++                // Zeo next §6.53: the kill switch, reachable from the palette wherever focus is.
++                .register_action(|workspace, _: &crate::StopJailedAgent, window, cx| {
++                    let thread_view = workspace
++                        .panel::<AgentPanel>(cx)
++                        .and_then(|panel| panel.read(cx).active_thread_view(cx));
++                    let stopped = thread_view.is_some_and(|thread_view| {
++                        thread_view.update(cx, |thread_view, cx| {
++                            thread_view.stop_jailed_agent(window, cx)
++                        })
++                    });
++                    if !stopped {
++                        log::info!(
++                            "agent_sandbox event=kill_switch_pressed source=palette outcome=no_running_jail"
++                        );
++                    }
++                })
+                 .register_action(|_workspace, _: &ResetFastModeWarnings, _window, cx| {
+                     reset_fast_mode_warnings(cx);
+                 })
+diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
+index 96012e2..b8d5f99 100644
+--- a/crates/agent_ui/src/agent_ui.rs
++++ b/crates/agent_ui/src/agent_ui.rs
+@@ -473,6 +473,9 @@ actions!(
+         NewTerminalThread,
+         /// Minimizes the pending question card to a one-line bar, or restores it.
+         ToggleQuestionCard,
++        /// Stops the jailed agent of the active thread: everything running in its jail ends,
++        /// and its network with it (the kill switch).
++        StopJailedAgent,
+     ]
+ );
+ 
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 0ae22ca..b209c67 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -7408,12 +7408,7 @@ impl ThreadView {
+         // Zeo next §6.53/§6.54: the kill switch, for a jail whose process runs. A paused jail is
+         // thawed first: a frozen process only acts on the signal once it runs again.
+         let stop = move |pid: u32, paused: bool| {
+-            if paused {
+-                agent_sandbox::control::jail_scope_dir(pid)
+-                    .and_then(|scope| agent_sandbox::control::set_frozen(&scope, false))
+-                    .log_err();
+-            }
+-            agent_sandbox::control::stop_jail(pid).log_err();
++            agent_sandbox::control::kill_switch(pid, paused, "button").log_err();
+         };
+         // Operator ask of 2026-11-23: Stop ends everything in the jail, so it asks first; Pause
+         // is the way to stop for a while with nothing lost.
+@@ -7543,6 +7538,42 @@ impl ThreadView {
+ 
+     /// Restarts the agent so a changed sandbox setting applies (§6.50). The thread is resumed
+     /// on the new process; a turn in progress would be cut, so that case asks first.
++    /// The kill switch from the palette (`agent::StopJailedAgent`, Zeo next §6.53): asks first, as
++    /// the lock's Stop does, then ends everything in this thread's jail, its network with it.
++    /// Returns whether the thread has a running jail to stop.
++    pub(crate) fn stop_jailed_agent(&self, window: &mut Window, cx: &mut App) -> bool {
++        let Some(project) = self.project.upgrade() else {
++            return false;
++        };
++        let Some(root) = agent_sandbox::launch::project_root(&project, cx) else {
++            return false;
++        };
++        let Some(record) = agent_sandbox::LaunchRegistry::get(&self.agent_id, &root, cx) else {
++            return false;
++        };
++        let Some(pid) = record.jail_pid else {
++            return false;
++        };
++        let paused = record.paused;
++        let answer = window.prompt(
++            PromptLevel::Warning,
++            "Stop the agent?",
++            Some(
++                "Everything running in the jail ends now. Pause keeps it instead, with \
++                 nothing lost.",
++            ),
++            &["Stop", "Cancel"],
++            cx,
++        );
++        cx.spawn(async move |_| {
++            if answer.await == Ok(0) {
++                agent_sandbox::control::kill_switch(pid, paused, "palette").log_err();
++            }
++        })
++        .detach();
++        true
++    }
++
+     pub(crate) fn restart_agent_for_jail(&self) -> Box<dyn Fn(&mut Window, &mut App)> {
+         let server_view = self.server_view.clone();
+         let thread = self.thread.clone();

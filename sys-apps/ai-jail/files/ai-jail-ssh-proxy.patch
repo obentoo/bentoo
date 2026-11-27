@@ -1,0 +1,675 @@
+SSH through filtered egress, ai-jail 3.7.1 (from the fork's
+feat/ssh-proxy-connect, on branch zeo/ebuild-371): an allowlisted HOST:22 gives
+the sandbox a ProxyCommand (ai-jail --proxy-connect) through the egress proxy,
+GIT_SSH_COMMAND using it, and the user's known_hosts filtered to those hosts
+with strict checking. Must follow ai-jail-secret-https.patch.
+
+diff --git a/README.md b/README.md
+index f8e19cf..485af83 100644
+--- a/README.md
++++ b/README.md
+@@ -379,6 +379,28 @@ version: one request per connection (`Connection: close`), no WebSocket or
+ other upgrade on a bound host, and no HTTPS injection on macOS. The supervisor
+ sees the plaintext of requests to bound hosts, by construction.
+ 
++### SSH through filtered egress: `--allow-host HOST:22`
++
++Filtered egress carries HTTP(S) tunnels, and `ssh` has no proxy setting of its
++own. When an allowlist entry opens some host's port 22
++(`--allow-host github.com:22`), the sandbox gets a ProxyCommand that tunnels
++`ssh` through the same egress proxy -- which still decides host by host and
++port by port, with DNS pinning and the address-range guard:
++
++- `GIT_SSH_COMMAND` is set to use it, so `git push` over SSH works as is,
++  unless you pass your own `GIT_SSH_COMMAND`;
++- `AI_JAIL_SSH_PROXY_COMMAND` holds it for anything else:
++  `ssh -o ProxyCommand="$AI_JAIL_SSH_PROXY_COMMAND" host cmd`.
++
++Host keys come from your own `~/.ssh/known_hosts`, filtered: `ssh-keygen -F`
++picks out the lines of exactly the allowlisted `:22` hosts (hashed entries
++included) into a file mounted read-only at `/tmp/.ai-jail-known-hosts`, and
++`ssh` checks them strictly -- so the sandbox never learns the other hosts you
++know, and a host you have never trusted outside stays unreachable inside.
++
++It opens a path, not a credential: keys and agents stay outside unless you map
++them. A refused host or port ends the command with the proxy's status line.
++
+ ### Host loopback services: `--forward-port PORT`
+ 
+ Without `--network` the sandbox has its own loopback, so services listening
+diff --git a/docs/SECURITY.md b/docs/SECURITY.md
+index ce3599d..5ba0ab3 100644
+--- a/docs/SECURITY.md
++++ b/docs/SECURITY.md
+@@ -357,6 +357,14 @@ Tunnels to every other host stay opaque and carry no substitution. Not
+ covered: macOS (no interception), WebSocket and other upgrades on a bound
+ host, and more than one request per connection.
+ 
++SSH under filtered egress goes through the same proxy as HTTPS: an allowlist
++entry naming port 22 (`github.com:22`) gives the sandbox a ProxyCommand
++(`ai-jail --proxy-connect %h %p`, run from the in-sandbox copy of the binary)
++that asks the egress proxy for a CONNECT tunnel. The proxy applies its usual
++checks -- allowlist and port, DNS pinning, the address-range guard -- so no
++other host or port opens, and the tunnel is opaque like any other. The mode
++holds no privilege: it is a client of the in-sandbox bridge.
++
+ The egress log (`--egress-log PATH`, Linux only, CLI-only) is written by the
+ supervisor, never by the sandbox. What a line **can** contain: the line
+ version, a UTC timestamp, the run id, the requested host and port, the verdict
+diff --git a/src/cli.rs b/src/cli.rs
+index 43f6112..0dfea83 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -363,6 +363,10 @@ pub struct CliArgs {
+     /// as (loopback port, outer proxy's Unix socket path). Spawned by
+     /// the --landlock-exec wrapper before it restricts itself.
+     pub proxy_bridge: Option<(u16, PathBuf)>,
++    /// Internal: `--proxy-connect HOST PORT`, the `ssh` ProxyCommand inside
++    /// a filtered-egress sandbox -- a CONNECT through the in-sandbox bridge,
++    /// then stdin/stdout piped through the tunnel.
++    pub proxy_connect: Option<(String, u16)>,
+     /// Internal: run the in-sandbox end of a `--publish-port`, as
+     /// (sandbox loopback port, supervisor's Unix socket path). Spawned
+     /// by the --landlock-exec wrapper before it restricts itself.
+@@ -914,6 +918,28 @@ pub fn parse_from(mut parser: lexopt::Parser) -> Result<CliArgs, String> {
+                     parser.value().map_err(|e| e.to_string())?.into();
+                 args.proxy_bridge = Some((port, sock));
+             }
++            Long("proxy-connect") => {
++                let host = parser
++                    .value()
++                    .map_err(|e| e.to_string())?
++                    .to_string_lossy()
++                    .into_owned();
++                let val = parser.value().map_err(|e| e.to_string())?;
++                let port_text = val.to_string_lossy();
++                let port: u16 = port_text
++                    .parse()
++                    .ok()
++                    .filter(|port| *port != 0)
++                    .ok_or_else(|| {
++                        format!("invalid proxy-connect port: {port_text}")
++                    })?;
++                if host.is_empty() || host.starts_with('-') {
++                    return Err(format!(
++                        "invalid proxy-connect host: {host:?}"
++                    ));
++                }
++                args.proxy_connect = Some((host, port));
++            }
+             Long("publish-bridge") => {
+                 let val = parser.value().map_err(|e| e.to_string())?;
+                 let port_text = val.to_string_lossy();
+@@ -3066,6 +3092,19 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn parse_proxy_connect_internal_mode() {
++        let args =
++            parse_test(&["--proxy-connect", "github.com", "22"]).unwrap();
++        assert_eq!(args.proxy_connect, Some(("github.com".into(), 22)));
++        assert!(parse_test(&["--proxy-connect", "github.com", "0"]).is_err());
++        assert!(parse_test(&["--proxy-connect", "github.com", "ssh"]).is_err());
++        assert!(parse_test(&["--proxy-connect", "github.com"]).is_err());
++        assert!(
++            parse_test(&["--proxy-connect", "-oProxyCommand=x", "22"]).is_err()
++        );
++    }
++
+     #[test]
+     fn parse_proxy_bridge_internal_mode() {
+         let args = parse_test(&[
+diff --git a/src/main.rs b/src/main.rs
+index e0026e2..40e362c 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -25,6 +25,7 @@ mod run_summary;
+ mod sandbox;
+ mod secret;
+ mod signals;
++mod ssh_hosts;
+ mod ssh_restricted;
+ mod state_root;
+ mod statusbar;
+@@ -1567,6 +1568,14 @@ fn run(
+     if let Some((port, socket)) = &cli.proxy_bridge {
+         return proxy::run_bridge(*port, socket).map(|()| 0);
+     }
++    // Internal: `ssh`'s ProxyCommand inside a filtered-egress sandbox
++    // (§6.9 of Zeo's proposal). Unprivileged by construction -- a client of
++    // the in-sandbox bridge, which only reaches what the outer proxy allows
++    // -- so it needs no marker: run anywhere else it simply finds no bridge.
++    if let Some((host, port)) = &cli.proxy_connect {
++        return proxy::run_proxy_connect(host, *port, proxy::BRIDGE_PORT)
++            .map(|()| 0);
++    }
+     // Internal: the in-sandbox end of a --publish-port, under the same
+     // marker.
+     if cli.publish_bridge.is_some()
+@@ -2293,6 +2302,7 @@ fn run(
+         let mut allowlist = config.allow_hosts().to_vec();
+         allowlist.extend(config.allow_private_hosts().iter().cloned());
+         proxy::validate_allowlist(&allowlist)?;
++        let allowlist_for_ssh = allowlist.clone();
+         let mut proxy_config = proxy::ProxyConfig::new(allowlist);
+         proxy_config.allow_private_hosts =
+             config.allow_private_hosts().to_vec();
+@@ -2329,6 +2339,22 @@ fn run(
+         let socket = proxy::default_socket_path();
+         let proxy = proxy::Proxy::start(proxy_config, Some(&socket))
+             .map_err(|e| format!("Failed to start the egress proxy: {e}"))?;
++        // SSH through the proxy: the keys of exactly the allowlisted :22
++        // hosts, for the sandbox's strict host checking.
++        let ssh_hosts = ssh_hosts::ssh_hosts(&allowlist_for_ssh);
++        if !ssh_hosts.is_empty() {
++            let user_known_hosts = std::env::var_os("HOME")
++                .map(std::path::PathBuf::from)
++                .unwrap_or_default()
++                .join(".ssh/known_hosts");
++            if let Err(e) = ssh_hosts::write_known_hosts(
++                &socket,
++                &user_known_hosts,
++                &ssh_hosts,
++            ) {
++                output::warn(&format!("SSH host keys for the sandbox: {e}"));
++            }
++        }
+         Some(proxy)
+     } else {
+         if config.prompt_hosts_enabled() {
+diff --git a/src/proxy.rs b/src/proxy.rs
+index 30ece81..a8f7a44 100644
+--- a/src/proxy.rs
++++ b/src/proxy.rs
+@@ -508,6 +508,7 @@ impl Drop for Proxy {
+         if let Some(path) = &self.unix_path {
+             let _ = std::fs::remove_file(path);
+             crate::tls_inject::remove_bundle(path);
++            crate::ssh_hosts::remove_known_hosts(path);
+         }
+     }
+ }
+@@ -2225,6 +2226,108 @@ pub(crate) fn run_bridge(port: u16, socket: &Path) -> Result<(), String> {
+     }
+ }
+ 
++/// Where the landlock wrapper binary -- ai-jail itself -- sits inside the
++/// sandbox; the ProxyCommand below runs it.
++pub(crate) const IN_SANDBOX_SELF_PATH: &str = "/tmp/.ai-jail-landlock";
++
++/// The `ssh` ProxyCommand a filtered-egress sandbox gets when an allowlist
++/// entry opens a host's port 22 (`github.com:22`).
++pub(crate) fn ssh_proxy_command() -> String {
++    format!("{IN_SANDBOX_SELF_PATH} --proxy-connect %h %p")
++}
++
++/// SSH through filtered egress (§6.9 of Zeo's proposal): `ssh` has no proxy
++/// of its own, so its ProxyCommand runs this. It opens a CONNECT tunnel to
++/// `host:port` through the in-sandbox bridge -- the outer proxy decides, with
++/// the same allowlist, port policy, DNS pinning and address guard as any
++/// tunnel -- and then pipes stdin to the tunnel and the tunnel to stdout.
++/// A refusal is an error naming the proxy's status line, never a fallback.
++pub(crate) fn run_proxy_connect(
++    host: &str,
++    port: u16,
++    bridge_port: u16,
++) -> Result<(), String> {
++    proxy_connect_with(host, port, bridge_port, io::stdin(), io::stdout())
++}
++
++/// [`run_proxy_connect`] with its two ends as parameters, for the tests.
++fn proxy_connect_with<R, W>(
++    host: &str,
++    port: u16,
++    bridge_port: u16,
++    mut input: R,
++    mut output: W,
++) -> Result<(), String>
++where
++    R: Read + Send + 'static,
++    W: Write,
++{
++    let authority = if host.contains(':') {
++        format!("[{host}]:{port}")
++    } else {
++        format!("{host}:{port}")
++    };
++    let mut tunnel = TcpStream::connect((Ipv4Addr::LOCALHOST, bridge_port))
++        .map_err(|e| format!("cannot reach the egress bridge: {e}"))?;
++    tunnel
++        .write_all(
++            format!(
++                "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n"
++            )
++            .as_bytes(),
++        )
++        .map_err(|e| format!("cannot ask the egress proxy: {e}"))?;
++    let _ = tunnel.set_read_timeout(Some(Duration::from_secs(30)));
++    let reply = read_request(&mut tunnel, REQUEST_CAP)
++        .map_err(|_| "the egress proxy did not answer".to_string())?;
++    let _ = tunnel.set_read_timeout(None);
++    let head_end = reply
++        .windows(4)
++        .position(|w| w == b"\r\n\r\n")
++        .map_or(reply.len(), |at| at + 4);
++    let status = String::from_utf8_lossy(&reply[..head_end]);
++    let status = status.lines().next().unwrap_or_default().to_string();
++    let accepted = status
++        .split_whitespace()
++        .nth(1)
++        .is_some_and(|code| code == "200");
++    if !accepted {
++        return Err(format!("the egress proxy refused {authority}: {status}"));
++    }
++    // Bytes the server sent right behind the reply (an SSH banner) are the
++    // stream's first bytes.
++    output
++        .write_all(&reply[head_end..])
++        .and_then(|()| output.flush())
++        .map_err(|e| e.to_string())?;
++    let mut upstream = tunnel.try_clone().map_err(|e| e.to_string())?;
++    let up = thread::spawn(move || {
++        let _ = io::copy(&mut input, &mut upstream);
++        let _ = upstream.shutdown(Shutdown::Write);
++    });
++    // Flushed after every read: stdout is line-buffered, and an SSH packet
++    // carries no newline, so `io::copy` would hold the server's key exchange
++    // back and the session would wait forever (measured against github.com).
++    let mut chunk = [0_u8; 16 * 1024];
++    loop {
++        match tunnel.read(&mut chunk) {
++            Ok(0) | Err(_) => break,
++            Ok(n) => {
++                if output
++                    .write_all(&chunk[..n])
++                    .and_then(|()| output.flush())
++                    .is_err()
++                {
++                    break;
++                }
++            }
++        }
++    }
++    // The server ended the session; the client closes our input next.
++    drop(up);
++    Ok(())
++}
++
+ /// Fixed path inside the sandbox where the host-side Unix socket of a
+ /// `--forward-port` is bind-mounted (Linux). One per port, under the
+ /// same fresh /tmp tmpfs as the proxy socket.
+@@ -4072,6 +4175,101 @@ mod tests {
+         }
+     }
+ 
++    /// A one-shot TCP server: reads `expect` bytes, then answers `reply`.
++    fn line_server(expect: usize, reply: &'static [u8]) -> u16 {
++        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
++        let port = listener.local_addr().unwrap().port();
++        thread::spawn(move || {
++            let (mut conn, _) = listener.accept().unwrap();
++            let mut got = vec![0_u8; expect];
++            conn.read_exact(&mut got).unwrap();
++            conn.write_all(reply).unwrap();
++            conn.write_all(&got).unwrap();
++        });
++        port
++    }
++
++    #[test]
++    fn proxy_connect_pipes_through_an_allowed_tunnel() {
++        let server = line_server(5, b"SSH-2.0-fixture\r\n");
++        let proxy = Proxy::start(test_config(&["127.0.0.1"]), None).unwrap();
++        let mut output = Vec::new();
++        proxy_connect_with(
++            "127.0.0.1",
++            server,
++            proxy.port(),
++            &b"hello"[..],
++            &mut output,
++        )
++        .unwrap();
++        assert_eq!(output, b"SSH-2.0-fixture\r\nhello");
++    }
++
++    #[test]
++    fn proxy_connect_hands_on_a_packet_without_a_newline_at_once() {
++        // An SSH key exchange: the server sends a binary packet and waits
++        // for the client's answer, which the client only sends once it has
++        // the packet. A line-buffered output that is not flushed holds the
++        // packet back and both sides wait forever.
++        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
++        let server_port = listener.local_addr().unwrap().port();
++        thread::spawn(move || {
++            let (mut conn, _) = listener.accept().unwrap();
++            conn.write_all(b"\x01\x02").unwrap();
++            let mut answer = [0_u8; 2];
++            conn.read_exact(&mut answer).unwrap();
++            conn.write_all(b"done").unwrap();
++        });
++        let proxy = Proxy::start(test_config(&["127.0.0.1"]), None).unwrap();
++        let (client_in, mut client_answers) = std::io::pipe().unwrap();
++        let (mut client_reads, server_bytes) = std::io::pipe().unwrap();
++        let client = thread::spawn(move || {
++            let mut packet = [0_u8; 2];
++            client_reads.read_exact(&mut packet).unwrap();
++            client_answers.write_all(b"ok").unwrap();
++            drop(client_answers);
++            let mut rest = Vec::new();
++            client_reads.read_to_end(&mut rest).unwrap();
++            rest
++        });
++        let (done_tx, done_rx) = std::sync::mpsc::channel();
++        thread::spawn(move || {
++            let output = std::io::LineWriter::new(server_bytes);
++            let result = proxy_connect_with(
++                "127.0.0.1",
++                server_port,
++                proxy.port(),
++                client_in,
++                output,
++            );
++            let _ = done_tx.send(result);
++        });
++        let result = done_rx
++            .recv_timeout(Duration::from_secs(10))
++            .expect("the packet was held back: the session deadlocked");
++        result.unwrap();
++        assert_eq!(client.join().unwrap(), b"done");
++    }
++
++    #[test]
++    fn proxy_connect_names_the_refusal_and_sends_nothing() {
++        // Listed for 443/80 only: port 22 is refused by the port policy.
++        let mut config = test_config(&["127.0.0.1"]);
++        config.danger_any_port = false;
++        let proxy = Proxy::start(config, None).unwrap();
++        let mut output = Vec::new();
++        let error = proxy_connect_with(
++            "127.0.0.1",
++            22,
++            proxy.port(),
++            &b"secret"[..],
++            &mut output,
++        )
++        .unwrap_err();
++        assert!(error.contains("403"), "{error}");
++        assert!(output.is_empty());
++    }
++
+     #[test]
+     fn e2e_http_absolute_form_non_secret_host_is_405() {
+         // Allowlisted but not secret-bound: no termination, today's 405.
+diff --git a/src/sandbox/bwrap.rs b/src/sandbox/bwrap.rs
+index dcd046b..7dc0ba3 100644
+--- a/src/sandbox/bwrap.rs
++++ b/src/sandbox/bwrap.rs
+@@ -2269,6 +2269,20 @@ fn proxy_socket_mount_args(
+                     );
+                 }
+             }
++            // SSH host keys for the allowlisted :22 hosts, read-only; with
++            // none, ssh's strict checking refuses the host, which is safe.
++            let known_hosts = crate::ssh_hosts::known_hosts_path(sock);
++            if known_hosts.is_file() {
++                args.extend(
++                    Mount::RoBind {
++                        src: known_hosts,
++                        dest: PathBuf::from(
++                            crate::ssh_hosts::IN_SANDBOX_KNOWN_HOSTS,
++                        ),
++                    }
++                    .to_args(),
++                );
++            }
+             Ok(args)
+         }
+         // Filtered egress without the outer proxy would silently mean
+@@ -2280,6 +2294,40 @@ fn proxy_socket_mount_args(
+     }
+ }
+ 
++/// SSH through filtered egress: when an allowlist entry opens some host's
++/// port 22 (`github.com:22`), `ssh` gets a ProxyCommand that tunnels through
++/// the egress proxy, which still decides host by host and port by port.
++/// `AI_JAIL_SSH_PROXY_COMMAND` carries it for `ssh -o ProxyCommand=...`, and
++/// `GIT_SSH_COMMAND` uses it so `git push` over SSH works as is -- unless the
++/// user passes their own `GIT_SSH_COMMAND`, which then wins.
++fn ssh_proxy_env(config: &Config) -> Vec<(String, String)> {
++    let opens_ssh = config
++        .allow_hosts()
++        .iter()
++        .chain(config.allow_private_hosts())
++        .filter_map(|entry| crate::proxy::split_allow_entry(entry).ok())
++        .any(|(_, port)| port == Some(22));
++    if !opens_ssh {
++        return Vec::new();
++    }
++    let command = crate::proxy::ssh_proxy_command();
++    let options = crate::ssh_hosts::ssh_options();
++    let mut vars = vec![
++        ("AI_JAIL_SSH_PROXY_COMMAND".to_string(), command.clone()),
++        ("AI_JAIL_SSH_OPTIONS".to_string(), options.clone()),
++    ];
++    let user_sets_git_ssh = crate::config::env_pass_names(&config.env_pass)
++        .iter()
++        .any(|name| name == "GIT_SSH_COMMAND");
++    if !user_sets_git_ssh {
++        vars.push((
++            "GIT_SSH_COMMAND".to_string(),
++            format!("ssh -o ProxyCommand='{command}' {options}"),
++        ));
++    }
++    vars
++}
++
+ /// Port forwards and publishes: bind each host-side bridge socket into
+ /// the sandbox at its fixed per-port path. Same placement and reasoning
+ /// as the proxy socket above. Fails closed when a configured port has no
+@@ -2611,6 +2659,7 @@ fn discover_mounts_full(
+         if !config.secret_hosts.is_empty() {
+             vars.extend(crate::tls_inject::env_vars());
+         }
++        vars.extend(ssh_proxy_env(config));
+         vars
+     } else {
+         vec![]
+@@ -6176,6 +6225,39 @@ mod tests {
+         }));
+     }
+ 
++    #[test]
++    fn an_allowlisted_ssh_port_gives_ssh_a_proxy_command() {
++        assert_eq!(LANDLOCK_WRAPPER_DEST, crate::proxy::IN_SANDBOX_SELF_PATH);
++        let mut config = Config {
++            allow_hosts: vec!["github.com".into()],
++            ..minimal_test_config()
++        };
++        assert!(ssh_proxy_env(&config).is_empty(), "443/80 only: no ssh");
++        config.allow_hosts.push("github.com:22".into());
++        let vars = ssh_proxy_env(&config);
++        let get =
++            |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
++        assert_eq!(
++            get("AI_JAIL_SSH_PROXY_COMMAND").as_deref(),
++            Some("/tmp/.ai-jail-landlock --proxy-connect %h %p")
++        );
++        assert_eq!(
++            get("GIT_SSH_COMMAND").as_deref(),
++            Some(
++                "ssh -o ProxyCommand='/tmp/.ai-jail-landlock --proxy-connect %h %p' \
++                 -F /dev/null -o UserKnownHostsFile=/tmp/.ai-jail-known-hosts \
++                 -o StrictHostKeyChecking=yes"
++            )
++        );
++        // The user's own GIT_SSH_COMMAND wins.
++        config.env_pass.push("GIT_SSH_COMMAND=ssh -v".into());
++        assert!(get_from(&ssh_proxy_env(&config), "GIT_SSH_COMMAND").is_none());
++    }
++
++    fn get_from(vars: &[(String, String)], key: &str) -> Option<String> {
++        vars.iter().find(|(n, _)| n == key).map(|(_, v)| v.clone())
++    }
++
+     #[test]
+     fn a_launch_with_a_secret_refuses_missing_ca_files() {
+         let mut config = Config {
+diff --git a/src/ssh_hosts.rs b/src/ssh_hosts.rs
+new file mode 100644
+index 0000000..5dcb43a
+--- /dev/null
++++ b/src/ssh_hosts.rs
+@@ -0,0 +1,152 @@
++//! Host keys for SSH through filtered egress (§6.9 of Zeo's proposal).
++//!
++//! The sandbox's home is its own, so `ssh` inside it has no `known_hosts`
++//! and would refuse every server it is allowed to reach. Copying the user's
++//! whole file in would tell the sandbox every host the user ever visited.
++//! Instead the supervisor asks `ssh-keygen -F` -- which also matches hashed
++//! entries -- for the keys of exactly the hosts whose port 22 is allowlisted,
++//! writes those lines to a file beside the proxy socket (mode 0600, created
++//! fresh), and the sandbox mounts it read-only with strict checking. A host
++//! with no known key stays unreachable until the user trusts it outside.
++
++use std::{
++    fs::OpenOptions,
++    io::Write as _,
++    os::unix::fs::OpenOptionsExt as _,
++    path::{Path, PathBuf},
++    process::{Command, Stdio},
++};
++
++/// Where the sandbox finds the filtered file.
++pub(crate) const IN_SANDBOX_KNOWN_HOSTS: &str = "/tmp/.ai-jail-known-hosts";
++
++/// The hosts whose port 22 an allowlist opens, lowercase, once each.
++pub(crate) fn ssh_hosts(entries: &[String]) -> Vec<String> {
++    let mut hosts: Vec<String> = entries
++        .iter()
++        .filter_map(|entry| crate::proxy::split_allow_entry(entry).ok())
++        .filter(|(_, port)| *port == Some(22))
++        .map(|(host, _)| host.trim_end_matches('.').to_lowercase())
++        .collect();
++    hosts.sort();
++    hosts.dedup();
++    hosts
++}
++
++/// The host-side path of the filtered file, beside the proxy socket.
++pub(crate) fn known_hosts_path(proxy_socket: &Path) -> PathBuf {
++    PathBuf::from(format!(
++        "{}.known_hosts",
++        proxy_socket.as_os_str().to_string_lossy()
++    ))
++}
++
++/// The lines of `known_hosts` that name `hosts`, as `ssh-keygen -F` finds
++/// them (comment lines dropped). A missing file or `ssh-keygen` finds none.
++pub(crate) fn matching_lines(known_hosts: &Path, hosts: &[String]) -> String {
++    let mut out = String::new();
++    for host in hosts {
++        let Ok(output) = Command::new("ssh-keygen")
++            .arg("-F")
++            .arg(host)
++            .arg("-f")
++            .arg(known_hosts)
++            .stdin(Stdio::null())
++            .stderr(Stdio::null())
++            .output()
++        else {
++            continue;
++        };
++        for line in String::from_utf8_lossy(&output.stdout).lines() {
++            if !line.starts_with('#') && !line.trim().is_empty() {
++                out.push_str(line);
++                out.push('\n');
++            }
++        }
++    }
++    out
++}
++
++/// Writes the filtered file for `hosts` beside the proxy socket, refusing
++/// to follow or reuse an existing path. Returns its path.
++pub(crate) fn write_known_hosts(
++    proxy_socket: &Path,
++    user_known_hosts: &Path,
++    hosts: &[String],
++) -> Result<PathBuf, String> {
++    let path = known_hosts_path(proxy_socket);
++    let mut file = OpenOptions::new()
++        .write(true)
++        .create_new(true)
++        .mode(0o600)
++        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
++        .open(&path)
++        .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
++    file.write_all(matching_lines(user_known_hosts, hosts).as_bytes())
++        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
++    Ok(path)
++}
++
++/// Removes the filtered file; quiet, it runs on teardown.
++pub(crate) fn remove_known_hosts(proxy_socket: &Path) {
++    let _ = std::fs::remove_file(known_hosts_path(proxy_socket));
++}
++
++/// The ssh options that make the sandbox use only the filtered file. `-F
++/// /dev/null` too: inside the user namespace the host's `/etc/ssh` files
++/// belong to an unmapped owner, which ssh refuses as "bad owner", and the
++/// sandbox's home has no `~/.ssh/config` to lose.
++pub(crate) fn ssh_options() -> String {
++    format!(
++        "-F /dev/null -o UserKnownHostsFile={IN_SANDBOX_KNOWN_HOSTS} -o StrictHostKeyChecking=yes"
++    )
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn only_port_22_entries_are_ssh_hosts() {
++        let entries = [
++            "github.com".to_string(),
++            "GitHub.com:22".to_string(),
++            "gitlab.com:22".to_string(),
++            "example.com:2222".to_string(),
++            "github.com:22".to_string(),
++        ];
++        assert_eq!(ssh_hosts(&entries), ["github.com", "gitlab.com"]);
++    }
++
++    #[test]
++    fn the_file_holds_only_the_allowed_hosts_keys() {
++        if Command::new("ssh-keygen").arg("-?").output().is_err() {
++            return;
++        }
++        let dir = std::env::temp_dir()
++            .join(format!("ai-jail-known-hosts-{}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&dir);
++        std::fs::create_dir_all(&dir).unwrap();
++        let user = dir.join("known_hosts");
++        std::fs::write(
++            &user,
++            "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n\
++             secret-host.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKZ6TQTTMDNk2r2Ga9h3j9VdPF8CXa6nrw0Dt2tSF1wJ\n",
++        )
++        .unwrap();
++        let socket = dir.join("proxy.sock");
++        let path =
++            write_known_hosts(&socket, &user, &["github.com".into()]).unwrap();
++        let text = std::fs::read_to_string(&path).unwrap();
++        assert!(text.contains("github.com ssh-ed25519"), "{text}");
++        assert!(!text.contains("secret-host"), "{text}");
++        use std::os::unix::fs::PermissionsExt as _;
++        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
++        assert_eq!(mode & 0o777, 0o600);
++        // Never reused.
++        assert!(write_known_hosts(&socket, &user, &[]).is_err());
++        remove_known_hosts(&socket);
++        assert!(!path.exists());
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++}

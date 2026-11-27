@@ -13,7 +13,7 @@ inherit xdg
 # targets znver5 and put AVX-512 into the binary; this build refuses any
 # compiler-generated AVX-512. PROVENANCE.txt inside the tarball names the commit,
 # every patch with its sha256, the toolchains and the flags.
-EGIT_COMMIT="6ba65ce3be7fc08eec910088ea1472174aa4a002"
+EGIT_COMMIT="46375fbf64574f01dc08fd2d2998aa7bbb7f0377"
 
 DESCRIPTION="Zeo - the Zed editor, rebranded, with the bentoo patch series (binary)"
 HOMEPAGE="https://github.com/zeo-workspace/zeo https://zed.dev"
@@ -42,7 +42,7 @@ KEYWORDS="-* ~amd64"
 # terminals, and for ai-jail (patches 0057, 0141, 0144, 0146, 0150, 0152, 0158, 0159, 0160, 0161, 0163,
 # 0165, 0168; in the binary since 0.19.2) the sandbox the agents are started in, which needs ai-jail 3.5.0-r5:
 # agent_sandbox.mask_host is on by default since 0.22.0 (0158), and refused without --mask-host.
-IUSE="+ai-jail +claude-agent-acp-plus +claude-agent-acp-tui +claude-code-ide"
+IUSE="+ai-jail +claude-agent-acp-plus +claude-agent-acp-tui +claude-code-ide +voice"
 # Never bindist: redistributing this binary is the reason the package exists.
 RESTRICT="mirror strip"
 
@@ -73,6 +73,7 @@ RDEPEND="
 	)
 	ai-jail? ( >=sys-apps/ai-jail-3.5.0-r5 )
 	claude-agent-acp-plus? ( >=dev-util/claude-agent-acp-plus-0.26.0 )
+	voice? ( app-accessibility/whisper-models[base] )
 	claude-agent-acp-tui? ( dev-util/claude-agent-acp-tui )
 	claude-code-ide? ( dev-util/claude-code )
 "

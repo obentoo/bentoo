@@ -1,0 +1,172 @@
+From bd1ac617f185411c6f3323b16de7f400000ca40f Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 27 Nov 2026 08:36:11 -0300
+Subject: [PATCH] agent_ui: a remote project's lock warns that its agent runs
+ unjailed
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next §6.53. Zed's remote projects run the agent on the remote
+machine, where Zeo's jail does not reach (0057 records them as
+`Reason::Remote`). The lock showed that the way it shows a jail turned
+off -- a muted open lock -- though a remote agent cannot be jailed at
+all and acts with everything the remote account can.
+
+The open lock is now in warning colour for a remote project, and its
+tooltip adds that the agent runs unjailed there, with everything the
+account can read, write and reach. The sentence is in the nine
+languages.
+
+Test: agent_jail_status_tests.rs -- the remote summary's colour and
+line.
+---
+
+diff --git a/crates/agent_ui/src/agent_jail_status.rs b/crates/agent_ui/src/agent_jail_status.rs
+index b07ab03..111086d 100644
+--- a/crates/agent_ui/src/agent_jail_status.rs
++++ b/crates/agent_ui/src/agent_jail_status.rs
+@@ -154,6 +154,8 @@ pub fn jail_status_summary(record: &LaunchRecord, drifted: bool) -> JailStatusSu
+         }
+         Reason::Remote => {
+             lines.push(t!("agent-jail-status-remote").into());
++            // Zeo next §6.53: a remote project's agent runs unjailed, so the lock warns.
++            lines.push(t!("agent-jail-status-remote-unjailed").into());
+             IconName::LockOff
+         }
+         Reason::NotClaude => {
+@@ -176,7 +178,7 @@ pub fn jail_status_summary(record: &LaunchRecord, drifted: bool) -> JailStatusSu
+         lines.push(drifted_line().into());
+     }
+ 
+-    let color = if outdated_version.is_some() {
++    let color = if outdated_version.is_some() || record.reason == Reason::Remote {
+         Color::Warning
+     } else if icon == IconName::Lock {
+         Color::Default
+diff --git a/crates/agent_ui/src/agent_jail_status_tests.rs b/crates/agent_ui/src/agent_jail_status_tests.rs
+index 64ec4c5..66d522d 100644
+--- a/crates/agent_ui/src/agent_jail_status_tests.rs
++++ b/crates/agent_ui/src/agent_jail_status_tests.rs
+@@ -161,6 +161,13 @@ mod icon {
+             "{:?}",
+             remote.lines
+         );
++        // Zeo next §6.53: unjailed on the remote machine, and the lock says so in warning colour.
++        assert_eq!(remote.color, Color::Warning);
++        assert!(
++            remote.lines.iter().any(|line| line.contains("unjailed")),
++            "{:?}",
++            remote.lines
++        );
+     }
+ 
+     #[test]
+diff --git a/crates/zeo_i18n/locales/de/agent-jail.ftl b/crates/zeo_i18n/locales/de/agent-jail.ftl
+index 0b2fa36..c1ef638 100644
+--- a/crates/zeo_i18n/locales/de/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/de/agent-jail.ftl
+@@ -121,6 +121,7 @@ agent-jail-status-list = { $list ->
+ }
+ agent-jail-status-list-none = keine
+ agent-jail-status-remote = Die Agent-Sandbox ist für Remote-Projekte nicht verfügbar.
++agent-jail-status-remote-unjailed = Sein Agent läuft ohne Jail auf dem entfernten Rechner, mit allem, was Ihr Konto dort lesen, schreiben und erreichen kann.
+ agent-jail-status-own-command = Durch seinen agent_servers-Befehl in einer Sandbox; nicht von Zeo verwaltet.
+ agent-jail-status-not-claude = Kein Claude-Agent: Die Agent-Sandbox gilt nur für die Claude-Adapter.
+ agent-jail-status-drifted = Starten Sie den Agenten neu, um die neue Einstellung anzuwenden.
+diff --git a/crates/zeo_i18n/locales/en-US/agent-jail.ftl b/crates/zeo_i18n/locales/en-US/agent-jail.ftl
+index 8ecccee..73c4e9e 100644
+--- a/crates/zeo_i18n/locales/en-US/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/en-US/agent-jail.ftl
+@@ -141,6 +141,7 @@ agent-jail-status-list = { $list ->
+ }
+ agent-jail-status-list-none = none
+ agent-jail-status-remote = The agent sandbox is not available for remote projects.
++agent-jail-status-remote-unjailed = Its agent runs unjailed on the remote machine, with everything your account there can read, write and reach.
+ agent-jail-status-own-command = Sandboxed by its agent_servers command; not managed by Zeo.
+ agent-jail-status-not-claude = Not a Claude agent: the agent sandbox applies only to the Claude adapters.
+ agent-jail-status-drifted = Restart the agent to apply the new setting.
+diff --git a/crates/zeo_i18n/locales/es/agent-jail.ftl b/crates/zeo_i18n/locales/es/agent-jail.ftl
+index d125889..f2ec4f8 100644
+--- a/crates/zeo_i18n/locales/es/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/es/agent-jail.ftl
+@@ -120,6 +120,7 @@ agent-jail-status-list = { $list ->
+ }
+ agent-jail-status-list-none = ninguno
+ agent-jail-status-remote = El sandbox del agente no está disponible para proyectos remotos.
++agent-jail-status-remote-unjailed = Su agente se ejecuta sin jail en la máquina remota, con todo lo que tu cuenta allí puede leer, escribir y alcanzar.
+ agent-jail-status-own-command = Aislado en sandbox por su comando agent_servers; no lo gestiona Zeo.
+ agent-jail-status-not-claude = No es un agente de Claude: el sandbox del agente solo se aplica a los adaptadores de Claude.
+ agent-jail-status-drifted = Reinicia el agente para aplicar la nueva configuración.
+diff --git a/crates/zeo_i18n/locales/fr/agent-jail.ftl b/crates/zeo_i18n/locales/fr/agent-jail.ftl
+index efc66c6..01aa61f 100644
+--- a/crates/zeo_i18n/locales/fr/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/fr/agent-jail.ftl
+@@ -113,6 +113,7 @@ agent-jail-status-list = { $list ->
+ }
+ agent-jail-status-list-none = aucun
+ agent-jail-status-remote = Le sandbox de l'agent n'est pas disponible pour les projets distants.
++agent-jail-status-remote-unjailed = Son agent s’exécute sans jail sur la machine distante, avec tout ce que votre compte peut y lire, écrire et joindre.
+ agent-jail-status-own-command = Isolé par sa propre commande agent_servers ; non géré par Zeo.
+ agent-jail-status-not-claude = Pas un agent Claude : le sandbox de l'agent ne s'applique qu'aux adaptateurs Claude.
+ agent-jail-status-drifted = Redémarrez l'agent pour appliquer le nouveau réglage.
+diff --git a/crates/zeo_i18n/locales/it/agent-jail.ftl b/crates/zeo_i18n/locales/it/agent-jail.ftl
+index 297f2d2..08450cf 100644
+--- a/crates/zeo_i18n/locales/it/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/it/agent-jail.ftl
+@@ -113,6 +113,7 @@ agent-jail-status-list = { $list ->
+ }
+ agent-jail-status-list-none = nessuno
+ agent-jail-status-remote = La sandbox dell'agente non è disponibile per i progetti remoti.
++agent-jail-status-remote-unjailed = Il suo agente gira senza jail sulla macchina remota, con tutto ciò che il tuo account lì può leggere, scrivere e raggiungere.
+ agent-jail-status-own-command = In sandbox tramite il suo comando agent_servers; non gestito da Zeo.
+ agent-jail-status-not-claude = Non è un agente Claude: la sandbox dell'agente si applica solo agli adapter Claude.
+ agent-jail-status-drifted = Riavvia l'agente per applicare la nuova impostazione.
+diff --git a/crates/zeo_i18n/locales/ja/agent-jail.ftl b/crates/zeo_i18n/locales/ja/agent-jail.ftl
+index 31e3c82..957c1ba 100644
+--- a/crates/zeo_i18n/locales/ja/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/ja/agent-jail.ftl
+@@ -119,6 +119,7 @@ agent-jail-status-list = { $list ->
+ }
+ agent-jail-status-list-none = なし
+ agent-jail-status-remote = リモートプロジェクトではエージェントの sandbox を利用できません。
++agent-jail-status-remote-unjailed = このエージェントはリモートマシン上で jail なしで動き、そこであなたのアカウントが読み書き・接続できるものすべてに触れられます。
+ agent-jail-status-own-command = agent_servers のコマンドで sandbox 化されています。Zeo の管理対象外です。
+ agent-jail-status-not-claude = Claude エージェントではありません。エージェントの sandbox は Claude アダプターにのみ適用されます。
+ agent-jail-status-drifted = 新しい設定を適用するには、エージェントを再起動してください。
+diff --git a/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl b/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
+index 5fe49a7..a1c09cd 100644
+--- a/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
+@@ -138,6 +138,7 @@ agent-jail-status-list = { $list ->
+ }
+ agent-jail-status-list-none = nenhuma
+ agent-jail-status-remote = O sandbox do agente não está disponível para projetos remotos.
++agent-jail-status-remote-unjailed = O agente dele roda sem jail na máquina remota, com tudo o que sua conta lá pode ler, escrever e alcançar.
+ agent-jail-status-own-command = Isolado pelo próprio comando de agent_servers; não é gerenciado pelo Zeo.
+ agent-jail-status-not-claude = Não é um agente Claude: o sandbox do agente vale só para os adaptadores do Claude.
+ agent-jail-status-drifted = Reinicie o agente para aplicar a nova configuração.
+diff --git a/crates/zeo_i18n/locales/ru/agent-jail.ftl b/crates/zeo_i18n/locales/ru/agent-jail.ftl
+index b6693fb..91447ca 100644
+--- a/crates/zeo_i18n/locales/ru/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/ru/agent-jail.ftl
+@@ -115,6 +115,7 @@ agent-jail-status-list = { $list ->
+ }
+ agent-jail-status-list-none = нет
+ agent-jail-status-remote = Sandbox агента недоступен для удаленных проектов.
++agent-jail-status-remote-unjailed = Его агент работает без jail на удалённой машине и может всё, что может ваша учётная запись там: читать, писать и подключаться.
+ agent-jail-status-own-command = Изолирован собственной командой из agent_servers; Zeo им не управляет.
+ agent-jail-status-not-claude = Не агент Claude: sandbox агента применяется только к адаптерам Claude.
+ agent-jail-status-drifted = Перезапустите агента, чтобы применить новую настройку.
+diff --git a/crates/zeo_i18n/locales/zh-CN/agent-jail.ftl b/crates/zeo_i18n/locales/zh-CN/agent-jail.ftl
+index efe4dc5..ea94577 100644
+--- a/crates/zeo_i18n/locales/zh-CN/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/zh-CN/agent-jail.ftl
+@@ -135,6 +135,7 @@ agent-jail-status-list = { $list ->
+ }
+ agent-jail-status-list-none = 无
+ agent-jail-status-remote = 智能体sandbox不适用于远程项目。
++agent-jail-status-remote-unjailed = 它的智能体在远程机器上不经 jail 运行，可以读取、写入和访问你在那里的账户能访问的一切。
+ agent-jail-status-own-command = 由其agent_servers命令置于sandbox中；不由Zeo管理。
+ agent-jail-status-not-claude = 不是Claude智能体：智能体sandbox仅适用于Claude适配器。
+ agent-jail-status-drifted = 重启智能体以应用新设置。

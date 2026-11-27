@@ -1,0 +1,165 @@
+From 2d9c8b5bd3944b3a3589a9071d91ac4b69e28db8 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 27 Nov 2026 09:27:10 -0300
+Subject: [PATCH] settings_ui: a jail's Capabilities offer zeo-terminals
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next §6.71, the jail half of 0214. A jail reaches a proxied MCP
+server only when its Capabilities choose it (0152), so `zeo-terminals`
+is listed there beside `zeo-lsp`, off by default, with a note saying it
+reads only the terminals the operator shared from their tab. It is
+offered while `agent.zeo_terminals` is on, or when a jail already chose
+it, so the choice can be undone.
+
+The note is in the nine languages.
+---
+
+diff --git a/crates/settings_ui/src/pages/agent_jail_capabilities.rs b/crates/settings_ui/src/pages/agent_jail_capabilities.rs
+index ffbc059..225fc7c 100644
+--- a/crates/settings_ui/src/pages/agent_jail_capabilities.rs
++++ b/crates/settings_ui/src/pages/agent_jail_capabilities.rs
+@@ -29,6 +29,8 @@ use super::{JailPageState, reveal};
+ 
+ /// `agent_servers::acp::zeo_lsp::ZEO_LSP_SERVER_NAME`, which this crate cannot reach.
+ pub(crate) const ZEO_LSP: &str = "zeo-lsp";
++/// `agent_servers::acp::zeo_terminals::ZEO_TERMINALS_SERVER_NAME` (§6.71), likewise.
++pub(crate) const ZEO_TERMINALS: &str = "zeo-terminals";
+ 
+ /// The anchor `OpenSettingsAt { path: "agent_sandbox#capabilities" }` reveals (the jail notice).
+ pub(crate) const CAPABILITIES_ANCHOR: &str = "capabilities";
+@@ -178,7 +180,24 @@ fn rows_from_store(
+         .try_global::<SettingsStore>()
+         .and_then(|store| store.merged_settings().agent.as_ref()?.zeo_lsp)
+         .unwrap_or(true);
+-    server_rows(servers, chosen, zeo_lsp)
++    let mut rows = server_rows(servers, chosen, zeo_lsp);
++    // §6.71: the terminals the operator shares, when `agent.zeo_terminals` is on (default) or a
++    // jail already chose them, so the choice can still be undone.
++    let zeo_terminals = cx
++        .try_global::<SettingsStore>()
++        .and_then(|store| store.merged_settings().agent.as_ref()?.zeo_terminals)
++        .unwrap_or(true);
++    let chosen_terminals = chosen.iter().any(|name| name == ZEO_TERMINALS);
++    if (zeo_terminals || chosen_terminals) && !rows.iter().any(|row| row.name == ZEO_TERMINALS) {
++        rows.push(ServerRow {
++            name: ZEO_TERMINALS.to_string(),
++            note: t!("agent-sandbox-mcp-zeo-terminals"),
++            secrets: Vec::new(),
++            chosen: chosen_terminals,
++        });
++        rows.sort_by(|a, b| a.name.cmp(&b.name));
++    }
++    rows
+ }
+ 
+ /// The Capabilities block of the project section.
+diff --git a/crates/zeo_i18n/locales/de/agent-sandbox.ftl b/crates/zeo_i18n/locales/de/agent-sandbox.ftl
+index e8d9d87..83ff990 100644
+--- a/crates/zeo_i18n/locales/de/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/de/agent-sandbox.ftl
+@@ -108,6 +108,7 @@ agent-sandbox-mcp-failed = Start fehlgeschlagen
+ agent-sandbox-mcp-needs-auth = Authentifizierung erforderlich
+ agent-sandbox-mcp-carries-secret = { $status }. Enthält ein Secret ({ $places }): fragt vor dem Aktivieren nach
+ agent-sandbox-mcp-zeo-lsp = Die Language Server des Projekts, schreibgeschützt: Diagnosen, Definition, Referenzen, Hover, Symbole
++agent-sandbox-mcp-zeo-terminals = Die Terminals, die Sie über ihren Tab geteilt haben, nur lesend: ihre letzten Zeilen
+ agent-sandbox-mcp-not-configured = In diesem Projekt nicht konfiguriert
+ agent-sandbox-skills = Skills
+     .note = Zeos Skills (~/.agents/skills und .agents/skills dieses Projekts) als Plugins, schreibgeschützt eingebunden. Starten Sie den Agenten neu, um die Änderung anzuwenden.
+diff --git a/crates/zeo_i18n/locales/en-US/agent-sandbox.ftl b/crates/zeo_i18n/locales/en-US/agent-sandbox.ftl
+index e21827c..849189b 100644
+--- a/crates/zeo_i18n/locales/en-US/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/en-US/agent-sandbox.ftl
+@@ -122,6 +122,7 @@ agent-sandbox-mcp-failed = Failed to start
+ agent-sandbox-mcp-needs-auth = Needs authentication
+ agent-sandbox-mcp-carries-secret = { $status }. Carries a secret ({ $places }): asks before turning on
+ agent-sandbox-mcp-zeo-lsp = The project's language servers, read-only: diagnostics, definition, references, hover, symbols
++agent-sandbox-mcp-zeo-terminals = The terminals you shared from their tab, read-only: their last lines
+ agent-sandbox-mcp-not-configured = Not configured in this project
+ agent-sandbox-skills = Skills
+     .note = Zeo's skills (~/.agents/skills and this project's .agents/skills) as plugins, mapped read-only. Restart the agent to apply.
+diff --git a/crates/zeo_i18n/locales/es/agent-sandbox.ftl b/crates/zeo_i18n/locales/es/agent-sandbox.ftl
+index 4ca658a..d968be4 100644
+--- a/crates/zeo_i18n/locales/es/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/es/agent-sandbox.ftl
+@@ -107,6 +107,7 @@ agent-sandbox-mcp-failed = Error al iniciar
+ agent-sandbox-mcp-needs-auth = Requiere autenticación
+ agent-sandbox-mcp-carries-secret = { $status }. Contiene un secreto ({ $places }): pregunta antes de activarse
+ agent-sandbox-mcp-zeo-lsp = Los language servers del proyecto, de solo lectura: diagnósticos, definición, referencias, información al pasar el cursor, símbolos
++agent-sandbox-mcp-zeo-terminals = Los terminales que compartiste desde su pestaña, solo lectura: sus últimas líneas
+ agent-sandbox-mcp-not-configured = No configurado en este proyecto
+ agent-sandbox-skills = Skills
+     .note = Las skills de Zeo (~/.agents/skills y .agents/skills de este proyecto) como plugins, montadas en modo de solo lectura. Reinicia el agente para aplicar los cambios.
+diff --git a/crates/zeo_i18n/locales/fr/agent-sandbox.ftl b/crates/zeo_i18n/locales/fr/agent-sandbox.ftl
+index 31bdea8..4cdd154 100644
+--- a/crates/zeo_i18n/locales/fr/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/fr/agent-sandbox.ftl
+@@ -101,6 +101,7 @@ agent-sandbox-mcp-failed = Échec du démarrage
+ agent-sandbox-mcp-needs-auth = Authentification requise
+ agent-sandbox-mcp-carries-secret = { $status }. Contient un secret ({ $places }) : demande confirmation avant l'activation
+ agent-sandbox-mcp-zeo-lsp = Les serveurs de langage du projet, en lecture seule : diagnostics, définition, références, survol, symboles
++agent-sandbox-mcp-zeo-terminals = Les terminaux que vous avez partagés depuis leur onglet, en lecture seule : leurs dernières lignes
+ agent-sandbox-mcp-not-configured = Non configuré dans ce projet
+ agent-sandbox-skills = Skills
+     .note = Les skills de Zeo (~/.agents/skills et .agents/skills de ce projet) sous forme de plugins, montés en lecture seule. Redémarrez l'agent pour appliquer.
+diff --git a/crates/zeo_i18n/locales/it/agent-sandbox.ftl b/crates/zeo_i18n/locales/it/agent-sandbox.ftl
+index 212c183..7e56cb5 100644
+--- a/crates/zeo_i18n/locales/it/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/it/agent-sandbox.ftl
+@@ -101,6 +101,7 @@ agent-sandbox-mcp-failed = Avvio non riuscito
+ agent-sandbox-mcp-needs-auth = Richiede l'autenticazione
+ agent-sandbox-mcp-carries-secret = { $status }. Contiene un segreto ({ $places }): chiede conferma prima di attivarsi
+ agent-sandbox-mcp-zeo-lsp = I language server del progetto, in sola lettura: diagnostica, definizione, riferimenti, hover, simboli
++agent-sandbox-mcp-zeo-terminals = I terminali che hai condiviso dalla loro scheda, in sola lettura: le ultime righe
+ agent-sandbox-mcp-not-configured = Non configurato in questo progetto
+ agent-sandbox-skills = Skill
+     .note = Le skill di Zeo (~/.agents/skills e .agents/skills di questo progetto) come plugin, mappate in sola lettura. Riavvia l'agente per applicare.
+diff --git a/crates/zeo_i18n/locales/ja/agent-sandbox.ftl b/crates/zeo_i18n/locales/ja/agent-sandbox.ftl
+index a7c838b..e325a7a 100644
+--- a/crates/zeo_i18n/locales/ja/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/ja/agent-sandbox.ftl
+@@ -107,6 +107,7 @@ agent-sandbox-mcp-failed = 起動に失敗しました
+ agent-sandbox-mcp-needs-auth = 認証が必要です
+ agent-sandbox-mcp-carries-secret = { $status }。シークレットを含みます ({ $places }): オンにする前に確認します
+ agent-sandbox-mcp-zeo-lsp = プロジェクトの言語サーバー (読み取り専用): 診断、定義、参照、ホバー、シンボル
++agent-sandbox-mcp-zeo-terminals = タブから共有したターミナル (読み取り専用): その最後の数行
+ agent-sandbox-mcp-not-configured = このプロジェクトでは設定されていません
+ agent-sandbox-skills = スキル
+     .note = Zeo のスキル (~/.agents/skills とこのプロジェクトの .agents/skills) をプラグインとして読み取り専用でマッピングします。適用するにはエージェントを再起動してください。
+diff --git a/crates/zeo_i18n/locales/pt-BR/agent-sandbox.ftl b/crates/zeo_i18n/locales/pt-BR/agent-sandbox.ftl
+index 5fd9827..c5a73bf 100644
+--- a/crates/zeo_i18n/locales/pt-BR/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/pt-BR/agent-sandbox.ftl
+@@ -122,6 +122,7 @@ agent-sandbox-mcp-failed = Falhou ao iniciar
+ agent-sandbox-mcp-needs-auth = Requer autenticação
+ agent-sandbox-mcp-carries-secret = { $status }. Contém um segredo ({ $places }): pergunta antes de ligar
+ agent-sandbox-mcp-zeo-lsp = Os servidores de linguagem do projeto, somente leitura: diagnósticos, definição, referências, hover, símbolos
++agent-sandbox-mcp-zeo-terminals = Os terminais que você compartilhou pela aba deles, só leitura: as últimas linhas
+ agent-sandbox-mcp-not-configured = Não configurado neste projeto
+ agent-sandbox-skills = Skills
+     .note = As skills do Zeo (~/.agents/skills e o .agents/skills deste projeto) como plugins, mapeadas somente leitura. Reinicie o agente para aplicar.
+diff --git a/crates/zeo_i18n/locales/ru/agent-sandbox.ftl b/crates/zeo_i18n/locales/ru/agent-sandbox.ftl
+index ddec5a7..c80e488 100644
+--- a/crates/zeo_i18n/locales/ru/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/ru/agent-sandbox.ftl
+@@ -101,6 +101,7 @@ agent-sandbox-mcp-failed = Не удалось запустить
+ agent-sandbox-mcp-needs-auth = Требуется аутентификация
+ agent-sandbox-mcp-carries-secret = { $status }. Содержит секрет ({ $places }): перед включением спросит подтверждение
+ agent-sandbox-mcp-zeo-lsp = Языковые серверы проекта, только чтение: диагностика, определения, ссылки, подсказки при наведении, символы
++agent-sandbox-mcp-zeo-terminals = Терминалы, которыми вы поделились через их вкладку, только для чтения: их последние строки
+ agent-sandbox-mcp-not-configured = Не настроен в этом проекте
+ agent-sandbox-skills = Skills
+     .note = Skills Zeo (~/.agents/skills и .agents/skills этого проекта) в виде плагинов, подключенные только для чтения. Перезапустите агента, чтобы применить.
+diff --git a/crates/zeo_i18n/locales/zh-CN/agent-sandbox.ftl b/crates/zeo_i18n/locales/zh-CN/agent-sandbox.ftl
+index 4636d6c..10128b2 100644
+--- a/crates/zeo_i18n/locales/zh-CN/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/zh-CN/agent-sandbox.ftl
+@@ -121,6 +121,7 @@ agent-sandbox-mcp-failed = 启动失败
+ agent-sandbox-mcp-needs-auth = 需要身份验证
+ agent-sandbox-mcp-carries-secret = { $status }。包含密钥（{ $places }）：开启前会先询问
+ agent-sandbox-mcp-zeo-lsp = 项目的语言服务器，只读：诊断、定义、引用、悬停、符号
++agent-sandbox-mcp-zeo-terminals = 你从标签页共享的终端，只读：它们的最后几行
+ agent-sandbox-mcp-not-configured = 未在此项目中配置
+ agent-sandbox-skills = 技能
+     .note = Zeo的技能（~/.agents/skills和此项目的.agents/skills）以插件形式只读映射。重启智能体以应用。

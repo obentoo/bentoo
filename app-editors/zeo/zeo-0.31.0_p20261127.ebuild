@@ -1576,7 +1576,7 @@ declare -A GIT_CRATES=(
 # rewrites the date and EGIT_COMMIT; a second version variable it could not
 # keep current would leave a new tarball under an old, already-manifested name).
 
-EGIT_COMMIT="6ba65ce3be7fc08eec910088ea1472174aa4a002"
+EGIT_COMMIT="46375fbf64574f01dc08fd2d2998aa7bbb7f0377"
 # LLVM 23 only, so it is the default slot: llvm-r2 would always prefer slot 22
 # (its newest stable) whenever 22 is listed. RUST_NEEDS_LLVM ties the Rust slot
 # to it. RUST_MIN_VER is the newest stable Rust, 1.100.0, past upstream's
@@ -1700,13 +1700,19 @@ KEYWORDS="~amd64"
 # test is not a Zed feature: src_test has existed here without it, which left
 # RESTRICT unable to say the suite is optional.
 #
-# collab, extensions-cli and remote-server are deliberately NOT offered here.
-# Each installs a binary under a name app-editors/zed uses -- collab,
-# zed-extension, zed-remote-server -- and renaming Zed's server infrastructure is
-# not what a rebrand of the editor is for.
+# remote-server and extensions-cli (Zeo next §6.60, decided 2026-11-17) install
+# under Zeo's names, so they never meet app-editors/zed's: zeo-remote-server in
+# /usr/libexec, beside zeo-editor, where 0124 looks for the server it uploads to
+# a remote host; zeo-extension in /usr/bin, for writing extensions. collab is
+# still not offered: it is Zed's server infrastructure, not the editor's.
+# system-node pulls in a Node the editor prefers over downloading its own.
+# telemetry keeps Zed's usage reports (to api.zed.dev); without it the defaults
+# `telemetry.diagnostics` and `telemetry.metrics` are false.
+# neovim only serves the vim tests, so it needs test.
 IUSE="+X +ai-jail +browser-extension +claude-agent-acp-plus +claude-agent-acp-tui
-	+claude-code-ide +devtools-bridge +devtools-panel +epic inspector +mimalloc
-	neovim screen-capture test tracy +voice +wayland"
+	+claude-code-ide +devtools-bridge +devtools-panel +epic +extensions-cli inspector
+	+mimalloc neovim +remote-server screen-capture +system-node telemetry test tracy
+	+voice +wayland"
 # BENTOO-DIVERGENCE: REQUIRED_USE - the || ( X wayland ) clause, which follows
 # from the X and wayland flags this overlay adds (see the IUSE tag). ::gentoo
 # exposes neither, so it has nothing to constrain. ai-jail? requires the agent
@@ -1723,6 +1729,7 @@ IUSE="+X +ai-jail +browser-extension +claude-agent-acp-plus +claude-agent-acp-tu
 # generated on top of.
 REQUIRED_USE="
 	|| ( X wayland )
+	neovim? ( test )
 	ai-jail? ( claude-agent-acp-plus devtools-bridge )
 	browser-extension? ( devtools-bridge )
 	devtools-panel? ( browser-extension )
@@ -1799,11 +1806,11 @@ RDEPEND="
 	!app-editors/zed-bin
 	!app-editors/zeo-bin
 	ai-jail? ( >=sys-apps/ai-jail-3.5.0-r5 )
-	browser-extension? ( www-plugins/zeo-browser )
 	claude-agent-acp-plus? ( >=dev-util/claude-agent-acp-plus-0.26.0 )
 	claude-agent-acp-tui? ( dev-util/claude-agent-acp-tui )
 	claude-code-ide? ( dev-util/claude-code )
 	neovim? ( app-editors/neovim )
+	system-node? ( >=net-libs/nodejs-24[npm] )
 	voice? ( app-accessibility/whisper-models[base] )
 "
 BDEPEND="
@@ -2179,6 +2186,7 @@ src_prepare() {
 			# a Git LFS agent or extension) or cannot be read; the error names the
 			# key and nothing is created. Pure Zed, BY CHOICE (PARITY item 105).
 			"${FILESDIR}/0062-git-refuse-worktree-when-repo-config-can-run-programs.patch"
+			"${FILESDIR}/0212-git-a-fifo-config-no-longer-hangs-worktree-creation.patch"
 			# 0070 (story 039): select text in an agent reply, right-click, and
 			# open a "Clean sub-thread" or a "Sub-thread with context" (the
 			# session forked through ACP session/fork, still unstable_), linked
@@ -2397,6 +2405,7 @@ src_prepare() {
 			"${FILESDIR}/0204-agent-ui-cards-fade-out-when-closed-the-floating-n-new-label-fades-in.patch"
 			# 0205: the floating controls' jumps scroll with a short ease-out. On 0204.
 			"${FILESDIR}/0205-agent-ui-gpui-the-floating-thread-controls-scroll-with-a-short-ease-out.patch"
+			"${FILESDIR}/0214-agent-servers-zeo-terminals-the-terminals-you-share-readable-by-the-agent.patch"
 		)
 	fi
 
@@ -2478,6 +2487,15 @@ src_prepare() {
 			"${FILESDIR}/0188-agent-ui-the-lock-s-small-modal-opens-under-the-lock-turning-the-jail.patch"
 			# 0190: a repository a jailed agent can write runs none of its own git drivers.
 			"${FILESDIR}/0190-agent-sandbox-git-a-repository-a-jailed-agent-can-write-runs-none-of-its.patch"
+			# 0206: a secret declares the variable a jail sees and the hosts its value may reach.
+			"${FILESDIR}/0206-secret-vault-settings-ui-a-secret-declares-the-variable-a-jail-sees.patch"
+			"${FILESDIR}/0207-agent-sandbox-a-jail-receives-the-vault-secrets-its-project-chose.patch"
+			"${FILESDIR}/0208-settings-ui-the-agent-sandbox-page-chooses-the-vault-secrets-a-jail-receives.patch"
+			"${FILESDIR}/0209-agent-ui-the-kill-switch-from-the-palette.patch"
+			"${FILESDIR}/0210-agent-ui-a-remote-project-s-lock-warns-that-its-agent-runs-unjailed.patch"
+			"${FILESDIR}/0211-agent-sandbox-a-jail-can-push-over-ssh-host-22-entries-and-the-operator-s-agent.patch"
+			"${FILESDIR}/0213-git-the-agent-reach-driver-listing-gives-up-on-a-git-that-never-answers.patch"
+			"${FILESDIR}/0215-settings-ui-a-jail-s-capabilities-offer-zeo-terminals.patch"
 		)
 	fi
 
@@ -2715,6 +2733,17 @@ src_prepare() {
 		sed -e 's/vim\.workspace = true/vim = { workspace = true, features = ["neovim"] }/' \
 			-i "${S}/crates/zed/Cargo.toml" || die "Failed to enable neovim feature"
 	fi
+
+	# Zeo next §6.60: without USE=telemetry, Zed's usage reports to api.zed.dev
+	# are off by default -- the two booleans of default.json's "telemetry" block.
+	# A user can still turn them on in settings.
+	if ! use telemetry; then
+		sed -e '/"telemetry": {/,/}/ s/"diagnostics": true/"diagnostics": false/' \
+			-e '/"telemetry": {/,/}/ s/"metrics": true/"metrics": false/' \
+			-i "${S}/assets/settings/default.json" || die "Failed to turn telemetry off"
+		grep -q '"metrics": false' "${S}/assets/settings/default.json" ||
+			die "telemetry defaults not found in default.json"
+	fi
 }
 
 src_compile() {
@@ -2771,12 +2800,20 @@ src_compile() {
 	# The native-messaging host the browser starts (0058): a workspace member of
 	# its own, so it is only built when the browser channel is.
 	use browser-extension && packages+=( --package zeo_browser_host )
+	use extensions-cli && packages+=( --package extension_cli )
 	# "${features[*]}" alone would be an empty --features argument when no flag
 	# is on; the count is what decides whether the option appears at all.
 	local feature_args=()
 	(( ${#features[@]} )) && feature_args=( --features "${features[*]}" )
 
 	cargo_src_compile "${packages[@]}" "${feature_args[@]}"
+
+	# remote_server in a run of its own: built in the same run as the editor,
+	# feature unification links X11 into it, and a headless host cannot start it
+	# (the reason zeo-bin's portable build splits it the same way).
+	if use remote-server; then
+		cargo_src_compile --package remote_server
+	fi
 }
 
 src_install() {
@@ -2794,6 +2831,16 @@ src_install() {
 	newicon -s 1024 crates/zed/resources/app-icon-zeo@2x.png "${APP_ID}.png"
 	domenu "${S}/${APP_ID}.desktop"
 
+	if use remote-server; then
+		# Beside zeo-editor: 0124 uploads the server found next to the editor's
+		# executable to a remote host that has none.
+		exeinto "/usr/libexec"
+		newexe "$(cargo_target_dir)"/remote-server zeo-remote-server
+	fi
+	if use extensions-cli; then
+		newbin "$(cargo_target_dir)"/zed-extension zeo-extension
+	fi
+
 	if use browser-extension; then
 		# The host is started by the browser, never by a user: libexec, next to
 		# zeo-editor. Its manifests name this path and only the committed
@@ -2805,8 +2852,8 @@ src_install() {
 		newins "${manifests}"/dev.zeo.browser_host.chrome.json dev.zeo.browser_host.json
 		insinto /etc/chromium/native-messaging-hosts
 		newins "${manifests}"/dev.zeo.browser_host.chrome.json dev.zeo.browser_host.json
-		insinto "/usr/$(get_libdir)/mozilla/native-messaging-hosts"
-		newins "${manifests}"/dev.zeo.browser_host.firefox.json dev.zeo.browser_host.json
+		# Chromium only (§6.60, 2026-11-27): Firefox is no longer served, so neither
+		# its manifest nor www-plugins/zeo-browser is installed.
 	fi
 }
 

@@ -1,0 +1,616 @@
+From 773f15e978564f01f79db8ac2245dbbb5bf88066 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 27 Nov 2026 09:27:10 -0300
+Subject: [PATCH] agent_servers: zeo-terminals -- the terminals you share,
+ readable by the agent
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next §6.71. ACP's `terminal/*` reaches only terminals the agent
+created, and Claude Agent (Plus) creates none, so the agent never saw
+what runs beside it -- a dev server's errors, a test run, a build.
+
+- A terminal is shared per tab, by the operator: `terminal::
+  ToggleShareWithAgent`, in the terminal's context menu as "Share with
+  Agent" / "Stop Sharing with Agent". A shared tab shows the agent's
+  icon. Nothing is shared until the operator shares it.
+- `zeo-terminals` is one more MCP server over MCP-over-ACP, declared
+  beside `zeo-lsp` to an agent that advertised `mcpCapabilities.acp`,
+  under `agent.zeo_terminals` (default on). Two read-only tools:
+  `list_terminals` (id, title, folder, and whether a task runs or how it
+  ended) and `read_terminal(id, lines)` -- the last non-empty lines,
+  200 by default, at most 2000 and 256 KB, newest kept. It never writes
+  to a terminal.
+- A read is logged with the terminal and the sizes, never the content.
+- Remote projects get no declaration: their terminals run on the
+  remote host. A jail reaches it only when chosen in its Capabilities,
+  like any proxied server (0215 lists it there).
+- `Project::local_terminals` exposes the live local terminals the
+  server filters.
+
+The manual direction -- sending a terminal's lines to the agent -- is
+Zed's existing "Add to Agent Thread" on a selection.
+
+Tests: zeo_terminals.rs (the byte bound keeps the newest lines; the
+tools are read-only); the MCP-over-ACP harness turns the server off
+like zeo-lsp.
+---
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index 12bf917..8c60189 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -1430,6 +1430,11 @@
+     //
+     // Default: true
+     "zeo_lsp": true,
++    // Zeo next §6.71: whether an agent that supports MCP-over-ACP gets `zeo-terminals`, the
++    // terminals you shared from their tab (Share with Agent), read-only.
++    //
++    // Default: true
++    "zeo_terminals": true,
+     // Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
+     // The command is sent to the shell as if typed, so it is interpreted by your
+     // configured shell (including on Windows and remote/WSL projects).
+diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
+index a63d59d..580a6b2 100644
+--- a/crates/agent_servers/src/acp.rs
++++ b/crates/agent_servers/src/acp.rs
+@@ -10,6 +10,7 @@ mod transport;
+ mod v1;
+ mod v2;
+ mod zeo_lsp;
++mod zeo_terminals;
+ 
+ use debug_log::AcpDebugLog;
+ pub use debug_log::{AcpDebugMessage, AcpDebugMessageContent, AcpDebugMessageDirection};
+diff --git a/crates/agent_servers/src/acp/mcp_over_acp.rs b/crates/agent_servers/src/acp/mcp_over_acp.rs
+index 45a6e5d..43e179e 100644
+--- a/crates/agent_servers/src/acp/mcp_over_acp.rs
++++ b/crates/agent_servers/src/acp/mcp_over_acp.rs
+@@ -75,6 +75,8 @@ enum Backend {
+     ContextServer(ContextServerId),
+     /// `zeo-lsp`, answered from the project's language servers (§6.13).
+     ZeoLsp,
++    /// `zeo-terminals`, the terminals the operator shared (§6.71).
++    ZeoTerminals,
+ }
+ 
+ /// Per-connection state of the proxy: the servers declared so far, by `serverId`, and the
+@@ -176,6 +178,43 @@ impl McpOverAcp {
+         servers
+     }
+ 
++    /// `servers` and `zeo-terminals` after them, when the policy lets the connection reach it, the
++    /// project is local (a remote project's terminals run on the remote host) and no other
++    /// server has the name. It lists only the terminals the operator shared (§6.71).
++    pub(crate) fn declare_zeo_terminals(
++        &self,
++        project: &Entity<Project>,
++        mut servers: Vec<acp::McpServer>,
++        policy: &McpProxyPolicy,
++        cx: &App,
++    ) -> Vec<acp::McpServer> {
++        let name = super::zeo_terminals::ZEO_TERMINALS_SERVER_NAME;
++        let taken = servers.iter().any(|server| match server {
++            acp::McpServer::Stdio(stdio) => stdio.name == name,
++            acp::McpServer::Http(http) => http.name == name,
++            acp::McpServer::Acp(acp) => acp.name == name,
++            _ => false,
++        });
++        if taken
++            || !project.read(cx).is_local()
++            || !policy.allows(name)
++            || !super::zeo_terminals::enabled(cx)
++        {
++            return servers;
++        }
++        let server_id = server_id_for(project, name);
++        self.routes.borrow_mut().insert(
++            server_id.clone(),
++            Route {
++                name: name.to_string(),
++                project: project.downgrade(),
++                backend: Backend::ZeoTerminals,
++            },
++        );
++        servers.push(acp::McpServer::Acp(acp::McpServerAcp::new(name, server_id)));
++        servers
++    }
++
+     fn route(&self, server_id: &str) -> Option<Route> {
+         self.routes.borrow().get(server_id).cloned()
+     }
+diff --git a/crates/agent_servers/src/acp/mcp_over_acp_forward.rs b/crates/agent_servers/src/acp/mcp_over_acp_forward.rs
+index 11b4329..652ae31 100644
+--- a/crates/agent_servers/src/acp/mcp_over_acp_forward.rs
++++ b/crates/agent_servers/src/acp/mcp_over_acp_forward.rs
+@@ -51,6 +51,21 @@ pub(super) async fn serve(
+                 super::super::zeo_lsp::serve(project, &request.method, request.params, cx).await,
+             );
+         }
++        Backend::ZeoTerminals => {
++            let project = route.project.upgrade().ok_or_else(|| {
++                agent_client_protocol::Error::new(
++                    MCP_SERVER_UNAVAILABLE,
++                    "zeo-terminals belongs to a project that is closed",
++                )
++            })?;
++            return Ok(super::super::zeo_terminals::serve(
++                project,
++                &request.method,
++                request.params,
++                cx,
++            )
++            .await);
++        }
+     };
+     let client = running_client(route, server, cx).await?;
+     match request.method.as_str() {
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index 4b16a7c..2a9603e 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -996,8 +996,11 @@ impl AcpConnection {
+         } else {
+             servers
+         };
++        let servers = self
++            .mcp_over_acp
++            .declare_zeo_lsp(project, servers, &policy, cx);
+         self.mcp_over_acp
+-            .declare_zeo_lsp(project, servers, &policy, cx)
++            .declare_zeo_terminals(project, servers, &policy, cx)
+     }
+ 
+     /// Which servers this connection may reach through the proxy: the hook a sandboxed launch
+diff --git a/crates/agent_servers/src/acp/v1/mcp_over_acp_harness.rs b/crates/agent_servers/src/acp/v1/mcp_over_acp_harness.rs
+index b34befa..44ab54e 100644
+--- a/crates/agent_servers/src/acp/v1/mcp_over_acp_harness.rs
++++ b/crates/agent_servers/src/acp/v1/mcp_over_acp_harness.rs
+@@ -81,6 +81,7 @@ impl ProxyAgent {
+             settings::SettingsStore::update_global(cx, |store, cx| {
+                 store.update_user_settings(cx, |settings| {
+                     settings.agent.get_or_insert_default().zeo_lsp = Some(false);
++                    settings.agent.get_or_insert_default().zeo_terminals = Some(false);
+                     user_settings(settings);
+                 });
+             });
+diff --git a/crates/agent_servers/src/acp/zeo_terminals.rs b/crates/agent_servers/src/acp/zeo_terminals.rs
+new file mode 100644
+index 0000000..c9c936f
+--- /dev/null
++++ b/crates/agent_servers/src/acp/zeo_terminals.rs
+@@ -0,0 +1,250 @@
++//! `zeo-terminals`: the terminals the operator shared with the agent, readable over MCP-over-ACP
++//! like `zeo-lsp` (next proposal §6.71).
++//!
++//! ACP's `terminal/*` reaches only terminals the agent itself created, and Claude Agent (Plus)
++//! creates none, so the agent never saw what the operator runs beside it. This server lists the
++//! project's terminals the operator shared -- per terminal, from its tab (`Share with Agent`), and
++//! marked there -- and reads their last lines. Read-only, forever: it never writes to a terminal.
++//! A read is logged with the terminal and the line count, never the content. Remote projects get
++//! no declaration: their terminals run on the remote host. A jail reaches it only when chosen in
++//! its Capabilities, like any proxied server.
++
++use agent_client_protocol::v1::schema as acp;
++use gpui::{AsyncApp, Entity};
++use project::Project;
++use serde_json::{Map, Value, json};
++use terminal::{TaskStatus, Terminal};
++
++/// The server's name, as the agent sees it (`mcp__zeo-terminals__<tool>` in Claude Code).
++pub(crate) const ZEO_TERMINALS_SERVER_NAME: &str = "zeo-terminals";
++/// Lines read when the call names none, and the most one read returns.
++const DEFAULT_LINES: usize = 200;
++const MAX_LINES: usize = 2_000;
++/// The most text one read returns; older lines are dropped first.
++const MAX_BYTES: usize = 256 * 1024;
++const METHOD_NOT_FOUND: i32 = -32601;
++const INVALID_PARAMS: i32 = -32602;
++
++const INSTRUCTIONS: &str = "The terminals the user shared with you in Zeo, read-only. \
++`list_terminals` names them; `read_terminal` returns the last lines of one. Only terminals the \
++user shared from their tab are listed; ask the user to share one if you need it.";
++
++/// `agent.zeo_terminals`, default on. A test app may run without a settings store.
++pub(crate) fn enabled(cx: &gpui::App) -> bool {
++    cx.try_global::<settings::SettingsStore>()
++        .and_then(|store| store.merged_settings().agent.as_ref()?.zeo_terminals)
++        .unwrap_or(true)
++}
++
++/// One `mcp/message` for `zeo-terminals`, in `project`.
++pub(super) async fn serve(
++    project: Entity<Project>,
++    method: &str,
++    params: Option<Map<String, Value>>,
++    cx: &mut AsyncApp,
++) -> acp::MessageMcpResponse {
++    match method {
++        "server/discover" => acp::MessageMcpResponse::success(discovery()),
++        "ping" => acp::MessageMcpResponse::success(json!({})),
++        "tools/list" => acp::MessageMcpResponse::success(json!({ "tools": tool_list() })),
++        "tools/call" => {
++            let params = params.unwrap_or_default();
++            let Some(name) = params.get("name").and_then(Value::as_str) else {
++                return inner_error(INVALID_PARAMS, "tools/call needs a tool name");
++            };
++            let arguments = params
++                .get("arguments")
++                .and_then(Value::as_object)
++                .cloned()
++                .unwrap_or_default();
++            let shared = cx.update(|cx| shared_terminals(&project, cx));
++            let answer = match name {
++                "list_terminals" => Ok(cx.update(|cx| list_text(&shared, cx))),
++                "read_terminal" => cx.update(|cx| read_text(&shared, &arguments, cx)),
++                other => {
++                    return inner_error(
++                        INVALID_PARAMS,
++                        &format!("zeo-terminals has no tool {other:?}"),
++                    );
++                }
++            };
++            match answer {
++                Ok(text) => acp::MessageMcpResponse::success(tool_result(text, false)),
++                // A refused read is the tool's answer, not a protocol error: the model reads it.
++                Err(text) => acp::MessageMcpResponse::success(tool_result(text, true)),
++            }
++        }
++        other => inner_error(
++            METHOD_NOT_FOUND,
++            &format!("zeo-terminals does not serve {other}"),
++        ),
++    }
++}
++
++/// The project's terminals the operator shared, oldest first.
++fn shared_terminals(project: &Entity<Project>, cx: &gpui::App) -> Vec<Entity<Terminal>> {
++    project
++        .read(cx)
++        .local_terminals()
++        .into_iter()
++        .filter(|terminal| terminal.read(cx).shared_with_agent())
++        .collect()
++}
++
++fn terminal_id(terminal: &Entity<Terminal>) -> u64 {
++    terminal.entity_id().as_u64()
++}
++
++fn status_text(terminal: &Terminal) -> &'static str {
++    match terminal.task().map(|task| task.status) {
++        None => "shell",
++        Some(TaskStatus::Running) => "task running",
++        Some(TaskStatus::Completed { success: true }) => "task finished, exit 0",
++        Some(TaskStatus::Completed { success: false }) => "task failed, exit non-zero",
++        Some(TaskStatus::Unknown) => "task ended, status unknown",
++    }
++}
++
++fn list_text(shared: &[Entity<Terminal>], cx: &gpui::App) -> String {
++    if shared.is_empty() {
++        return "No terminal is shared with you. The user shares one from its tab's context menu \
++                (Share with Agent); a shared tab shows the agent's icon."
++            .to_string();
++    }
++    let mut text = String::new();
++    for terminal in shared {
++        let view = terminal.read(cx);
++        let directory = view
++            .working_directory()
++            .map(|dir| dir.display().to_string())
++            .unwrap_or_else(|| "unknown".to_string());
++        text.push_str(&format!(
++            "id {} -- {} -- in {} -- {}\n",
++            terminal_id(terminal),
++            view.title(false),
++            directory,
++            status_text(view),
++        ));
++    }
++    text
++}
++
++fn read_text(
++    shared: &[Entity<Terminal>],
++    arguments: &Map<String, Value>,
++    cx: &gpui::App,
++) -> Result<String, String> {
++    let Some(id) = arguments.get("id").and_then(Value::as_u64) else {
++        return Err("read_terminal needs the terminal's `id` from list_terminals".to_string());
++    };
++    let Some(terminal) = shared.iter().find(|terminal| terminal_id(terminal) == id) else {
++        return Err(format!(
++            "terminal {id} is not shared with you (or was closed); list_terminals names the shared ones"
++        ));
++    };
++    let lines = arguments
++        .get("lines")
++        .and_then(Value::as_u64)
++        .map_or(DEFAULT_LINES, |lines| lines as usize)
++        .clamp(1, MAX_LINES);
++    let view = terminal.read(cx);
++    let text = within_bytes(view.last_n_non_empty_lines(lines), MAX_BYTES);
++    log::info!(
++        "zeo_terminals event=read terminal={id} lines_asked={lines} bytes={}",
++        text.len()
++    );
++    Ok(format!(
++        "{} ({}):\n{text}",
++        view.title(false),
++        status_text(view)
++    ))
++}
++
++/// The lines joined, keeping the newest ones within `max` bytes.
++fn within_bytes(lines: Vec<String>, max: usize) -> String {
++    let mut kept: Vec<String> = Vec::new();
++    let mut size = 0;
++    for line in lines.into_iter().rev() {
++        if size + line.len() + 1 > max {
++            break;
++        }
++        size += line.len() + 1;
++        kept.push(line);
++    }
++    kept.reverse();
++    kept.join("\n")
++}
++
++fn discovery() -> Value {
++    json!({
++        "supportedVersions": ["2026-07-28"],
++        "capabilities": { "tools": {} },
++        "serverInfo": {
++            "name": ZEO_TERMINALS_SERVER_NAME,
++            "title": "Zeo terminals",
++            "version": env!("CARGO_PKG_VERSION"),
++        },
++        "instructions": INSTRUCTIONS,
++    })
++}
++
++fn tool_result(text: String, is_error: bool) -> Value {
++    json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
++}
++
++fn inner_error(code: i32, message: &str) -> acp::MessageMcpResponse {
++    acp::MessageMcpResponse::error(acp::McpError::new(code, message))
++}
++
++fn tool_list() -> Value {
++    let read_only = json!({ "readOnlyHint": true, "openWorldHint": false });
++    json!([
++        {
++            "name": "list_terminals",
++            "description": "The terminals the user shared with you: id, title, folder, and whether a task runs or how it ended.",
++            "inputSchema": { "type": "object", "properties": {} },
++            "annotations": read_only,
++        },
++        {
++            "name": "read_terminal",
++            "description": "The last lines of a shared terminal, newest last (at most 2000 lines and 256 KB).",
++            "inputSchema": {
++                "type": "object",
++                "properties": {
++                    "id": { "type": "integer", "description": "The terminal's id from list_terminals." },
++                    "lines": { "type": "integer", "minimum": 1, "maximum": MAX_LINES, "description": "How many of the last non-empty lines (default 200)." },
++                },
++                "required": ["id"],
++            },
++            "annotations": read_only,
++        },
++    ])
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn a_read_keeps_the_newest_lines_within_the_byte_bound() {
++        let lines: Vec<String> = (0..10).map(|n| format!("line {n}")).collect();
++        assert_eq!(within_bytes(lines.clone(), 1024), lines.join("\n"));
++        // "line 9" + newline is 7 bytes: 14 bytes keep the last two.
++        assert_eq!(within_bytes(lines, 14), "line 8\nline 9");
++    }
++
++    #[test]
++    fn the_tools_are_read_only() {
++        let tools = tool_list();
++        for tool in tools.as_array().unwrap() {
++            assert_eq!(tool["annotations"]["readOnlyHint"], true, "{tool}");
++        }
++        let names: Vec<&str> = tools
++            .as_array()
++            .unwrap()
++            .iter()
++            .filter_map(|tool| tool["name"].as_str())
++            .collect();
++        assert_eq!(names, ["list_terminals", "read_terminal"]);
++    }
++}
+diff --git a/crates/project/src/terminals.rs b/crates/project/src/terminals.rs
+index 9920993..b3939e4 100644
+--- a/crates/project/src/terminals.rs
++++ b/crates/project/src/terminals.rs
+@@ -29,6 +29,18 @@ pub struct Terminals {
+     pub(crate) local_handles: Vec<WeakEntity<terminal::Terminal>>,
+ }
+ 
++impl Project {
++    /// The project's live local terminals, oldest first (Zeo next §6.71: `zeo-terminals` lists
++    /// the shared ones).
++    pub fn local_terminals(&self) -> Vec<gpui::Entity<terminal::Terminal>> {
++        self.terminals
++            .local_handles
++            .iter()
++            .filter_map(|handle| handle.upgrade())
++            .collect()
++    }
++}
++
+ impl Project {
+     pub fn active_entry_directory(&self, cx: &App) -> Option<PathBuf> {
+         let entry_id = self.active_entry()?;
+diff --git a/crates/settings_content/src/agent.rs b/crates/settings_content/src/agent.rs
+index 253ed47..90b47c6 100644
+--- a/crates/settings_content/src/agent.rs
++++ b/crates/settings_content/src/agent.rs
+@@ -496,6 +496,12 @@ pub struct AgentSettingsContent {
+     ///
+     /// Default: true
+     pub zeo_lsp: Option<bool>,
++    /// Whether an external agent that supports MCP-over-ACP gets `zeo-terminals`: the terminals
++    /// you shared from their tab (Share with Agent), read-only -- their list and last lines.
++    /// Nothing is shared until you share it. Zeo next proposal §6.71.
++    ///
++    /// Default: true
++    pub zeo_terminals: Option<bool>,
+     /// Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
+     /// The command is sent to the shell as if typed, so it is interpreted by your
+     /// configured shell (including on Windows and remote/WSL projects).
+diff --git a/crates/terminal/src/terminal.rs b/crates/terminal/src/terminal.rs
+index a2c7c3f..d51321f 100644
+--- a/crates/terminal/src/terminal.rs
++++ b/crates/terminal/src/terminal.rs
+@@ -1019,6 +1019,7 @@ impl TerminalBuilder {
+         );
+ 
+         let terminal = Terminal {
++            shared_with_agent: false,
+             task: None,
+             terminal_type: TerminalType::DisplayOnly,
+             subprocess: None,
+@@ -1309,6 +1310,7 @@ impl TerminalBuilder {
+ 
+             let no_task = task.is_none();
+             let terminal = Terminal {
++                shared_with_agent: false,
+                 task,
+                 terminal_type,
+                 subprocess,
+@@ -1513,6 +1515,9 @@ enum TerminalType {
+ }
+ 
+ pub struct Terminal {
++    /// Zeo next §6.71: whether the operator shared this terminal with the agent, which may then
++    /// read its last lines through `zeo-terminals`. Off until the operator turns it on.
++    shared_with_agent: bool,
+     terminal_type: TerminalType,
+     /// Set for non-PTY terminals (see [`HeadlessTerminal`]); owns the spawned
+     /// subprocess and the task pumping its output into the grid.
+@@ -1630,6 +1635,20 @@ const FIND_HYPERLINK_THROTTLE: Duration = Duration::from_millis(100);
+ const SELECTION_DRAG_THRESHOLD: f64 = 2.0;
+ 
+ impl Terminal {
++    /// Whether the operator shared this terminal with the agent (Zeo next §6.71).
++    pub fn shared_with_agent(&self) -> bool {
++        self.shared_with_agent
++    }
++
++    /// Shares this terminal with the agent, or stops sharing it; the tab shows which.
++    pub fn set_shared_with_agent(&mut self, shared: bool, cx: &mut Context<Self>) {
++        if self.shared_with_agent != shared {
++            self.shared_with_agent = shared;
++            log::info!("terminal event=shared_with_agent shared={shared}");
++            cx.notify();
++        }
++    }
++
+     fn process_pty_event(&mut self, event: PtyEvent, cx: &mut Context<Self>) {
+         match event {
+             PtyEvent::Event(event, generation) => {
+diff --git a/crates/terminal_view/src/terminal_view.rs b/crates/terminal_view/src/terminal_view.rs
+index 4ba3d75..db4fbf8 100644
+--- a/crates/terminal_view/src/terminal_view.rs
++++ b/crates/terminal_view/src/terminal_view.rs
+@@ -92,6 +92,9 @@ actions!(
+     [
+         /// Reruns the last executed task in the terminal.
+         RerunTask,
++        /// Shares this terminal with the agent, which may then read its last lines, or stops
++        /// sharing it (Zeo next §6.71). The tab shows the agent's icon while it is shared.
++        ToggleShareWithAgent,
+     ]
+ );
+ 
+@@ -569,6 +572,21 @@ impl TerminalView {
+         cx.emit(Event::Wakeup);
+     }
+ 
++    /// Zeo next §6.71: what the agent's `zeo-terminals` may read is the operator's choice, per
++    /// terminal, and visible on its tab.
++    fn toggle_share_with_agent(
++        &mut self,
++        _: &ToggleShareWithAgent,
++        _: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        self.terminal.update(cx, |terminal, cx| {
++            let shared = terminal.shared_with_agent();
++            terminal.set_shared_with_agent(!shared, cx);
++        });
++        cx.notify();
++    }
++
+     pub fn deploy_context_menu(
+         &mut self,
+         position: GpuiPoint<Pixels>,
+@@ -581,6 +599,7 @@ impl TerminalView {
+             .upgrade()
+             .and_then(|workspace| workspace.read(cx).panel::<TerminalPanel>(cx))
+             .is_some_and(|terminal_panel| terminal_panel.read(cx).assistant_enabled());
++        let shared_with_agent = self.terminal.read(cx).shared_with_agent();
+         let context_menu = ContextMenu::build(window, cx, |menu, _, _| {
+             menu.context(self.focus_handle.clone())
+                 .when(self.shows_workspace_actions(), |menu| {
+@@ -614,6 +633,14 @@ impl TerminalView {
+                             .when(has_selection && self.shows_workspace_actions(), |menu| {
+                                 menu.action("Add to Agent Thread", Box::new(AddSelectionToThread))
+                             })
++                            .action(
++                                if shared_with_agent {
++                                    "Stop Sharing with Agent"
++                                } else {
++                                    "Share with Agent"
++                                },
++                                Box::new(ToggleShareWithAgent),
++                            )
+                     },
+                 )
+                 .when(self.shows_workspace_actions(), |menu| {
+@@ -1464,6 +1491,7 @@ impl Render for TerminalView {
+             .relative()
+             .track_focus(&self.focus_handle(cx))
+             .key_context(self.dispatch_context(cx))
++            .on_action(cx.listener(TerminalView::toggle_share_with_agent))
+             .on_action(cx.listener(TerminalView::send_text))
+             .on_action(cx.listener(TerminalView::send_keystroke))
+             .on_action(cx.listener(TerminalView::copy))
+@@ -1596,6 +1624,7 @@ impl Item for TerminalView {
+ 
+     fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
+         let terminal = self.terminal().read(cx);
++        let shared_with_agent = terminal.shared_with_agent();
+         let title = self
+             .custom_title
+             .as_ref()
+@@ -1650,6 +1679,14 @@ impl Item for TerminalView {
+                             })
+                             .child(Icon::new(icon).color(icon_color)),
+                     )
++                    // Zeo next §6.71: a terminal the agent may read says so on its tab.
++                    .when(shared_with_agent, |this| {
++                        this.child(
++                            Icon::new(IconName::ZedAgent)
++                                .size(IconSize::XSmall)
++                                .color(Color::Accent),
++                        )
++                    })
+                     .when_some(rerun_button, |this, rerun_button| {
+                         this.child(
+                             div()

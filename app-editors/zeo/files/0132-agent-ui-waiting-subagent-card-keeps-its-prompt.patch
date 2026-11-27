@@ -27,11 +27,41 @@ Tests: rfd_surfaces_tests' test_rfd_waiting_child_shows_its_permission_in_the_ca
 and waiting_card_full_screen_follows_the_latest_entries (both Red on the
 series before this patch).
 
+A third such check arrived with upstream #67156 (Zed 46375fbf, 2026-11-27):
+SubagentCardState::for_subagent_tool_call now follows a subagent retried from
+its own view and offers Stop while the retry runs, as `status == Running &&
+can_cancel`. A retry that waits for the user reads Waiting here, and would lose
+Stop for exactly that time -- what story 064 rules out ("Waiting does not lose
+Stop for a child the agent lets Zed cancel"). It reads is_live() too, and
+upstream's test_retried_subagent_tool_call_shows_the_retry_state gains a
+RequiresAction step that pins it (Red with `== Running`).
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
 
+diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
+index a694777..ce4b242 100644
+--- a/crates/agent_ui/src/conversation_view.rs
++++ b/crates/agent_ui/src/conversation_view.rs
+@@ -8087,6 +8087,16 @@ pub(crate) mod tests {
+             cx,
+         );
+         assert_card(SubagentStatus::Running, true, Some(0), cx);
++        // Zeo (0132): a retry that waits for the user reads Waiting (0072) and keeps Stop.
++        report(
++            acp_v2::StateUpdate::RequiresAction(acp_v2::RequiresActionStateUpdate::new()),
++            cx,
++        );
++        assert_card(SubagentStatus::Waiting, true, Some(0), cx);
++        report(
++            acp_v2::StateUpdate::Running(acp_v2::RunningStateUpdate::new()),
++            cx,
++        );
+         retry_work(cx);
+         report(idle(acp_v2::StopReason::EndTurn), cx);
+         assert_card(SubagentStatus::Completed, false, Some(1), cx);
 diff --git a/crates/agent_ui/src/conversation_view/subagent_card.rs b/crates/agent_ui/src/conversation_view/subagent_card.rs
-index c20387c..fa052c0 100644
+index 15e074e..13839b2 100644
 --- a/crates/agent_ui/src/conversation_view/subagent_card.rs
 +++ b/crates/agent_ui/src/conversation_view/subagent_card.rs
 @@ -164,6 +164,13 @@ pub(crate) enum SubagentStatus {
@@ -48,7 +78,17 @@ index c20387c..fa052c0 100644
      /// An ACP subagent's status from the state it last reported, with the error to show for a
      /// failure. Only an explicit successful stop reason warrants a success indicator.
      pub(crate) fn from_reported_state(
-@@ -337,8 +344,7 @@ impl SubagentCardState {
+@@ -310,7 +317,8 @@ impl SubagentCardState {
+         Self {
+             status,
+             error,
+-            can_stop: status == SubagentStatus::Running && can_cancel,
++            // A retry waiting for the user (Waiting, 0072) is live work and keeps Stop (0132).
++            can_stop: status.is_live() && can_cancel,
+             entries: Some(SubagentEntries {
+                 start,
+                 end: Some(end),
+@@ -365,8 +373,7 @@ impl SubagentCardState {
      /// once its work has stopped, or `None` while it runs, so the subagent's view keeps
      /// following its latest entries.
      pub(crate) fn fullscreen_entry(&self) -> Option<usize> {

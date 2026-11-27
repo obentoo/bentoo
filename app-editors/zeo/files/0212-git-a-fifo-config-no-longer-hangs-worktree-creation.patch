@@ -1,0 +1,146 @@
+From 65d669072a9d34ac35aeae43be2314b2fde99980 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 27 Nov 2026 09:14:03 -0300
+Subject: [PATCH] git: a FIFO config no longer hangs worktree creation
+
+Found reviewing the 46375fbf bump: upstream hardened its own reads
+against FIFOs, and 0062's screen did not get the same.
+
+`check_readable` opened `<common_dir>/config` with a plain open(2),
+which blocks on a FIFO until something writes to it. A jailed agent can
+plant one as the config of a nested repository it can write, and every
+worktree creation in it would hang. That is a denial of service, not
+code execution, and plain git hangs on the same file -- but Zeo's own
+screen should not be the thing that hangs.
+
+- The config is opened with O_NONBLOCK and then required to be a
+  regular file; anything else is unreadable, which refuses the worktree
+  as before.
+- `git config --list --includes` is bounded to 5 s with the process
+  killed on drop: an `include.path` can name a FIFO too, and git would
+  wait on it forever. A timed-out read is unreadable too.
+
+Test: a FIFO config is refused at once (and a regular one still
+passes).
+---
+
+diff --git a/crates/git/src/worktree_config.rs b/crates/git/src/worktree_config.rs
+index 8bc0516..7b867d1 100644
+--- a/crates/git/src/worktree_config.rs
++++ b/crates/git/src/worktree_config.rs
+@@ -215,8 +215,19 @@ fn check_readable(git_dir: &Path, common_dir: &Path) -> Result<(), UnsafeWorktre
+         detail: format!("{}: {error}", git_dir.display()),
+     })?;
+     let config = common_dir.join("config");
+-    match std::fs::File::open(&config) {
+-        Ok(_) => Ok(()),
++    // Opened without blocking and then required to be a regular file: a FIFO planted as the
++    // config of a repository an agent can write would otherwise hang `open(2)` until something
++    // writes to it, and every worktree creation with it.
++    match open_without_blocking(&config) {
++        Ok(file) => match file.metadata() {
++            Ok(metadata) if metadata.is_file() => Ok(()),
++            Ok(_) => Err(UnsafeWorktreeConfig::Unreadable {
++                detail: format!("{}: not a regular file", config.display()),
++            }),
++            Err(error) => Err(UnsafeWorktreeConfig::Unreadable {
++                detail: format!("{}: {error}", config.display()),
++            }),
++        },
+         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+         Err(error) => Err(UnsafeWorktreeConfig::Unreadable {
+             detail: format!("{}: {error}", config.display()),
+@@ -224,6 +235,25 @@ fn check_readable(git_dir: &Path, common_dir: &Path) -> Result<(), UnsafeWorktre
+     }
+ }
+ 
++#[cfg(unix)]
++fn open_without_blocking(path: &Path) -> std::io::Result<std::fs::File> {
++    use std::os::unix::fs::OpenOptionsExt as _;
++    // O_NONBLOCK (Linux 04000, macOS 4): only meaningful for a FIFO or device here.
++    #[cfg(target_os = "macos")]
++    const NONBLOCK: i32 = 0x0004;
++    #[cfg(not(target_os = "macos"))]
++    const NONBLOCK: i32 = 0o4000;
++    std::fs::OpenOptions::new()
++        .read(true)
++        .custom_flags(NONBLOCK)
++        .open(path)
++}
++
++#[cfg(not(unix))]
++fn open_without_blocking(path: &Path) -> std::io::Result<std::fs::File> {
++    std::fs::File::open(path)
++}
++
+ /// Whether git reads `config.worktree`, as git itself answers it.
+ ///
+ /// Git parses `extensions.worktreeConfig` as a boolean, and a boolean there is
+@@ -269,15 +299,28 @@ async fn worktree_config_enabled(git: &GitBinary) -> Result<bool> {
+     }
+ }
+ 
++/// How long `git config` may take: an `include.path` can name a FIFO, and git would wait on it
++/// forever. Past this the config counts as unreadable, which refuses the worktree.
++const CONFIG_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
++
++// smol's timer, not the executor's: GitBinary keeps its executor private to `repository`, and
++// this bound guards a real process against a real FIFO, which no test executor simulates.
++#[allow(clippy::disallowed_methods)]
+ async fn read_config_scope(git: &GitBinary, scope: &str) -> Result<Vec<ConfigEntry>> {
+-    let output = git
+-        .build_command(&["config", scope, "--includes", "-z", "--list"])
+-        .env("LC_ALL", "C")
+-        .output()
+-        .await
+-        .map_err(|error| UnsafeWorktreeConfig::Unreadable {
+-            detail: format!("could not run git config {scope}: {error}"),
+-        })?;
++    let mut command = git.build_command(&["config", scope, "--includes", "-z", "--list"]);
++    command.env("LC_ALL", "C").kill_on_drop(true);
++    // Bounded: an `include.path` can name a FIFO, and git would wait on it forever.
++    let output = smol::future::or(async { Some(command.output().await) }, async {
++        smol::Timer::after(CONFIG_READ_TIMEOUT).await;
++        None
++    })
++    .await
++    .ok_or_else(|| UnsafeWorktreeConfig::Unreadable {
++        detail: format!("git config {scope} did not answer in time"),
++    })?
++    .map_err(|error| UnsafeWorktreeConfig::Unreadable {
++        detail: format!("could not run git config {scope}: {error}"),
++    })?;
+     if !output.status.success() {
+         let stderr = String::from_utf8_lossy(&output.stderr);
+         // A repository without a config file has nothing to screen.
+@@ -296,6 +339,30 @@ async fn read_config_scope(git: &GitBinary, scope: &str) -> Result<Vec<ConfigEnt
+ mod tests {
+     use super::*;
+ 
++    /// A FIFO as the repository's config is refused at once instead of hanging the open.
++    #[test]
++    #[cfg(unix)]
++    #[allow(clippy::disallowed_methods, reason = "mkfifo(1) makes the fixture")]
++    fn a_fifo_config_is_refused_without_blocking() {
++        let dir = tempfile::tempdir().unwrap();
++        let git_dir = dir.path().join(".git");
++        std::fs::create_dir(&git_dir).unwrap();
++        let made = std::process::Command::new("mkfifo")
++            .arg(git_dir.join("config"))
++            .status();
++        if !made.is_ok_and(|status| status.success()) {
++            return;
++        }
++        let started = std::time::Instant::now();
++        let refused = check_readable(&git_dir, &git_dir);
++        assert!(refused.is_err(), "a FIFO is not a config file");
++        assert!(started.elapsed() < std::time::Duration::from_secs(2));
++        // A regular config still passes.
++        std::fs::remove_file(git_dir.join("config")).unwrap();
++        std::fs::write(git_dir.join("config"), "[core]\n").unwrap();
++        assert!(check_readable(&git_dir, &git_dir).is_ok());
++    }
++
+     fn entry(key: &str, value: Option<&str>) -> ConfigEntry {
+         ConfigEntry {
+             key: key.to_string(),

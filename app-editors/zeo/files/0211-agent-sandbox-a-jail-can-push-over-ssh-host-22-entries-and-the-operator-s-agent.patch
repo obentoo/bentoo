@@ -1,0 +1,781 @@
+From 512d147b0a099fa9261b35d02072820771f6682e Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 27 Nov 2026 09:08:00 -0300
+Subject: [PATCH] agent_sandbox: a jail can push over SSH -- host:22 entries
+ and the operator's agent
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zeo next §6.9, the Zeo half. ai-jail 3.7.1-r1 tunnels ssh through its
+egress proxy for an allowlisted `host:22`, with strict host keys
+filtered from the user's known_hosts. Zeo now lets a jail use that:
+
+- An allowed host may name one port: `github.com:22`. validate_host
+  accepts `name:PORT` (1-65535) with the name under its usual rules,
+  and its errors quote the whole entry. A bare name keeps ai-jail's 443
+  and 80. An ai-jail whose `--help` lacks `HOST[:PORT]` would read the
+  entry as a host name, opening nothing or every port, so a project
+  with such an entry refuses to start on it (`host_ports_unsupported`).
+- `agent_sandbox.ssh_agent_socket`: the socket of an ssh-agent the
+  operator starts for the jails alone (`ssh-agent -a
+  /tmp/zeo-ssh/agent.sock`, then `ssh-add -c -t 1h -h github.com`).
+  Every jail gets its folder read-only and SSH_AUTH_SOCK pointing at it,
+  never the desktop agent or ~/.ssh. Refused, with its own sentence:
+  not absolute, nothing listening, someone else's socket or folder, a
+  folder open to others (not 700), or a folder the sandbox never maps
+  (home, the runtime directory, ...).
+- The kill switch empties that agent (`ssh-add -D`) with the jail: the
+  agent is the operator's process, so it is disarmed, not killed.
+- The socket is part of the settings fingerprint: a change asks for a
+  restart.
+
+The strings are in the nine languages.
+
+Tests: jail_ssh.rs (the socket checks), validate_tests.rs (a name with
+one port, and the refused port shapes), and the kill switch's test
+with no agent.
+---
+
+diff --git a/crates/agent_sandbox/src/agent_sandbox.rs b/crates/agent_sandbox/src/agent_sandbox.rs
+index a3e991f..d844beb 100644
+--- a/crates/agent_sandbox/src/agent_sandbox.rs
++++ b/crates/agent_sandbox/src/agent_sandbox.rs
+@@ -15,6 +15,7 @@ pub mod git_reach;
+ pub mod host_view;
+ pub mod jail_hostname;
+ pub mod jail_secrets;
++pub mod jail_ssh;
+ pub mod launch;
+ pub mod memory;
+ pub mod probe;
+diff --git a/crates/agent_sandbox/src/control.rs b/crates/agent_sandbox/src/control.rs
+index 7fb97bc..7daa601 100644
+--- a/crates/agent_sandbox/src/control.rs
++++ b/crates/agent_sandbox/src/control.rs
+@@ -30,8 +30,17 @@ pub fn stop_jail(pid: u32) -> io::Result<()> {
+ /// The kill switch (Zeo next §6.53): thaws a paused jail first -- a frozen process only acts on
+ /// the signal once it runs again -- then stops it. Killing ai-jail also ends its egress proxy,
+ /// which lives in that process, so every connection the jail had open ends with it. `source`
+-/// says where the operator pressed it (`button`, `palette`), for the log line.
+-pub fn kill_switch(pid: u32, paused: bool, source: &'static str) -> io::Result<()> {
++/// says where the operator pressed it (`button`, `palette`), for the log line. With the
++/// operator's restricted ssh-agent configured (§6.9), it is emptied too (`ssh-add -D`).
++pub fn kill_switch(
++    pid: u32,
++    paused: bool,
++    source: &'static str,
++    ssh_agent: Option<&std::path::Path>,
++) -> io::Result<()> {
++    if let Some(socket) = ssh_agent {
++        crate::jail_ssh::empty_agent(socket);
++    }
+     if paused {
+         if let Err(error) = jail_scope_dir(pid).and_then(|scope| set_frozen(&scope, false)) {
+             log::warn!(
+@@ -118,10 +127,13 @@ mod tests {
+             .arg("30")
+             .spawn()
+             .expect("sleep");
+-        kill_switch(child.id(), false, "test").expect("signalled");
++        kill_switch(child.id(), false, "test", None).expect("signalled");
+         let status = child.wait().expect("wait");
+         assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
+-        assert!(kill_switch(1, false, "test").is_err(), "pid 1 is init");
++        assert!(
++            kill_switch(1, false, "test", None).is_err(),
++            "pid 1 is init"
++        );
+     }
+ 
+     #[test]
+diff --git a/crates/agent_sandbox/src/jail_ssh.rs b/crates/agent_sandbox/src/jail_ssh.rs
+new file mode 100644
+index 0000000..25bc2c8
+--- /dev/null
++++ b/crates/agent_sandbox/src/jail_ssh.rs
+@@ -0,0 +1,156 @@
++//! The operator's restricted ssh-agent, reachable from a jail (Zeo next §6.9).
++//!
++//! The operator starts an agent for the jails alone, its socket in a folder of its own:
++//! `ssh-agent -a /tmp/zeo-ssh/agent.sock`, then `ssh-add -c -t 1h -h github.com <key>` -- each use
++//! asks, the key expires, and it signs only for the hosts named. A jail gets that folder
++//! read-only (ai-jail maps folders, not files) and `SSH_AUTH_SOCK` pointing at the socket; never
++//! the desktop agent, never `~/.ssh`. A push also needs the host's port 22 in the allowed hosts,
++//! which ai-jail tunnels through its egress proxy.
++
++use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
++use std::path::{Path, PathBuf};
++
++/// Why the configured socket is not handed to a jail. Each refuses the start: a jail that expects
++/// to push and cannot fails later and less clearly.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum SshSocketProblem {
++    /// Not an absolute path (after `~`).
++    NotAbsolute,
++    /// Nothing is there, or it is not a socket.
++    NotASocket,
++    /// The socket or its folder belongs to someone else.
++    NotYours,
++    /// The folder is open to others (its mode is not 700): the jail would see what else is there,
++    /// and anyone could swap the socket.
++    OpenFolder,
++    /// The folder is one the sandbox never maps (home, the config or runtime directory, …).
++    Protected,
++}
++
++impl SshSocketProblem {
++    /// The `$reason` selector of `agent-jail-launch-ssh-socket`.
++    pub fn as_str(self) -> &'static str {
++        match self {
++            Self::NotAbsolute => "not-absolute",
++            Self::NotASocket => "not-a-socket",
++            Self::NotYours => "not-yours",
++            Self::OpenFolder => "open-folder",
++            Self::Protected => "protected",
++        }
++    }
++}
++
++/// The socket at `raw` (`~` expanded against `home`) and its folder, checked for a jail.
++/// `protected` says whether a folder is one the sandbox refuses to map.
++pub fn check_socket(
++    raw: &str,
++    home: &Path,
++    uid: u32,
++    protected: impl Fn(&Path) -> bool,
++) -> Result<(PathBuf, PathBuf), (PathBuf, SshSocketProblem)> {
++    let socket = match raw.strip_prefix("~/") {
++        Some(rest) => home.join(rest),
++        None => PathBuf::from(raw),
++    };
++    let refuse = |problem| Err((socket.clone(), problem));
++    if !socket.is_absolute() {
++        return refuse(SshSocketProblem::NotAbsolute);
++    }
++    let Ok(metadata) = std::fs::symlink_metadata(&socket) else {
++        return refuse(SshSocketProblem::NotASocket);
++    };
++    if !metadata.file_type().is_socket() {
++        return refuse(SshSocketProblem::NotASocket);
++    }
++    if metadata.uid() != uid {
++        return refuse(SshSocketProblem::NotYours);
++    }
++    let Some(folder) = socket.parent().map(Path::to_path_buf) else {
++        return refuse(SshSocketProblem::NotAbsolute);
++    };
++    let Ok(folder_metadata) = std::fs::symlink_metadata(&folder) else {
++        return refuse(SshSocketProblem::NotASocket);
++    };
++    if !folder_metadata.is_dir() || folder_metadata.uid() != uid {
++        return refuse(SshSocketProblem::NotYours);
++    }
++    if folder_metadata.permissions().mode() & 0o077 != 0 {
++        return refuse(SshSocketProblem::OpenFolder);
++    }
++    if protected(&folder) {
++        return refuse(SshSocketProblem::Protected);
++    }
++    Ok((socket, folder))
++}
++
++/// Empties the operator's agent (`ssh-add -D`), for the kill switch: the agent is the operator's
++/// process, so it is disarmed, not killed. Fire and forget; smol reaps the child.
++pub fn empty_agent(socket: &Path) {
++    let spawned = smol::process::Command::new("ssh-add")
++        .arg("-D")
++        .env("SSH_AUTH_SOCK", socket)
++        .stdin(std::process::Stdio::null())
++        .stdout(std::process::Stdio::null())
++        .stderr(std::process::Stdio::null())
++        .spawn();
++    match spawned {
++        Ok(_) => log::info!(
++            "agent_sandbox event=ssh_agent_emptied socket={}",
++            socket.display()
++        ),
++        Err(error) => log::warn!(
++            "agent_sandbox event=ssh_agent_empty_failed socket={} error={error}",
++            socket.display()
++        ),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn bound_socket(dir: &Path) -> PathBuf {
++        let socket = dir.join("agent.sock");
++        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
++        std::mem::forget(listener);
++        socket
++    }
++
++    #[test]
++    fn a_private_folder_with_the_operator_s_socket_is_accepted() {
++        let tmp = tempfile::tempdir().expect("tempdir");
++        let folder = tmp.path().join("zeo-ssh");
++        std::fs::create_dir(&folder).unwrap();
++        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
++        let socket = bound_socket(&folder);
++        let uid = unsafe { libc::getuid() };
++        let (checked, checked_folder) =
++            check_socket(socket.to_str().unwrap(), tmp.path(), uid, |_| false).unwrap();
++        assert_eq!((checked, checked_folder), (socket.clone(), folder.clone()));
++
++        // Open to others, someone else's, protected, relative, or not a socket: refused.
++        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
++        let problem = |raw: &str, uid: u32, protected: bool| {
++            check_socket(raw, tmp.path(), uid, |_| protected)
++                .unwrap_err()
++                .1
++        };
++        let raw = socket.to_str().unwrap();
++        assert_eq!(problem(raw, uid, false), SshSocketProblem::OpenFolder);
++        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
++        assert_eq!(problem(raw, uid + 1, false), SshSocketProblem::NotYours);
++        assert_eq!(problem(raw, uid, true), SshSocketProblem::Protected);
++        assert_eq!(
++            problem("zeo-ssh/agent.sock", uid, false),
++            SshSocketProblem::NotAbsolute
++        );
++        let plain = folder.join("plain");
++        std::fs::write(&plain, "").unwrap();
++        assert_eq!(
++            problem(plain.to_str().unwrap(), uid, false),
++            SshSocketProblem::NotASocket
++        );
++        // `~/` is the home given.
++        assert!(check_socket("~/zeo-ssh/agent.sock", tmp.path(), uid, |_| false).is_ok());
++    }
++}
+diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
+index 4af55b7..a30a88f 100644
+--- a/crates/agent_sandbox/src/launch.rs
++++ b/crates/agent_sandbox/src/launch.rs
+@@ -242,6 +242,14 @@ pub enum LaunchCause {
+         reference: String,
+         problem: crate::jail_secrets::SecretProblem,
+     },
++    /// An allowed host names a port (`github.com:22`, §6.9) and the installed ai-jail reads
++    /// `HOST:PORT` as a host name: refused rather than open nothing, or every port.
++    HostPortsUnsupported,
++    /// `agent_sandbox.ssh_agent_socket` cannot be handed to a jail (§6.9).
++    SshSocket {
++        socket: PathBuf,
++        problem: crate::jail_ssh::SshSocketProblem,
++    },
+ }
+ 
+ impl LaunchCause {
+@@ -272,6 +280,8 @@ impl LaunchCause {
+             Self::StateRootCreate { .. } => "state_root_create",
+             Self::SecretsUnsupported => "secrets_unsupported",
+             Self::SecretUnavailable { .. } => "secret_unavailable",
++            Self::HostPortsUnsupported => "host_ports_unsupported",
++            Self::SshSocket { .. } => "ssh_socket",
+         }
+     }
+ }
+@@ -375,6 +385,14 @@ impl fmt::Display for LaunchCause {
+                 reference = reference.as_str(),
+                 reason = problem.as_str()
+             )),
++            Self::HostPortsUnsupported => {
++                f.write_str(&t!("agent-jail-launch-host-ports-unsupported"))
++            }
++            Self::SshSocket { socket, problem } => f.write_str(&t!(
++                "agent-jail-launch-ssh-socket",
++                socket = socket.display().to_string(),
++                reason = problem.as_str()
++            )),
+         }
+     }
+ }
+@@ -597,6 +615,8 @@ struct Checked {
+     env_names: Vec<String>,
+     /// Whether ai-jail injects `--secret` values into HTTPS (§6.53 step 3).
+     supports_secrets: bool,
++    /// The operator's ssh-agent socket and its folder, checked (§6.9).
++    ssh_agent: Option<(PathBuf, PathBuf)>,
+ }
+ 
+ impl LocalLaunch {
+@@ -685,6 +705,14 @@ impl LocalLaunch {
+         for secret in &secrets {
+             spawn_env.push((secret.env_name.clone(), secret.value.as_str().to_string()));
+         }
++        // §6.9: the operator's agent, by its socket; its folder is mapped read-only below.
++        if let Some((socket, _)) = &checked.ssh_agent {
++            spawn_env.retain(|(name, _)| name != "SSH_AUTH_SOCK");
++            spawn_env.push((
++                "SSH_AUTH_SOCK".into(),
++                socket.to_string_lossy().into_owned(),
++            ));
++        }
+         spawn_env.sort_by(|a, b| a.0.cmp(&b.0));
+         let jail_spawn = JailSpawn {
+             cwd: checked.root.clone(),
+@@ -693,6 +721,17 @@ impl LocalLaunch {
+         };
+         let mut env_names = checked.env_names.clone();
+         env_names.extend(secrets.iter().map(|secret| secret.env_name.clone()));
++        if checked.ssh_agent.is_some() && !env_names.iter().any(|name| name == "SSH_AUTH_SOCK") {
++            env_names.push("SSH_AUTH_SOCK".into());
++        }
++        let mut ro_maps = if skills {
++            checked.ro_maps.clone()
++        } else {
++            Vec::new()
++        };
++        if let Some((_, folder)) = &checked.ssh_agent {
++            ro_maps.push(folder.clone());
++        }
+         if !connectors
+             && !env_names
+                 .iter()
+@@ -710,7 +749,7 @@ impl LocalLaunch {
+             state_root: checked.state_root.as_deref(),
+             limit_args: &checked.limit_args,
+             host_args: &checked.host_args,
+-            ro_maps: if skills { &checked.ro_maps } else { &[] },
++            ro_maps: &ro_maps,
+             rw_maps: &checked.rw_maps,
+             allow_hosts: &checked.allow_hosts,
+             forward_ports: &checked.forward_ports,
+@@ -940,6 +979,27 @@ impl LocalLaunch {
+         }
+         validate::check_limits(rw_maps.len(), allow_hosts.len())
+             .map_err(|error| refuse(LaunchCause::Limit(error)))?;
++        // §6.9: a port in an allowed host needs an ai-jail that reads it as one.
++        if allow_hosts.iter().any(|host| host.contains(':')) && !binary.supports_host_ports {
++            return Err(refuse(LaunchCause::HostPortsUnsupported));
++        }
++        let ssh_agent = match self.sandbox.ssh_agent_socket.as_deref() {
++            None => None,
++            Some(raw) => {
++                // SAFETY: getuid(2) cannot fail and touches no memory.
++                let uid = unsafe { libc::getuid() };
++                let protected = |folder: &Path| {
++                    folder
++                        .to_str()
++                        .is_none_or(|text| validate::validate_rw_map_with(text, &set).is_err())
++                };
++                let checked = crate::jail_ssh::check_socket(raw, &self.env.home, uid, protected)
++                    .map_err(|(socket, problem)| {
++                        refuse(LaunchCause::SshSocket { socket, problem })
++                    })?;
++                Some(checked)
++            }
++        };
+         let private_state = state_root.as_deref().unwrap_or(&claude_dir);
+         check_nesting(&canonical_root, private_state, &rw_maps).map_err(refuse)?;
+ 
+@@ -1008,6 +1068,7 @@ impl LocalLaunch {
+             memory_port,
+             env_names,
+             supports_secrets: binary.supports_secrets,
++            ssh_agent,
+         })
+     }
+ 
+@@ -1300,8 +1361,9 @@ fn settings_fingerprint(
+     // The skills' maps are made at start; the MCP list is read at each session/new, so a change
+     // to it applies to the next thread without a restart and is left out.
+     sandbox.skills_for_key(key).hash(&mut hasher);
+-    // §6.53 step 3: the secrets are read at start.
++    // §6.53 step 3: the secrets are read at start; §6.9: so is the agent's socket.
+     sandbox.secrets_for_key(key).hash(&mut hasher);
++    sandbox.ssh_agent_socket.hash(&mut hasher);
+     policy.enabled.hash(&mut hasher);
+     policy.rw_maps.hash(&mut hasher);
+     policy.allow_hosts.hash(&mut hasher);
+diff --git a/crates/agent_sandbox/src/probe.rs b/crates/agent_sandbox/src/probe.rs
+index 36ffaff..3b62589 100644
+--- a/crates/agent_sandbox/src/probe.rs
++++ b/crates/agent_sandbox/src/probe.rs
+@@ -55,6 +55,9 @@ pub struct JailBinary {
+     /// `--secret` that takes only one host is the plain-HTTP-only one, which a jail's HTTPS
+     /// clients would bypass.
+     pub supports_secrets: bool,
++    /// `--allow-host HOST[:PORT]` (ai-jail 3.7.1-r1, §6.9): an entry may open one port. Older
++    /// ai-jail reads `github.com:22` as a host name and opens nothing, or every port.
++    pub supports_host_ports: bool,
+ }
+ 
+ /// What `--help` listed, cached with the version.
+@@ -70,6 +73,7 @@ struct HelpFlags {
+     minimal_etc: bool,
+     hostname: bool,
+     secrets: bool,
++    host_ports: bool,
+ }
+ 
+ impl HelpFlags {
+@@ -86,6 +90,7 @@ impl HelpFlags {
+             hostname: help_lists_option(help, crate::jail_hostname::HOSTNAME_OPTION),
+             secrets: help_lists_option(help, "--secret")
+                 && help.contains(crate::jail_secrets::SECRET_HOSTS_SYNTAX),
++            host_ports: help_lists_option(help, "--allow-host") && help.contains("HOST[:PORT]"),
+         }
+     }
+ 
+@@ -102,6 +107,7 @@ impl HelpFlags {
+             supports_minimal_etc: self.minimal_etc,
+             supports_hostname: self.hostname,
+             supports_secrets: self.secrets,
++            supports_host_ports: self.host_ports,
+         }
+     }
+ }
+diff --git a/crates/agent_sandbox/src/settings.rs b/crates/agent_sandbox/src/settings.rs
+index bb3607c..7bd3815 100644
+--- a/crates/agent_sandbox/src/settings.rs
++++ b/crates/agent_sandbox/src/settings.rs
+@@ -37,6 +37,8 @@ pub struct AgentSandboxSettings {
+     /// Hosts every jailed project may reach, as written.
+     pub allow_hosts: Vec<String>,
+     /// The directory each project's own state directory lives under, as written (§6.54).
++    /// The operator's restricted ssh-agent socket for the jails (§6.9); `None`: no agent.
++    pub ssh_agent_socket: Option<String>,
+     pub state_root: String,
+     /// Limits for every jailed project (§6.54).
+     pub limits: SandboxLimits,
+@@ -424,6 +426,9 @@ impl Settings for AgentSandboxSettings {
+             state_root: sandbox
+                 .state_root
+                 .unwrap_or_else(|| DEFAULT_STATE_ROOT.to_string()),
++            ssh_agent_socket: sandbox
++                .ssh_agent_socket
++                .filter(|socket| !socket.trim().is_empty()),
+             reserve_cpus: sandbox
+                 .limits
+                 .as_ref()
+diff --git a/crates/agent_sandbox/src/validate.rs b/crates/agent_sandbox/src/validate.rs
+index 78ddd80..e6c48db 100644
+--- a/crates/agent_sandbox/src/validate.rs
++++ b/crates/agent_sandbox/src/validate.rs
+@@ -625,11 +625,48 @@ impl fmt::Display for HostError {
+ 
+ impl std::error::Error for HostError {}
+ 
++impl HostError {
++    /// The same refusal, naming `entry` instead: a `name:PORT` entry is refused for its name, and
++    /// the message quotes the whole entry the user typed.
++    fn for_entry(self, entry: &str) -> Self {
++        let entry = entry.to_string();
++        match self {
++            Self::Empty => Self::Empty,
++            Self::TooLong { length, .. } => Self::TooLong { entry, length },
++            Self::IpLiteral { .. } => Self::IpLiteral { entry },
++            Self::Localhost { .. } => Self::Localhost { entry },
++            Self::NotDnsName { shape, .. } => Self::NotDnsName { entry, shape },
++            Self::NumericLastLabel { .. } => Self::NumericLastLabel { entry },
++            Self::PatternUnavailable { .. } => Self::PatternUnavailable { entry },
++        }
++    }
++}
++
+ pub fn validate_host(raw: &str) -> Result<String, HostError> {
+     let entry = || raw.to_string();
+     if raw.is_empty() {
+         return Err(HostError::Empty);
+     }
++    // `name:PORT` opens that one port of `name` (ai-jail 3.7.1-r1, §6.9: `github.com:22` for a
++    // push over SSH); a bare name keeps ai-jail's 443 and 80. Only a DNS name takes a port.
++    if !raw.starts_with('[')
++        && !raw.contains("://")
++        && let Some((name, port)) = raw.rsplit_once(':')
++        && !name.contains(':')
++    {
++        let port_ok = !port.is_empty()
++            && port.bytes().all(|byte| byte.is_ascii_digit())
++            && port.parse::<u16>().is_ok_and(|port| port != 0);
++        if !port_ok || name.is_empty() {
++            return Err(HostError::NotDnsName {
++                entry: entry(),
++                shape: HostShape::Port,
++            });
++        }
++        // The error names the whole entry, port included, as the user typed it.
++        let host = validate_host(name).map_err(|error| error.for_entry(raw))?;
++        return Ok(format!("{host}:{port}"));
++    }
+     if raw.len() > MAX_HOST_LENGTH {
+         return Err(HostError::TooLong {
+             entry: entry(),
+diff --git a/crates/agent_sandbox/src/validate_tests.rs b/crates/agent_sandbox/src/validate_tests.rs
+index 13b2a33..2e408d4 100644
+--- a/crates/agent_sandbox/src/validate_tests.rs
++++ b/crates/agent_sandbox/src/validate_tests.rs
+@@ -236,7 +236,11 @@ fn validate_host_refuses_non_dns_names() {
+     let label_64 = format!("{long_label}.example.com");
+     for raw in [
+         "https://anthropic.com",
+-        "anthropic.com:443",
++        "anthropic.com:0",
++        "anthropic.com:ssh",
++        "anthropic.com:99999",
++        ":22",
++        "127.0.0.1:22",
+         "anthropic.com/path",
+         "*.anthropic.com",
+         "Anthropic.com",
+@@ -633,3 +637,18 @@ mod review_fixes {
+         }
+     }
+ }
++
++/// §6.9: `name:PORT` opens one port of a DNS name (`github.com:22` for a push over SSH).
++#[test]
++fn validate_host_accepts_a_dns_name_with_one_port() {
++    assert_eq!(validate_host("github.com:22").unwrap(), "github.com:22");
++    assert_eq!(
++        validate_host("api.example.com:8443").unwrap(),
++        "api.example.com:8443"
++    );
++    assert!(
++        validate_host("GitHub.com:22").is_err(),
++        "the name keeps its own rules"
++    );
++    assert!(validate_host("localhost:22").is_err());
++}
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index b209c67..cc93a8b 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -7407,8 +7407,14 @@ impl ThreadView {
+             .with_cpu_reservation(reservation.as_ref());
+         // Zeo next §6.53/§6.54: the kill switch, for a jail whose process runs. A paused jail is
+         // thawed first: a frozen process only acts on the signal once it runs again.
++        // §6.9: the operator's restricted ssh-agent is emptied with the jail.
++        let ssh_agent = agent_sandbox::AgentSandboxSettings::get_global(cx)
++            .ssh_agent_socket
++            .as_ref()
++            .map(std::path::PathBuf::from);
+         let stop = move |pid: u32, paused: bool| {
+-            agent_sandbox::control::kill_switch(pid, paused, "button").log_err();
++            agent_sandbox::control::kill_switch(pid, paused, "button", ssh_agent.as_deref())
++                .log_err();
+         };
+         // Operator ask of 2026-11-23: Stop ends everything in the jail, so it asks first; Pause
+         // is the way to stop for a while with nothing lost.
+@@ -7423,6 +7429,7 @@ impl ThreadView {
+                 &["Stop", "Cancel"],
+                 cx,
+             );
++            let stop = stop.clone();
+             cx.spawn(async move |_| {
+                 if answer.await == Ok(0) {
+                     stop(pid, paused);
+@@ -7555,6 +7562,10 @@ impl ThreadView {
+             return false;
+         };
+         let paused = record.paused;
++        let ssh_agent = agent_sandbox::AgentSandboxSettings::get_global(cx)
++            .ssh_agent_socket
++            .as_ref()
++            .map(std::path::PathBuf::from);
+         let answer = window.prompt(
+             PromptLevel::Warning,
+             "Stop the agent?",
+@@ -7567,7 +7578,8 @@ impl ThreadView {
+         );
+         cx.spawn(async move |_| {
+             if answer.await == Ok(0) {
+-                agent_sandbox::control::kill_switch(pid, paused, "palette").log_err();
++                agent_sandbox::control::kill_switch(pid, paused, "palette", ssh_agent.as_deref())
++                    .log_err();
+             }
+         })
+         .detach();
+diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
+index 808ccd0..48aa533 100644
+--- a/crates/settings_content/src/settings_content.rs
++++ b/crates/settings_content/src/settings_content.rs
+@@ -395,6 +395,15 @@ pub struct AgentSandboxSettingsContent {
+     ///
+     /// Default: "/var/tmp/zeo-jail"
+     pub state_root: Option<String>,
++    /// The socket of an ssh-agent you start for the jails, holding a key for them alone:
++    /// `ssh-agent -a /run/user/$UID/zeo-ssh/agent.sock` (its folder mode 700), then
++    /// `ssh-add -c -t 1h -h github.com <key>`, so each use asks you, expires, and only signs for
++    /// the hosts you name. Every jail gets its folder read-only and `SSH_AUTH_SOCK` pointing at
++    /// it -- never your desktop agent, never `~/.ssh`. The jail's Stop also empties this agent
++    /// (`ssh-add -D`). A push needs the host's port too: add `github.com:22` to the allowed hosts.
++    ///
++    /// Default: null (none)
++    pub ssh_agent_socket: Option<String>,
+     /// Resource limits for every jailed project.
+     pub limits: Option<AgentSandboxLimitsContent>,
+     /// Whether jailed projects get ai-jail's synthetic host view (`--mask-host`): the CPUs and
+diff --git a/crates/settings_ui/src/pages/agent_jail_host_tests.rs b/crates/settings_ui/src/pages/agent_jail_host_tests.rs
+index 707add7..7ea8758 100644
+--- a/crates/settings_ui/src/pages/agent_jail_host_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_host_tests.rs
+@@ -20,6 +20,7 @@ fn sandbox(
+         rw_maps: Vec::new(),
+         allow_hosts: Vec::new(),
+         state_root: "/var/tmp/zeo-jail".to_string(),
++        ssh_agent_socket: None,
+         limits: Default::default(),
+         mask_host,
+         claude_ai_connectors: false,
+diff --git a/crates/settings_ui/src/pages/agent_jail_page_tests.rs b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+index 4bd4cfd..ecc4ab2 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+@@ -613,6 +613,7 @@ mod page {
+             rw_maps: Vec::new(),
+             allow_hosts: Vec::new(),
+             state_root: "/var/tmp/zeo-jail".to_string(),
++            ssh_agent_socket: None,
+             limits: Default::default(),
+             mask_host: false,
+             claude_ai_connectors: false,
+diff --git a/crates/zeo_i18n/locales/de/agent-jail.ftl b/crates/zeo_i18n/locales/de/agent-jail.ftl
+index c1ef638..d89dd52 100644
+--- a/crates/zeo_i18n/locales/de/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/de/agent-jail.ftl
+@@ -151,3 +151,11 @@ agent-jail-launch-secret-unavailable = { $reason ->
+     [vault-unreadable] Der Tresor konnte nicht geöffnet werden, um die für diesen Jail gewählten Geheimnisse zu lesen (ist der Schlüsselbund gesperrt?).
+    *[unreadable] Das für diesen Jail gewählte Geheimnis { $reference } konnte nicht aus dem Tresor gelesen werden.
+ }
++agent-jail-launch-host-ports-unsupported = Ein erlaubter Host dieses Projekts nennt einen Port (etwa github.com:22), und das installierte ai-jail kann keinen einzelnen Port öffnen. Installieren Sie sys-apps/ai-jail 3.7.1-r1 oder neuer, oder entfernen Sie den Port vom Host.
++agent-jail-launch-ssh-socket = { $reason ->
++    [not-absolute] Der ssh-agent-Socket { $socket } (agent_sandbox.ssh_agent_socket) ist kein absoluter Pfad.
++    [not-a-socket] An { $socket } (agent_sandbox.ssh_agent_socket) lauscht nichts: Starten Sie dort zuerst den ssh-agent der Jails.
++    [not-yours] Der ssh-agent-Socket { $socket } oder sein Ordner gehört einem anderen Benutzer.
++    [open-folder] Der Ordner des ssh-agent-Sockets { $socket } ist für andere offen; setzen Sie ihn auf Modus 700, nur mit dem Socket darin.
++   *[protected] Der ssh-agent-Socket { $socket } liegt in einem Ordner, den der Sandbox nie einbindet; legen Sie ihn in einen eigenen Ordner wie /tmp/zeo-ssh.
++}
+diff --git a/crates/zeo_i18n/locales/en-US/agent-jail.ftl b/crates/zeo_i18n/locales/en-US/agent-jail.ftl
+index 73c4e9e..a31a5c0 100644
+--- a/crates/zeo_i18n/locales/en-US/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/en-US/agent-jail.ftl
+@@ -171,3 +171,11 @@ agent-jail-launch-secret-unavailable = { $reason ->
+     [vault-unreadable] The vault could not be opened to read the secrets chosen for this jail (is the keyring locked?).
+    *[unreadable] The secret { $reference } chosen for this jail could not be read from the vault.
+ }
++agent-jail-launch-host-ports-unsupported = An allowed host of this project names a port (such as github.com:22), and the installed ai-jail cannot open a single port. Install sys-apps/ai-jail 3.7.1-r1 or later, or remove the port from the host.
++agent-jail-launch-ssh-socket = { $reason ->
++    [not-absolute] The ssh-agent socket { $socket } (agent_sandbox.ssh_agent_socket) is not an absolute path.
++    [not-a-socket] Nothing listens at { $socket } (agent_sandbox.ssh_agent_socket): start the jails' ssh-agent there first.
++    [not-yours] The ssh-agent socket { $socket } or its folder belongs to another user.
++    [open-folder] The folder of the ssh-agent socket { $socket } is open to others; make it mode 700 and keep only the socket in it.
++   *[protected] The ssh-agent socket { $socket } sits in a folder the sandbox never maps; put it in a folder of its own, such as /tmp/zeo-ssh.
++}
+diff --git a/crates/zeo_i18n/locales/es/agent-jail.ftl b/crates/zeo_i18n/locales/es/agent-jail.ftl
+index f2ec4f8..ec12ba2 100644
+--- a/crates/zeo_i18n/locales/es/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/es/agent-jail.ftl
+@@ -150,3 +150,11 @@ agent-jail-launch-secret-unavailable = { $reason ->
+     [vault-unreadable] No se pudo abrir la bóveda para leer los secretos elegidos para este jail (¿está bloqueado el llavero?).
+    *[unreadable] No se pudo leer de la bóveda el secreto { $reference } elegido para este jail.
+ }
++agent-jail-launch-host-ports-unsupported = Un host permitido de este proyecto indica un puerto (como github.com:22), y el ai-jail instalado no puede abrir un solo puerto. Instala sys-apps/ai-jail 3.7.1-r1 o posterior, o quita el puerto del host.
++agent-jail-launch-ssh-socket = { $reason ->
++    [not-absolute] El socket de ssh-agent { $socket } (agent_sandbox.ssh_agent_socket) no es una ruta absoluta.
++    [not-a-socket] Nada escucha en { $socket } (agent_sandbox.ssh_agent_socket): inicia primero allí el ssh-agent de los jails.
++    [not-yours] El socket de ssh-agent { $socket } o su carpeta pertenece a otro usuario.
++    [open-folder] La carpeta del socket de ssh-agent { $socket } está abierta a otros; ponla en modo 700 y deja solo el socket dentro.
++   *[protected] El socket de ssh-agent { $socket } está en una carpeta que el sandbox nunca monta; ponlo en una carpeta propia, como /tmp/zeo-ssh.
++}
+diff --git a/crates/zeo_i18n/locales/fr/agent-jail.ftl b/crates/zeo_i18n/locales/fr/agent-jail.ftl
+index 01aa61f..61a3f87 100644
+--- a/crates/zeo_i18n/locales/fr/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/fr/agent-jail.ftl
+@@ -143,3 +143,11 @@ agent-jail-launch-secret-unavailable = { $reason ->
+     [vault-unreadable] Impossible d’ouvrir le coffre pour lire les secrets choisis pour ce jail (le trousseau est-il verrouillé ?).
+    *[unreadable] Impossible de lire dans le coffre le secret { $reference } choisi pour ce jail.
+ }
++agent-jail-launch-host-ports-unsupported = Un hôte autorisé de ce projet indique un port (comme github.com:22), et l’ai-jail installé ne sait pas ouvrir un seul port. Installez sys-apps/ai-jail 3.7.1-r1 ou ultérieur, ou retirez le port de l’hôte.
++agent-jail-launch-ssh-socket = { $reason ->
++    [not-absolute] Le socket ssh-agent { $socket } (agent_sandbox.ssh_agent_socket) n’est pas un chemin absolu.
++    [not-a-socket] Rien n’écoute sur { $socket } (agent_sandbox.ssh_agent_socket) : lancez-y d’abord le ssh-agent des jails.
++    [not-yours] Le socket ssh-agent { $socket } ou son dossier appartient à un autre utilisateur.
++    [open-folder] Le dossier du socket ssh-agent { $socket } est ouvert aux autres ; mettez-le en mode 700 avec le seul socket dedans.
++   *[protected] Le socket ssh-agent { $socket } est dans un dossier que le sandbox ne monte jamais ; placez-le dans un dossier à part, comme /tmp/zeo-ssh.
++}
+diff --git a/crates/zeo_i18n/locales/it/agent-jail.ftl b/crates/zeo_i18n/locales/it/agent-jail.ftl
+index 08450cf..ad63d82 100644
+--- a/crates/zeo_i18n/locales/it/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/it/agent-jail.ftl
+@@ -143,3 +143,11 @@ agent-jail-launch-secret-unavailable = { $reason ->
+     [vault-unreadable] Impossibile aprire la cassaforte per leggere i segreti scelti per questo jail (il portachiavi è bloccato?).
+    *[unreadable] Impossibile leggere dalla cassaforte il segreto { $reference } scelto per questo jail.
+ }
++agent-jail-launch-host-ports-unsupported = Un host consentito di questo progetto indica una porta (come github.com:22), e l'ai-jail installato non sa aprire una sola porta. Installa sys-apps/ai-jail 3.7.1-r1 o successivo, oppure togli la porta dall'host.
++agent-jail-launch-ssh-socket = { $reason ->
++    [not-absolute] Il socket di ssh-agent { $socket } (agent_sandbox.ssh_agent_socket) non è un percorso assoluto.
++    [not-a-socket] Niente è in ascolto su { $socket } (agent_sandbox.ssh_agent_socket): avvia prima lì l'ssh-agent dei jail.
++    [not-yours] Il socket di ssh-agent { $socket } o la sua cartella appartiene a un altro utente.
++    [open-folder] La cartella del socket di ssh-agent { $socket } è aperta ad altri; mettila in modo 700 con dentro solo il socket.
++   *[protected] Il socket di ssh-agent { $socket } sta in una cartella che il sandbox non monta mai; mettilo in una cartella sua, come /tmp/zeo-ssh.
++}
+diff --git a/crates/zeo_i18n/locales/ja/agent-jail.ftl b/crates/zeo_i18n/locales/ja/agent-jail.ftl
+index 957c1ba..8ad8f64 100644
+--- a/crates/zeo_i18n/locales/ja/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/ja/agent-jail.ftl
+@@ -149,3 +149,11 @@ agent-jail-launch-secret-unavailable = { $reason ->
+     [vault-unreadable] この jail に選ばれたシークレットを読むための保管庫を開けませんでした (キーリングがロックされていませんか?)。
+    *[unreadable] この jail に選ばれたシークレット { $reference } を保管庫から読み取れませんでした。
+ }
++agent-jail-launch-host-ports-unsupported = このプロジェクトの許可ホストにポートが指定されています (github.com:22 など) が、インストールされている ai-jail は単一のポートを開けません。sys-apps/ai-jail 3.7.1-r1 以降をインストールするか、ホストからポートを外してください。
++agent-jail-launch-ssh-socket = { $reason ->
++    [not-absolute] ssh-agent のソケット { $socket } (agent_sandbox.ssh_agent_socket) が絶対パスではありません。
++    [not-a-socket] { $socket } (agent_sandbox.ssh_agent_socket) で待ち受けているものがありません。先に jail 用の ssh-agent をそこで起動してください。
++    [not-yours] ssh-agent のソケット { $socket } またはそのフォルダーが別のユーザーのものです。
++    [open-folder] ssh-agent のソケット { $socket } のフォルダーが他者に開かれています。モード 700 にし、ソケットだけを置いてください。
++   *[protected] ssh-agent のソケット { $socket } はサンドボックスが決してマウントしないフォルダーにあります。/tmp/zeo-ssh のような専用フォルダーに置いてください。
++}
+diff --git a/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl b/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
+index a1c09cd..39f68ef 100644
+--- a/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
+@@ -168,3 +168,11 @@ agent-jail-launch-secret-unavailable = { $reason ->
+     [vault-unreadable] Não foi possível abrir o cofre para ler os segredos escolhidos para este jail (o chaveiro está bloqueado?).
+    *[unreadable] Não foi possível ler do cofre o segredo { $reference } escolhido para este jail.
+ }
++agent-jail-launch-host-ports-unsupported = Um host permitido deste projeto nomeia uma porta (como github.com:22), e o ai-jail instalado não consegue abrir uma única porta. Instale o sys-apps/ai-jail 3.7.1-r1 ou posterior, ou tire a porta do host.
++agent-jail-launch-ssh-socket = { $reason ->
++    [not-absolute] O socket do ssh-agent { $socket } (agent_sandbox.ssh_agent_socket) não é um caminho absoluto.
++    [not-a-socket] Nada escuta em { $socket } (agent_sandbox.ssh_agent_socket): inicie lá primeiro o ssh-agent dos jails.
++    [not-yours] O socket do ssh-agent { $socket } ou a pasta dele pertence a outro usuário.
++    [open-folder] A pasta do socket do ssh-agent { $socket } está aberta a outros; deixe-a em modo 700 e só com o socket dentro.
++   *[protected] O socket do ssh-agent { $socket } está numa pasta que o sandbox nunca mapeia; coloque-o numa pasta só dele, como /tmp/zeo-ssh.
++}
+diff --git a/crates/zeo_i18n/locales/ru/agent-jail.ftl b/crates/zeo_i18n/locales/ru/agent-jail.ftl
+index 91447ca..b4d88d8 100644
+--- a/crates/zeo_i18n/locales/ru/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/ru/agent-jail.ftl
+@@ -145,3 +145,11 @@ agent-jail-launch-secret-unavailable = { $reason ->
+     [vault-unreadable] Не удалось открыть хранилище, чтобы прочитать секреты, выбранные для этого jail (связка ключей заблокирована?).
+    *[unreadable] Не удалось прочитать из хранилища секрет { $reference }, выбранный для этого jail.
+ }
++agent-jail-launch-host-ports-unsupported = Один из разрешённых хостов этого проекта указывает порт (например, github.com:22), а установленный ai-jail не умеет открывать отдельный порт. Установите sys-apps/ai-jail 3.7.1-r1 или новее либо уберите порт из хоста.
++agent-jail-launch-ssh-socket = { $reason ->
++    [not-absolute] Сокет ssh-agent { $socket } (agent_sandbox.ssh_agent_socket) — не абсолютный путь.
++    [not-a-socket] По адресу { $socket } (agent_sandbox.ssh_agent_socket) никто не слушает: сначала запустите там ssh-agent для jail.
++    [not-yours] Сокет ssh-agent { $socket } или его папка принадлежит другому пользователю.
++    [open-folder] Папка сокета ssh-agent { $socket } открыта для других; задайте ей режим 700 и держите в ней только сокет.
++   *[protected] Сокет ssh-agent { $socket } лежит в папке, которую песочница никогда не подключает; поместите его в отдельную папку, например /tmp/zeo-ssh.
++}
+diff --git a/crates/zeo_i18n/locales/zh-CN/agent-jail.ftl b/crates/zeo_i18n/locales/zh-CN/agent-jail.ftl
+index ea94577..2b48fdd 100644
+--- a/crates/zeo_i18n/locales/zh-CN/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/zh-CN/agent-jail.ftl
+@@ -165,3 +165,11 @@ agent-jail-launch-secret-unavailable = { $reason ->
+     [vault-unreadable] 无法打开保险库来读取为此 jail 选择的密钥（钥匙环是否已锁定？）。
+    *[unreadable] 无法从保险库读取为此 jail 选择的密钥 { $reference }。
+ }
++agent-jail-launch-host-ports-unsupported = 此项目的某个允许主机指定了端口（如 github.com:22），但已安装的 ai-jail 无法只开放单个端口。请安装 sys-apps/ai-jail 3.7.1-r1 或更新版本，或从主机中去掉端口。
++agent-jail-launch-ssh-socket = { $reason ->
++    [not-absolute] ssh-agent 套接字 { $socket }（agent_sandbox.ssh_agent_socket）不是绝对路径。
++    [not-a-socket] { $socket }（agent_sandbox.ssh_agent_socket）上没有任何程序在监听：请先在那里启动 jail 专用的 ssh-agent。
++    [not-yours] ssh-agent 套接字 { $socket } 或其文件夹属于其他用户。
++    [open-folder] ssh-agent 套接字 { $socket } 所在的文件夹对他人开放；请将其设为 700 并只在其中放置该套接字。
++   *[protected] ssh-agent 套接字 { $socket } 位于沙箱从不挂载的文件夹中；请把它放在专用文件夹里，例如 /tmp/zeo-ssh。
++}

@@ -1,0 +1,138 @@
+From 16731d435cd982430e59b218091a2a991d089f3d Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 27 Nov 2026 09:14:03 -0300
+Subject: [PATCH] git: the agent-reach driver listing gives up on a git that
+ never answers
+
+The same FIFO, on 0190's side. Before every git command in a repository
+a jailed agent can write, 0190 lists the drivers its config names with
+`git config --includes --get-regexp`, synchronously. A config, or a
+file it includes, that is a FIFO makes git wait forever, and with it
+the thread that asked.
+
+The listing now runs under `output_within`, which drains the pipes on
+their own threads and kills git after 5 s. A listing that timed out is
+"unscreenable", which 0190 already turns into a refused command
+(GIT_DIR pointed nowhere) -- fail closed, as for any listing failure.
+
+Test: a process that never answers is given up within the bound, and a
+quick one returns its output.
+---
+
+diff --git a/crates/git/src/agent_reach.rs b/crates/git/src/agent_reach.rs
+index be0b254..8fd84ba 100644
+--- a/crates/git/src/agent_reach.rs
++++ b/crates/git/src/agent_reach.rs
+@@ -127,13 +127,76 @@ pub(crate) fn driver_overrides(listing: &str) -> Result<Vec<String>, Unscreenabl
+ /// Lists the drivers the repository at `working_directory` defines and returns the `-c`
+ /// arguments that switch them off. Runs `git config` synchronously: it reads files and starts no
+ /// program the repository names.
++/// How long reading a repository's config may take. A config, or a file it includes, can be a
++/// FIFO in a repository an agent can write, and git waits on it forever; past this the read is
++/// given up and the repository treated as unscreenable, which refuses its commands.
++pub(crate) const CONFIG_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
++
++/// `command`'s output, or a timed-out error after `timeout` with the process killed. The pipes
++/// are drained on their own threads so a large output cannot stall the child.
++#[allow(clippy::disallowed_methods)]
++pub(crate) fn output_within(
++    mut command: std::process::Command,
++    timeout: std::time::Duration,
++) -> std::io::Result<std::process::Output> {
++    use std::io::Read as _;
++    use std::process::Stdio;
++    let mut child = command
++        .stdin(Stdio::null())
++        .stdout(Stdio::piped())
++        .stderr(Stdio::piped())
++        .spawn()?;
++    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
++        std::thread::spawn(move || {
++            let mut bytes = Vec::new();
++            if let Some(mut pipe) = pipe {
++                let _ = pipe.read_to_end(&mut bytes);
++            }
++            bytes
++        })
++    };
++    let stdout = drain(
++        child
++            .stdout
++            .take()
++            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
++    );
++    let stderr = drain(
++        child
++            .stderr
++            .take()
++            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
++    );
++    let deadline = std::time::Instant::now() + timeout;
++    let status = loop {
++        if let Some(status) = child.try_wait()? {
++            break status;
++        }
++        if std::time::Instant::now() >= deadline {
++            let _ = child.kill();
++            let _ = child.wait();
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::TimedOut,
++                format!("git config did not answer within {} s", timeout.as_secs()),
++            ));
++        }
++        std::thread::sleep(std::time::Duration::from_millis(10));
++    };
++    Ok(std::process::Output {
++        status,
++        stdout: stdout.join().unwrap_or_default(),
++        stderr: stderr.join().unwrap_or_default(),
++    })
++}
++
+ #[allow(clippy::disallowed_methods)]
+ pub(crate) fn list_driver_overrides(
+     git_binary_path: &Path,
+     working_directory: &Path,
+     envs: &collections::HashMap<String, String>,
+ ) -> Result<Vec<String>, UnscreenableDrivers> {
+-    let output = std::process::Command::new(git_binary_path)
++    let mut command = std::process::Command::new(git_binary_path);
++    command
+         .current_dir(working_directory)
+         .envs(envs)
+         .env("LC_ALL", "C")
+@@ -144,8 +207,8 @@ pub(crate) fn list_driver_overrides(
+             "--name-only",
+             "--get-regexp",
+             DRIVER_KEYS_PATTERN,
+-        ])
+-        .output()
++        ]);
++    let output = output_within(command, CONFIG_READ_TIMEOUT)
+         .map_err(|error| UnscreenableDrivers::Listing(error.to_string()))?;
+     let stderr = String::from_utf8_lossy(&output.stderr);
+     match output.status.code() {
+@@ -164,6 +227,23 @@ pub(crate) fn list_driver_overrides(
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    #[cfg(unix)]
++    #[allow(clippy::disallowed_methods, reason = "a real process is the point")]
++    fn a_git_that_never_answers_is_given_up() {
++        let mut stuck = std::process::Command::new("sleep");
++        stuck.arg("30");
++        let started = std::time::Instant::now();
++        let error = output_within(stuck, std::time::Duration::from_millis(200)).unwrap_err();
++        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
++        assert!(started.elapsed() < std::time::Duration::from_secs(5));
++        let mut quick = std::process::Command::new("echo");
++        quick.arg("listed");
++        let output = output_within(quick, std::time::Duration::from_secs(5)).unwrap();
++        assert!(output.status.success());
++        assert_eq!(output.stdout, b"listed\n");
++    }
++
+     #[test]
+     fn test_driver_overrides_switches_off_local_and_worktree_drivers_only() {
+         let listing = "local\tfilter.x.clean\n\
