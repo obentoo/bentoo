@@ -1,0 +1,1871 @@
+From d50f81ed00fa9c0a252ef0c2658e518c885dcc06 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 27 Nov 2026 20:25:00 -0300
+Subject: [PATCH] agent_sandbox, agent_ui, agent_servers: fixes from the
+ 2026-11-27 review of 0.31.0
+
+Findings Z1-Z10 of hub docs/assets/security-review-0.31.0-2026-11-27/README.md, fixed here
+but for Z4 (the release scripts, outside the series). Decisions are the operator's, same day.
+
+Z1, Z2 -- the login of a jailed agent. The login task came from the auth method the agent
+advertises in `initialize`, command, args and env included, and a jailed agent answers that
+from inside the jail; Zeo ran it on the host, outside the jail, on the operator's click. It
+also ran with CLAUDE_CONFIG_DIR on the jail's own config dir, which the agent writes: hooks,
+a statusLine or an apiKeyHelper in settings.json, an MCP server in .claude.json, a plugin
+would all run on the host. Now a jailed login runs the agent program Zeo resolved for the
+launch (`LaunchRecord::login_program`) with fixed arguments for Plus's three methods, any
+other method is refused, nothing of the agent's environment or cwd is kept, and it runs
+against an empty private directory (`DirBuilder::create`, 0700, removed afterwards); only
+`.credentials.json` is then moved into the jail's directory -- a new file, `create_new`, then
+a rename, after checking the directory is a real one of this user, so a link the agent
+planted is replaced, not written through. The Agent Sandbox page no longer tells the
+operator to run `CLAUDE_CONFIG_DIR=<state>/claude claude` by hand (the same hazard); its
+string is gone from all nine catalogs.
+
+Z3 -- the state root. Its default was /var/tmp/zeo-jail, where every user can create a
+project's predictable folder first and receive the login and the copied transcripts. The
+default is now ~/.local/state/zeo/jail, and every folder from the state root down to the
+project's claude/ must be a real directory of this user, the ones below the root mode 0700,
+or the start is refused. A jail's state from before moves with nothing: a new login is due.
+
+Z5, Z6 -- the ssh-agent. Nothing could tell the operator's dedicated agent from the
+desktop's /tmp/ssh-XXXX/agent.N, whose keys sign unconfirmed; the kill switch passed the
+setting raw (`~` never expanded) and logged `ssh_agent_emptied` when ssh-add started, not
+when it succeeded. Operator's decision: Zeo starts the jails' own agent. New setting
+`agent_sandbox.ssh_agent` (default false): Zeo makes /tmp/zeo-ssh-$UID (0700, a folder made
+first by someone else, or open to others, is refused), starts `ssh-agent -a` there when
+nothing answers, and the operator loads it with `SSH_AUTH_SOCK=... ssh-add -c -t 1h -h <host>`.
+A set `ssh_agent_socket` now refuses the start and names its replacement rather than being
+ignored. The kill switch empties that socket and logs ssh-add's own exit status.
+
+Z7 -- zeo-terminals turned off for a running session. Its route was declared once; each call
+now checks `agent.zeo_terminals` and the jail's Capabilities again, with the same policy the
+declaration used (`v1::policy_for_launch`). No test: there is no harness for a routed call.
+
+Z8 -- a secret's variable may not take a name the unjailed supervisor reads: `LD_*`,
+`AI_JAIL*`, `SSL_*`, `*_PROXY` join the reserved names, case-insensitively.
+
+Z9 -- `JailSpawn` no longer derives `Debug`: its env carries the real secret values; the
+hand-written one prints names only.
+
+Z10 -- the kill switch sent one SIGTERM and never checked. It now opens a pidfd before the
+signal and, from a thread, SIGKILLs through it if the process has not exited within 2 s, so
+the escalation can only reach the process it was opened for, never one that reused the pid.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index 2eb712e..fd6b2e8 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -3189,7 +3189,7 @@
+     // Where each jailed project keeps its own home, /tmp and Claude config (its own
+     // login): a directory per project under this one. Needs an ai-jail with --state-root;
+     // without one, the jail uses `claude_config_dir`.
+-    "state_root": "/var/tmp/zeo-jail",
++    "state_root": "~/.local/state/zeo/jail",
+     // Resource limits for every jailed project; a project's own replace them one by one,
+     // and 0 (or "0") turns one off. A limit the installed ai-jail cannot apply keeps the
+     // agent from starting.
+diff --git a/crates/agent_sandbox/src/control.rs b/crates/agent_sandbox/src/control.rs
+index 7daa601..4272a62 100644
+--- a/crates/agent_sandbox/src/control.rs
++++ b/crates/agent_sandbox/src/control.rs
+@@ -15,12 +15,24 @@ pub fn stop_jail(pid: u32) -> io::Result<()> {
+             "refusing to signal pid 0 or 1",
+         ));
+     }
++    // A pidfd names this process and no other, so the SIGKILL below can never reach a process
++    // that took the pid over (review Z10). Opened before the SIGTERM, while the pid is surely
++    // ai-jail's.
++    // SAFETY: pidfd_open(2) with a positive pid and no flags; it returns a new descriptor or -1.
++    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as libc::c_int;
+     // SAFETY: kill(2) with a positive pid and a valid signal touches no memory of ours.
+     let result = unsafe { libc::kill(pid, libc::SIGTERM) };
+     if result == 0 {
+         log::info!("agent_sandbox event=kill_switch pid={pid} outcome=signalled");
++        if pidfd >= 0 {
++            std::thread::spawn(move || escalate_after(pidfd, pid, KILL_GRACE_MS));
++        }
+         Ok(())
+     } else {
++        if pidfd >= 0 {
++            // SAFETY: closing the descriptor pidfd_open just returned.
++            unsafe { libc::close(pidfd) };
++        }
+         let error = io::Error::last_os_error();
+         log::warn!("agent_sandbox event=kill_switch pid={pid} outcome=failed error={error}");
+         Err(error)
+@@ -52,6 +64,49 @@ pub fn kill_switch(
+     stop_jail(pid)
+ }
+ 
++/// How long ai-jail has after SIGTERM to end the jail and itself (§6.55 measured it well under
++/// a second) before the kill switch sends SIGKILL.
++#[cfg(unix)]
++const KILL_GRACE_MS: libc::c_int = 2000;
++
++/// Waits up to `grace_ms` for the process behind `pidfd` to exit, then SIGKILLs it through the
++/// pidfd if it has not, and closes the descriptor. A pidfd turns readable when its process
++/// exits, a zombie included.
++#[cfg(unix)]
++fn escalate_after(pidfd: libc::c_int, pid: libc::pid_t, grace_ms: libc::c_int) {
++    let mut poll = libc::pollfd {
++        fd: pidfd,
++        events: libc::POLLIN,
++        revents: 0,
++    };
++    // SAFETY: one valid pollfd, owned by this frame.
++    let ready = unsafe { libc::poll(&mut poll, 1, grace_ms) };
++    if ready == 0 {
++        // SAFETY: pidfd_send_signal(2) on our pidfd with a valid signal and no siginfo.
++        let sent = unsafe {
++            libc::syscall(
++                libc::SYS_pidfd_send_signal,
++                pidfd,
++                libc::SIGKILL,
++                std::ptr::null::<libc::siginfo_t>(),
++                0,
++            )
++        };
++        if sent == 0 {
++            log::warn!(
++                "agent_sandbox event=kill_switch pid={pid} outcome=escalated signal=SIGKILL"
++            );
++        } else {
++            let error = io::Error::last_os_error();
++            log::error!(
++                "agent_sandbox event=kill_switch pid={pid} outcome=escalation_failed error={error}"
++            );
++        }
++    }
++    // SAFETY: closing the descriptor this function was handed.
++    unsafe { libc::close(pidfd) };
++}
++
+ #[cfg(not(unix))]
+ pub fn stop_jail(_pid: u32) -> io::Result<()> {
+     Err(io::Error::new(
+@@ -136,6 +191,32 @@ mod tests {
+         );
+     }
+ 
++    /// Review Z10: a jail that ignores SIGTERM is SIGKILLed once the grace runs out, through a
++    /// pidfd, so the signal can only reach the process it was opened for.
++    #[test]
++    #[allow(
++        clippy::disallowed_methods,
++        reason = "the signal must reach a real child, outside any executor"
++    )]
++    fn a_jail_that_ignores_sigterm_is_killed_after_the_grace() {
++        use std::os::unix::process::ExitStatusExt as _;
++        let mut child = std::process::Command::new("sh")
++            .args(["-c", "trap '' TERM; exec sleep 30"])
++            .spawn()
++            .expect("sh");
++        // Let the shell install its trap before the signal arrives.
++        std::thread::sleep(std::time::Duration::from_millis(200));
++        let pid = libc::pid_t::try_from(child.id()).unwrap();
++        // SAFETY: as in stop_jail.
++        let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as libc::c_int;
++        assert!(pidfd >= 0, "pidfd_open: {}", io::Error::last_os_error());
++        // SAFETY: as in stop_jail.
++        assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
++        escalate_after(pidfd, pid, 300);
++        let status = child.wait().expect("wait");
++        assert_eq!(status.signal(), Some(libc::SIGKILL), "{status:?}");
++    }
++
+     #[test]
+     #[allow(
+         clippy::disallowed_methods,
+diff --git a/crates/agent_sandbox/src/jail_secrets.rs b/crates/agent_sandbox/src/jail_secrets.rs
+index 8d4b3a9..2d4be17 100644
+--- a/crates/agent_sandbox/src/jail_secrets.rs
++++ b/crates/agent_sandbox/src/jail_secrets.rs
+@@ -22,6 +22,20 @@ pub const SECRET_HOSTS_SYNTAX: &str = "KEY=host[,host";
+ 
+ /// Names the jail's environment already uses: a secret named like one would replace it.
+ const RESERVED_NAMES: [&str; 5] = ["HOME", "PATH", "LANG", "XDG_RUNTIME_DIR", "ZEO_NO_PROXY"];
++/// Prefixes a secret's variable may not take: the real value sits in the environment of the
++/// unjailed ai-jail supervisor, where the dynamic loader reads `LD_*`, ai-jail reads its own
++/// `AI_JAIL*`, and TLS and proxy libraries read `SSL_*` and `*_PROXY` (2026-11-27 review, Z8).
++const RESERVED_PREFIXES: [&str; 3] = ["LD_", "AI_JAIL", "SSL_"];
++
++/// Whether a secret may not be handed over under `name`, case aside.
++fn is_reserved_name(name: &str) -> bool {
++    let upper = name.to_ascii_uppercase();
++    RESERVED_NAMES.contains(&upper.as_str())
++        || RESERVED_PREFIXES
++            .iter()
++            .any(|prefix| upper.starts_with(prefix))
++        || upper.ends_with("_PROXY")
++}
+ 
+ /// One secret a jail receives.
+ pub struct JailSecret {
+@@ -106,7 +120,7 @@ pub fn match_chosen(
+             .jail_use
+             .clone()
+             .ok_or_else(|| (uri.clone(), SecretProblem::NoJailUse))?;
+-        if RESERVED_NAMES.contains(&jail_use.env_name.as_str()) {
++        if is_reserved_name(&jail_use.env_name) {
+             return Err((uri, SecretProblem::ReservedName));
+         }
+         if forwarded.contains(&jail_use.env_name) {
+diff --git a/crates/agent_sandbox/src/jail_secrets_tests.rs b/crates/agent_sandbox/src/jail_secrets_tests.rs
+index 42e8b06..ada493a 100644
+--- a/crates/agent_sandbox/src/jail_secrets_tests.rs
++++ b/crates/agent_sandbox/src/jail_secrets_tests.rs
+@@ -96,6 +96,42 @@ fn a_secret_may_not_take_a_name_the_jail_sets() {
+     );
+ }
+ 
++/// Review Z8: names the loader, ai-jail, TLS or a proxy library read in the unjailed supervisor.
++#[test]
++fn a_secret_may_not_take_a_name_the_supervisor_reads() {
++    for name in [
++        "LD_PRELOAD",
++        "ld_library_path",
++        "AI_JAIL_CONFIG",
++        "SSL_CERT_FILE",
++        "HTTPS_PROXY",
++        "all_proxy",
++    ] {
++        let vault = vec![entry("x", "v", Some((name, &["example.com"])))];
++        assert_eq!(
++            match_chosen(&chosen(&["secret://x/v"]), &vault, &[]).expect_err(name),
++            ("secret://x/v".into(), SecretProblem::ReservedName),
++            "{name}"
++        );
++    }
++    let vault = vec![entry("x", "v", Some(("GH_TOKEN", &["example.com"])))];
++    assert!(match_chosen(&chosen(&["secret://x/v"]), &vault, &[]).is_ok());
++}
++
++#[test]
++fn a_jail_spawn_prints_names_never_values() {
++    let spawn = crate::launch::JailSpawn {
++        cwd: "/w".into(),
++        env: vec![("GH_PAT".into(), "ghp_realvalue".into())],
++        cpu_reservation: None,
++    };
++    let text = format!("{spawn:?}");
++    assert!(
++        text.contains("GH_PAT") && !text.contains("ghp_realvalue"),
++        "{text}"
++    );
++}
++
+ fn secret(name: &str, hosts: &[&str]) -> JailSecret {
+     JailSecret {
+         env_name: name.into(),
+diff --git a/crates/agent_sandbox/src/jail_ssh.rs b/crates/agent_sandbox/src/jail_ssh.rs
+index 25bc2c8..8fc8cbc 100644
+--- a/crates/agent_sandbox/src/jail_ssh.rs
++++ b/crates/agent_sandbox/src/jail_ssh.rs
+@@ -1,11 +1,16 @@
+-//! The operator's restricted ssh-agent, reachable from a jail (Zeo next §6.9).
++//! The jails' own ssh-agent (Zeo next §6.9, 2026-11-27 review Z6).
+ //!
+-//! The operator starts an agent for the jails alone, its socket in a folder of its own:
+-//! `ssh-agent -a /tmp/zeo-ssh/agent.sock`, then `ssh-add -c -t 1h -h github.com <key>` -- each use
+-//! asks, the key expires, and it signs only for the hosts named. A jail gets that folder
+-//! read-only (ai-jail maps folders, not files) and `SSH_AUTH_SOCK` pointing at the socket; never
+-//! the desktop agent, never `~/.ssh`. A push also needs the host's port 22 in the allowed hosts,
+-//! which ai-jail tunnels through its egress proxy.
++//! Zeo starts one agent for the jails alone, with `agent_sandbox.ssh_agent`, its socket at a
++//! fixed place in a folder Zeo makes: `/tmp/zeo-ssh-<uid>/agent.sock` ([`zeo_agent_socket`]).
++//! The operator loads it with `SSH_AUTH_SOCK=<that socket> ssh-add -c -t 1h -h github.com <key>`
++//! -- each use asks, the key expires, and it signs only for the hosts named. A jail gets that
++//! folder read-only (ai-jail maps folders, not files) and `SSH_AUTH_SOCK` pointing at the socket;
++//! never `~/.ssh`. A push also needs the host's port 22 in the allowed hosts, which ai-jail
++//! tunnels through its egress proxy.
++//!
++//! Until 0.32.0 the operator named a socket of their own (`agent_sandbox.ssh_agent_socket`), and
++//! nothing could tell a dedicated agent from the desktop's `/tmp/ssh-XXXX/agent.N`, whose keys
++//! sign with no confirmation. That setting now refuses the start and says what replaced it.
+ 
+ use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
+ use std::path::{Path, PathBuf};
+@@ -25,6 +30,11 @@ pub enum SshSocketProblem {
+     OpenFolder,
+     /// The folder is one the sandbox never maps (home, the config or runtime directory, …).
+     Protected,
++    /// `agent_sandbox.ssh_agent_socket` is set: an agent Zeo cannot vouch for. Replaced by
++    /// `agent_sandbox.ssh_agent`, which starts the jails' own.
++    Replaced,
++    /// The jails' own agent could not be started.
++    AgentFailed,
+ }
+ 
+ impl SshSocketProblem {
+@@ -36,6 +46,8 @@ impl SshSocketProblem {
+             Self::NotYours => "not-yours",
+             Self::OpenFolder => "open-folder",
+             Self::Protected => "protected",
++            Self::Replaced => "replaced",
++            Self::AgentFailed => "agent-failed",
+         }
+     }
+ }
+@@ -83,25 +95,153 @@ pub fn check_socket(
+     Ok((socket, folder))
+ }
+ 
+-/// Empties the operator's agent (`ssh-add -D`), for the kill switch: the agent is the operator's
+-/// process, so it is disarmed, not killed. Fire and forget; smol reaps the child.
+-pub fn empty_agent(socket: &Path) {
+-    let spawned = smol::process::Command::new("ssh-add")
++/// The folder of the jails' own agent: one per user, at a fixed place so the operator can
++/// `ssh-add` to it.
++pub fn zeo_agent_dir(uid: u32) -> PathBuf {
++    std::env::temp_dir().join(format!("zeo-ssh-{uid}"))
++}
++
++/// The socket of the jails' own agent.
++pub fn zeo_agent_socket(uid: u32) -> PathBuf {
++    zeo_agent_dir(uid).join("agent.sock")
++}
++
++/// [`zeo_agent_socket`] for the user Zeo runs as.
++pub fn current_user_agent_socket() -> PathBuf {
++    // SAFETY: getuid(2) cannot fail and touches no memory.
++    zeo_agent_socket(unsafe { libc::getuid() })
++}
++
++/// Makes sure the jails' own agent listens at [`zeo_agent_socket`], starting it if nothing does,
++/// and returns the socket and its folder. The folder is made mode 700 when absent; one already
++/// there must be a real directory of `uid`, open to nobody else -- `/tmp` is shared, and a
++/// folder somebody else made first would hold their socket, not Zeo's.
++pub fn ensure_zeo_agent(uid: u32) -> Result<(PathBuf, PathBuf), (PathBuf, SshSocketProblem)> {
++    ensure_agent_in(&zeo_agent_dir(uid), uid).map(|(socket, folder, _)| (socket, folder))
++}
++
++/// [`ensure_zeo_agent`] in `folder`; also the pid of an agent it started.
++#[allow(
++    clippy::disallowed_methods,
++    reason = "the launch decision is synchronous, and ssh-agent/ssh-add answer at once on a local socket"
++)]
++fn ensure_agent_in(
++    folder: &Path,
++    uid: u32,
++) -> Result<(PathBuf, PathBuf, Option<u32>), (PathBuf, SshSocketProblem)> {
++    use std::os::unix::fs::DirBuilderExt as _;
++    let folder = folder.to_path_buf();
++    let socket = folder.join("agent.sock");
++    let refuse = |problem| Err((socket.clone(), problem));
++    match std::fs::DirBuilder::new().mode(0o700).create(&folder) {
++        Ok(()) => {}
++        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
++        Err(_) => return refuse(SshSocketProblem::AgentFailed),
++    }
++    let Ok(meta) = std::fs::symlink_metadata(&folder) else {
++        return refuse(SshSocketProblem::AgentFailed);
++    };
++    if !meta.is_dir() || meta.uid() != uid {
++        return refuse(SshSocketProblem::NotYours);
++    }
++    if meta.permissions().mode() & 0o077 != 0 {
++        return refuse(SshSocketProblem::OpenFolder);
++    }
++    if agent_answers(&socket) {
++        return Ok((socket, folder, None));
++    }
++    // Nothing answers: a stale socket from an agent that ended, or none yet.
++    if std::fs::symlink_metadata(&socket).is_ok() && std::fs::remove_file(&socket).is_err() {
++        return refuse(SshSocketProblem::AgentFailed);
++    }
++    let started = std::process::Command::new("ssh-agent")
++        .arg("-a")
++        .arg(&socket)
++        .stdin(std::process::Stdio::null())
++        .stderr(std::process::Stdio::null())
++        .output();
++    // ssh-agent forks the agent, which binds the socket and leaves stdout, then prints
++    // `SSH_AGENT_PID=<pid>;` and exits.
++    match started {
++        Ok(output) if output.status.success() && agent_answers(&socket) => {
++            let pid = String::from_utf8_lossy(&output.stdout)
++                .split("SSH_AGENT_PID=")
++                .nth(1)
++                .and_then(|rest| rest.split(';').next())
++                .and_then(|pid| pid.trim().parse::<u32>().ok());
++            log::info!(
++                "agent_sandbox event=ssh_agent_started socket={} pid={pid:?}",
++                socket.display()
++            );
++            Ok((socket, folder, pid))
++        }
++        Ok(output) => {
++            log::warn!(
++                "agent_sandbox event=ssh_agent_start_failed status={}",
++                output.status
++            );
++            refuse(SshSocketProblem::AgentFailed)
++        }
++        Err(error) => {
++            log::warn!("agent_sandbox event=ssh_agent_start_failed error={error}");
++            refuse(SshSocketProblem::AgentFailed)
++        }
++    }
++}
++
++/// Whether an agent answers at `socket`: `ssh-add -l` exits 0 (keys) or 1 (none) when it
++/// reaches one, 2 when it cannot.
++#[allow(
++    clippy::disallowed_methods,
++    reason = "the launch decision is synchronous, and ssh-agent/ssh-add answer at once on a local socket"
++)]
++fn agent_answers(socket: &Path) -> bool {
++    std::process::Command::new("ssh-add")
++        .arg("-l")
++        .env("SSH_AUTH_SOCK", socket)
++        .stdin(std::process::Stdio::null())
++        .stdout(std::process::Stdio::null())
++        .stderr(std::process::Stdio::null())
++        .status()
++        .is_ok_and(|status| matches!(status.code(), Some(0 | 1)))
++}
++
++/// Empties the jails' agent (`ssh-add -D`), for the kill switch, and says whether it did: the
++/// log line follows ssh-add's own exit status, not the spawn (2026-11-27 review, Z5).
++#[allow(
++    clippy::disallowed_methods,
++    reason = "the kill switch is synchronous, and ssh-agent/ssh-add answer at once on a local socket"
++)]
++pub fn empty_agent(socket: &Path) -> bool {
++    let status = std::process::Command::new("ssh-add")
+         .arg("-D")
+         .env("SSH_AUTH_SOCK", socket)
+         .stdin(std::process::Stdio::null())
+         .stdout(std::process::Stdio::null())
+         .stderr(std::process::Stdio::null())
+-        .spawn();
+-    match spawned {
+-        Ok(_) => log::info!(
+-            "agent_sandbox event=ssh_agent_emptied socket={}",
+-            socket.display()
+-        ),
+-        Err(error) => log::warn!(
+-            "agent_sandbox event=ssh_agent_empty_failed socket={} error={error}",
+-            socket.display()
+-        ),
++        .status();
++    match status {
++        Ok(status) if status.success() => {
++            log::info!(
++                "agent_sandbox event=ssh_agent_emptied socket={}",
++                socket.display()
++            );
++            true
++        }
++        Ok(status) => {
++            log::error!(
++                "agent_sandbox event=ssh_agent_empty_failed socket={} status={status}",
++                socket.display()
++            );
++            false
++        }
++        Err(error) => {
++            log::error!(
++                "agent_sandbox event=ssh_agent_empty_failed socket={} error={error}",
++                socket.display()
++            );
++            false
++        }
+     }
+ }
+ 
+@@ -153,4 +293,73 @@ mod tests {
+         // `~/` is the home given.
+         assert!(check_socket("~/zeo-ssh/agent.sock", tmp.path(), uid, |_| false).is_ok());
+     }
++
++    #[test]
++    fn the_jails_agent_folder_must_be_private_and_the_user_s() {
++        let tmp = tempfile::tempdir().expect("tempdir");
++        let uid = unsafe { libc::getuid() };
++        let folder = tmp.path().join("zeo-ssh");
++        std::fs::create_dir(&folder).unwrap();
++        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
++        assert_eq!(
++            ensure_agent_in(&folder, uid).unwrap_err().1,
++            SshSocketProblem::OpenFolder,
++            "a folder made first, open to others, is not used"
++        );
++        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
++        assert_eq!(
++            ensure_agent_in(&folder, uid + 1).unwrap_err().1,
++            SshSocketProblem::NotYours
++        );
++        let link = tmp.path().join("link");
++        std::os::unix::fs::symlink(&folder, &link).unwrap();
++        assert_eq!(
++            ensure_agent_in(&link, uid).unwrap_err().1,
++            SshSocketProblem::NotYours,
++            "a link is not a folder of the user's"
++        );
++    }
++
++    #[test]
++    #[allow(
++        clippy::disallowed_methods,
++        reason = "a real ssh-agent, outside any executor"
++    )]
++    fn the_jails_agent_starts_once_and_is_emptied() {
++        let has = |bin: &str| {
++            std::process::Command::new(bin)
++                .arg("-h")
++                .stdout(std::process::Stdio::null())
++                .stderr(std::process::Stdio::null())
++                .status()
++                .is_ok()
++        };
++        if !has("ssh-agent") || !has("ssh-add") {
++            eprintln!("skipped: no ssh-agent/ssh-add on PATH");
++            return;
++        }
++        let tmp = tempfile::tempdir().expect("tempdir");
++        let uid = unsafe { libc::getuid() };
++        let folder = tmp.path().join("zeo-ssh");
++        let (socket, checked, pid) = ensure_agent_in(&folder, uid).expect("started");
++        let pid = pid.expect("the started agent's pid");
++        assert_eq!(checked, folder);
++        let mode = std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777;
++        assert_eq!(mode, 0o700);
++        assert!(agent_answers(&socket));
++        let (again, _, none) = ensure_agent_in(&folder, uid).expect("reused");
++        assert_eq!(
++            (again, none),
++            (socket.clone(), None),
++            "the running agent is reused"
++        );
++        assert!(empty_agent(&socket), "ssh-add -D succeeded");
++        // Stop the agent this test started.
++        // SAFETY: kill(2) with a pid this test's agent printed; no memory is touched.
++        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
++        assert!(
++            !empty_agent(&tmp.path().join("nothing.sock")),
++            "a dead socket reports failure"
++        );
++    }
+ }
+diff --git a/crates/agent_sandbox/src/launch.rs b/crates/agent_sandbox/src/launch.rs
+index a30a88f..2fa5d37 100644
+--- a/crates/agent_sandbox/src/launch.rs
++++ b/crates/agent_sandbox/src/launch.rs
+@@ -118,6 +118,10 @@ pub struct LaunchRecord {
+     /// login started from Zeo runs on the host, where the browser's callback can reach it, and
+     /// is pointed here: without it the token went to `~/.claude` and the jail never saw it.
+     pub claude_config_dir: Option<PathBuf>,
++    /// The program and arguments of a jailed start's agent, as Zeo resolved them before wrapping
++    /// them in ai-jail: the only command a login for it may run on the host. The login the agent
++    /// itself advertises is chosen inside the jail, so it is never run (2026-11-27 review, Z1).
++    pub login_program: Option<(PathBuf, Vec<String>)>,
+     /// A start with the jail off found no ai-jail to turn it on with: the thread's lock is shown
+     /// disabled, saying what to install (operator, 2026-11-22). Checked at launch, not at render.
+     pub ai_jail_missing: bool,
+@@ -130,7 +134,7 @@ pub enum LaunchDecision {
+ }
+ 
+ /// How a jailed start's process is spawned, besides its command.
+-#[derive(Clone, Debug, PartialEq, Eq)]
++#[derive(Clone, PartialEq, Eq)]
+ pub struct JailSpawn {
+     /// The resolved root `check_root` approved: ai-jail binds its working directory as the
+     /// writable project, so it must be the checked path, not a symlink that could be re-pointed.
+@@ -145,6 +149,25 @@ pub struct JailSpawn {
+     pub cpu_reservation: Option<CpuReservation>,
+ }
+ 
++/// Names only: `env` carries the vault's real secret values, and a derived `Debug` would print
++/// them wherever a spawn is formatted (2026-11-27 review, Z9).
++impl std::fmt::Debug for JailSpawn {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("JailSpawn")
++            .field("cwd", &self.cwd)
++            .field(
++                "env",
++                &self
++                    .env
++                    .iter()
++                    .map(|(name, _)| name.as_str())
++                    .collect::<Vec<_>>(),
++            )
++            .field("cpu_reservation", &self.cpu_reservation)
++            .finish()
++    }
++}
++
+ /// A launch decision and, for a jailed start, how to spawn it.
+ pub struct LaunchPlan {
+     pub decision: LaunchDecision,
+@@ -756,6 +779,8 @@ impl LocalLaunch {
+             env_names,
+             secret_args: &secret_args,
+         };
++        // Taken before `generate` consumes the command: the only login a jailed agent gets.
++        let login_program = Some((self.cmd.path.clone(), self.cmd.args.clone()));
+         let mut jailed = generate(self.cmd, &inputs);
+         if forwarded {
+             // ai-jail's filtered egress would send loopback HTTP to its proxy (R7.1).
+@@ -763,6 +788,7 @@ impl LocalLaunch {
+         }
+         record.ai_jail_version = Some(checked.version);
+         record.claude_config_dir = Some(checked.claude_dir.clone());
++        record.login_program = login_program;
+         record.rw_maps = std::iter::once(checked.state_root.unwrap_or(checked.claude_dir))
+             .chain(checked.rw_maps)
+             .collect();
+@@ -935,9 +961,9 @@ impl LocalLaunch {
+         let state_root = if binary.supports_state_root {
+             let base = expand_tilde(&self.sandbox.state_root, &self.env.home);
+             let dir = project_state_dir(&base, &canonical_root);
+-            // ai-jail creates it too; Zeo makes `claude/` first so a login can run before the
+-            // first start (`CLAUDE_CONFIG_DIR=<dir>/claude claude`).
+-            create_private_dir(&dir.join("claude")).map_err(|error| {
++            // ai-jail creates it too; Zeo makes `claude/` first so the jail's login (Zeo's own,
++            // see agent_jail_login) has a folder to land in before the first start.
++            create_private_dir(&base, &dir.join("claude")).map_err(|error| {
+                 refuse(LaunchCause::StateRootCreate {
+                     dir: dir.clone(),
+                     error,
+@@ -983,22 +1009,31 @@ impl LocalLaunch {
+         if allow_hosts.iter().any(|host| host.contains(':')) && !binary.supports_host_ports {
+             return Err(refuse(LaunchCause::HostPortsUnsupported));
+         }
+-        let ssh_agent = match self.sandbox.ssh_agent_socket.as_deref() {
+-            None => None,
+-            Some(raw) => {
+-                // SAFETY: getuid(2) cannot fail and touches no memory.
+-                let uid = unsafe { libc::getuid() };
+-                let protected = |folder: &Path| {
+-                    folder
+-                        .to_str()
+-                        .is_none_or(|text| validate::validate_rw_map_with(text, &set).is_err())
+-                };
+-                let checked = crate::jail_ssh::check_socket(raw, &self.env.home, uid, protected)
+-                    .map_err(|(socket, problem)| {
+-                        refuse(LaunchCause::SshSocket { socket, problem })
+-                    })?;
+-                Some(checked)
+-            }
++        // §6.9, review Z6: only the agent Zeo starts for the jails reaches one. A socket the
++        // operator named could be the desktop's, so a set `ssh_agent_socket` refuses the start.
++        if let Some(raw) = self.sandbox.ssh_agent_socket.as_deref() {
++            return Err(refuse(LaunchCause::SshSocket {
++                socket: PathBuf::from(raw),
++                problem: crate::jail_ssh::SshSocketProblem::Replaced,
++            }));
++        }
++        let ssh_agent = if self.sandbox.ssh_agent {
++            // SAFETY: getuid(2) cannot fail and touches no memory.
++            let uid = unsafe { libc::getuid() };
++            let (socket, _) = crate::jail_ssh::ensure_zeo_agent(uid)
++                .map_err(|(socket, problem)| refuse(LaunchCause::SshSocket { socket, problem }))?;
++            // The same checks a mapped folder gets: the sandbox must be able to map it.
++            let protected = |folder: &Path| {
++                folder
++                    .to_str()
++                    .is_none_or(|text| validate::validate_rw_map_with(text, &set).is_err())
++            };
++            let raw = socket.to_string_lossy().into_owned();
++            let checked = crate::jail_ssh::check_socket(&raw, &self.env.home, uid, protected)
++                .map_err(|(socket, problem)| refuse(LaunchCause::SshSocket { socket, problem }))?;
++            Some(checked)
++        } else {
++            None
+         };
+         let private_state = state_root.as_deref().unwrap_or(&claude_dir);
+         check_nesting(&canonical_root, private_state, &rw_maps).map_err(refuse)?;
+@@ -1122,6 +1157,7 @@ impl LocalLaunch {
+             jail_pid: None,
+             paused: false,
+             claude_config_dir: None,
++            login_program: None,
+             ai_jail_missing: false,
+         }
+     }
+@@ -1364,6 +1400,7 @@ fn settings_fingerprint(
+     // §6.53 step 3: the secrets are read at start; §6.9: so is the agent's socket.
+     sandbox.secrets_for_key(key).hash(&mut hasher);
+     sandbox.ssh_agent_socket.hash(&mut hasher);
++    sandbox.ssh_agent.hash(&mut hasher);
+     policy.enabled.hash(&mut hasher);
+     policy.rw_maps.hash(&mut hasher);
+     policy.allow_hosts.hash(&mut hasher);
+@@ -1375,7 +1412,7 @@ fn settings_fingerprint(
+ }
+ 
+ /// The project's own state directory under `base` (Zeo next §6.54): the root's folder name, for a
+-/// person reading `/var/tmp/zeo-jail`, then a hash of the whole canonical root, so two projects
++/// person reading the state root, then a hash of the whole canonical root, so two projects
+ /// named alike never share a jail. FNV-1a, not `DefaultHasher`: the name must survive a Zeo
+ /// update, or every project would lose its login.
+ pub fn project_state_dir(base: &Path, root: &Path) -> PathBuf {
+@@ -1406,8 +1443,13 @@ pub fn project_state_dir(base: &Path, root: &Path) -> PathBuf {
+     base.join(format!("{name}-{hash:016x}"))
+ }
+ 
+-/// Creates `path` and its missing parents with mode 0700: the folder holds a login.
+-fn create_private_dir(path: &Path) -> io::Result<()> {
++/// Creates `path` and its missing parents with mode 0700 -- the folder holds a login -- and then
++/// refuses it unless every folder from `base` down to `path` is a real directory (no link), owned
++/// by this user, and the ones below `base` open to nobody else. A folder someone else made first
++/// under a shared base (`/var/tmp` was the default until 0.32.0) would otherwise receive the
++/// login and the copied transcripts, with whatever that person planted in it (2026-11-27
++/// review, Z3). Folders above `base` are the operator's choice and are not checked.
++fn create_private_dir(base: &Path, path: &Path) -> io::Result<()> {
+     let mut builder = std::fs::DirBuilder::new();
+     builder.recursive(true);
+     #[cfg(unix)]
+@@ -1415,7 +1457,41 @@ fn create_private_dir(path: &Path) -> io::Result<()> {
+         use std::os::unix::fs::DirBuilderExt as _;
+         builder.mode(0o700);
+     }
+-    builder.create(path)
++    builder.create(path)?;
++    #[cfg(unix)]
++    check_private_chain(base, path)?;
++    Ok(())
++}
++
++#[cfg(unix)]
++fn check_private_chain(base: &Path, path: &Path) -> io::Result<()> {
++    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
++    // SAFETY: getuid(2) cannot fail and touches no memory.
++    let uid = unsafe { libc::getuid() };
++    let mut current = path;
++    loop {
++        let meta = std::fs::symlink_metadata(current)?;
++        let below_base = current != base;
++        let private = meta.file_type().is_dir()
++            && meta.uid() == uid
++            && (!below_base || meta.permissions().mode() & 0o077 == 0);
++        if !private {
++            return Err(io::Error::new(
++                io::ErrorKind::PermissionDenied,
++                format!(
++                    "{} is not a private folder of this user (a link, another owner, or open to others)",
++                    current.display()
++                ),
++            ));
++        }
++        if !below_base {
++            return Ok(());
++        }
++        current = match current.parent() {
++            Some(parent) if parent.starts_with(base) => parent,
++            _ => return Ok(()),
++        };
++    }
+ }
+ 
+ fn memory_fingerprint(memory: &AgentMemorySettings) -> u64 {
+diff --git a/crates/agent_sandbox/src/launch_tests.rs b/crates/agent_sandbox/src/launch_tests.rs
+index 65bfac3..ec63447 100644
+--- a/crates/agent_sandbox/src/launch_tests.rs
++++ b/crates/agent_sandbox/src/launch_tests.rs
+@@ -932,6 +932,7 @@ mod run_additions {
+             jail_pid: None,
+             paused: false,
+             claude_config_dir: None,
++            login_program: None,
+             ai_jail_missing: false,
+         };
+         cx.update(|cx| {
+diff --git a/crates/agent_sandbox/src/limits_tests.rs b/crates/agent_sandbox/src/limits_tests.rs
+index 3b6b531..18cfe5b 100644
+--- a/crates/agent_sandbox/src/limits_tests.rs
++++ b/crates/agent_sandbox/src/limits_tests.rs
+@@ -79,7 +79,10 @@ async fn the_defaults_are_the_operators_values_and_a_state_root(cx: &mut TestApp
+         limits("8G", 400, 4096, None),
+         "8 GB, 400 %, 4096 processes (operator, 2026-11-17); no disk quota"
+     );
+-    assert_eq!(settings.state_root, "/var/tmp/zeo-jail");
++    assert_eq!(
++        settings.state_root, "~/.local/state/zeo/jail",
++        "the user's own state directory, not the shared /var/tmp (2026-11-27 review, Z3)"
++    );
+ }
+ 
+ #[test]
+@@ -182,6 +185,39 @@ async fn limits_and_the_project_state_root_reach_the_command(cx: &mut TestAppCon
+     );
+ }
+ 
++/// 2026-11-27 review, Z3: a project folder somebody else could have made or reached first -- a
++/// link, or one open to other users -- is refused before the start, so no login or transcript
++/// lands in it.
++#[gpui::test]
++async fn a_state_folder_that_is_a_link_or_open_to_others_is_refused(cx: &mut TestAppContext) {
++    init(cx);
++    let f = fixture("ai-jail 3.5.0");
++    write_script(&f.ai_jail, HELP_WITH_LIMITS_AND_STATE_ROOT);
++    let base = f.base.join("state");
++    std::fs::create_dir(&base).unwrap();
++    set_user_settings(with_limits_on(&f, &base), cx);
++    let project = project(&f, cx).await;
++    let dir = project_state_dir(&base, &f.root);
++
++    let elsewhere = f.base.join("planted");
++    std::fs::create_dir_all(elsewhere.join("claude")).unwrap();
++    std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
++    let text = refused(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    assert!(text.contains("not a private folder"), "a link: {text}");
++
++    std::fs::remove_file(&dir).unwrap();
++    std::fs::create_dir(&dir).unwrap();
++    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
++    let text = refused(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++    assert!(
++        text.contains("not a private folder"),
++        "open to others: {text}"
++    );
++
++    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
++    jailed(run(&project, agent_cmd("/usr/bin/claude-agent-acp-plus"), cx).await);
++}
++
+ #[gpui::test]
+ async fn without_state_root_support_the_shared_config_dir_stays(cx: &mut TestAppContext) {
+     init(cx);
+diff --git a/crates/agent_sandbox/src/operator_pause_tests.rs b/crates/agent_sandbox/src/operator_pause_tests.rs
+index 2f89ef3..3bafb8b 100644
+--- a/crates/agent_sandbox/src/operator_pause_tests.rs
++++ b/crates/agent_sandbox/src/operator_pause_tests.rs
+@@ -25,6 +25,7 @@ fn running(pid: Option<u32>) -> LaunchRecord {
+         jail_pid: pid,
+         paused: false,
+         claude_config_dir: None,
++        login_program: None,
+         ai_jail_missing: false,
+     }
+ }
+diff --git a/crates/agent_sandbox/src/roundtrip_tests.rs b/crates/agent_sandbox/src/roundtrip_tests.rs
+index c71ccc6..1f3afbf 100644
+--- a/crates/agent_sandbox/src/roundtrip_tests.rs
++++ b/crates/agent_sandbox/src/roundtrip_tests.rs
+@@ -240,6 +240,7 @@ fn roundtrip_contract_shapes_carry_every_field_the_consumers_read(cx: &mut TestA
+         jail_pid: None,
+         paused: false,
+         claude_config_dir: None,
++        login_program: None,
+         ai_jail_missing: false,
+     };
+     cx.update(|cx| {
+@@ -267,6 +268,7 @@ fn roundtrip_contract_shapes_carry_every_field_the_consumers_read(cx: &mut TestA
+             jail_pid: _,
+             paused: _,
+             claude_config_dir: _,
++            login_program: _,
+             ai_jail_missing: _,
+         } = &stored;
+         assert_eq!(*reason, Reason::On);
+diff --git a/crates/agent_sandbox/src/settings.rs b/crates/agent_sandbox/src/settings.rs
+index 7bd3815..7c9ee7a 100644
+--- a/crates/agent_sandbox/src/settings.rs
++++ b/crates/agent_sandbox/src/settings.rs
+@@ -11,8 +11,10 @@ use crate::validate::expand_tilde;
+ const DEFAULT_CLAUDE_CONFIG_DIR: &str = "~/.claude-jailed";
+ /// `agent_sandbox.allow_hosts` when the defaults lack it: the measured login minimum.
+ const DEFAULT_ALLOW_HOSTS: [&str; 2] = ["anthropic.com", "platform.claude.com"];
+-/// `agent_sandbox.state_root` when the defaults lack it; `default.json` says the same.
+-const DEFAULT_STATE_ROOT: &str = "/var/tmp/zeo-jail";
++/// `agent_sandbox.state_root` when the defaults lack it; `default.json` says the same. Under the
++/// user's own state directory (XDG's default `~/.local/state`), not `/var/tmp`: every user can
++/// create a project's predictable folder there first (2026-11-27 review, Z3).
++const DEFAULT_STATE_ROOT: &str = "~/.local/state/zeo/jail";
+ /// `agent_sandbox.limits` when the defaults lack them (the operator's values, 2026-11-17).
+ const DEFAULT_MEMORY: &str = "8G";
+ const DEFAULT_CPU_QUOTA: u32 = 400;
+@@ -37,8 +39,11 @@ pub struct AgentSandboxSettings {
+     /// Hosts every jailed project may reach, as written.
+     pub allow_hosts: Vec<String>,
+     /// The directory each project's own state directory lives under, as written (§6.54).
+-    /// The operator's restricted ssh-agent socket for the jails (§6.9); `None`: no agent.
++    /// The socket the operator named for the jails before 0.32.0 (§6.9). Still read so a set one
++    /// refuses the start, saying what replaced it, instead of being dropped in silence.
+     pub ssh_agent_socket: Option<String>,
++    /// Whether Zeo starts the jails' own ssh-agent and hands it to every jail (§6.9, review Z6).
++    pub ssh_agent: bool,
+     pub state_root: String,
+     /// Limits for every jailed project (§6.54).
+     pub limits: SandboxLimits,
+@@ -429,6 +434,7 @@ impl Settings for AgentSandboxSettings {
+             ssh_agent_socket: sandbox
+                 .ssh_agent_socket
+                 .filter(|socket| !socket.trim().is_empty()),
++            ssh_agent: sandbox.ssh_agent.unwrap_or(false),
+             reserve_cpus: sandbox
+                 .limits
+                 .as_ref()
+diff --git a/crates/agent_servers/src/acp/mcp_over_acp.rs b/crates/agent_servers/src/acp/mcp_over_acp.rs
+index 43e179e..08f02dc 100644
+--- a/crates/agent_servers/src/acp/mcp_over_acp.rs
++++ b/crates/agent_servers/src/acp/mcp_over_acp.rs
+@@ -75,8 +75,11 @@ enum Backend {
+     ContextServer(ContextServerId),
+     /// `zeo-lsp`, answered from the project's language servers (§6.13).
+     ZeoLsp,
+-    /// `zeo-terminals`, the terminals the operator shared (§6.71).
+-    ZeoTerminals,
++    /// `zeo-terminals`, the terminals the operator shared (§6.71), declared for the jailed launch
++    /// named, if any: each call checks again that it is still allowed (review Z7).
++    ZeoTerminals {
++        launch: Option<agent_sandbox::launch::LaunchId>,
++    },
+ }
+ 
+ /// Per-connection state of the proxy: the servers declared so far, by `serverId`, and the
+@@ -186,6 +189,7 @@ impl McpOverAcp {
+         project: &Entity<Project>,
+         mut servers: Vec<acp::McpServer>,
+         policy: &McpProxyPolicy,
++        launch: Option<agent_sandbox::launch::LaunchId>,
+         cx: &App,
+     ) -> Vec<acp::McpServer> {
+         let name = super::zeo_terminals::ZEO_TERMINALS_SERVER_NAME;
+@@ -208,7 +212,7 @@ impl McpOverAcp {
+             Route {
+                 name: name.to_string(),
+                 project: project.downgrade(),
+-                backend: Backend::ZeoTerminals,
++                backend: Backend::ZeoTerminals { launch },
+             },
+         );
+         servers.push(acp::McpServer::Acp(acp::McpServerAcp::new(name, server_id)));
+diff --git a/crates/agent_servers/src/acp/mcp_over_acp_forward.rs b/crates/agent_servers/src/acp/mcp_over_acp_forward.rs
+index 652ae31..3663ddd 100644
+--- a/crates/agent_servers/src/acp/mcp_over_acp_forward.rs
++++ b/crates/agent_servers/src/acp/mcp_over_acp_forward.rs
+@@ -51,7 +51,21 @@ pub(super) async fn serve(
+                 super::super::zeo_lsp::serve(project, &request.method, request.params, cx).await,
+             );
+         }
+-        Backend::ZeoTerminals => {
++        Backend::ZeoTerminals { launch } => {
++            // Declared once, at session start; the operator may have turned it off since,
++            // globally or in the jail's Capabilities (review Z7).
++            let launch = *launch;
++            let allowed = cx.update(|cx| {
++                super::super::zeo_terminals::enabled(cx)
++                    && super::super::v1::policy_for_launch(launch, cx)
++                        .allows(super::super::zeo_terminals::ZEO_TERMINALS_SERVER_NAME)
++            });
++            if !allowed {
++                return Err(agent_client_protocol::Error::new(
++                    MCP_SERVER_UNAVAILABLE,
++                    "zeo-terminals was turned off for this session",
++                ));
++            }
+             let project = route.project.upgrade().ok_or_else(|| {
+                 agent_client_protocol::Error::new(
+                     MCP_SERVER_UNAVAILABLE,
+diff --git a/crates/agent_servers/src/acp/v1.rs b/crates/agent_servers/src/acp/v1.rs
+index 2a9603e..dbd6896 100644
+--- a/crates/agent_servers/src/acp/v1.rs
++++ b/crates/agent_servers/src/acp/v1.rs
+@@ -1000,7 +1000,7 @@ impl AcpConnection {
+             .mcp_over_acp
+             .declare_zeo_lsp(project, servers, &policy, cx);
+         self.mcp_over_acp
+-            .declare_zeo_terminals(project, servers, &policy, cx)
++            .declare_zeo_terminals(project, servers, &policy, self.launch_id, cx)
+     }
+ 
+     /// Which servers this connection may reach through the proxy: the hook a sandboxed launch
+@@ -1009,10 +1009,7 @@ impl AcpConnection {
+         // A proxied server runs on the host with Zeo's files and network, so a jail reaches only
+         // the servers its project chose on the Capabilities page (§6.64 step 2; none by
+         // default), `zeo-lsp` included.
+-        match super::jail_servers::choice(self.launch_id, cx) {
+-            Some(choice) => McpProxyPolicy::only(choice.servers),
+-            None => McpProxyPolicy::All,
+-        }
++        policy_for_launch(self.launch_id, cx)
+     }
+ 
+     /// Whether this connection hands Zeo's running servers over as `acp` ones: the gate of
+@@ -2159,6 +2156,19 @@ impl AcpConnection {
+     }
+ }
+ 
++/// The proxy policy of a connection launched as `launch`: a jail reaches only the servers its
++/// project chose (§6.64 step 2); an unjailed connection, all. Read at declaration and again on
++/// every `zeo-terminals` call (review Z7).
++pub(crate) fn policy_for_launch(
++    launch: Option<agent_sandbox::launch::LaunchId>,
++    cx: &App,
++) -> McpProxyPolicy {
++    match super::jail_servers::choice(launch, cx) {
++        Some(choice) => McpProxyPolicy::only(choice.servers),
++        None => McpProxyPolicy::All,
++    }
++}
++
+ /// The record a fork inherits from its parent session, and that parent's id for the log.
+ struct InheritedConfig {
+     parent: acp_v2::SessionId,
+diff --git a/crates/agent_servers/src/acp/v1/mcp_over_acp_jail_tests.rs b/crates/agent_servers/src/acp/v1/mcp_over_acp_jail_tests.rs
+index dd46e62..baaf4f4 100644
+--- a/crates/agent_servers/src/acp/v1/mcp_over_acp_jail_tests.rs
++++ b/crates/agent_servers/src/acp/v1/mcp_over_acp_jail_tests.rs
+@@ -25,6 +25,7 @@ fn record(reason: Reason) -> LaunchRecord {
+         jail_pid: None,
+         paused: false,
+         claude_config_dir: None,
++        login_program: None,
+         ai_jail_missing: false,
+     }
+ }
+diff --git a/crates/agent_ui/src/agent_jail_login.rs b/crates/agent_ui/src/agent_jail_login.rs
+index b8fddc6..18d6fd6 100644
+--- a/crates/agent_ui/src/agent_jail_login.rs
++++ b/crates/agent_ui/src/agent_jail_login.rs
+@@ -2,44 +2,166 @@
+ //!
+ //! A jailed Claude agent reads its login from its own config directory -- one per project since
+ //! §6.54 -- but the login Zeo starts runs on the host, in a terminal, because the browser's OAuth
+-//! callback lands on a host port the jail cannot receive. So the login is pointed at the jail's
+-//! directory with `CLAUDE_CONFIG_DIR`; without it the token went to `~/.claude` and the jailed
+-//! agent kept answering "Authentication required".
++//! callback lands on a host port the jail cannot receive.
++//!
++//! Two things make that host-side login safe, both from the 2026-11-27 review of Zeo 0.31.0:
++//!
++//! - **Z1, the command.** An agent advertises its login methods in `initialize`, command, args
++//!   and env included -- and a jailed agent answers `initialize` from inside the jail. Running
++//!   what it advertises would run the agent's choice of program on the host, outside the jail,
++//!   on the operator's click. So the advertised command is never run: the login is the agent
++//!   program Zeo itself resolved for the launch (`LaunchRecord::login_program`) with fixed
++//!   arguments for the methods Claude Agent (Plus) offers, and any other method is refused.
++//! - **Z2, the directory.** The jail's config directory is writable from inside: a `settings.json`
++//!   with hooks, a `statusLine` or an `apiKeyHelper`, an MCP server in `.claude.json`, a plugin --
++//!   any of them would run on the host if the CLI were started there. So the login runs against
++//!   an empty private directory, and only the credentials it writes are moved into the jail's.
+ 
+-use std::path::PathBuf;
++use std::{
++    fs,
++    io::Write as _,
++    os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _},
++    path::{Path, PathBuf},
++};
+ 
++use anyhow::{Context as _, Result, anyhow, bail};
+ use gpui::{App, Entity};
+ use project::{Project, agent_server_store::AgentId};
+ 
+-/// The config directory the agent's live jailed launch in `project` uses, if it is jailed.
+-pub(crate) fn jailed_claude_config_dir(
+-    agent_id: &AgentId,
+-    project: &Entity<Project>,
+-    cx: &App,
+-) -> Option<PathBuf> {
+-    let root = agent_sandbox::launch::project_root(project, cx)?;
+-    agent_sandbox::LaunchRegistry::get(agent_id, &root, cx)?.claude_config_dir
++/// The file the Claude CLI keeps its login in, under `CLAUDE_CONFIG_DIR`.
++const CREDENTIALS_FILE: &str = ".credentials.json";
++
++/// The arguments Zeo runs a jailed agent's program with for each login method it knows: the
++/// ones Claude Agent (Plus) advertises (`acp-agent.ts`: `claude-ai-login`, `console-login`, and
++/// `claude-login` on a remote host). Only the method id is taken from the agent.
++pub(crate) fn fixed_login_args(method: &str) -> Option<&'static [&'static str]> {
++    match method {
++        "claude-ai-login" => Some(&["--cli", "auth", "login", "--claudeai"]),
++        "console-login" => Some(&["--cli", "auth", "login", "--console"]),
++        "claude-login" => Some(&["--cli"]),
++        _ => None,
++    }
+ }
+ 
+-/// Points `login` at a jailed agent's config directory, and says so in the log.
+-pub(crate) fn point_login_at_jail(
++/// A host-side login for a jailed agent, in progress: the private directory it writes to, and
++/// the jail's directory its credentials go to once it succeeds. The private directory is
++/// removed when this is dropped, finished or not.
++pub(crate) struct JailedLogin {
++    scratch: PathBuf,
++    jail_dir: PathBuf,
++}
++
++impl Drop for JailedLogin {
++    fn drop(&mut self) {
++        let _ = fs::remove_dir_all(&self.scratch);
++    }
++}
++
++/// Rewrites `login` for a jailed agent: Zeo's own program and fixed arguments, no environment
++/// from the agent, an empty private `CLAUDE_CONFIG_DIR`. `Ok(None)` when the agent is not
++/// jailed in `project`, leaving `login` as it was; an error when it is jailed and the method is
++/// not one Zeo knows how to run safely.
++pub(crate) fn prepare_jailed_login(
+     login: &mut task::SpawnInTerminal,
++    method: &str,
+     agent_id: &AgentId,
+     project: &Entity<Project>,
+     cx: &App,
+-) {
+-    let Some(dir) = jailed_claude_config_dir(agent_id, project, cx) else {
+-        return;
++) -> Result<Option<JailedLogin>> {
++    let Some(root) = agent_sandbox::launch::project_root(project, cx) else {
++        return Ok(None);
+     };
+-    log::info!(
+-        "agent_sandbox event=jailed_login agent={} config_dir={}",
+-        agent_id.0,
+-        dir.display()
+-    );
++    let Some(record) = agent_sandbox::LaunchRegistry::get(agent_id, &root, cx) else {
++        return Ok(None);
++    };
++    let Some(jail_dir) = record.claude_config_dir else {
++        return Ok(None);
++    };
++    let (program, program_args) = record
++        .login_program
++        .ok_or_else(|| anyhow!("the jailed agent's program is unknown; restart its thread"))?;
++    let fixed = fixed_login_args(method).ok_or_else(|| {
++        anyhow!("a jailed agent's login method {method:?} cannot run on the host")
++    })?;
++    let scratch =
++        std::env::temp_dir().join(format!("zeo-jail-login-{}", uuid::Uuid::new_v4().simple()));
++    // `create` (not `create_all`) fails on a name that already exists: a directory another
++    // user made in the shared temp dir is never used.
++    fs::DirBuilder::new()
++        .mode(0o700)
++        .create(&scratch)
++        .context("creating the login's private directory")?;
++    let pending = JailedLogin { scratch, jail_dir };
++
++    login.command = Some(program.to_string_lossy().into_owned());
++    login.args = program_args
++        .into_iter()
++        .chain(fixed.iter().map(|arg| arg.to_string()))
++        .collect();
++    login.env.clear();
+     login.env.insert(
+         "CLAUDE_CONFIG_DIR".to_string(),
+-        dir.to_string_lossy().into_owned(),
++        pending.scratch.to_string_lossy().into_owned(),
+     );
++    login.cwd = None;
++    log::info!(
++        "agent_sandbox event=jailed_login agent={} method={method} config_dir={}",
++        agent_id.0,
++        pending.jail_dir.display()
++    );
++    Ok(Some(pending))
++}
++
++impl JailedLogin {
++    /// Moves the credentials the login wrote into the jail's directory, and nothing else.
++    pub(crate) fn finish(self) -> Result<()> {
++        let source = self.scratch.join(CREDENTIALS_FILE);
++        let credentials =
++            fs::read(&source).with_context(|| format!("the login wrote no {CREDENTIALS_FILE}"))?;
++        let owner = fs::metadata(&self.scratch)
++            .context("reading the login's private directory")?
++            .uid();
++        install_credentials(&self.jail_dir, &credentials, owner)?;
++        log::info!(
++            "agent_sandbox event=jailed_login_installed config_dir={}",
++            self.jail_dir.display()
++        );
++        Ok(())
++    }
++}
++
++/// Writes `credentials` as `dir/.credentials.json`. `dir` is writable from inside the jail, so
++/// nothing in it is trusted: it must be a real directory owned by `owner` (the user Zeo runs
++/// as, read off the directory it just made) and not a link the agent swapped in; the bytes go
++/// to a new file, mode 0600, created where no file of that name exists -- `create_new` fails
++/// on a symlink rather than follow it -- and a rename puts it in place, replacing whatever sat
++/// at the name, a link included, instead of writing through it.
++pub(crate) fn install_credentials(dir: &Path, credentials: &[u8], owner: u32) -> Result<()> {
++    let meta = fs::symlink_metadata(dir)
++        .with_context(|| format!("reading the jail's config directory {}", dir.display()))?;
++    if !meta.file_type().is_dir() || meta.uid() != owner {
++        bail!(
++            "the jail's config directory {} is not a directory of this user",
++            dir.display()
++        );
++    }
++    let staged = dir.join(format!(
++        ".credentials.json.zeo-{}",
++        uuid::Uuid::new_v4().simple()
++    ));
++    let mut file = fs::OpenOptions::new()
++        .write(true)
++        .create_new(true)
++        .mode(0o600)
++        .open(&staged)
++        .with_context(|| format!("staging the credentials in {}", dir.display()))?;
++    let written = file.write_all(credentials).and_then(|()| file.sync_all());
++    drop(file);
++    if let Err(error) = written.and_then(|()| fs::rename(&staged, dir.join(CREDENTIALS_FILE))) {
++        let _ = fs::remove_file(&staged);
++        return Err(error).context("installing the credentials");
++    }
++    Ok(())
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/agent_ui/src/agent_jail_login_tests.rs b/crates/agent_ui/src/agent_jail_login_tests.rs
+index 6362710..2040364 100644
+--- a/crates/agent_ui/src/agent_jail_login_tests.rs
++++ b/crates/agent_ui/src/agent_jail_login_tests.rs
+@@ -1,5 +1,7 @@
+-// Zeo next proposal §6.54: the login Zeo starts for a jailed agent writes to the jail's own
+-// Claude config directory. Filter: `agent_jail_login`.
++// Zeo next proposal §6.54 and the 2026-11-27 review (Z1, Z2): the login Zeo starts for a jailed
++// agent runs Zeo's own program with fixed arguments, never the command the jailed agent
++// advertises, against an empty private config directory whose credentials alone reach the
++// jail's. Filter: `agent_jail_login`.
+ 
+ use std::path::{Path, PathBuf};
+ 
+@@ -10,10 +12,11 @@ use project::Project;
+ use project::agent_server_store::AgentId;
+ use serde_json::json;
+ 
+-use super::point_login_at_jail;
++use super::{JailedLogin, install_credentials, prepare_jailed_login};
+ 
+ const ROOT: &str = "/w/app";
+ const JAIL_CLAUDE: &str = "/var/tmp/zeo-jail/app-8347daa28034a658/claude";
++const PLUS: &str = "/usr/bin/claude-agent-acp-plus";
+ 
+ fn record(agent: &str, claude_config_dir: Option<&str>) -> LaunchRecord {
+     LaunchRecord {
+@@ -32,15 +35,30 @@ fn record(agent: &str, claude_config_dir: Option<&str>) -> LaunchRecord {
+         jail_pid: None,
+         paused: false,
+         claude_config_dir: claude_config_dir.map(PathBuf::from),
++        login_program: claude_config_dir.map(|_| (PathBuf::from(PLUS), vec!["--acp".into()])),
+         ai_jail_missing: false,
+     }
+ }
+ 
+-async fn login_env_with(
++/// What the jailed agent advertised for its login: a program of its choosing, with an
++/// environment that would load code into it.
++fn advertised_login() -> task::SpawnInTerminal {
++    let mut login = task::SpawnInTerminal::default();
++    login.command = Some("/tmp/evil".into());
++    login.args = vec!["--pwn".into()];
++    login
++        .env
++        .insert("NODE_OPTIONS".into(), "--require /tmp/x.js".into());
++    login.cwd = Some(PathBuf::from("/tmp"));
++    login
++}
++
++async fn prepare_with(
+     registered: LaunchRecord,
+     agent: &str,
++    method: &str,
+     cx: &mut TestAppContext,
+-) -> Option<String> {
++) -> (task::SpawnInTerminal, anyhow::Result<Option<JailedLogin>>) {
+     crate::conversation_view::tests::init_test(cx);
+     let fs = FakeFs::new(cx.executor());
+     cx.update(|cx| {
+@@ -51,33 +69,137 @@ async fn login_env_with(
+     let project = Project::test(fs.clone(), [Path::new(ROOT)], cx).await;
+     cx.update(|cx| {
+         LaunchRegistry::register(registered, cx);
+-        let mut login = task::SpawnInTerminal::default();
+-        point_login_at_jail(&mut login, &AgentId::new(agent), &project, cx);
+-        login.env.get("CLAUDE_CONFIG_DIR").cloned()
++        let mut login = advertised_login();
++        let prepared = prepare_jailed_login(&mut login, method, &AgentId::new(agent), &project, cx);
++        (login, prepared)
+     })
+ }
+ 
+ #[gpui::test]
+-async fn agent_jail_login_writes_to_the_jails_config_dir(cx: &mut TestAppContext) {
+-    let env = login_env_with(record("Plus", Some(JAIL_CLAUDE)), "Plus", cx).await;
++async fn agent_jail_login_runs_zeos_program_not_the_advertised_one(cx: &mut TestAppContext) {
++    let (login, prepared) = prepare_with(
++        record("Plus", Some(JAIL_CLAUDE)),
++        "Plus",
++        "claude-ai-login",
++        cx,
++    )
++    .await;
++    let prepared = prepared
++        .expect("a known method")
++        .expect("the agent is jailed");
++    assert_eq!(login.command.as_deref(), Some(PLUS));
++    assert_eq!(
++        login.args,
++        ["--acp", "--cli", "auth", "login", "--claudeai"]
++    );
++    assert_eq!(
++        login.cwd, None,
++        "no working directory of the agent's choosing"
++    );
++    let scratch = login
++        .env
++        .get("CLAUDE_CONFIG_DIR")
++        .map(PathBuf::from)
++        .expect("a private config directory");
++    assert_eq!(
++        login.env.len(),
++        1,
++        "none of the agent's environment: {:?}",
++        login.env
++    );
++    assert_ne!(
++        scratch,
++        PathBuf::from(JAIL_CLAUDE),
++        "never the jail's own directory"
++    );
++    assert!(
++        scratch.is_dir(),
++        "the private directory exists while the login runs"
++    );
++    drop(prepared);
++    assert!(!scratch.exists(), "and is removed afterwards");
++}
++
++#[gpui::test]
++async fn agent_jail_login_refuses_a_method_it_does_not_know(cx: &mut TestAppContext) {
++    let (login, prepared) =
++        prepare_with(record("Plus", Some(JAIL_CLAUDE)), "Plus", "evil-login", cx).await;
++    assert!(
++        prepared.is_err(),
++        "an unknown method is not run on the host"
++    );
+     assert_eq!(
+-        env.as_deref(),
+-        Some(JAIL_CLAUDE),
+-        "the token must land where the jailed agent reads it, not in ~/.claude"
++        login.command.as_deref(),
++        Some("/tmp/evil"),
++        "and nothing was rewritten"
+     );
+ }
+ 
+ #[gpui::test]
+ async fn agent_jail_login_leaves_an_unjailed_agent_alone(cx: &mut TestAppContext) {
+-    let env = login_env_with(record("Plus", None), "Plus", cx).await;
+-    assert_eq!(env, None, "an agent outside the jail logs in as before");
++    let (login, prepared) = prepare_with(record("Plus", None), "Plus", "claude-ai-login", cx).await;
++    assert!(
++        matches!(prepared, Ok(None)),
++        "an agent outside the jail logs in as before"
++    );
++    assert_eq!(login.command.as_deref(), Some("/tmp/evil"));
+ }
+ 
+ #[gpui::test]
+ async fn agent_jail_login_reads_only_its_own_agents_launch(cx: &mut TestAppContext) {
+-    let env = login_env_with(record("Other", Some(JAIL_CLAUDE)), "Plus", cx).await;
+-    assert_eq!(
+-        env, None,
++    let (_, prepared) = prepare_with(
++        record("Other", Some(JAIL_CLAUDE)),
++        "Plus",
++        "claude-ai-login",
++        cx,
++    )
++    .await;
++    assert!(
++        matches!(prepared, Ok(None)),
+         "another agent's jail says nothing about this login"
+     );
+ }
++
++/// Only the credentials file reaches the jail's directory, and a link the agent planted at its
++/// name is replaced, not written through.
++#[test]
++fn agent_jail_login_installs_only_the_credentials_and_never_through_a_link() {
++    use std::os::unix::fs::MetadataExt as _;
++    let base = tempfile::tempdir().unwrap();
++    let jail = base.path().join("claude");
++    std::fs::create_dir(&jail).unwrap();
++    let outside = base.path().join("outside.json");
++    std::fs::write(&outside, b"host file").unwrap();
++    std::os::unix::fs::symlink(&outside, jail.join(".credentials.json")).unwrap();
++    let owner = std::fs::metadata(base.path()).unwrap().uid();
++
++    install_credentials(&jail, br#"{"token":"t"}"#, owner).unwrap();
++
++    assert_eq!(
++        std::fs::read(&outside).unwrap(),
++        b"host file",
++        "the link was not followed"
++    );
++    let installed = jail.join(".credentials.json");
++    assert!(
++        !std::fs::symlink_metadata(&installed)
++            .unwrap()
++            .file_type()
++            .is_symlink()
++    );
++    assert_eq!(std::fs::read(&installed).unwrap(), br#"{"token":"t"}"#);
++    let names: Vec<_> = std::fs::read_dir(&jail)
++        .unwrap()
++        .map(|entry| entry.unwrap().file_name())
++        .collect();
++    assert_eq!(
++        names,
++        [".credentials.json"],
++        "nothing staged is left behind"
++    );
++
++    // The directory itself swapped for a link: refused.
++    let swapped = base.path().join("swapped");
++    std::os::unix::fs::symlink(base.path(), &swapped).unwrap();
++    assert!(install_credentials(&swapped, b"{}", owner).is_err());
++}
+diff --git a/crates/agent_ui/src/agent_jail_status_cpu_tests.rs b/crates/agent_ui/src/agent_jail_status_cpu_tests.rs
+index 324eecf..9bd9e86 100644
+--- a/crates/agent_ui/src/agent_jail_status_cpu_tests.rs
++++ b/crates/agent_ui/src/agent_jail_status_cpu_tests.rs
+@@ -26,6 +26,7 @@ fn jailed() -> LaunchRecord {
+         jail_pid: None,
+         paused: false,
+         claude_config_dir: None,
++        login_program: None,
+         ai_jail_missing: false,
+     }
+ }
+diff --git a/crates/agent_ui/src/agent_jail_status_pending_tests.rs b/crates/agent_ui/src/agent_jail_status_pending_tests.rs
+index 271e569..34f3f08 100644
+--- a/crates/agent_ui/src/agent_jail_status_pending_tests.rs
++++ b/crates/agent_ui/src/agent_jail_status_pending_tests.rs
+@@ -25,6 +25,7 @@ fn record(reason: Reason) -> LaunchRecord {
+         jail_pid: None,
+         paused: false,
+         claude_config_dir: None,
++        login_program: None,
+         ai_jail_missing: false,
+     }
+ }
+diff --git a/crates/agent_ui/src/agent_jail_status_tests.rs b/crates/agent_ui/src/agent_jail_status_tests.rs
+index 66d522d..f067cfb 100644
+--- a/crates/agent_ui/src/agent_jail_status_tests.rs
++++ b/crates/agent_ui/src/agent_jail_status_tests.rs
+@@ -80,6 +80,7 @@ fn record(root: &str, reason: Reason, version: Option<&str>) -> LaunchRecord {
+         jail_pid: None,
+         paused: false,
+         claude_config_dir: None,
++        login_program: None,
+         ai_jail_missing: false,
+     }
+ }
+diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conversation_view.rs
+index b6eb064..cdf5562 100644
+--- a/crates/agent_ui/src/conversation_view.rs
++++ b/crates/agent_ui/src/conversation_view.rs
+@@ -2757,21 +2757,34 @@ impl ConversationView {
+                 async move |this, cx| {
+                     let result = async {
+                         let mut login = login_task.await?;
+-                        this.update_in(cx, |_this, window, cx| {
+-                            crate::agent_jail_login::point_login_at_jail(
+-                                &mut login, &agent_id, &project, cx,
+-                            );
+-                            Self::spawn_external_agent_login(
+-                                login,
+-                                workspace,
+-                                project,
+-                                method.clone(),
+-                                false,
+-                                window,
++                        let (jailed, spawned) = this.update_in(cx, |_this, window, cx| {
++                            // A jailed agent's advertised login is never run on the host; Zeo
++                            // runs its own program against a private directory (review Z1, Z2).
++                            let jailed = crate::agent_jail_login::prepare_jailed_login(
++                                &mut login,
++                                method.0.as_ref(),
++                                &agent_id,
++                                &project,
+                                 cx,
+-                            )
+-                        })?
+-                        .await
++                            )?;
++                            anyhow::Ok((
++                                jailed,
++                                Self::spawn_external_agent_login(
++                                    login,
++                                    workspace,
++                                    project,
++                                    method.clone(),
++                                    false,
++                                    window,
++                                    cx,
++                                ),
++                            ))
++                        })??;
++                        spawned.await?;
++                        if let Some(jailed) = jailed {
++                            jailed.finish()?;
++                        }
++                        anyhow::Ok(())
+                     }
+                     .await;
+ 
+diff --git a/crates/agent_ui/src/conversation_view/tests/settings_restart_tests.rs b/crates/agent_ui/src/conversation_view/tests/settings_restart_tests.rs
+index 9aac50a..4c2185c 100644
+--- a/crates/agent_ui/src/conversation_view/tests/settings_restart_tests.rs
++++ b/crates/agent_ui/src/conversation_view/tests/settings_restart_tests.rs
+@@ -70,6 +70,7 @@ fn drifted_launch(root: &Path) -> LaunchRecord {
+         jail_pid: None,
+         paused: false,
+         claude_config_dir: None,
++        login_program: None,
+         ai_jail_missing: false,
+     }
+ }
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index 2d5a5f8..75fe2d7 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -7198,10 +7198,11 @@ impl ThreadView {
+         // Zeo next §6.53/§6.54: the kill switch, for a jail whose process runs. A paused jail is
+         // thawed first: a frozen process only acts on the signal once it runs again.
+         // §6.9: the operator's restricted ssh-agent is emptied with the jail.
++        // §6.9, review Z5: the jails' own agent, at the path Zeo computes -- not a setting
++        // read raw, whose `~` the kill switch never expanded.
+         let ssh_agent = agent_sandbox::AgentSandboxSettings::get_global(cx)
+-            .ssh_agent_socket
+-            .as_ref()
+-            .map(std::path::PathBuf::from);
++            .ssh_agent
++            .then(agent_sandbox::jail_ssh::current_user_agent_socket);
+         let stop = move |pid: u32, paused: bool| {
+             agent_sandbox::control::kill_switch(pid, paused, "button", ssh_agent.as_deref())
+                 .log_err();
+@@ -7352,10 +7353,11 @@ impl ThreadView {
+             return false;
+         };
+         let paused = record.paused;
++        // §6.9, review Z5: the jails' own agent, at the path Zeo computes -- not a setting
++        // read raw, whose `~` the kill switch never expanded.
+         let ssh_agent = agent_sandbox::AgentSandboxSettings::get_global(cx)
+-            .ssh_agent_socket
+-            .as_ref()
+-            .map(std::path::PathBuf::from);
++            .ssh_agent
++            .then(agent_sandbox::jail_ssh::current_user_agent_socket);
+         let answer = window.prompt(
+             PromptLevel::Warning,
+             "Stop the agent?",
+diff --git a/crates/settings_content/src/settings_content.rs b/crates/settings_content/src/settings_content.rs
+index 095c2ac..2ae0d16 100644
+--- a/crates/settings_content/src/settings_content.rs
++++ b/crates/settings_content/src/settings_content.rs
+@@ -389,17 +389,23 @@ pub struct AgentSandboxSettingsContent {
+     /// login): a directory per project under this one. Used when the installed ai-jail offers
+     /// `--state-root`; otherwise the jail uses `claude_config_dir`.
+     ///
+-    /// Default: "/var/tmp/zeo-jail"
++    /// Default: "~/.local/state/zeo/jail"
+     pub state_root: Option<String>,
+-    /// The socket of an ssh-agent you start for the jails, holding a key for them alone:
+-    /// `ssh-agent -a /run/user/$UID/zeo-ssh/agent.sock` (its folder mode 700), then
+-    /// `ssh-add -c -t 1h -h github.com <key>`, so each use asks you, expires, and only signs for
+-    /// the hosts you name. Every jail gets its folder read-only and `SSH_AUTH_SOCK` pointing at
+-    /// it -- never your desktop agent, never `~/.ssh`. The jail's Stop also empties this agent
+-    /// (`ssh-add -D`). A push needs the host's port too: add `github.com:22` to the allowed hosts.
++    /// Replaced in 0.32.0 by `ssh_agent`: nothing can tell an agent named here from the
++    /// desktop's, whose keys sign with no confirmation. A jailed start refuses while it is set.
+     ///
+     /// Default: null (none)
+     pub ssh_agent_socket: Option<String>,
++    /// Whether Zeo starts an ssh-agent for the jails alone, at `/tmp/zeo-ssh-$UID/agent.sock` (a
++    /// folder Zeo makes, mode 700). Load it with
++    /// `SSH_AUTH_SOCK=/tmp/zeo-ssh-$UID/agent.sock ssh-add -c -t 1h -h github.com <key>`, so each
++    /// use asks you, expires, and only signs for the hosts you name. Every jail gets its folder
++    /// read-only and `SSH_AUTH_SOCK` pointing at it -- never your desktop agent, never `~/.ssh`.
++    /// The jail's Stop also empties it (`ssh-add -D`). A push needs the host's port too: add
++    /// `github.com:22` to the allowed hosts.
++    ///
++    /// Default: false
++    pub ssh_agent: Option<bool>,
+     /// Resource limits for every jailed project.
+     pub limits: Option<AgentSandboxLimitsContent>,
+     /// Whether jailed projects get ai-jail's synthetic host view (`--mask-host`): the CPUs and
+diff --git a/crates/settings_ui/src/pages/agent_jail_host_tests.rs b/crates/settings_ui/src/pages/agent_jail_host_tests.rs
+index 7ea8758..6dff107 100644
+--- a/crates/settings_ui/src/pages/agent_jail_host_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_host_tests.rs
+@@ -21,6 +21,7 @@ fn sandbox(
+         allow_hosts: Vec::new(),
+         state_root: "/var/tmp/zeo-jail".to_string(),
+         ssh_agent_socket: None,
++        ssh_agent: false,
+         limits: Default::default(),
+         mask_host,
+         claude_ai_connectors: false,
+diff --git a/crates/settings_ui/src/pages/agent_jail_limits.rs b/crates/settings_ui/src/pages/agent_jail_limits.rs
+index 855c9f0..dffd542 100644
+--- a/crates/settings_ui/src/pages/agent_jail_limits.rs
++++ b/crates/settings_ui/src/pages/agent_jail_limits.rs
+@@ -291,7 +291,6 @@ pub(crate) fn render_limits(
+         )
+         .child(v_flex().mt_2().gap_2().children(rows))
+         .when_some(state_dir, |this, dir| {
+-            let claude = dir.join("claude");
+             this.child(
+                 v_flex()
+                     .mt_3()
+@@ -306,17 +305,10 @@ pub(crate) fn render_limits(
+                         Label::new(dir.display().to_string())
+                             .size(LabelSize::Small)
+                             .buffer_font(cx),
+-                    )
+-                    .child(
+-                        Label::new(t!("agent-sandbox-state-folder.login"))
+-                            .size(LabelSize::Small)
+-                            .color(Color::Muted),
+-                    )
+-                    .child(
+-                        Label::new(format!("CLAUDE_CONFIG_DIR={} claude", claude.display()))
+-                            .size(LabelSize::Small)
+-                            .buffer_font(cx),
+                     ),
++                // No "run CLAUDE_CONFIG_DIR=<this folder>/claude claude" hint any more: that runs
++                // the CLI unjailed on a folder the jailed agent writes, whose settings and hooks it
++                // would load (2026-11-27 review, Z2). The thread's Log In button is the way in.
+             )
+         })
+         .into_any_element()
+diff --git a/crates/settings_ui/src/pages/agent_jail_page_tests.rs b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+index ecc4ab2..1026c04 100644
+--- a/crates/settings_ui/src/pages/agent_jail_page_tests.rs
++++ b/crates/settings_ui/src/pages/agent_jail_page_tests.rs
+@@ -614,6 +614,7 @@ mod page {
+             allow_hosts: Vec::new(),
+             state_root: "/var/tmp/zeo-jail".to_string(),
+             ssh_agent_socket: None,
++            ssh_agent: false,
+             limits: Default::default(),
+             mask_host: false,
+             claude_ai_connectors: false,
+diff --git a/crates/zeo_i18n/locales/de/agent-jail.ftl b/crates/zeo_i18n/locales/de/agent-jail.ftl
+index d89dd52..889b7a3 100644
+--- a/crates/zeo_i18n/locales/de/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/de/agent-jail.ftl
+@@ -157,5 +157,7 @@ agent-jail-launch-ssh-socket = { $reason ->
+     [not-a-socket] An { $socket } (agent_sandbox.ssh_agent_socket) lauscht nichts: Starten Sie dort zuerst den ssh-agent der Jails.
+     [not-yours] Der ssh-agent-Socket { $socket } oder sein Ordner gehört einem anderen Benutzer.
+     [open-folder] Der Ordner des ssh-agent-Sockets { $socket } ist für andere offen; setzen Sie ihn auf Modus 700, nur mit dem Socket darin.
++    [replaced] agent_sandbox.ssh_agent_socket ({ $socket }) wurde in 0.32.0 ersetzt: entfernen Sie es und setzen Sie agent_sandbox.ssh_agent auf true, damit Zeo den eigenen Agenten der Jails unter /tmp/zeo-ssh-$UID/agent.sock startet.
++    [agent-failed] Zeo konnte den ssh-agent der Jails unter { $socket } nicht starten; prüfen Sie, ob ssh-agent installiert ist.
+    *[protected] Der ssh-agent-Socket { $socket } liegt in einem Ordner, den der Sandbox nie einbindet; legen Sie ihn in einen eigenen Ordner wie /tmp/zeo-ssh.
+ }
+diff --git a/crates/zeo_i18n/locales/de/agent-sandbox.ftl b/crates/zeo_i18n/locales/de/agent-sandbox.ftl
+index 83ff990..9dd2986 100644
+--- a/crates/zeo_i18n/locales/de/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/de/agent-sandbox.ftl
+@@ -79,7 +79,6 @@ agent-sandbox-stepper-invalid-cpu = { $raw } ist kein Prozentsatz einer CPU
+ agent-sandbox-stepper-invalid-tasks = { $raw } ist keine Anzahl von Prozessen
+ agent-sandbox-state-folder = Zustandsordner
+     .note = Das Jail dieses Projekts bewahrt sein Home-Verzeichnis, /tmp und die Claude-Anmeldung hier auf:
+-    .login = Um sich vor dem ersten Start anzumelden, führen Sie aus:
+ 
+ agent-sandbox-host = Host
+ agent-sandbox-hide-host = Host verbergen
+diff --git a/crates/zeo_i18n/locales/en-US/agent-jail.ftl b/crates/zeo_i18n/locales/en-US/agent-jail.ftl
+index a31a5c0..d9716c2 100644
+--- a/crates/zeo_i18n/locales/en-US/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/en-US/agent-jail.ftl
+@@ -177,5 +177,7 @@ agent-jail-launch-ssh-socket = { $reason ->
+     [not-a-socket] Nothing listens at { $socket } (agent_sandbox.ssh_agent_socket): start the jails' ssh-agent there first.
+     [not-yours] The ssh-agent socket { $socket } or its folder belongs to another user.
+     [open-folder] The folder of the ssh-agent socket { $socket } is open to others; make it mode 700 and keep only the socket in it.
++    [replaced] agent_sandbox.ssh_agent_socket ({ $socket }) was replaced in 0.32.0: remove it and set agent_sandbox.ssh_agent to true, so Zeo starts the jails' own agent at /tmp/zeo-ssh-$UID/agent.sock.
++    [agent-failed] Zeo could not start the jails' ssh-agent at { $socket }; check that ssh-agent is installed.
+    *[protected] The ssh-agent socket { $socket } sits in a folder the sandbox never maps; put it in a folder of its own, such as /tmp/zeo-ssh.
+ }
+diff --git a/crates/zeo_i18n/locales/en-US/agent-sandbox.ftl b/crates/zeo_i18n/locales/en-US/agent-sandbox.ftl
+index 849189b..93ba9ce 100644
+--- a/crates/zeo_i18n/locales/en-US/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/en-US/agent-sandbox.ftl
+@@ -89,7 +89,6 @@ agent-sandbox-stepper-invalid-cpu = { $raw } is not a percentage of one CPU
+ agent-sandbox-stepper-invalid-tasks = { $raw } is not a number of processes
+ agent-sandbox-state-folder = State Folder
+     .note = This project's jail keeps its home, /tmp and Claude login in:
+-    .login = To log in before the first start, run:
+ 
+ ## Page: host
+ 
+diff --git a/crates/zeo_i18n/locales/es/agent-jail.ftl b/crates/zeo_i18n/locales/es/agent-jail.ftl
+index ec12ba2..dd41094 100644
+--- a/crates/zeo_i18n/locales/es/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/es/agent-jail.ftl
+@@ -156,5 +156,7 @@ agent-jail-launch-ssh-socket = { $reason ->
+     [not-a-socket] Nada escucha en { $socket } (agent_sandbox.ssh_agent_socket): inicia primero allí el ssh-agent de los jails.
+     [not-yours] El socket de ssh-agent { $socket } o su carpeta pertenece a otro usuario.
+     [open-folder] La carpeta del socket de ssh-agent { $socket } está abierta a otros; ponla en modo 700 y deja solo el socket dentro.
++    [replaced] agent_sandbox.ssh_agent_socket ({ $socket }) se sustituyó en la 0.32.0: elimínalo y pon agent_sandbox.ssh_agent en true, para que Zeo inicie el agente propio de los jails en /tmp/zeo-ssh-$UID/agent.sock.
++    [agent-failed] Zeo no pudo iniciar el ssh-agent de los jails en { $socket }; comprueba que ssh-agent está instalado.
+    *[protected] El socket de ssh-agent { $socket } está en una carpeta que el sandbox nunca monta; ponlo en una carpeta propia, como /tmp/zeo-ssh.
+ }
+diff --git a/crates/zeo_i18n/locales/es/agent-sandbox.ftl b/crates/zeo_i18n/locales/es/agent-sandbox.ftl
+index d968be4..9c41b17 100644
+--- a/crates/zeo_i18n/locales/es/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/es/agent-sandbox.ftl
+@@ -78,7 +78,6 @@ agent-sandbox-stepper-invalid-cpu = { $raw } no es un porcentaje de una CPU
+ agent-sandbox-stepper-invalid-tasks = { $raw } no es un número de procesos
+ agent-sandbox-state-folder = Carpeta de estado
+     .note = El jail de este proyecto guarda su directorio personal, /tmp y el inicio de sesión de Claude en:
+-    .login = Para iniciar sesión antes del primer inicio, ejecuta:
+ 
+ agent-sandbox-host = Host
+ agent-sandbox-hide-host = Ocultar el host
+diff --git a/crates/zeo_i18n/locales/fr/agent-jail.ftl b/crates/zeo_i18n/locales/fr/agent-jail.ftl
+index 61a3f87..2903370 100644
+--- a/crates/zeo_i18n/locales/fr/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/fr/agent-jail.ftl
+@@ -149,5 +149,7 @@ agent-jail-launch-ssh-socket = { $reason ->
+     [not-a-socket] Rien n’écoute sur { $socket } (agent_sandbox.ssh_agent_socket) : lancez-y d’abord le ssh-agent des jails.
+     [not-yours] Le socket ssh-agent { $socket } ou son dossier appartient à un autre utilisateur.
+     [open-folder] Le dossier du socket ssh-agent { $socket } est ouvert aux autres ; mettez-le en mode 700 avec le seul socket dedans.
++    [replaced] agent_sandbox.ssh_agent_socket ({ $socket }) a été remplacé en 0.32.0 : supprimez-le et mettez agent_sandbox.ssh_agent à true, pour que Zeo lance l'agent propre aux jails dans /tmp/zeo-ssh-$UID/agent.sock.
++    [agent-failed] Zeo n'a pas pu lancer le ssh-agent des jails dans { $socket } ; vérifiez que ssh-agent est installé.
+    *[protected] Le socket ssh-agent { $socket } est dans un dossier que le sandbox ne monte jamais ; placez-le dans un dossier à part, comme /tmp/zeo-ssh.
+ }
+diff --git a/crates/zeo_i18n/locales/fr/agent-sandbox.ftl b/crates/zeo_i18n/locales/fr/agent-sandbox.ftl
+index 4cdd154..2eb88c2 100644
+--- a/crates/zeo_i18n/locales/fr/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/fr/agent-sandbox.ftl
+@@ -74,7 +74,6 @@ agent-sandbox-stepper-invalid-cpu = { $raw } n'est pas un pourcentage d'un CPU
+ agent-sandbox-stepper-invalid-tasks = { $raw } n'est pas un nombre de processus
+ agent-sandbox-state-folder = Dossier d'état
+     .note = Le jail de ce projet conserve son répertoire personnel, /tmp et la connexion Claude dans :
+-    .login = Pour vous connecter avant le premier démarrage, exécutez :
+ agent-sandbox-host = Hôte
+ agent-sandbox-hide-host = Masquer l'hôte
+     .note = L'agent dans le jail ne voit que les CPU et la mémoire permis par ses limites, son propre cgroup, son propre identifiant de machine et, avec ai-jail 3.5.0-r6, son propre nom d'hôte (desktop- suivi de six caractères, identique à chaque démarrage de ce projet), au lieu de ceux de cette machine ; avec ai-jail 3.5.0-r3, il voit aussi une version du noyau sans les détails de compilation, un nom de système générique, ni swap ni disques, et une durée de fonctionnement comptée depuis son démarrage. Restent visibles : le disque et la taille des dossiers en écriture, les numéros de CPU, cpuid et les chaînes de version propres aux chaînes d'outils. Cela masque, cela n'isole pas. Redémarrez l'agent pour appliquer.
+diff --git a/crates/zeo_i18n/locales/it/agent-jail.ftl b/crates/zeo_i18n/locales/it/agent-jail.ftl
+index ad63d82..a645177 100644
+--- a/crates/zeo_i18n/locales/it/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/it/agent-jail.ftl
+@@ -149,5 +149,7 @@ agent-jail-launch-ssh-socket = { $reason ->
+     [not-a-socket] Niente è in ascolto su { $socket } (agent_sandbox.ssh_agent_socket): avvia prima lì l'ssh-agent dei jail.
+     [not-yours] Il socket di ssh-agent { $socket } o la sua cartella appartiene a un altro utente.
+     [open-folder] La cartella del socket di ssh-agent { $socket } è aperta ad altri; mettila in modo 700 con dentro solo il socket.
++    [replaced] agent_sandbox.ssh_agent_socket ({ $socket }) è stato sostituito nella 0.32.0: rimuovilo e imposta agent_sandbox.ssh_agent a true, così Zeo avvia l'agente proprio dei jail in /tmp/zeo-ssh-$UID/agent.sock.
++    [agent-failed] Zeo non è riuscito ad avviare lo ssh-agent dei jail in { $socket }; verifica che ssh-agent sia installato.
+    *[protected] Il socket di ssh-agent { $socket } sta in una cartella che il sandbox non monta mai; mettilo in una cartella sua, come /tmp/zeo-ssh.
+ }
+diff --git a/crates/zeo_i18n/locales/it/agent-sandbox.ftl b/crates/zeo_i18n/locales/it/agent-sandbox.ftl
+index 7e56cb5..fba2ca8 100644
+--- a/crates/zeo_i18n/locales/it/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/it/agent-sandbox.ftl
+@@ -74,7 +74,6 @@ agent-sandbox-stepper-invalid-cpu = { $raw } non è una percentuale di una CPU
+ agent-sandbox-stepper-invalid-tasks = { $raw } non è un numero di processi
+ agent-sandbox-state-folder = Cartella di stato
+     .note = Il jail di questo progetto conserva la sua home, /tmp e l'accesso a Claude in:
+-    .login = Per accedere prima del primo avvio, esegui:
+ agent-sandbox-host = Host
+ agent-sandbox-hide-host = Nascondi l'host
+     .note = L'agente nel jail vede solo le CPU e la memoria consentite dai suoi limiti, il proprio cgroup, un proprio ID macchina e, con ai-jail 3.5.0-r6, un proprio nome host (desktop- e sei caratteri, uguale a ogni avvio di questo progetto), invece di quelli di questa macchina; con ai-jail 3.5.0-r3, anche una versione del kernel senza i dettagli di compilazione, un nome di sistema operativo generico, nessuno swap né disco, e un uptime contato dal suo avvio. Ancora visibili: il disco e la dimensione delle cartelle scrivibili, i numeri delle CPU, cpuid e le stringhe di versione delle toolchain. Nasconde; non isola. Riavvia l'agente per applicare.
+diff --git a/crates/zeo_i18n/locales/ja/agent-jail.ftl b/crates/zeo_i18n/locales/ja/agent-jail.ftl
+index 8ad8f64..659582a 100644
+--- a/crates/zeo_i18n/locales/ja/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/ja/agent-jail.ftl
+@@ -155,5 +155,7 @@ agent-jail-launch-ssh-socket = { $reason ->
+     [not-a-socket] { $socket } (agent_sandbox.ssh_agent_socket) で待ち受けているものがありません。先に jail 用の ssh-agent をそこで起動してください。
+     [not-yours] ssh-agent のソケット { $socket } またはそのフォルダーが別のユーザーのものです。
+     [open-folder] ssh-agent のソケット { $socket } のフォルダーが他者に開かれています。モード 700 にし、ソケットだけを置いてください。
++    [replaced] agent_sandbox.ssh_agent_socket（{ $socket }）は 0.32.0 で置き換えられました。削除して agent_sandbox.ssh_agent を true にすると、Zeo が jail 専用のエージェントを /tmp/zeo-ssh-$UID/agent.sock で起動します。
++    [agent-failed] Zeo は { $socket } で jail の ssh-agent を起動できませんでした。ssh-agent がインストールされているか確認してください。
+    *[protected] ssh-agent のソケット { $socket } はサンドボックスが決してマウントしないフォルダーにあります。/tmp/zeo-ssh のような専用フォルダーに置いてください。
+ }
+diff --git a/crates/zeo_i18n/locales/ja/agent-sandbox.ftl b/crates/zeo_i18n/locales/ja/agent-sandbox.ftl
+index e325a7a..7b61843 100644
+--- a/crates/zeo_i18n/locales/ja/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/ja/agent-sandbox.ftl
+@@ -78,7 +78,6 @@ agent-sandbox-stepper-invalid-cpu = { $raw } は CPU 1 個に対する割合で
+ agent-sandbox-stepper-invalid-tasks = { $raw } はプロセス数ではありません
+ agent-sandbox-state-folder = 状態フォルダー
+     .note = このプロジェクトの jail は、ホーム、/tmp、Claude のログイン情報を次の場所に保存します:
+-    .login = 初回起動の前にログインするには、次を実行します:
+ 
+ agent-sandbox-host = ホスト
+ agent-sandbox-hide-host = ホストを隠す
+diff --git a/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl b/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
+index 39f68ef..c8d4c66 100644
+--- a/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/pt-BR/agent-jail.ftl
+@@ -174,5 +174,7 @@ agent-jail-launch-ssh-socket = { $reason ->
+     [not-a-socket] Nada escuta em { $socket } (agent_sandbox.ssh_agent_socket): inicie lá primeiro o ssh-agent dos jails.
+     [not-yours] O socket do ssh-agent { $socket } ou a pasta dele pertence a outro usuário.
+     [open-folder] A pasta do socket do ssh-agent { $socket } está aberta a outros; deixe-a em modo 700 e só com o socket dentro.
++    [replaced] agent_sandbox.ssh_agent_socket ({ $socket }) foi substituído na 0.32.0: remova-o e defina agent_sandbox.ssh_agent como true, para o Zeo iniciar o agente próprio dos jails em /tmp/zeo-ssh-$UID/agent.sock.
++    [agent-failed] O Zeo não conseguiu iniciar o ssh-agent dos jails em { $socket }; confira se o ssh-agent está instalado.
+    *[protected] O socket do ssh-agent { $socket } está numa pasta que o sandbox nunca mapeia; coloque-o numa pasta só dele, como /tmp/zeo-ssh.
+ }
+diff --git a/crates/zeo_i18n/locales/pt-BR/agent-sandbox.ftl b/crates/zeo_i18n/locales/pt-BR/agent-sandbox.ftl
+index c5a73bf..9dee816 100644
+--- a/crates/zeo_i18n/locales/pt-BR/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/pt-BR/agent-sandbox.ftl
+@@ -89,7 +89,6 @@ agent-sandbox-stepper-invalid-cpu = { $raw } não é uma porcentagem de uma CPU
+ agent-sandbox-stepper-invalid-tasks = { $raw } não é um número de processos
+ agent-sandbox-state-folder = Pasta de estado
+     .note = O jail deste projeto guarda a home, o /tmp e o login do Claude em:
+-    .login = Para fazer login antes da primeira inicialização, rode:
+ 
+ ## Page: host
+ 
+diff --git a/crates/zeo_i18n/locales/ru/agent-jail.ftl b/crates/zeo_i18n/locales/ru/agent-jail.ftl
+index b4d88d8..48472e8 100644
+--- a/crates/zeo_i18n/locales/ru/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/ru/agent-jail.ftl
+@@ -151,5 +151,7 @@ agent-jail-launch-ssh-socket = { $reason ->
+     [not-a-socket] По адресу { $socket } (agent_sandbox.ssh_agent_socket) никто не слушает: сначала запустите там ssh-agent для jail.
+     [not-yours] Сокет ssh-agent { $socket } или его папка принадлежит другому пользователю.
+     [open-folder] Папка сокета ssh-agent { $socket } открыта для других; задайте ей режим 700 и держите в ней только сокет.
++    [replaced] agent_sandbox.ssh_agent_socket ({ $socket }) заменён в 0.32.0: удалите его и задайте agent_sandbox.ssh_agent = true, чтобы Zeo запускал собственный агент джейлов в /tmp/zeo-ssh-$UID/agent.sock.
++    [agent-failed] Zeo не смог запустить ssh-agent джейлов в { $socket }; проверьте, что ssh-agent установлен.
+    *[protected] Сокет ssh-agent { $socket } лежит в папке, которую песочница никогда не подключает; поместите его в отдельную папку, например /tmp/zeo-ssh.
+ }
+diff --git a/crates/zeo_i18n/locales/ru/agent-sandbox.ftl b/crates/zeo_i18n/locales/ru/agent-sandbox.ftl
+index c80e488..e72af4c 100644
+--- a/crates/zeo_i18n/locales/ru/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/ru/agent-sandbox.ftl
+@@ -74,7 +74,6 @@ agent-sandbox-stepper-invalid-cpu = { $raw } — не процент от одн
+ agent-sandbox-stepper-invalid-tasks = { $raw } — не число процессов
+ agent-sandbox-state-folder = Папка состояния
+     .note = Jail этого проекта хранит свой домашний каталог, /tmp и вход в Claude в папке:
+-    .login = Чтобы войти до первого запуска, выполните:
+ agent-sandbox-host = Хост
+ agent-sandbox-hide-host = Скрыть хост
+     .note = Агент в jail видит только те CPU и память, что разрешают его лимиты, собственную cgroup, собственный machine id и, с ai-jail 3.5.0-r6, собственное имя хоста (desktop- и шесть символов, одно и то же при каждом запуске этого проекта) вместо данных этой машины; с ai-jail 3.5.0-r3 — также версию ядра без подробностей сборки, обобщенное название ОС, отсутствие swap и дисков и время работы, отсчитываемое от его запуска. По-прежнему видны: диск и размер папок с правом записи, номера CPU, cpuid и собственные строки версий инструментов сборки. Это скрывает, но не изолирует. Перезапустите агента, чтобы применить.
+diff --git a/crates/zeo_i18n/locales/zh-CN/agent-jail.ftl b/crates/zeo_i18n/locales/zh-CN/agent-jail.ftl
+index 2b48fdd..19a18a4 100644
+--- a/crates/zeo_i18n/locales/zh-CN/agent-jail.ftl
++++ b/crates/zeo_i18n/locales/zh-CN/agent-jail.ftl
+@@ -171,5 +171,7 @@ agent-jail-launch-ssh-socket = { $reason ->
+     [not-a-socket] { $socket }（agent_sandbox.ssh_agent_socket）上没有任何程序在监听：请先在那里启动 jail 专用的 ssh-agent。
+     [not-yours] ssh-agent 套接字 { $socket } 或其文件夹属于其他用户。
+     [open-folder] ssh-agent 套接字 { $socket } 所在的文件夹对他人开放；请将其设为 700 并只在其中放置该套接字。
++    [replaced] agent_sandbox.ssh_agent_socket（{ $socket }）已在 0.32.0 中被取代：请删除它并将 agent_sandbox.ssh_agent 设为 true，Zeo 会在 /tmp/zeo-ssh-$UID/agent.sock 启动 jail 专用的代理。
++    [agent-failed] Zeo 无法在 { $socket } 启动 jail 的 ssh-agent；请确认已安装 ssh-agent。
+    *[protected] ssh-agent 套接字 { $socket } 位于沙箱从不挂载的文件夹中；请把它放在专用文件夹里，例如 /tmp/zeo-ssh。
+ }
+diff --git a/crates/zeo_i18n/locales/zh-CN/agent-sandbox.ftl b/crates/zeo_i18n/locales/zh-CN/agent-sandbox.ftl
+index 10128b2..f18316b 100644
+--- a/crates/zeo_i18n/locales/zh-CN/agent-sandbox.ftl
++++ b/crates/zeo_i18n/locales/zh-CN/agent-sandbox.ftl
+@@ -88,7 +88,6 @@ agent-sandbox-stepper-invalid-cpu = { $raw }不是单个CPU的百分比
+ agent-sandbox-stepper-invalid-tasks = { $raw }不是有效的进程数
+ agent-sandbox-state-folder = 状态文件夹
+     .note = 此项目的jail将其主目录、/tmp和Claude登录信息保存在：
+-    .login = 如需在首次启动前登录，请运行：
+ 
+ ## Page: host
+ 

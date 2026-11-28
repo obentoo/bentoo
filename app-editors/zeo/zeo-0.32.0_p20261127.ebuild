@@ -2406,6 +2406,9 @@ src_prepare() {
 			# 0205: the floating controls' jumps scroll with a short ease-out. On 0204.
 			"${FILESDIR}/0205-agent-ui-gpui-the-floating-thread-controls-scroll-with-a-short-ease-out.patch"
 			"${FILESDIR}/0214-agent-servers-zeo-terminals-the-terminals-you-share-readable-by-the-agent.patch"
+			# 0216: a list name is typed whole (0069's field joins the sidebar's key context),
+			# and the minimized question bar counts questions, not cards (0082). On 0214.
+			"${FILESDIR}/0216-sidebar-agent-ui-a-list-name-is-typed-whole-the-question-bar-counts-questions.patch"
 		)
 	fi
 
@@ -2496,6 +2499,10 @@ src_prepare() {
 			"${FILESDIR}/0211-agent-sandbox-a-jail-can-push-over-ssh-host-22-entries-and-the-operator-s-agent.patch"
 			"${FILESDIR}/0213-git-the-agent-reach-driver-listing-gives-up-on-a-git-that-never-answers.patch"
 			"${FILESDIR}/0215-settings-ui-a-jail-s-capabilities-offer-zeo-terminals.patch"
+			# 0217: the 2026-11-27 security review of 0.31.0 -- a jailed agent's login runs Zeo's
+			# own program in a private dir, the state root leaves /var/tmp, Zeo starts the jails'
+			# ssh-agent, Stop escalates to SIGKILL. On 0215.
+			"${FILESDIR}/0217-agent-sandbox-agent-ui-agent-servers-fixes-from-the-0-31-0-security-review.patch"
 		)
 	fi
 

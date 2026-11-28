@@ -1,0 +1,157 @@
+From afec3fceaeed8d7a9c664933eab7e3583a547d24 Mon Sep 17 00:00:00 2001
+From: lucascouts <lucascs@protonmail.com>
+Date: Fri, 27 Nov 2026 20:25:00 -0300
+Subject: [PATCH] sidebar, agent_ui: a list name is typed whole, and the
+ question bar counts questions
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two defects seen while recording the 2026-11-25 feature reel on Zeo 0.27.0, located by
+reading the code on 2026-11-27.
+
+A thread list name lost characters. The Lists name field (0069) is an editor inside the
+sidebar root, but `Sidebar::dispatch_context` only knew the filter and rename editors, so
+while a list name was typed the root kept its `not_searching` context, where `space` is
+`menu::Confirm`, `shift-r` is `agent::RenameSelectedThread` and `shift-p` toggles the pin.
+An editor binds none of those, so the ancestor binding won: typed key by key, "Release work"
+became the list "elease" -- the capital R renamed the selected thread, the space confirmed
+the field, and "work" fell on the sidebar. The field now counts as editing, like the rename
+editor. The tests never saw it because `type_name` inserts text without keystrokes; the new
+test types with `simulate_keystrokes` and binds the three keys.
+
+The minimized question bar read "Question pending" for one AskUserQuestion call with two
+questions: it counted pending cards (0082), and the two questions are one card of two pages.
+It now sums the pages of every pending form card, the same pages the card steps through
+(`form_pages`), so it reads "Question pending · 2 questions" as CHANGELOG 0.9.0 promised.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+
+diff --git a/crates/agent_ui/src/conversation_view/elicitation.rs b/crates/agent_ui/src/conversation_view/elicitation.rs
+index 6be4546..460fa97 100644
+--- a/crates/agent_ui/src/conversation_view/elicitation.rs
++++ b/crates/agent_ui/src/conversation_view/elicitation.rs
+@@ -1562,6 +1562,23 @@ mod tests {
+         );
+     }
+ 
++    /// The minimized bar counts questions (2026-11-27): one AskUserQuestion call with two
++    /// questions read as "Question pending", as if one were left.
++    #[test]
++    fn a_two_question_form_counts_as_two_questions() {
++        let form = |schema| Elicitation {
++            id: ElicitationEntryId("form".into()),
++            request: acp::CreateElicitationRequest::new(
++                acp::ElicitationFormMode::new(preview_request_scope(0), schema),
++                "Two questions.",
++            ),
++            v1_string_patterns: BTreeMap::new(),
++            status: pending_status(),
++        };
++        assert_eq!(question_count(&form(two_question_schema())), 2);
++        assert_eq!(question_count(&form(acp::ElicitationSchema::new())), 1);
++    }
++
+     #[test]
+     fn form_pages_pair_each_question_with_its_own_custom_answer_box() {
+         assert_eq!(
+@@ -2279,6 +2296,15 @@ fn custom_answer_companion_of(property: &acp::ElicitationPropertySchema) -> Opti
+ ///
+ /// A form with one question therefore yields one page, which is how a
+ /// paginated card ends up looking exactly like an unpaginated one.
++/// How many questions a pending form asks: its pages, which is what the
++/// paginated card steps through. A form that is not a form asks one.
++pub(crate) fn question_count(elicitation: &Elicitation) -> usize {
++    match &elicitation.request.mode {
++        acp::ElicitationMode::Form(mode) => form_pages(&mode.requested_schema).len().max(1),
++        _ => 1,
++    }
++}
++
+ fn form_pages(schema: &acp::ElicitationSchema) -> Vec<Vec<SharedString>> {
+     let marks_questions = schema
+         .properties
+diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
+index a8ced5d..daf1097 100644
+--- a/crates/agent_ui/src/conversation_view/thread_view.rs
++++ b/crates/agent_ui/src/conversation_view/thread_view.rs
+@@ -9990,7 +9990,15 @@ impl ThreadView {
+             self.question_card_minimized = false;
+         }
+         if self.question_card_minimized {
+-            return Some(Self::render_question_card_bar(pending_count, cx));
++            // The bar counts questions, not cards: one AskUserQuestion call with two
++            // questions is one card of two pages, and "Question pending" alone read as one.
++            let question_total = thread
++                .elicitations()
++                .iter()
++                .filter(|elicitation| Self::renders_elicitation_as_card(elicitation, cx))
++                .map(crate::conversation_view::elicitation::question_count)
++                .sum();
++            return Some(Self::render_question_card_bar(question_total, cx));
+         }
+ 
+         let (ix, elicitation) = thread
+diff --git a/crates/sidebar/src/sidebar.rs b/crates/sidebar/src/sidebar.rs
+index 61d5a3c..3f6fbe0 100644
+--- a/crates/sidebar/src/sidebar.rs
++++ b/crates/sidebar/src/sidebar.rs
+@@ -4144,7 +4144,12 @@ impl Sidebar {
+ 
+         let is_archived_search_focused = matches!(&self.view, SidebarView::Archive(archive) if archive.read(cx).is_filter_editor_focused(window, cx));
+ 
+-        let is_renaming = self.rename_editor.focus_handle(cx).is_focused(window);
++        // The Lists name field is typed into like the rename editor: without it here the
++        // `not_searching` bindings (`space` confirms, `shift-r` renames, `shift-p` pins) fire
++        // while a name is typed, and "Release work" became the list "elease".
++        let is_naming_list = matches!(&self.view, SidebarView::Lists(state)
++            if state.name_field.as_ref().is_some_and(|field| field.editor.focus_handle(cx).is_focused(window)));
++        let is_renaming = self.rename_editor.focus_handle(cx).is_focused(window) || is_naming_list;
+ 
+         let identifier = if self.filter_editor.focus_handle(cx).is_focused(window)
+             || is_archived_search_focused
+diff --git a/crates/sidebar/src/sidebar_lists_tests/manage.rs b/crates/sidebar/src/sidebar_lists_tests/manage.rs
+index b4d1993..219d171 100644
+--- a/crates/sidebar/src/sidebar_lists_tests/manage.rs
++++ b/crates/sidebar/src/sidebar_lists_tests/manage.rs
+@@ -383,6 +383,39 @@ async fn new_list_from_a_thread_creates_the_list_and_files_the_thread(cx: &mut T
+     );
+ }
+ 
++// 2026-11-27 — the name field is typed into, so keys the sidebar binds outside a text field
++// (`space` confirms, `shift-r` renames, `shift-p` pins) do not fire there. They did: typed key by
++// key, "Release work" became the list "elease" — the R renamed the selected thread, the space
++// confirmed the field. `type_name` inserts text without keystrokes, which is why no test saw it.
++#[gpui::test]
++async fn a_list_name_with_a_capital_and_a_space_is_typed_whole(cx: &mut TestAppContext) {
++    let (_mw, sidebar, cx) = alpha_window(true, cx).await;
++    let fix = save_in("a1", "Fix login", ALPHA, 1, cx);
++    cx.update(|_, cx| {
++        let context = Some("ThreadsSidebar && not_searching");
++        cx.bind_keys([
++            gpui::KeyBinding::new("space", Confirm, context),
++            gpui::KeyBinding::new("shift-r", RenameSelectedThread, context),
++            gpui::KeyBinding::new("shift-p", TogglePinSelectedThread, context),
++        ]);
++    });
++
++    right_click_group_row(&sidebar, fix, cx);
++    assert!(open_move_to_list(cx));
++    click(NEW_LIST_ENTRY, cx);
++    cx.simulate_keystrokes("shift-r e l e a s e space shift-p l a n");
++    cx.run_until_parked();
++    assert!(shown(NAME_FIELD, cx), "the space did not confirm the field");
++    press_enter(cx);
++
++    assert_eq!(list_names(cx), vec!["Release Plan"]);
++    assert_eq!(
++        list_of(fix, cx),
++        Some(list_ids(cx)[0]),
++        "the thread is filed in it"
++    );
++}
++
+ // R5.9, Q4 — a list deleted elsewhere before the rename is confirmed: the store refuses, every
+ // list is unchanged, and ONE warning names the list id, never a list name. The deletion and the
+ // Enter happen in one update, so the confirm reaches the field the user typed in.

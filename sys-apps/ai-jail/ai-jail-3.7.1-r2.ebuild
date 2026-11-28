@@ -273,6 +273,13 @@ PATCHES+=( "${FILESDIR}"/${PN}-secret-https.patch )
 # on top of the patch above.
 PATCHES+=( "${FILESDIR}"/${PN}-ssh-proxy.patch )
 
+# Scoped secret substitution (2026-11-27 security review of Zeo 0.31.0): the real
+# value only in Authorization, x-api-key and named query parameters, a request
+# carrying the placeholder anywhere else refused, the response head scrubbed, the
+# Host checked against the CONNECT origin, interception on 443 only. From the
+# fork's fix/secret-scope on top of the patch above.
+PATCHES+=( "${FILESDIR}"/${PN}-secret-scope.patch )
+
 src_prepare() {
 	default
 
